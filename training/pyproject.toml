@@ -1,0 +1,6 @@
+# Test configuration for the training package. The trainer modules are top-level
+# (config, run_layout, standalone_trainer, f1tenth_env, qrsac) and imported as such
+# by the tests, so put the training/ root on sys.path when running pytest.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

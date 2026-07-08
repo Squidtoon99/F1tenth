@@ -1,0 +1,25 @@
+# RL training dependencies for a Linux + NVIDIA GPU box (HPC / training rig).
+#
+# Pins the CUDA torch build that matches the validated training environment. Use a
+# CUDA index appropriate for the host, e.g.:
+#
+#   pip install -r requirements-gpu.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu130
+
+# Shared observation/action contract, installed EDITABLE.
+-e ../libs/f1tenth_contract
+
+# Simulator for synthetic-data generation + training.
+genesis-world==0.4.3
+
+# Core ML stack (CUDA build).
+torch==2.10.0
+torchvision==0.25.0
+numpy
+
+# Environment + trainer runtime deps.
+requests
+tqdm
+python-dotenv
+rerun-sdk
+wandb

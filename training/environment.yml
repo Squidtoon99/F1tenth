@@ -1,4 +1,6 @@
-# Conda environment for RL training (local/HPC). Scaffold placeholder.
+# Conda environment for RL training. Defaults to the macOS (Apple Silicon) set,
+# which is the local dev/test target. For the Linux/GPU box use requirements-gpu.txt
+# (CUDA torch build) instead of the torch line below.
 name: f1tenth-training
 channels:
   - conda-forge
@@ -8,10 +10,11 @@ dependencies:
   - pip:
       # Editable shared contract: obs-space edits picked up with no rebuild.
       - -e ../libs/f1tenth_contract
-      - genesis-world
+      - genesis-world==0.4.3
       - torch
-      - torchvision
       - numpy
+      - requests
+      - tqdm
+      - python-dotenv
+      - rerun-sdk
       - wandb
-      - pandas
-      - joblib

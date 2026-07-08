@@ -1,19 +1,9 @@
-# RL training dependencies (pure Python; run locally or on HPC).
-# NOTE: kept separate from the ROS/car image on purpose.
-
-# Shared observation/action contract, installed EDITABLE so obs-space changes need
-# no rebuild/reinstall during training.
--e ../libs/f1tenth_contract
-
-# Simulator for synthetic-data generation + training.
-genesis-world
-
-# Core ML stack.
-torch
-torchvision
-numpy
-
-# Experiment tracking / utilities.
-wandb
-pandas
-joblib
+# Default training requirements.
+#
+# Platform-split so local macOS installs and the Linux/GPU training box each get a
+# working torch build:
+#   - macOS (Apple Silicon):   pip install -r requirements-mac.txt
+#   - Linux + NVIDIA GPU:      pip install -r requirements-gpu.txt
+#
+# This file defaults to the macOS set (the local dev/test target).
+-r requirements-mac.txt

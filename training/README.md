@@ -1,31 +1,57 @@
 # training/
 
-Reinforcement-learning training frameworks. This is **pure Python**: it is never
-built by colcon and never included in the car image. Training runs on developer
-machines or on HPC (there is intentionally **no GPU CI**).
+Reinforcement-learning training code. This is **pure Python**: it is never built by
+colcon and never included in the car image. Training runs natively on developer
+machines (macOS Apple Silicon uses the torch MPS/Metal or CPU backend) or on a
+Linux + NVIDIA GPU box / HPC (there is intentionally **no GPU CI**).
 
 ## Layout
 
-- `f1tenth_env/` — the simulation environment wrapper used for training (synthetic
-  rollouts + reward/termination logic).
-- `qrsac/` — the RL algorithm (distributional actor-critic).
-- `trainer/` — training entry points (single-process and any distributed variants).
-- `configs/` — default training configuration.
+The modules are top-level (imported as `config`, `run_layout`, `standalone_trainer`,
+`f1tenth_env`, `qrsac`), so run commands from this `training/` directory.
 
-## Setup (editable contract = no rebuild on obs changes)
+- `f1tenth_env/` — the Genesis simulation environment used for training (env, car,
+  observations, rewards, terminations, opponents, domain randomization). Loads the
+  vehicle model from `F110.export.urdf` and track geometry from
+  `f1tenth_env/tracks.pickle`.
+- `qrsac/` — the RL algorithm: Quantile-Regression Soft Actor-Critic
+  (distributional actor-critic) plus the spinning-up MLP building blocks.
+- `standalone_trainer.py` — single-process trainer entry point (F1tenthEnv +
+  in-memory n-step replay; no Reverb/Redis/S3).
+- `run_layout.py` — per-run output directory layout (`outputs/runs/<run-id>/`).
+- `config.py` — `DEFAULT_CONFIG` (the single source of the trainer's config).
+- `tests/` — observation-geometry / reward / termination / opponent unit tests
+  (they `pytest.importorskip("genesis")`, so they are skipped where Genesis is not
+  installed).
 
-The observation/action layout comes from the shared contract. Install it editable so
-changing the observation space is picked up on the next run with no rebuild:
+## Setup
+
+The observation/action layout is documented by the shared contract, installed
+editable so format changes need no rebuild/reinstall:
 
 ```bash
-pip install -r training/requirements.txt   # includes: -e ../libs/f1tenth_contract
-# or: conda env create -f training/environment.yml
+cd training
+
+# macOS (Apple Silicon) — the local dev/test target:
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-mac.txt        # includes: -e ../libs/f1tenth_contract
+
+# Linux + NVIDIA GPU (HPC / training rig):
+pip install -r requirements-gpu.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu130
 ```
 
 ## Run
 
 ```bash
-python -m training.trainer.standalone_trainer --num-envs 512 --total-steps 500000
+cd training
+python standalone_trainer.py --num-envs 512 --total-steps 500000
+```
+
+Run the unit tests (skipped if Genesis is not installed):
+
+```bash
+cd training && pytest
 ```
 
 ## Offboard / HPC
@@ -34,17 +60,6 @@ Build an Apptainer image for HPC and run there — see
 [`deploy/apptainer/training.def`](../deploy/apptainer/training.def) and
 [`docs/deployment.md`](../docs/deployment.md). Outputs (checkpoints, logs, wandb) are
 kept out of git (see [`.gitignore`](../.gitignore)).
-
-## Migration note
-
-Maps onto the current `F1tenth-Genesis` repo:
-
-| Here | From F1tenth-Genesis |
-| --- | --- |
-| `f1tenth_env/` | `f1tenth_env/` (Genesis env: env, car, observations, rewards, ...) |
-| `qrsac/` | `qrsac/` |
-| `trainer/standalone_trainer.py` | `standalone_trainer.py` |
-| `configs/` | `config.py` (`DEFAULT_CONFIG`) / `param.py` / `task.py` |
 
 The synthetic-data simulator (Genesis) is a pip dependency (`genesis-world`); see
 [`../sim/genesis/`](../sim/genesis/).
