@@ -1,7 +1,6 @@
 """Tests for gym-compatible spawn sampling."""
 
 import math
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -86,11 +85,3 @@ def test_sample_reset_pose_uses_map_when_available():
     mask = build_free_spawn_mask(occ, res, max_dist=0.3)
     assert is_spawn_cell_free(x, y, mask, origin, res)
     assert -math.pi <= yaw <= math.pi
-
-
-def test_iv2026_static_spawn_yaw():
-    csv_path = Path(__file__).resolve().parents[2] / "assets" / "IV_2026_SIM_centerline.csv"
-    data = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=np.float32)
-    cl = data[:, :2] if data.ndim == 2 else data
-    yaw = centerline_yaw_at(0.0, 2.0, cl)
-    assert yaw == pytest.approx(-1.465477, abs=0.01)

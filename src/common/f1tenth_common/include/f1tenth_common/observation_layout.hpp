@@ -1,3 +1,5 @@
+// Copyright 2026 F1TENTH Racing Stack contributors
+//
 // C++ mirror of the observation/action format defined in Python at
 // libs/f1tenth_contract. The on-car C++ nodes cannot import Python, so this header
 // must stay in sync with the Python contract. A parity test

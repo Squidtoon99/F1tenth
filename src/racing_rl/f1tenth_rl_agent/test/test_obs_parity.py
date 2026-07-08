@@ -22,20 +22,38 @@ import pytest
 # Keep matplotlib (imported transitively by genesis) from complaining.
 os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
 
-gs = pytest.importorskip("genesis")
-
 import torch  # noqa: E402
 
 from f1tenth_rl_agent import obs_core  # noqa: E402
 from f1tenth_rl_agent.interfaces import default_obs_cfg  # noqa: E402
 
-# Repo root: ros2_deploy/f1tenth_rl_agent/test -> up 3.
-_REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..")
-)
+# NOTE: genesis is only importable in the training venv (natively on macOS), not in
+# the amd64 ROS dev container. We gate it inside the ``real_modules`` fixture (not at
+# module import) so that a missing genesis skips only these two tests instead of
+# aborting collection of the whole f1tenth_rl_agent test session.
 
 
-def _configure_genesis():
+def _find_monorepo_root() -> str:
+    """Walk up from this test until we find the training/f1tenth_env package.
+
+    In the monorepo the deployed package lives under src/racing_rl/ while the
+    training env lives under training/, so the old fixed "up 3" no longer applies.
+    """
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        if os.path.isdir(os.path.join(d, "training", "f1tenth_env")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    raise RuntimeError("could not locate training/f1tenth_env from " + __file__)
+
+
+_REPO_ROOT = _find_monorepo_root()
+
+
+def _configure_genesis(gs):
     gs.tc_float = torch.float32
     gs.device = torch.device("cpu")
     if getattr(gs, "EPS", None) is None:
@@ -70,10 +88,15 @@ def _stub_requests():
 
 @pytest.fixture(scope="module")
 def real_modules():
-    _configure_genesis()
+    gs = pytest.importorskip("genesis")
+    _configure_genesis(gs)
     _stub_requests()
-    real_utils = _load_module("real_f1tenth_utils", "f1tenth_env/utils.py")
-    real_obs = _load_module("real_f1tenth_observations", "f1tenth_env/observations.py")
+    real_utils = _load_module(
+        "real_f1tenth_utils", "training/f1tenth_env/utils.py"
+    )
+    real_obs = _load_module(
+        "real_f1tenth_observations", "training/f1tenth_env/observations.py"
+    )
     return real_utils, real_obs
 
 

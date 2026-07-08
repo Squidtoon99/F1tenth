@@ -35,9 +35,8 @@ jobs:
           source /opt/ros/humble/setup.bash
           colcon build --symlink-install
 
-      - name: Test (build/unit tests + ament lint)
+      - name: Test (build/unit tests + ament lint, vendored packages skipped)
         shell: bash
         run: |
           source /opt/ros/humble/setup.bash
-          colcon test
-          colcon test-result --verbose
+          ./tools/test.sh

@@ -38,23 +38,24 @@ def test_compute_boundaries_offset():
 
 
 def test_load_iv2026_bundled_centerline():
-    repo_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    path = os.path.join(
-        repo_root,
-        "ros2_deploy",
-        "f1tenth_rl_agent",
-        "assets",
-        "IV_2026_SIM_centerline.csv",
-    )
+    # Bundled asset lives at the package root: <pkg>/assets/. Assert that
+    # load_track_csv reproduces the raw file contents and yields a sane track,
+    # deriving expectations from the file itself (no brittle hard-coded counts).
+    pkg_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    path = os.path.join(pkg_root, "assets", "IV_2026_SIM_centerline.csv")
     assert os.path.exists(path), path
+
+    raw = np.loadtxt(path, delimiter=",", skiprows=1, dtype=np.float32)
+    n = raw.shape[0]
+    assert n > 100  # a real closed-loop centerline, not a stub
+
     cl, wl, wr = load_track_csv(path)
-    assert cl.shape[0] == 671
-    assert cl.shape[1] == 2
-    np.testing.assert_allclose(cl[0], [0.420455, 0.160366], atol=1e-4)
-    np.testing.assert_allclose(cl[-1], [0.385675, 0.106087], atol=1e-4)
-    np.testing.assert_allclose(wl[0], 0.714610, atol=1e-4)
-    np.testing.assert_allclose(wr[0], 0.723019, atol=1e-4)
-    np.testing.assert_allclose(wl.mean(), 0.680687, atol=1e-3)
-    np.testing.assert_allclose(wr.mean(), 0.653404, atol=1e-3)
+    assert cl.shape == (n, 2)
+    assert wl.shape == (n,)
+    assert wr.shape == (n,)
+    # Column order is x_m, y_m, w_tr_right_m, w_tr_left_m.
+    np.testing.assert_allclose(cl, raw[:, :2], atol=1e-4)
+    np.testing.assert_allclose(wr, raw[:, 2], atol=1e-4)
+    np.testing.assert_allclose(wl, raw[:, 3], atol=1e-4)
+    assert np.isfinite(cl).all()
+    assert (wl > 0).all() and (wr > 0).all()

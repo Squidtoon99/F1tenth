@@ -1,3 +1,5 @@
+// Copyright 2026 F1TENTH Racing Stack contributors
+//
 // Parity test: verifies the C++ observation mirror matches the Python contract
 // (libs/f1tenth_contract) dimensions and field slices.
 #include <gtest/gtest.h>

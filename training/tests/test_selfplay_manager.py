@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from unittest.mock import MagicMock
 
 import torch
 import torch.nn as nn
@@ -47,10 +46,25 @@ def _make_models() -> Models:
     )
 
 
-def _mock_env() -> MagicMock:
-    env = MagicMock()
-    env.refresh_opponent_policy = MagicMock()
-    return env
+class _RecordingEnv:
+    """Minimal real stand-in for F1tenthEnv that records opponent refreshes.
+
+    SelfPlayManager.maybe_refresh only touches ``refresh_opponent_policy`` on the
+    env, so a tiny real object (not a mock) is enough to exercise the cadence and
+    sampling logic without pulling in Genesis.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_args = None
+
+    def refresh_opponent_policy(self, actor, mean, var) -> None:
+        self.call_count += 1
+        self.last_args = (actor, mean, var)
+
+
+def _recording_env() -> _RecordingEnv:
+    return _RecordingEnv()
 
 
 def test_pool_push_and_maxlen_eviction():
@@ -81,16 +95,16 @@ def test_refresh_cadence_gating():
     mgr = SelfPlayManager(pool_size=5, snapshot_interval=1, refresh_interval=50)
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
-    env = _mock_env()
+    env = _recording_env()
 
     mgr.seed_snapshot(SelfPlayManager.make_snapshot(models, normalizer, 0))
 
     assert not mgr.maybe_refresh(env, 25)
     assert mgr.maybe_refresh(env, 50)
-    env.refresh_opponent_policy.assert_called_once()
+    assert env.call_count == 1
     assert not mgr.maybe_refresh(env, 50)
     assert mgr.maybe_refresh(env, 100)
-    assert env.refresh_opponent_policy.call_count == 2
+    assert env.call_count == 2
 
 
 def test_sample_latest():
@@ -102,7 +116,7 @@ def test_sample_latest():
     )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
-    env = _mock_env()
+    env = _recording_env()
 
     for step in (10, 20, 30):
         mgr.maybe_snapshot(models, normalizer, step)
@@ -120,7 +134,7 @@ def test_sample_uniform_covers_pool():
     )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
-    env = _mock_env()
+    env = _recording_env()
 
     for step in (10, 20, 30):
         mgr.maybe_snapshot(models, normalizer, step)
@@ -145,7 +159,7 @@ def test_sample_mixed_favors_latest():
     )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
-    env = _mock_env()
+    env = _recording_env()
 
     for step in (10, 20, 30):
         mgr.maybe_snapshot(models, normalizer, step)

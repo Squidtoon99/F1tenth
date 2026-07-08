@@ -81,8 +81,13 @@ load_tracks()
 
 
 def bundled_track_csv(workspace_dir: str, track_name: str) -> str | None:
-    """Return a bundled centerline CSV path, if present under ros2_deploy/assets."""
+    """Return a bundled centerline CSV path, if present in the assets dirs.
+
+    Checks the monorepo ``training/assets`` layout first, then the legacy
+    ``ros2_deploy/assets`` locations for backward compatibility.
+    """
     for root in (
+        os.path.join(workspace_dir, "assets"),
         os.path.join(workspace_dir, "ros2_deploy", "f1tenth_rl_agent", "assets"),
         os.path.join(workspace_dir, "ros2_deploy", "assets"),
     ):

@@ -21,7 +21,10 @@ def test_policy_inference_publishes_valid_action():
         obs_pub = pub.create_publisher(Float32MultiArray, ifc.TOPIC_OBSERVATION, 10)
 
         received = {}
-        node.create_subscription(
+        # Subscribe on the separate publisher node: subscribing on `node` itself
+        # (which also has a busy observation subscription) starves this callback
+        # under single-threaded spin_once.
+        pub.create_subscription(
             Float32MultiArray, ifc.TOPIC_ACTION,
             lambda m: received.__setitem__("a", m), 10)
 

@@ -57,7 +57,10 @@ def test_evaluation_publishes_metrics():
         width_pub.publish(w)
 
         received = {}
-        node.create_subscription(
+        # Subscribe on the separate publisher node: subscribing on `node` itself
+        # (which also has a busy odom subscription) starves this callback under
+        # single-threaded spin_once.
+        pub.create_subscription(
             Float32MultiArray, ifc.TOPIC_METRICS,
             lambda m: received.__setitem__("m", m), 10)
 

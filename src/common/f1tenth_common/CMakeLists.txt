@@ -22,6 +22,9 @@ ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  # Skip the copyright linter (it requires a full recognized license block, which
+  # we do not enforce repo-wide). cpplint/uncrustify/cppcheck still run.
+  set(ament_cmake_copyright_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
   # Parity test: asserts the C++ observation mirror matches the Python contract

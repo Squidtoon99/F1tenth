@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-serial-driver \
       ros-${ROS_DISTRO}-asio-cmake-module \
       ros-${ROS_DISTRO}-diagnostic-updater \
+      python3-scipy \
     && rm -rf /var/lib/apt/lists/*
 
 # LiDAR driver: install if a prebuilt package exists for the target arch; otherwise

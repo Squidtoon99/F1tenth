@@ -8,10 +8,15 @@ ARG ROS_DISTRO
 SHELL ["/bin/bash", "-lc"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      vim less bash-completion \
+      vim less bash-completion python3-pip \
       ros-${ROS_DISTRO}-foxglove-bridge \
       ros-${ROS_DISTRO}-rviz2 \
     && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch for policy inference (the trainer runs natively on the host GPU
+# box; the ROS image never needs CUDA). Kept in the dev image only, not runtime.
+RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      "torch==2.4.1"
 
 # Auto-source ROS + the workspace overlay (if built) for interactive shells.
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc \

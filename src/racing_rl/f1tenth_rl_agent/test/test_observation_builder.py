@@ -77,7 +77,10 @@ def test_observation_builder_emits_380():
         width_pub.publish(_widths_msg(wl, wr))
 
         received = {}
-        node.create_subscription(
+        # Subscribe on the separate publisher node: subscribing on `node` itself
+        # (which also has a busy odom subscription) starves this callback under
+        # single-threaded spin_once.
+        pub.create_subscription(
             Float32MultiArray, ifc.TOPIC_OBSERVATION,
             lambda m: received.__setitem__("obs", m), 10)
 

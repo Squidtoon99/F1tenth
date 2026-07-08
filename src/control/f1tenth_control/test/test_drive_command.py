@@ -16,19 +16,26 @@ from f1tenth_control.drive_command_node import DriveCommandNode  # noqa: E402
 
 def _collect_drive(node, pub, action, timeout_s=3.0):
     received = []
+    # Subscribe to /drive on a SEPARATE node (not on `node` itself): with
+    # single-threaded spin_once, subscribing on the same node that also has a busy
+    # /rl/action subscription starves the drive callback. Also throttle the action
+    # publish so the node's action callback does not monopolize every spin.
     pub_node = rclpy.create_node("act_pub")
     try:
         act_pub = pub_node.create_publisher(Float32MultiArray, ifc.TOPIC_ACTION, 10)
-        node.create_subscription(
+        pub_node.create_subscription(
             AckermannDriveStamped, ifc.TOPIC_DRIVE,
             lambda m: received.append(m), 10)
         msg = Float32MultiArray()
         msg.data = action
         end = node.get_clock().now().nanoseconds + int(timeout_s * 1e9)
+        count = 0
         while node.get_clock().now().nanoseconds < end and not received:
-            act_pub.publish(msg)
-            rclpy.spin_once(pub_node, timeout_sec=0.02)
+            if count % 5 == 0:
+                act_pub.publish(msg)
+            count += 1
             rclpy.spin_once(node, timeout_sec=0.05)
+            rclpy.spin_once(pub_node, timeout_sec=0.02)
     finally:
         pub_node.destroy_node()
     return received

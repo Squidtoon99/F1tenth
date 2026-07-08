@@ -8,7 +8,8 @@
 #
 # Run inside the dev container (ROS 2 sourced). Uses --symlink-install so Python
 # edits need no rebuild.
-set -euo pipefail
+# No `-u`: the ROS setup.bash dereferences unset vars and would abort under it.
+set -eo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
 GROUP=""
