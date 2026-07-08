@@ -20,8 +20,13 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
+# Genesis is a hard test dependency (installed in the dev venv), so import it
+# directly instead of importorskip. Disabling numba JIT caching sidesteps a
+# "no locator available" cache error when genesis is imported from a symlinked
+# venv path, and keeps import fast for these constant-only tests.
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
-gs = pytest.importorskip("genesis")
+import genesis as gs  # noqa: E402
 
 import torch  # noqa: E402
 

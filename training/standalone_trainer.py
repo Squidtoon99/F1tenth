@@ -537,6 +537,10 @@ def accumulate_step_diagnostics(
 def build_config(args: argparse.Namespace) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["track"] = args.track
+    if getattr(args, "physics", None) is not None:
+        cfg["env"]["physics_backend"] = args.physics
+    if getattr(args, "throttle_mode", None) is not None:
+        cfg["env"]["throttle_mode"] = args.throttle_mode
 
     # Episode horizon: explicit override, else derive from the track centerline
     # length so each track gets ~episode_lap_multiplier laps of racing time.
@@ -698,6 +702,107 @@ def save_checkpoint(
     return path
 
 
+def run_eval_video(
+    eval_state: dict,
+    env_cfg: dict,
+    obs_cfg: dict,
+    reward_cfg: dict,
+    models: Models,
+    normalizer: "ObsNormalizer",
+    control_interval: int,
+    clip_actions: float,
+    run_dir: Path,
+    step: int,
+    num_steps: int,
+    num_show: int,
+    live: bool,
+    wandb_run,
+    log: logging.Logger,
+) -> None:
+    """Deterministic eval rollout rendered to an mp4 (and optionally live Rerun).
+
+    Uses a cached env instance (``num_show`` parallel cars overlaid on the track)
+    so the training env, replay buffer and RNG state are never touched. Best-effort:
+    any failure is logged and swallowed so a long run is never taken down by viz.
+    """
+    import numpy as np
+
+    from f1tenth_env.eval_viz import RolloutVisualizer, yaw_from_quat_wxyz
+
+    num_show = max(1, int(num_show))
+    env = eval_state.get("env")
+    if env is None:
+        env = F1tenthEnv(
+            num_envs=num_show,
+            env_cfg={**env_cfg, "launch_strategy_data": {"num_cars": num_show}},
+            obs_cfg=obs_cfg,
+            reward_cfg=reward_cfg,
+            show_viewer=False,
+            enable_recording=False,
+        )
+        eval_state["env"] = env
+
+    mp4_dir = run_dir / "eval"
+    mp4_dir.mkdir(parents=True, exist_ok=True)
+    mp4_path = str(mp4_dir / f"eval_{step}.mp4")
+    viz = RolloutVisualizer(
+        centerline=env.track_state["centerline"],
+        w_tr_left=env.track_state["w_tr_left"],
+        w_tr_right=env.track_state["w_tr_right"],
+        car_length=float(env_cfg.get("car_length", 0.46)),
+        car_width=float(env_cfg.get("car_width", 0.30)),
+        num_show=num_show,
+        live=live,
+        mp4_path=mp4_path,
+        fps=10,
+        has_opponent=env.has_opponent,
+        rr_app_id="f1tenth_train_eval",
+        rr_spawn=live,
+    )
+
+    was_training = models.actor.training
+    models.actor.eval()
+    obs, _ = env.reset()
+    obs = obs.to(torch.float32)
+    with torch.no_grad():
+        for _ in range(num_steps):
+            actions, _ = models.actor(
+                normalizer.normalize(obs), deterministic=True, with_logprob=False
+            )
+            actions = actions.clamp(-clip_actions, clip_actions)
+            obs, _, done, _ = env.step(
+                actions.to(gs.tc_float), n_steps=control_interval
+            )
+            obs = obs.to(torch.float32)
+            st = env.backend.read_state()
+            ego_xy = st["base_pos"][:, :2].cpu().numpy()
+            ego_yaw = np.array(
+                [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"]]
+            )
+            spd = torch.linalg.norm(st["base_lin_vel"][:, :2], dim=-1).cpu().numpy()
+            opp_xy = opp_yaw = None
+            if env.has_opponent and "opp_base_pos" in st:
+                opp_xy = st["opp_base_pos"][:, :2].cpu().numpy()
+                opp_yaw = np.array(
+                    [yaw_from_quat_wxyz(q.tolist()) for q in st["opp_base_quat"]]
+                )
+            viz.render(
+                ego_xy=ego_xy,
+                ego_yaw=ego_yaw,
+                speed=spd,
+                opp_xy=opp_xy,
+                opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
+                done=done.cpu().numpy(),
+            )
+    out = viz.close()
+    models.actor.train(was_training)
+    if wandb_run is not None and out is not None:
+        import wandb
+
+        wandb_run.log({"eval/rollout": wandb.Video(out, format="mp4")}, step=step)
+    log.info("Eval rollout video written to %s", out)
+
+
 def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(description="Standalone QRSAC trainer (1v0, single process)")
@@ -721,6 +826,22 @@ def parse_args() -> argparse.Namespace:
         help=f"N-step horizon (default: {cfg['model']['n_step']} from config)",
     )
     parser.add_argument("--track", type=str, default=cfg["env"]["track"])
+    parser.add_argument(
+        "--physics",
+        type=str,
+        default=cfg["env"].get("physics_backend", "genesis"),
+        choices=["genesis", "torch"],
+        help="Physics backend: 'genesis' (rigid-body, default) or 'torch' "
+        "(pure-Torch f1tenth_sim vehicle model). Same obs/action contract.",
+    )
+    parser.add_argument(
+        "--throttle-mode",
+        type=str,
+        default=None,
+        choices=["force", "speed"],
+        help="Throttle semantics for the torch backend: 'force' (drive-force "
+        "envelope) or 'speed' (VESC-style speed command). Default from config.",
+    )
     parser.add_argument(
         "--episode-length",
         type=float,
@@ -881,6 +1002,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--buffer-capacity", type=int, default=100_000)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument(
+        "--eval-video-interval",
+        type=int,
+        default=0,
+        help="Render a deterministic eval rollout every N steps (0=off). Uses a "
+        "separate 1-env instance so training data/state is never touched. Logs an "
+        "mp4 to W&B (and/or streams live to Rerun with --eval-video-live).",
+    )
+    parser.add_argument(
+        "--eval-video-steps",
+        type=int,
+        default=600,
+        help="Length (control steps) of each eval rollout video.",
+    )
+    parser.add_argument(
+        "--eval-video-num-envs",
+        type=int,
+        default=1,
+        help="How many env instances to draw overlaid in the eval video (swarm "
+        "view showing the spread of policy behaviour).",
+    )
+    parser.add_argument(
+        "--eval-video-live",
+        action="store_true",
+        help="Also stream the eval rollout live to a Rerun viewer as it renders.",
+    )
+    parser.add_argument(
         "--wandb",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -935,21 +1082,33 @@ def main():
     control_interval = cfg["env"]["control_interval"]
     n_step = model_cfg["n_step"]
 
-    _maybe_patch_headless_rasterizer()
-    backend = select_genesis_backend(args.backend)
-    gs.init(
-        backend=backend,
-        precision=args.precision,
-        performance_mode=True,
-    )
-    # Keep the RL pipeline (normalizer, networks, replay buffer) on the same
-    # device as the Genesis sim so env outputs don't straddle two devices. On a
-    # GPU backend gs.device is the accelerator (CUDA / Apple MPS); on CPU it is
-    # cpu and we honour the explicit --device choice.
-    if backend == gs.cpu:
+    physics_backend = str(cfg["env"].get("physics_backend", "genesis"))
+    if physics_backend == "torch":
+        # The pure-Torch vehicle sim is Genesis-free: skip gs.init() entirely and
+        # just set the few module constants the env buffers reference. This keeps
+        # the torch training path fully standalone (no Genesis runtime / no GL).
         device = select_device(args.device)
+        gs.tc_float = torch.float64 if args.precision == "64" else torch.float32
+        gs.tc_int = torch.int32
+        gs.device = device
+        if getattr(gs, "EPS", None) is None:
+            gs.EPS = 1e-12
     else:
-        device = gs.device
+        _maybe_patch_headless_rasterizer()
+        backend = select_genesis_backend(args.backend)
+        gs.init(
+            backend=backend,
+            precision=args.precision,
+            performance_mode=True,
+        )
+        # Keep the RL pipeline (normalizer, networks, replay buffer) on the same
+        # device as the Genesis sim so env outputs don't straddle two devices. On a
+        # GPU backend gs.device is the accelerator (CUDA / Apple MPS); on CPU it is
+        # cpu and we honour the explicit --device choice.
+        if backend == gs.cpu:
+            device = select_device(args.device)
+        else:
+            device = gs.device
     run_id = args.run_id or uuid.uuid4().hex[:8]
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1064,6 +1223,7 @@ def main():
     consecutive_nan_steps = 0
     total_nan_resets = 0
     max_consecutive_nan = 20
+    eval_state: dict = {}
 
     try:
         while global_step < args.total_steps:
@@ -1415,12 +1575,43 @@ def main():
             if global_step % args.ckpt_interval == 0:
                 save_checkpoint(models, global_step, ckpt_dir, normalizer)
 
+            if (
+                args.eval_video_interval > 0
+                and global_step % args.eval_video_interval == 0
+            ):
+                try:
+                    run_eval_video(
+                        eval_state=eval_state,
+                        env_cfg=env_cfg,
+                        obs_cfg=obs_cfg,
+                        reward_cfg=reward_cfg,
+                        models=models,
+                        normalizer=normalizer,
+                        control_interval=control_interval,
+                        clip_actions=clip_actions,
+                        run_dir=run_dir,
+                        step=global_step,
+                        num_steps=args.eval_video_steps,
+                        num_show=args.eval_video_num_envs,
+                        live=args.eval_video_live,
+                        wandb_run=wandb_run,
+                        log=log,
+                    )
+                except Exception as exc:
+                    log.warning("Eval video rollout failed (continuing): %s", exc)
+
         save_checkpoint(models, global_step, ckpt_dir, normalizer)
     finally:
         try:
             env.close()
         except Exception as exc:
             log.warning("env.close() failed during shutdown: %s", exc)
+        eval_env = eval_state.get("env")
+        if eval_env is not None:
+            try:
+                eval_env.close()
+            except Exception as exc:
+                log.warning("eval env.close() failed during shutdown: %s", exc)
         if wandb_run is not None:
             wandb_run.finish()
 

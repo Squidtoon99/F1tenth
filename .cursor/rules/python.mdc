@@ -7,10 +7,9 @@ alwaysApply: false
 # Python
 
 - Lint with [.flake8](.flake8): max line length 99; CI runs `ament_flake8`.
-- **No mocks.** Test against real modules. When a heavy dependency (e.g. `genesis`,
-  `torch`) is unavailable in the current environment, skip the test with
-  `pytest.importorskip("<dep>")` rather than faking it — see
-  [test_obs_parity.py](src/racing_rl/f1tenth_rl_agent/test/test_obs_parity.py).
+- **No mocks.** Test against real modules and real behavior. Don't fake, stub, or
+  skip a heavy dependency (e.g. `genesis`, `torch`) to avoid exercising it — set up
+  the real dependency so the test genuinely runs.
 - Deterministic randomness: seed with `np.random.default_rng(0)` in tests.
 - Prefer plain functions and the standard library over new frameworks or class
   hierarchies. Don't add abstractions until a second real caller needs them.

@@ -46,8 +46,9 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the module groups under `src/`.
 
 - **Keep it simple.** Do not add abstractions, layers, config knobs, or helper
   indirection until a second real caller needs them.
-- **No mocks.** Test against real modules. When a heavy dependency is unavailable
-  in the current environment — never fake behavior.
+- **No mocks.** Test against real modules and real behavior. Don't fake, stub, or
+  skip a dependency to avoid exercising it — write a test that genuinely runs
+  against the real thing.
 - **Match existing patterns** before inventing new ones; prefer editing an
   existing file over adding one.
 - **Respect ownership boundaries** in [`CODEOWNERS`](CODEOWNERS). Coordinate before
@@ -91,8 +92,9 @@ tested/linted**.
 
 ## Testing philosophy
 
-- Real-dependency tests over mocks; Don't use `importorskip` to skip when a heavy dep
-  (e.g. `genesis`) is missing, or fake it; make a clean test that uses the module or a specific functionality.
+- Real-dependency tests over mocks: exercise the actual module or functionality.
+  Don't fake behavior or skip a test to dodge a heavy dependency — set up the real
+  dependency so the test genuinely runs.
 - Duplicated logic is fenced by a **parity test** (e.g. the Python/C++ observation
   mirror).
 - Deterministic seeds (`np.random.default_rng(0)`). CPU-only — there is no GPU CI.

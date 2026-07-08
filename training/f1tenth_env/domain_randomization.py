@@ -49,6 +49,11 @@ def init_dr_state(
             (num_envs,), base_vehicle_mass, dtype=gs.tc_float, device=device
         ),
         "mass_scale": torch.ones((num_envs,), dtype=gs.tc_float, device=device),
+        # Torch-backend physical DR (neutral by default; Genesis ignores these).
+        # drive_scale multiplies the drive force (motor/gearing strength) and
+        # steer_bias (rad) adds a steering-alignment offset.
+        "drive_scale": torch.ones((num_envs,), dtype=gs.tc_float, device=device),
+        "steer_bias": torch.zeros((num_envs,), dtype=gs.tc_float, device=device),
         "action_latency_steps": torch.full(
             (num_envs,), base_action_latency, dtype=torch.int32, device=device
         ),
@@ -93,6 +98,8 @@ def sample_dr_on_reset(
     )
     obs_lat_lo, obs_lat_hi = _range("obs_latency_steps_range", (0.0, 0.0))
     noise_lo, noise_hi = _range("obs_noise_std_range", (0.0, 0.02))
+    drive_lo, drive_hi = _range("drive_scale_range", (1.0, 1.0))
+    steer_bias_lo, steer_bias_hi = _range("steer_bias_range", (0.0, 0.0))
 
     act_lat_hi = max(act_lat_hi, act_lat_lo)
     obs_lat_hi = max(obs_lat_hi, obs_lat_lo)
@@ -101,6 +108,10 @@ def sample_dr_on_reset(
     dr["ground_friction"][reset_mask] = _uniform(gf_lo, gf_hi, (n,), device)
     dr["vehicle_mass"][reset_mask] = _uniform(mass_lo, mass_hi, (n,), device)
     dr["mass_scale"][reset_mask] = _uniform(scale_lo, scale_hi, (n,), device)
+    dr["drive_scale"][reset_mask] = _uniform(drive_lo, drive_hi, (n,), device)
+    dr["steer_bias"][reset_mask] = _uniform(
+        steer_bias_lo, steer_bias_hi, (n,), device
+    )
     dr["action_latency_steps"][reset_mask] = _uniform(
         act_lat_lo, act_lat_hi + 1.0, (n,), device
     ).to(torch.int32)
@@ -210,6 +221,8 @@ def dr_metrics(dr: dict[str, Any]) -> dict[str, torch.Tensor]:
         "dr/ground_friction": dr["ground_friction"],
         "dr/vehicle_mass": dr["vehicle_mass"],
         "dr/mass_scale": dr["mass_scale"],
+        "dr/drive_scale": dr["drive_scale"],
+        "dr/steer_bias": dr["steer_bias"],
         "dr/action_latency_steps": dr["action_latency_steps"].to(gs.tc_float),
         "dr/obs_latency_steps": dr["obs_latency_steps"].to(gs.tc_float),
         "dr/obs_noise_std": dr["obs_noise_std"],

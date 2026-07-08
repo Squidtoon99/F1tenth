@@ -117,6 +117,26 @@ DEFAULT_CONFIG = {
         "v_eps": 0.1,
         "enable_aero_drag": True,
         "drive_torque_sign": 1.0,
+        # Physics backend: "genesis" (rigid-body engine, default) or "torch"
+        # (pure-Torch f1tenth_sim.TorchVehicleSim). The observation/action contract
+        # is identical for both so the trainer/deploy pipeline is backend-agnostic.
+        "physics_backend": "genesis",
+        # Torch-sim-only knobs (ignored by the Genesis backend). "model": "dynamic"
+        # (Pacejka tires + load transfer + wheel spin) or "kinematic" (Tier 0);
+        # "suspension_mode": "quasi_static" or "dynamic"; "internal_substeps"
+        # subdivides each sim_dt for extra stability; "throttle_mode" is set via the
+        # top-level env key of the same name.
+        "torch_sim": {
+            "model": "dynamic",
+            "suspension_mode": "quasi_static",
+            "internal_substeps": 1,
+        },
+        # Throttle semantics for the torch backend (Genesis is force-based and
+        # ignores this). Default "speed": normalized throttle is a VESC-style speed
+        # command v_cmd = throttle * max_speed, matching the deployed car's
+        # drive_math.py -- a self-regulating closed loop chosen for stable, reliable
+        # physics. "force" is an open-loop drive-force envelope alternative.
+        "throttle_mode": "speed",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
         "track": "IV_2026_SIM",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
@@ -165,6 +185,11 @@ DEFAULT_CONFIG = {
             "obs_latency_steps_range": [0, 1],
             "obs_noise_std_range": [0.0, 0.02],
             "action_latency_steps_max": 3,
+            # Torch-backend-only physical DR (Genesis ignores these). Neutral by
+            # default: drive_scale multiplies drive force (motor/gearing spread),
+            # steer_bias (rad) is a steering-alignment offset. Widen for sim2real.
+            "drive_scale_range": [1.0, 1.0],
+            "steer_bias_range": [0.0, 0.0],
         },
     },
     "reward": {

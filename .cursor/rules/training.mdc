@@ -16,6 +16,7 @@ alwaysApply: false
   ([libs/f1tenth_contract](libs/f1tenth_contract/)), installed **editable** — a
   format change is picked up on the next run with no rebuild, but it also affects
   `racing_rl` and the C++ mirror, so treat it as a shared-surface change.
-- Tests `pytest.importorskip("genesis")`, so they skip cleanly where Genesis is not
-  installed. No mocks — keep this pattern.
+- No mocks — tests exercise the real env and modules. Run them where the training
+  dependencies (e.g. Genesis) are actually installed, rather than faking or
+  skipping them.
 - Keep heavy artifacts (checkpoints, logs, wandb) out of git; they are gitignored.

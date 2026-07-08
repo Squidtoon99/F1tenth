@@ -19,7 +19,7 @@ speculatively; read before editing docs/config (targeted edits, not rewrites).
 
 **Golden rules.**
 - Keep it simple — no abstractions/layers/config/helpers until a second real caller needs them.
-- No mocks — test real modules; skip with `pytest.importorskip(...)` when a heavy dep is missing.
+- No mocks — test real modules and real behavior; don't fake, stub, or skip a dependency to dodge it.
 - Match existing patterns; edit an existing file rather than adding one.
 - Respect [CODEOWNERS](CODEOWNERS); coordinate before touching vendored `src/vehicle/**`.
 

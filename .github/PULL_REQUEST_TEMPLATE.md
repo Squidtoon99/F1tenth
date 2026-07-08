@@ -27,7 +27,7 @@ Write "none — no shared surface touched" otherwise. -->
 ## Checklist
 
 - [ ] Builds and tests pass (`tools/build.sh`, `tools/test.sh`); lint clean
-- [ ] No mocks added — tests use real modules (skip via `importorskip` when a dep is missing)
+- [ ] No mocks added — tests exercise real modules and real behavior (no faking or skipping deps)
 - [ ] No new unjustified abstraction (KISS)
 - [ ] Comment discipline followed (no narration, no ticket IDs, nothing added to untouched code)
 - [ ] ADR added under `docs/adr/` if this is an architectural decision
