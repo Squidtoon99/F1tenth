@@ -1,0 +1,21 @@
+---
+description: RL training conventions (pure Python, never colcon)
+globs: training/**
+alwaysApply: false
+---
+
+# Training
+
+- `training/` is **pure Python**: never built by colcon, never shipped in the car
+  image. Run commands from the `training/` directory. See
+  [training/README.md](training/README.md).
+- The RL approach follows GT Sophy: QR-SAC in [training/qrsac/](training/qrsac/),
+  the sim env in [training/f1tenth_env/](training/f1tenth_env/). Background:
+  [docs/context.md](docs/context.md).
+- The observation/action layout is the shared contract
+  ([libs/f1tenth_contract](libs/f1tenth_contract/)), installed **editable** — a
+  format change is picked up on the next run with no rebuild, but it also affects
+  `racing_rl` and the C++ mirror, so treat it as a shared-surface change.
+- Tests `pytest.importorskip("genesis")`, so they skip cleanly where Genesis is not
+  installed. No mocks — keep this pattern.
+- Keep heavy artifacts (checkpoints, logs, wandb) out of git; they are gitignored.

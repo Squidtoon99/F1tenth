@@ -1,0 +1,31 @@
+---
+description: Observation/action contract change protocol + blast-radius checklist
+globs: libs/f1tenth_contract/**,src/common/f1tenth_common/include/f1tenth_common/observation_layout.hpp
+alwaysApply: false
+---
+
+# Observation / action contract
+
+This is the interface between RL training and the on-car inference node. If they
+disagree, a policy trained in sim behaves differently on the car. It is a single
+source of truth with one intentional, fenced duplication. See
+[docs/observation_contract.md](docs/observation_contract.md).
+
+When you change the layout, do all three, in one change:
+
+1. Update the Python contract in [libs/f1tenth_contract](libs/f1tenth_contract/)
+   (`observation.py` / `action.py`).
+2. Update the C++ mirror
+   ([observation_layout.hpp](src/common/f1tenth_common/include/f1tenth_common/observation_layout.hpp)).
+3. Keep the parity test green
+   ([test_obs_parity.cpp](src/common/f1tenth_common/test/test_obs_parity.cpp)).
+
+**Blast-radius checklist** — before changing this shared surface, enumerate and
+verify every downstream consumer:
+
+- `training/` (env + trainer) — installs the contract editable.
+- `src/racing_rl/` — the observation builder + policy inference nodes.
+- The C++ vehicle node via the `f1tenth_common` mirror.
+
+Trace the blast radius while writing the change, not after. A layout change is an
+"ask first" change and usually warrants an ADR under [docs/adr/](docs/adr/).

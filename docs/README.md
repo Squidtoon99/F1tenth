@@ -1,5 +1,7 @@
 # docs/
 
+- [context.md](context.md) — domain primer: what F1TENTH is, the GT Sophy RL
+  lineage, and the autonomy stack / core problems.
 - [development.md](development.md) — setup, build, run, and the branching model.
 - [deployment.md](deployment.md) — image build -> snapshot -> Jetson -> per-car config.
 - [observation_contract.md](observation_contract.md) — the shared obs/action contract

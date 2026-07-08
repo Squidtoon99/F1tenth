@@ -1,0 +1,25 @@
+---
+description: ROS 2 / colcon workspace conventions for src/
+globs: src/**
+alwaysApply: false
+---
+
+# ROS 2 packages (src/)
+
+- `src/` is one colcon workspace on ROS 2 Humble, grouped by domain (see
+  [ARCHITECTURE.md](ARCHITECTURE.md)). Each group is code-owned
+  ([CODEOWNERS](CODEOWNERS)) — keep changes scoped to your group.
+- Build and test only through the wrappers, inside the dev container:
+  ```bash
+  ./tools/build.sh [-t <group>]     # colcon build --symlink-install
+  ./tools/test.sh  [--packages-select <pkg>]
+  ```
+  `--symlink-install` means Python-only edits need no rebuild.
+- New/changed dependencies go in the package's `package.xml`; adding a package or a
+  dependency is an "ask first" change.
+- **Do not edit vendored packages** under `src/vehicle/**` (vesc, ackermann_mux,
+  f1tenth_stack) without coordinating — see
+  [src/vehicle/VENDORED.md](src/vehicle/VENDORED.md). They are built but not
+  tested/linted.
+- Changing `f1tenth_interfaces` messages or `f1tenth_common` is a shared-surface
+  change: trace the downstream consumers first (see the contract rule).

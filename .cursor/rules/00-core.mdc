@@ -1,0 +1,43 @@
+---
+description: Always-on core guidance for the F1TENTH monorepo (context, principles, boundaries, commands)
+alwaysApply: true
+---
+
+# Core rules
+
+Full manual: [AGENTS.md](AGENTS.md). Domain primer: [docs/context.md](docs/context.md).
+
+**Context.** F1TENTH 1/10th-scale autonomous racing on ROS 2 Humble, developed in
+Docker. Two racing stacks (classical raceline + pure-pursuit, and an end-to-end RL
+policy) share perception/mapping/localization. The RL side follows GT Sophy:
+QR-SAC ([training/qrsac/](training/qrsac/)) + a hand-designed observation
+([libs/f1tenth_contract](libs/f1tenth_contract/)).
+
+**Operating principles.** Verify before acting; prefer the conservative read; ask
+over guessing; you own every line of the diff; keep diffs small; don't ship
+speculatively; read before editing docs/config (targeted edits, not rewrites).
+
+**Golden rules.**
+- Keep it simple — no abstractions/layers/config/helpers until a second real caller needs them.
+- No mocks — test real modules; skip with `pytest.importorskip(...)` when a heavy dep is missing.
+- Match existing patterns; edit an existing file rather than adding one.
+- Respect [CODEOWNERS](CODEOWNERS); coordinate before touching vendored `src/vehicle/**`.
+
+**Comment discipline.** Don't add comments/docstrings/type annotations to code you
+didn't change. No ticket IDs, no historical narration ("previously…"), no
+near-duplicate comments, no signature-restating docstrings, no unexplained jargon.
+
+**Boundaries.**
+- Always: build + test + lint before proposing; keep the diff in the module group in scope.
+- Ask first: contract changes, vendored `src/vehicle/**`, new deps/packages, CI/deploy edits.
+- Never: commit heavy artifacts; add company/internal names; skip tests/lint; self-merge.
+
+**Where things go.** `src/` colcon packages · `libs/` shared contract · `training/`
+pure Python (never colcon) · `deploy/` · `tools/` · `docs/`.
+
+**Commands** (inside the dev container):
+```bash
+./tools/dev.sh up
+./tools/build.sh [-t <group>]
+./tools/test.sh [--packages-select <pkg>]
+```

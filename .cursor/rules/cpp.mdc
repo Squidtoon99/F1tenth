@@ -1,0 +1,20 @@
+---
+description: C++ conventions for the F1TENTH monorepo
+globs: src/**/*.cpp,src/**/*.hpp
+alwaysApply: false
+---
+
+# C++
+
+- Format with [.clang-format](.clang-format); CI runs `ament_clang_format`.
+- The C++ observation layout in
+  [observation_layout.hpp](src/common/f1tenth_common/include/f1tenth_common/observation_layout.hpp)
+  is a **hand-kept mirror** of the Python contract
+  ([libs/f1tenth_contract](libs/f1tenth_contract/)). If you change the layout, keep
+  the parity test green
+  ([test_obs_parity.cpp](src/common/f1tenth_common/test/test_obs_parity.cpp)). See
+  [docs/observation_contract.md](docs/observation_contract.md).
+- Keep unit tests free of ROS runtime dependencies where possible — test the plain
+  logic.
+- Don't edit vendored packages under `src/vehicle/**` without coordinating (see
+  [src/vehicle/VENDORED.md](src/vehicle/VENDORED.md)).

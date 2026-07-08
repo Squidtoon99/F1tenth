@@ -83,3 +83,21 @@ installed editable, so changing the observation space needs no rebuild.
 - Don't commit heavy artifacts (weights, rosbags, outputs, maps, build trees) — they
   are gitignored.
 - No company or internal product/project names anywhere in the repo (public repo).
+
+## Decisions & PRs
+
+- **Commits** follow a `scope: summary` convention, where `scope` is the module
+  group or area and the summary is a short, imperative, lowercase phrase — e.g.
+  `contract: seed f1tenth_contract with the real obs/action format`,
+  `training: migrate standalone QR-SAC trainer`, `build: make workspace
+  colcon-clean`.
+- **PRs** use [`../.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md):
+  say what/why, list the module group(s) touched and any downstream impact, and
+  include build/test evidence. This is how routine work is documented.
+- **ADRs** capture significant decisions. Write one when a change alters the repo's
+  structure, a public interface or the observation/action contract, the
+  build/deploy shape, or accepts a non-obvious trade-off. Copy
+  [`adr/0000-template.md`](adr/0000-template.md); never rewrite an accepted ADR —
+  supersede it.
+- Agent-facing guidance lives in [`../AGENTS.md`](../AGENTS.md) and
+  `../.cursor/rules/`; the domain primer is [`context.md`](context.md).
