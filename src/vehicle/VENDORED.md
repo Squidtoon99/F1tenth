@@ -7,18 +7,25 @@ re-vendor, so the snapshot is reproducible.
 | Package (local path)      | Upstream repo                                   | Branch        | Commit SHA                                 | Vendored on |
 | ------------------------- | ----------------------------------------------- | ------------- | ------------------------------------------ | ----------- |
 | `f1tenth_stack/`          | f1tenth/f1tenth_system (`f1tenth_stack` subdir) | humble-devel  | `94cb8d7fb5439315316bf80aadbc7256b80cb4e2` | 2026-07-07  |
-| `vesc/`                   | f1tenth/vesc                                    | ros2          | TODO                                       | TODO        |
-| `ackermann_mux/`          | f1tenth/ackermann_mux                           | (default)     | TODO                                       | TODO        |
+| `vesc/`                   | f1tenth/vesc                                    | ros2          | `153998df8545fe1781b975df88e411b4e71d4bfe` | 2026-07-07  |
+| `ackermann_mux/`          | f1tenth/ackermann_mux                           | foxy-devel    | `b3c0b083ac03aa8c648537d7e4d22608fcd3440c` | 2026-07-07  |
 
 Notes:
 - `f1tenth_stack` was vendored from the `f1tenth_stack/` subdirectory of the
   `f1tenth/f1tenth_system` monorepo (MIT licensed). Only that package directory was
   copied; the repo's `.git`/`.gitmodules` were not.
+- `vesc/` contains four packages: `vesc` (metapackage), `vesc_msgs`, `vesc_driver`,
+  `vesc_ackermann`. `ackermann_mux/` is a single package. Upstream `.git` and
+  `.github/` were dropped; `LICENSE` files are retained.
 - In upstream, `vesc`, `ackermann_mux`, and `teleop_tools` are git submodules of
   `f1tenth_system` (not populated by a shallow clone). `vesc` and `ackermann_mux`
-  still need to be vendored from their own repos (`f1tenth/vesc` @ `ros2`,
-  `f1tenth/ackermann_mux`). `teleop_tools` (`f1tenth/teleop_tools` @ `humble-devel`)
-  can instead be satisfied via rosdep/apt (`joy_teleop`).
+  are now vendored from their own repos. `teleop_tools`
+  (`f1tenth/teleop_tools` @ `humble-devel`) is instead satisfied via rosdep/apt
+  (`joy_teleop`, from `ros-humble-teleop-tools`).
+- The vendored packages' non-ROS system deps are installed in the Docker base image:
+  `serial_driver` (`ros-humble-serial-driver`, needed by `vesc_driver`),
+  `diagnostic_updater` (`ros-humble-diagnostic-updater`, needed by `ackermann_mux`),
+  and `rosbridge_server` (`ros-humble-rosbridge-server`, needed by `f1tenth_stack`).
 
 ## Not vendored (installed via rosdep/apt in the Docker base image)
 
