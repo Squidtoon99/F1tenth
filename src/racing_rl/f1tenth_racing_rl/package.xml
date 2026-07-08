@@ -13,7 +13,7 @@
   <depend>ackermann_msgs</depend>
   <depend>f1tenth_interfaces</depend>
   <!-- Single source of truth for the observation/action layout (dual pip+ament
-       package under libs/). Built with colcon --symlink-install so Python edits
+       package under libs/). Built with colcon symlink install so Python edits
        need no rebuild. -->
   <exec_depend>f1tenth_contract</exec_depend>
 
