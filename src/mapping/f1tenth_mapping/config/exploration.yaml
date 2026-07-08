@@ -1,0 +1,38 @@
+exploration:
+  ros__parameters:
+    map_topic: "/map"
+    goal_topic: "/mapping/goal"
+    nav_status_topic: "/mapping/nav_status"
+    status_topic: "/mapping/status"
+    map_save_path: "/tmp/f1tenth_map"
+    control_hz: 1.0
+    min_cluster_size: 3
+    min_coverage_ratio: 0.98
+    max_runtime_s: 3600.0
+    startup_delay_s: 5.0
+    auto_save_map: true
+
+navigator:
+  ros__parameters:
+    map_topic: "/map"
+    odom_topic: "/odom"
+    goal_topic: "/mapping/goal"
+    nav_status_topic: "/mapping/nav_status"
+    drive_topic: "/drive"
+    control_hz: 20.0
+    mapping_speed_mps: 2.0
+    speed_limit_mps: 2.5
+    goal_tolerance_m: 0.5
+    stuck_timeout_s: 15.0
+    watchdog_timeout_s: 0.5
+    wheelbase_m: 0.33
+    max_steer_rad: 0.44
+    lookahead_m: 1.5
+    min_lookahead_m: 0.8
+    path_inflation_cells: 2
+    speed_pid_kp: 1.5
+    speed_pid_ki: 0.1
+    speed_pid_kd: 0.05
+    speed_pid_limit: 1.0
+    odom_frame: "odom"
+    base_frame: "base_link"

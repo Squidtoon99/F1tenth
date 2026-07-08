@@ -3,7 +3,12 @@
 <package format="3">
   <name>f1tenth_perception</name>
   <version>0.0.0</version>
-  <description>Perception nodes (e.g. LiDAR-based opponent/obstacle detection). Scaffold placeholder.</description>
+  <description>
+    Perception nodes for the algorithmic stack (e.g. LiDAR-based obstacle detection).
+    Scaffold placeholder: onboard opponent detection for the RL stack currently ships
+    inside the f1tenth_rl_vehicle C++ package (opponent_detector); this package is the
+    future home for shared/algorithmic perception.
+  </description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 

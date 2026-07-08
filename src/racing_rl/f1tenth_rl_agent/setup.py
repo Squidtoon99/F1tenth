@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = "f1tenth_mapping"
+package_name = "f1tenth_rl_agent"
 
 setup(
     name=package_name,
@@ -14,18 +14,23 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
+        (os.path.join("share", package_name, "assets"), glob("assets/*")),
     ],
-    install_requires=["setuptools", "numpy", "scipy"],
+    install_requires=["setuptools"],
     zip_safe=True,
     maintainer="f1tenth-genesis",
     maintainer_email="dev@todo.todo",
-    description="F1TENTH autonomous track mapping with slam_toolbox and DFS exploration.",
+    description="ROS 2 nodes to run a trained F1TENTH QRSAC policy in f1tenth_gym_ros.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "exploration = f1tenth_mapping.exploration_node:main",
-            "navigator = f1tenth_mapping.navigator_node:main",
+            "track_server = f1tenth_rl_agent.track_server_node:main",
+            "observation_builder = f1tenth_rl_agent.observation_builder_node:main",
+            "obs_debug = f1tenth_rl_agent.obs_debug_node:main",
+            "policy_inference = f1tenth_rl_agent.policy_inference_node:main",
+            "evaluation = f1tenth_rl_agent.evaluation_node:main",
+            "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
         ],
     },
 )

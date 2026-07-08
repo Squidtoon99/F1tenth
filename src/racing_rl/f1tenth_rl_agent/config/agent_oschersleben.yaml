@@ -1,0 +1,50 @@
+track_server:
+  ros__parameters:
+    track_csv: "/sim_ws/src/f1tenth_rl_agent/assets/Oschersleben_centerline.csv"
+    frame_id: "map"
+    republish_hz: 1.0
+
+observation_builder:
+  ros__parameters:
+    control_hz: 10.0
+    contact_margin_m: 0.08
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
+    twist_in_world_frame: false
+    publish_debug_markers: true
+
+policy_inference:
+  ros__parameters:
+    checkpoint_path: ""
+    state_dict_key: "actor"
+    device: "cpu"
+    deterministic: true
+    demo_throttle_floor: 0.55
+
+drive_command:
+  ros__parameters:
+    max_speed: 5.0
+    max_steer: 0.4189
+    clip_actions: 1.0
+    speed_limit_mps: 2.0
+    watchdog_timeout_s: 0.5
+    brake_behavior: "stop"
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
+
+evaluation:
+  ros__parameters:
+    oob_margin_m: 0.0
+    stuck_speed_mps: 0.2
+    stuck_timeout_s: 3.0
+    reset_x: 0.0
+    reset_y: 0.0
+    reset_yaw: 0.1
+    auto_reset: true
+    random_reset: true
+    random_spawn_on_start: true
+    reset_seed: -1
+    map_yaml: "/sim_ws/src/f1tenth_gym_ros/maps/Oschersleben_map.yaml"
+    spawn_max_dist: 1.0

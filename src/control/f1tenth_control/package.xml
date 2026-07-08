@@ -3,7 +3,7 @@
 <package format="3">
   <name>f1tenth_control</name>
   <version>0.0.0</version>
-  <description>Path-tracking control (pure pursuit, optional MPC) and the drive-command layer. Scaffold placeholder.</description>
+  <description>Path-tracking control (pure pursuit, optional MPC) and the drive-command layer that maps policy actions to AckermannDriveStamped.</description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 
@@ -11,12 +11,17 @@
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>ackermann_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>f1tenth_interfaces</depend>
+  <!-- drive_command reads the shared topic/scale contract from the RL agent's
+       interfaces module (the shared contract mirror). -->
+  <exec_depend>f1tenth_rl_agent</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>f1tenth_rl_agent</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

@@ -19,8 +19,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # TODO: e.g. "pure_pursuit = f1tenth_control.pure_pursuit_node:main",
-            #       "drive_command = f1tenth_control.drive_command_node:main",
+            "drive_command = f1tenth_control.drive_command_node:main",
         ],
     },
 )

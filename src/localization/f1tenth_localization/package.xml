@@ -3,7 +3,11 @@
 <package format="3">
   <name>f1tenth_localization</name>
   <version>0.0.0</version>
-  <description>Particle-filter localization configuration and wrappers. Scaffold placeholder.</description>
+  <description>
+    Particle-filter localization configuration and wrappers. Scaffold placeholder:
+    the stack currently consumes pose from an external particle_filter node on
+    /pf/pose/odom; this package is the future home for its config and wrappers.
+  </description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 

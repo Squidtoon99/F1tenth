@@ -1,0 +1,77 @@
+track_server:
+  ros__parameters:
+    # IV 2026 competition track (dfr_f1tenth_gym dev-humble). Use agent_oschersleben.yaml for Oschersleben.
+    track_csv: "/sim_ws/src/f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv"
+    frame_id: "map"
+    republish_hz: 1.0
+
+observation_builder:
+  ros__parameters:
+    control_hz: 10.0
+    contact_margin_m: 0.08
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
+    # If the simulator publishes odom twist in the world frame instead of body frame,
+    # set this True to rotate linear velocity into the body frame before building obs.
+    twist_in_world_frame: false
+    publish_debug_markers: false
+
+obs_debug:
+  ros__parameters:
+    # Read-only diagnostics: decodes /rl/observation into plottable scalars + markers.
+    # pose_topic is the real-car map-frame pose (particle filter); matches vehicle_obs.
+    pose_topic: "/pf/pose/odom"
+    future_track_num_points: 60
+    enable_markers: true
+    frame_id: "map"
+
+policy_inference:
+  ros__parameters:
+    # Empty -> random-init actor (plumbing demo). Mount a real .pt at /checkpoints to run trained policy.
+    checkpoint_path: ""
+    state_dict_key: "actor"
+    device: "cpu"
+    deterministic: true
+    # Must match vehicle_obs enable_opponent_obs (387 for 1v1 checkpoints).
+    enable_opponent_obs: true
+    # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads).
+    demo_throttle_floor: 0.55
+    # ObsNormalizer (match config.py norm_clip / norm_eps); applied to raw obs using
+    # the checkpoint's saved obs_norm stats before the actor.
+    norm_clip: 10.0
+    norm_eps: 1.0e-8
+
+drive_command:
+  ros__parameters:
+    # Cap below training envelope (~3–6 m/s in Genesis) to reduce wall collisions in gym.
+    max_speed: 3.0
+    max_steer: 0.30
+    clip_actions: 1.0
+    # Hard cap on commanded speed (m/s). Matches real-car shakedown in vehicle.yaml.
+    speed_limit_mps: 2.0
+    watchdog_timeout_s: 0.5
+    # "stop" -> negative throttle commands zero speed; "reverse" -> allow negative speed.
+    brake_behavior: "stop"
+    # Match Genesis F1tenthEnv steer lag (config.py t_delta at 10 Hz control).
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
+
+evaluation:
+  ros__parameters:
+    oob_margin_m: 0.0
+    stuck_speed_mps: 0.2
+    stuck_timeout_s: 3.0
+    # Fixed fallback pose when random_reset is false.
+    reset_x: 0.0
+    reset_y: 2.0
+    reset_yaw: -0.9
+    auto_reset: true
+    random_reset: true
+    random_spawn_on_start: true
+    reset_seed: -1
+    # Gym-compatible free-cell spawns (AllMapResetFn dilation); matches gym bridge maps/.
+    map_yaml: "/sim_ws/src/f1tenth_gym_ros/maps/IV_2026_SIM.yaml"
+    spawn_max_dist: 1.0
+    reset_grace_s: 2.0

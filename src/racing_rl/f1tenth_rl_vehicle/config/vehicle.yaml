@@ -1,0 +1,99 @@
+# Real-car parameters for the lean RL vehicle layer (vehicle_obs + drive).
+# The policy_inference node keeps using f1tenth_rl_agent/config/agent.yaml.
+
+vehicle_obs:
+  ros__parameters:
+    # Resolved to the f1tenth_rl_agent share asset by the launch file; override
+    # with an absolute path for a different (surveyed) track.
+    track_csv: ""
+    control_hz: 10.0
+    # Map-frame pose from the particle filter, body twist from the VESC odom.
+    pose_topic: "/pf/pose/odom"
+    twist_topic: "/odom"
+    action_topic: "/rl/action"
+    obs_topic: "/rl/observation"
+    # Set true if the twist source reports velocity in the world/map frame.
+    twist_in_world_frame: false
+    # Observation assembly (match config.py DEFAULT_CONFIG["obs"] and agent.yaml).
+    num_obs: 380
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_min_lookahead_m: 5.0
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
+    contact_margin_m: 0.08
+    clip_obs: 50.0
+    lin_vel_scale: 1.0
+    ang_vel_scale: 1.0
+    lin_acc_scale: 1.0
+    coarse_stride: 10
+    # 1v1 checkpoint in 1v0 mode: keep the 387-dim layout but zero [380:387]
+    # (broken LiDAR detector). Set zero_opponent_obs: false when running 1v1.
+    num_obs: 387
+    enable_opponent_obs: true
+    zero_opponent_obs: true
+    opponent_odom_topic: "/rl/opponent/odom"
+    opponent_timeout_s: 0.5
+
+# LiDAR opponent detector (only launched when enable_opponent:=true). Publishes the
+# detected opponent as Odometry on opponent_odom_topic for vehicle_obs to consume.
+opponent_detector:
+  ros__parameters:
+    # track_csv is resolved by the launch file (same surveyed centerline as vehicle_obs).
+    track_csv: ""
+    scan_topic: "/scan"
+    pose_topic: "/pf/pose/odom"
+    opponent_odom_topic: "/rl/opponent/odom"
+    marker_topic: "/rl/opponent/marker"
+    publish_marker: true
+    frame_id: "map"
+    coarse_stride: 10
+    # Static laser pose in base_link (avoids a tf2 dependency). Set from the URDF.
+    lidar_offset_x: 0.0
+    lidar_offset_y: 0.0
+    lidar_offset_yaw: 0.0
+    # Clustering + gating thresholds (metres).
+    cluster_gap_m: 0.30
+    min_opponent_size_m: 0.05
+    max_opponent_size_m: 0.80
+    boundary_margin_m: 0.20
+    # Foreground gate: a real car stands in front of its angular background; a
+    # contiguous wall does not. Cuts wall false-positives (~55% -> ~15% in the gym
+    # during occlusion) while keeping ~95% recall on a visible opponent. 0 disables.
+    foreground_jump_m: 0.30
+    # Ignore clusters whose near edge is beyond this range (a single LiDAR cannot
+    # reliably localise a distant car). 0 disables.
+    max_range_m: 10.0
+    # Reject speckle / wall fragments with too few beams. 0 disables.
+    min_cluster_beams: 2
+    # Reject bumper-range phantoms (real-car solo bag median ~0.27 m). 0 disables.
+    min_ego_dist_m: 0.50
+    # Optional tighter lower bound on cluster extent (m). 0 disables.
+    min_extent_m: 0.0
+    # Minimum angular span of a cluster in degrees ((i1-i0+1)*angle_increment).
+    # Real cars subtend ~car_width/range; leave 0 to disable until tuned.
+    min_visible_angle_deg: 0.0
+    max_assoc_dist_m: 1.50
+    vel_alpha: 0.50
+    # Persistence-based confirmation; works for a stationary opponent. min_speed_mps
+    # only fast-tracks confirmation (0 = disabled) and never rejects a static track.
+    min_track_age_frames: 3
+    min_speed_mps: 0.0
+
+drive:
+  ros__parameters:
+    # Match training DEFAULT_CONFIG (config.py): max_speed=15.0, delta_max=0.44.
+    max_speed: 15.0
+    max_steer: 0.44
+    clip_actions: 1.0
+    # Hard cap on commanded speed for staged shakedown. Raise once validated.
+    speed_limit_mps: 2.0
+    watchdog_timeout_s: 0.5
+    brake_behavior: "stop"
+    # Match Genesis F1tenthEnv steer lag; tune t_delta after vehicle_calibration/fit.
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
+    action_topic: "/rl/action"
+    # Publishes straight to the f1tenth_stack ackermann_mux autonomous input.
+    drive_topic: "/drive"
+    frame_id: "base_link"
