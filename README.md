@@ -29,14 +29,20 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and rationale.
 
 ## Quick start (newcomers)
 
+New here? Start with **[`docs/getting-started.md`](docs/getting-started.md)** — it
+covers what the repo is, first-time setup, and contributing a ROS node end to end.
+
 Everything runs in Docker; you do not need ROS 2 installed on your host.
 
 ```bash
-git clone <this-repo> f1tenth && cd f1tenth
-./tools/dev.sh up        # build/enter the dev container with a built workspace
+git clone https://github.com/Squidtoon99/F1tenth.git f1tenth && cd f1tenth
+./tools/dev.sh up        # build/enter the dev container (or `./tools/dev.sh pull`)
 ```
 
-Then, inside the container:
+Teammates on amd64 can skip building by pulling the prebuilt seed images
+([`squidtoon99/f1tenth-base`](https://hub.docker.com/r/squidtoon99/f1tenth-base),
+[`squidtoon99/f1tenth-dev`](https://hub.docker.com/r/squidtoon99/f1tenth-dev)) via
+`./tools/dev.sh pull`. Then, inside the container:
 
 ```bash
 ./tools/build.sh          # colcon build the whole workspace

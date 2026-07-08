@@ -20,11 +20,15 @@ Inside the dev container the source is mounted at `/ws`:
 
 Teammates can skip building by pulling the prebuilt seed images from Docker Hub
 (published amd64):
+[`squidtoon99/f1tenth-base`](https://hub.docker.com/r/squidtoon99/f1tenth-base),
+[`squidtoon99/f1tenth-dev`](https://hub.docker.com/r/squidtoon99/f1tenth-dev).
 
 ```bash
 ./tools/dev.sh pull      # docker pull squidtoon99/f1tenth-{base,dev}:latest, retag local
 ./tools/dev.sh shell
 ```
+
+Point at a different registry with `SEED_REGISTRY=<user> ./tools/dev.sh pull`.
 
 On Apple Silicon the amd64 seed runs under emulation, so an arm64 host is usually
 better off building natively (`./tools/dev.sh build`). Images can also be shared as
