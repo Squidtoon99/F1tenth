@@ -1,48 +1,95 @@
-"""Observation layout — single source of truth.
+"""Observation layout — the shared observation-space format.
 
-Scaffold placeholder. Define the observation fields, their order, and dimensions
-here. Both training and the on-car inference node import this, so changing the
-observation space is a one-file change (no rebuild during training thanks to the
-editable install).
+This module documents the *format* of the flat observation vector: its dimensions
+and the (start, stop) slice of every field. It is the single reference that both
+sides target:
 
-Keep this in sync with the C++ mirror in
-``src/common/f1tenth_common/include/f1tenth_common/observation_layout.hpp`` — the
-parity test guards it.
+- training: ``training/f1tenth_env/observations.py`` builds this layout.
+- on-car inference: ``src/racing_rl/f1tenth_rl_agent`` (``interfaces.py`` /
+  ``obs_core.py``) builds and consumes it.
+- the C++ mirror in ``src/common/f1tenth_common`` is checked against these values.
 
-Migration note: consolidate the observation math currently duplicated in
-``F1tenth-Genesis/f1tenth_env/observations.py`` and
-``ros2_deploy/.../obs_core.py`` here.
+These are format constants only; the field-building math lives with each consumer.
+A parity test in ``f1tenth_rl_agent`` asserts that the deployed ``interfaces.py``
+matches the values here so the contract cannot silently drift.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+# --- Dimensions ---------------------------------------------------------------
+NUM_OBS_BASE = 380
+OPPONENT_OBS_DIM = 7
+NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 387
+NUM_ACTIONS = 2
+NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4]
+
+# --- Field slices (start, stop) within the base 380-dim vector ----------------
+OBS_LIN_VEL = (0, 2)
+OBS_ANG_VEL = (2, 3)
+OBS_LIN_ACC = (3, 5)
+OBS_LAST_ACTION = (5, 7)
+OBS_TRACK_PROGRESS = (7, 9)
+OBS_CENTERLINE_ANGLE = (9, 10)
+OBS_CENTERLINE_DISTANCE = (10, 11)
+OBS_CONTACT_FLAG = (11, 12)
+OBS_FUTURE_POINTS = (12, 372)
+OBS_TYRE_SLIP = (372, 380)
+# Opponent-relative block, appended only when opponent observations are enabled.
+OBS_OPPONENT = (380, 387)
+
+# Ordered (name, start, stop) table for the base observation. Kept in field order
+# and contiguous from 0 to NUM_OBS_BASE.
+OBS_FIELDS_BASE: tuple[tuple[str, int, int], ...] = (
+    ("lin_vel", *OBS_LIN_VEL),
+    ("ang_vel", *OBS_ANG_VEL),
+    ("lin_acc", *OBS_LIN_ACC),
+    ("last_action", *OBS_LAST_ACTION),
+    ("track_progress", *OBS_TRACK_PROGRESS),
+    ("centerline_angle", *OBS_CENTERLINE_ANGLE),
+    ("centerline_distance", *OBS_CENTERLINE_DISTANCE),
+    ("contact_flag", *OBS_CONTACT_FLAG),
+    ("future_points", *OBS_FUTURE_POINTS),
+    ("tyre_slip", *OBS_TYRE_SLIP),
+)
+
+# The opponent block, appended for the 1v1 (387-dim) observation.
+OBS_FIELDS_OPPONENT: tuple[tuple[str, int, int], ...] = (
+    ("opponent", *OBS_OPPONENT),
+)
+
+
+def expected_num_obs(enable_opponent_obs: bool) -> int:
+    """Policy observation dimension (380 solo, 387 with the opponent block)."""
+    return NUM_OBS_1V1 if enable_opponent_obs else NUM_OBS_BASE
 
 
 @dataclass(frozen=True)
 class ObservationSpec:
-    """Describes the flat observation vector.
+    """Describes the flat observation vector via ordered (name, start, stop) fields."""
 
-    Extend ``fields`` with (name, size) entries; ``dim`` is their sum.
-    """
-
-    # TODO: replace with the real layout, e.g.
-    #   ("frenet_progress", 1), ("lateral_error", 1), ("lidar", 108), ...
-    fields: tuple[tuple[str, int], ...] = field(default_factory=tuple)
+    fields: tuple[tuple[str, int, int], ...]
 
     @property
     def dim(self) -> int:
-        return sum(size for _name, size in self.fields)
+        return self.fields[-1][2] if self.fields else 0
 
     def index_of(self, name: str) -> int:
         """Return the start index of a named field in the flat vector."""
-        offset = 0
-        for field_name, size in self.fields:
+        for field_name, start, _stop in self.fields:
             if field_name == name:
-                return offset
-            offset += size
+                return start
+        raise KeyError(name)
+
+    def slice_of(self, name: str) -> tuple[int, int]:
+        """Return the (start, stop) slice of a named field."""
+        for field_name, start, stop in self.fields:
+            if field_name == name:
+                return (start, stop)
         raise KeyError(name)
 
 
-# The canonical instance imported elsewhere.
-OBSERVATION = ObservationSpec()
+# Canonical instances imported elsewhere.
+OBSERVATION = ObservationSpec(fields=OBS_FIELDS_BASE)
+OBSERVATION_1V1 = ObservationSpec(fields=OBS_FIELDS_BASE + OBS_FIELDS_OPPONENT)

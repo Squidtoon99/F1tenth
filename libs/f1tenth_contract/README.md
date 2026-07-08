@@ -1,7 +1,10 @@
 # f1tenth_contract
 
-The single source of truth for the observation/action layout, shared by RL training
-and the on-car RL inference node.
+The shared observation/action **format** (dimensions and field slices), referenced
+by RL training and the on-car RL inference stack. It defines the layout only; the
+field-building math stays with each consumer (training's `f1tenth_env`, the deploy
+`f1tenth_rl_agent`, and the C++ `f1tenth_common` mirror). Parity tests in those
+consumers assert they match this contract so the format cannot silently drift.
 
 This is a **dual package**: a normal Python package (`pyproject.toml` + `setup.py`)
 that also carries a `package.xml`, so it works in both build worlds without
@@ -28,9 +31,11 @@ The on-car C++ node cannot import Python, so `src/common/f1tenth_common` holds a
 mirror of this layout. A parity test keeps them in sync. This is a deploy-time
 concern and does not affect the training loop.
 
-## Migration note
+## Scope
 
-Consolidate the observation math currently duplicated across
-`F1tenth-Genesis/f1tenth_env/observations.py`,
-`ros2_deploy/.../obs_core.py`, and the C++ `rl_obs_core.cpp` behind this package (+
-the C++ mirror).
+This package is intentionally **format-only and additive**: it encodes the vector
+dimensions (380 solo / 387 with the opponent block) and the `(start, stop)` slice of
+each field, mirroring the deployed `interfaces.py`. It does not reimplement or
+replace the observation math in the training env, the deploy nodes, or the C++
+mirror — those keep their own implementations, guarded by parity tests against these
+values.

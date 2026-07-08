@@ -1,19 +1,38 @@
-// Parity test placeholder: verifies the C++ observation mirror matches the
-// Python contract (libs/f1tenth_contract) on shared fixtures.
-//
-// When the contract is implemented, load the fixtures (e.g. a JSON dumped by the
-// Python side) and assert the C++ layout produces identical values.
+// Parity test: verifies the C++ observation mirror matches the Python contract
+// (libs/f1tenth_contract) dimensions and field slices.
 #include <gtest/gtest.h>
 
 #include "f1tenth_common/observation_layout.hpp"
 
-TEST(ObservationParity, ActionDimIsTwo)
+using L = f1tenth_common::ObservationLayout;
+
+TEST(ObservationParity, Dimensions)
 {
-  EXPECT_EQ(f1tenth_common::ObservationLayout::kActionDim, 2u);
+  EXPECT_EQ(L::kObservationDim, 380u);
+  EXPECT_EQ(L::kOpponentObsDim, 7u);
+  EXPECT_EQ(L::kObservationDim1v1, 387u);
+  EXPECT_EQ(L::kObservationDim + L::kOpponentObsDim, L::kObservationDim1v1);
+  EXPECT_EQ(L::kActionDim, 2u);
+  EXPECT_EQ(L::kTyreSlipDim, 8u);
 }
 
-// TODO: add a fixture-based parity test against libs/f1tenth_contract once the
-// observation layout is finalized.
+TEST(ObservationParity, BaseFieldsContiguous)
+{
+  // Fields must tile [0, 380) with no gaps/overlaps, in order.
+  EXPECT_EQ(L::kLinVelStart, 0u);
+  EXPECT_EQ(L::kLinVelStop, L::kAngVelStart);
+  EXPECT_EQ(L::kAngVelStop, L::kLinAccStart);
+  EXPECT_EQ(L::kLinAccStop, L::kLastActionStart);
+  EXPECT_EQ(L::kLastActionStop, L::kTrackProgressStart);
+  EXPECT_EQ(L::kTrackProgressStop, L::kCenterlineAngleStart);
+  EXPECT_EQ(L::kCenterlineAngleStop, L::kCenterlineDistanceStart);
+  EXPECT_EQ(L::kCenterlineDistanceStop, L::kContactFlagStart);
+  EXPECT_EQ(L::kContactFlagStop, L::kFuturePointsStart);
+  EXPECT_EQ(L::kFuturePointsStop, L::kTyreSlipStart);
+  EXPECT_EQ(L::kTyreSlipStop, L::kObservationDim);
+  EXPECT_EQ(L::kOpponentStart, L::kObservationDim);
+  EXPECT_EQ(L::kOpponentStop, L::kObservationDim1v1);
+}
 
 int main(int argc, char ** argv)
 {
