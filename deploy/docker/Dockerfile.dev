@@ -2,7 +2,10 @@
 # Dev image: base + developer conveniences. Source is mounted live at /ws (see
 # tools/dev.sh), so nothing is baked in — you build the workspace inside.
 ARG ROS_DISTRO=humble
-FROM f1tenth-base:latest
+# Base image ref. Defaults to the locally-built base; seed/CI builds can point this
+# at the published base (e.g. squidtoon99/f1tenth-base:latest) via --build-arg.
+ARG BASE_IMAGE=f1tenth-base:latest
+FROM ${BASE_IMAGE}
 ARG ROS_DISTRO
 
 SHELL ["/bin/bash", "-lc"]

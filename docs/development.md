@@ -18,7 +18,17 @@ Inside the dev container the source is mounted at `/ws`:
 ./tools/build.sh -t control      # build just one module group
 ```
 
-Teammates can skip rebuilding images by sharing them directly (no registry):
+Teammates can skip building by pulling the prebuilt seed images from Docker Hub
+(published amd64):
+
+```bash
+./tools/dev.sh pull      # docker pull squidtoon99/f1tenth-{base,dev}:latest, retag local
+./tools/dev.sh shell
+```
+
+On Apple Silicon the amd64 seed runs under emulation, so an arm64 host is usually
+better off building natively (`./tools/dev.sh build`). Images can also be shared as
+tarballs without any registry:
 
 ```bash
 deploy/scripts/save_dev_images.sh          # producer
