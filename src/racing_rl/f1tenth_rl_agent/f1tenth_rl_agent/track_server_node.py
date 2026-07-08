@@ -7,8 +7,14 @@ evaluation nodes get a single source of truth, plus RViz/Foxglove markers.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import rclpy
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_share_directory,
+)
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 
@@ -45,6 +51,8 @@ class TrackServerNode(Node):
         if not track_csv:
             raise ValueError("track_server: 'track_csv' parameter is required")
 
+        track_csv = self._resolve_track_csv(track_csv)
+
         self.centerline, self.w_tr_left, self.w_tr_right = load_track_csv(track_csv)
         self.get_logger().info(
             f"Loaded track '{track_csv}' with {self.centerline.shape[0]} centerline points"
@@ -68,6 +76,24 @@ class TrackServerNode(Node):
         self._publish_all()
         period = 1.0 / republish_hz if republish_hz > 0 else 1.0
         self.timer = self.create_timer(period, self._publish_all)
+
+    def _resolve_track_csv(self, track_csv: str) -> str:
+        """Resolve a bare filename against the package's bundled assets.
+
+        Absolute/relative paths that exist are used as-is. A bare filename (e.g.
+        ``IV_2026_SIM_centerline.csv``) is looked up in this package's installed
+        ``assets/`` dir so the same config works in any container layout.
+        """
+        if os.path.isabs(track_csv) or os.path.exists(track_csv):
+            return track_csv
+        try:
+            share = get_package_share_directory("f1tenth_rl_agent")
+        except PackageNotFoundError:
+            return track_csv
+        candidate = os.path.join(share, "assets", track_csv)
+        if os.path.exists(candidate):
+            return candidate
+        return track_csv
 
     def _build_path(self) -> Path:
         path = Path()

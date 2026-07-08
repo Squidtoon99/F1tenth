@@ -1,0 +1,92 @@
+# Two-container simulation stack for evaluating the deployed ROS stack in the gym.
+#
+#   [ sim ]  the external gym bridge (fork image, imported via vcs) -- physics +
+#            /scan, /ego_racecar/odom out, /drive in. Runs the bridge-only launch.
+#   [ agent ] our monorepo dev image with the live source mounted -- runs the RL
+#            agent nodes (observation -> policy -> drive) against the bridge.
+#   [ novnc ] a lightweight X server + web VNC so RViz (from either ROS container)
+#            is viewable at http://localhost:8080/vnc.html. Foxglove needs no X:
+#            connect Foxglove Studio to ws://localhost:8765.
+#
+# The two ROS containers share a user-defined bridge network and a ROS_DOMAIN_ID so
+# DDS discovery connects them (no host networking -- that is unreliable on macOS
+# Docker Desktop). Bring it up with tools/sim.sh.
+#
+# Prereqs: `vcs import sim < sim/f1tenth_gym_ros.repos` (populates sim/f1tenth_gym_ros)
+# and the f1tenth-dev image (tools/dev.sh build). tools/sim.sh does both for you.
+services:
+  sim:
+    image: f1tenth_gym_ros:latest
+    build:
+      context: ../../sim/f1tenth_gym_ros
+      dockerfile: Dockerfile
+    volumes:
+      # Live fork source (launch files, maps, config). The engine is pip -e'd from
+      # here at image build; the mount keeps sources editable without a rebuild.
+      - ../../sim/f1tenth_gym_ros:/sim_ws/src/f1tenth_gym_ros
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - ROS_LOCALHOST_ONLY=0
+      - DISPLAY=novnc:0.0
+    networks:
+      - rosnet
+    ports:
+      - "8765:8765"   # foxglove_bridge websocket
+    depends_on:
+      - novnc
+    stdin_open: true
+    tty: true
+    # Build the fork workspace once, then run the bridge-only sim launch (gym bridge
+    # + map server + robot_state_publisher + foxglove). The built-in gap/pid/pp
+    # drivers are intentionally NOT launched so they do not fight our agent on /drive.
+    # entrypoint override: the fork image's ENTRYPOINT is ["/bin/bash"], so we pass a
+    # single -lc script string here rather than re-invoking bash in the command.
+    entrypoint: ["/bin/bash", "-lc"]
+    command: >
+      "source /opt/ros/humble/setup.bash &&
+       cd /sim_ws &&
+       colcon build --symlink-install &&
+       source install/setup.bash &&
+       ros2 launch f1tenth_gym_ros rl_agent_sim_launch.py"
+
+  agent:
+    image: f1tenth-dev:latest
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dev
+    working_dir: /ws
+    volumes:
+      - ../../:/ws:cached
+      # Trained policy checkpoint(s), read-only. Point CHECKPOINT_DIR at the dir
+      # holding the .pt file; the launch default reads /checkpoints/policy.pt.
+      - ${CHECKPOINT_DIR:-./}:/checkpoints:ro
+    environment:
+      - ROS_DISTRO=humble
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - ROS_LOCALHOST_ONLY=0
+      - DISPLAY=novnc:0.0
+    networks:
+      - rosnet
+    depends_on:
+      - sim
+      - novnc
+    stdin_open: true
+    tty: true
+    # Overridden by tools/sim.sh (which builds the workspace first). Default just
+    # drops into a shell so `docker compose run agent` is usable interactively.
+    command: bash
+
+  novnc:
+    image: theasp/novnc:latest
+    environment:
+      - DISPLAY_WIDTH=1728
+      - DISPLAY_HEIGHT=972
+      - RUN_XTERM=no
+    networks:
+      - rosnet
+    ports:
+      - "8080:8080"   # http://localhost:8080/vnc.html
+
+networks:
+  rosnet:
+    driver: bridge

@@ -55,13 +55,23 @@ gitGraph
 
 ## Running
 
-- Simulation (gym bridge + a racing stack):
+- Simulation — evaluate the deployed RL stack in the gym (two containers: the gym
+  bridge in the fork image + our nodes in the dev image, sharing a docker bridge
+  network; noVNC serves RViz, Foxglove serves at `ws://localhost:8765`):
 
   ```bash
-  vcs import sim < sim/f1tenth_gym_ros.repos     # first time
-  ./tools/build.sh
-  ros2 launch f1tenth_bringup sim.launch.py stack:=rl   # or stack:=algo
+  # CHECKPOINT_DIR is the host dir holding the trained .pt; CKPT its filename.
+  CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
+  # ... watch: RViz at http://localhost:8080/vnc.html, or Foxglove -> ws://localhost:8765
+  ./tools/sim.sh down
   ```
+
+  `tools/sim.sh` imports the gym (`vcs import sim < sim/f1tenth_gym_ros.repos`),
+  builds the agent workspace, launches the bridge-only sim
+  (`rl_agent_sim_launch.py`) plus our `bringup_agent_launch.py`, and drives the car
+  with the trained policy. The `evaluation` node spawns the car forward-facing along
+  the centerline (matching training) and resets it on stuck/out-of-bounds. See
+  [`../sim/README.md`](../sim/README.md).
 
 - On the car: vehicle-only shakedown then full stack:
 

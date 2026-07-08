@@ -1,12 +1,26 @@
 # vcstool manifest for the external gym bridge (the ROS 2 wrapper around the
-# F1TENTH gym simulator). Import it into this directory with:
+# F1TENTH gym simulator) plus the gym engine it wraps.
+#
+# Import both into this directory with:
 #
 #   vcs import sim < sim/f1tenth_gym_ros.repos
 #
-# The imported clone is gitignored (it is external and pinned here). Replace the
-# url/version with your fork/branch if needed.
+# This clones:
+#   sim/f1tenth_gym_ros            <- the ROS 2 bridge fork (bridge, launch, maps)
+#   sim/f1tenth_gym_ros/f1tenth_gym <- the gym physics engine (pip install -e'd)
+#
+# The engine is nested under the bridge because the bridge's Dockerfile expects it
+# there (it records the engine as a bare gitlink with no submodule config, so it is
+# NOT fetched by cloning the bridge alone — we pin it explicitly here instead).
+#
+# Everything imported here is gitignored (external, pinned below). It is a sim-only
+# dependency and is never part of the car runtime image.
 repositories:
   f1tenth_gym_ros:
     type: git
-    url: https://github.com/f1tenth/f1tenth_gym_ros.git
-    version: main
+    url: https://github.com/Squidtoon99/dfr_f1tenth_gym.git
+    version: dev-humble
+  f1tenth_gym_ros/f1tenth_gym:
+    type: git
+    url: https://github.com/f1tenth/f1tenth_gym.git
+    version: bdaec1420c3b0f103858d289866d0d4e2e597c30

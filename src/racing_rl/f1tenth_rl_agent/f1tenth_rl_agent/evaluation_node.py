@@ -8,10 +8,15 @@ when ``auto_reset`` is enabled, resets the car via ``/initialpose`` on episode e
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import rclpy
 import torch
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_share_directory,
+)
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 
@@ -75,6 +80,7 @@ class EvaluationNode(Node):
         self._pending_ego_spawn: tuple[float, float, float] | None = None
         self._map_assets: MapAssets | None = None
         map_yaml = gp("map_yaml").get_parameter_value().string_value.strip()
+        map_yaml = self._resolve_asset(map_yaml)
         if map_yaml:
             try:
                 self._map_assets = load_map_assets(map_yaml)
@@ -108,6 +114,23 @@ class EvaluationNode(Node):
             PoseWithCovarianceStamped, ifc.TOPIC_INITIALPOSE, 1
         )
         self.opp_reset_pub = self.create_publisher(PoseStamped, ifc.TOPIC_GOAL_POSE, 1)
+
+    @staticmethod
+    def _resolve_asset(path: str) -> str:
+        """Resolve a bare filename against this package's bundled assets.
+
+        Absolute/relative paths that exist are used as-is; a bare filename (e.g.
+        ``IV_2026_SIM.yaml``) is looked up in the installed ``assets/`` dir so the
+        same config works regardless of container layout. Empty stays empty.
+        """
+        if not path or os.path.isabs(path) or os.path.exists(path):
+            return path
+        try:
+            share = get_package_share_directory("f1tenth_rl_agent")
+        except PackageNotFoundError:
+            return path
+        candidate = os.path.join(share, "assets", path)
+        return candidate if os.path.exists(candidate) else path
 
     def _on_centerline(self, msg: Path):
         self._centerline = np.array(

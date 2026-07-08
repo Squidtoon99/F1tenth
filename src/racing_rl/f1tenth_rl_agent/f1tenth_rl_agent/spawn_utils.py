@@ -25,18 +25,13 @@ class MapAssets:
 
 
 def _load_grayscale_image(path: Path) -> np.ndarray:
-    try:
-        from PIL import Image
-        from PIL.Image import Transpose
+    # Flip top-to-bottom via numpy (image row 0 is the top; occupancy grids index
+    # from the bottom). Using np.flipud instead of PIL's Transpose enum keeps this
+    # working across Pillow versions and needs no cv2.
+    from PIL import Image
 
-        return np.array(Image.open(path).transpose(Transpose.FLIP_TOP_BOTTOM))
-    except ImportError:
-        import cv2
-
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise FileNotFoundError(f"Could not read map image: {path}")
-        return np.flipud(img)
+    img = Image.open(path).convert("L")
+    return np.flipud(np.array(img))
 
 
 def load_map_assets(map_yaml: str | Path) -> MapAssets:
