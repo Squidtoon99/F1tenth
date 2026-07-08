@@ -1,0 +1,17 @@
+# Conda environment for RL training (local/HPC). Scaffold placeholder.
+name: f1tenth-training
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      # Editable shared contract: obs-space edits picked up with no rebuild.
+      - -e ../libs/f1tenth_contract
+      - genesis-world
+      - torch
+      - torchvision
+      - numpy
+      - wandb
+      - pandas
+      - joblib

@@ -1,0 +1,7 @@
+# Per-car identity.
+# Authored on the car and NEVER overwritten by a deployed image or config push.
+# The generic image reads this at runtime from /config.
+car_id: car01
+description: "Example car. Copy this directory to add a new car (car02, ...)."
+# Chassis calibration and runtime params live in params.yaml; the current track
+# map/centerline lives in maps/.

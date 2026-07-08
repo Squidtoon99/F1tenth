@@ -1,0 +1,11 @@
+# C++ style for the vehicle/common packages (2-space, 100 cols), aligned with the
+# conventions ament_clang_format uses.
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 2
+AccessModifierOffset: -2
+AlignAfterOpenBracket: AlwaysBreak
+ConstructorInitializerIndentWidth: 0
+ContinuationIndentWidth: 2
+DerivePointerAlignment: false
+PointerAlignment: Middle

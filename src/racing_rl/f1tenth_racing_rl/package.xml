@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>f1tenth_racing_rl</name>
+  <version>0.0.0</version>
+  <description>On-car RL inference: observation builder, policy inference, action decode. Scaffold placeholder.</description>
+  <maintainer email="dev@example.com">maintainers</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>f1tenth_interfaces</depend>
+  <!-- Single source of truth for the observation/action layout (dual pip+ament
+       package under libs/). Built with colcon --symlink-install so Python edits
+       need no rebuild. -->
+  <exec_depend>f1tenth_contract</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

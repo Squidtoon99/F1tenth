@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>f1tenth_racing_algo</name>
+  <version>0.0.0</version>
+  <description>Composition/bringup of the algorithmic racing stack (perception + localization + planning + control). Scaffold placeholder.</description>
+  <maintainer email="dev@example.com">maintainers</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>f1tenth_planning</exec_depend>
+  <exec_depend>f1tenth_control</exec_depend>
+  <exec_depend>f1tenth_localization</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

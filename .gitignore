@@ -216,3 +216,62 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# ROS 2 / colcon workspace
+# ---------------------------------------------------------------------------
+# colcon output trees (anywhere in the repo)
+build/
+install/
+log/
+# ament / colcon markers
+.colcon/
+*.colcon_install_layout
+# rosdep
+.rosdep_cache/
+
+# ---------------------------------------------------------------------------
+# Heavy artifacts (kept OUT of git; stored/shared separately)
+# ---------------------------------------------------------------------------
+# Training outputs and run artifacts
+outputs/
+runs/
+wandb/
+# Model weights / checkpoints
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.pkl
+# Rosbags
+*.bag
+*.db3
+*.mcap
+**/bags/
+# Simulator + built container/image snapshots
+*.sif
+*.tar
+*.tar.gz
+# Large binary map assets (keep small YAML/CSV; drop rendered grids)
+*.pgm
+# NOTE: track map PNGs are large occupancy grids; ignore by default. If a
+# specific small reference map must be tracked, force-add it with `git add -f`.
+**/maps/*.png
+
+# ---------------------------------------------------------------------------
+# vcstool-imported external sources (pinned via *.repos, not committed)
+# ---------------------------------------------------------------------------
+/sim/f1tenth_gym_ros/
+
+# ---------------------------------------------------------------------------
+# Built image snapshots (shared manually; not committed)
+# ---------------------------------------------------------------------------
+/deploy/snapshots/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+

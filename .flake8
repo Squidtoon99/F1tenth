@@ -1,0 +1,11 @@
+[flake8]
+max-line-length = 99
+# Match the defaults ament_flake8 tolerates.
+extend-ignore = E203, W503
+exclude =
+    .git,
+    __pycache__,
+    build,
+    install,
+    log,
+    sim/f1tenth_gym_ros

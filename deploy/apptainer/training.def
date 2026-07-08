@@ -1,0 +1,24 @@
+# Apptainer definition for offboard RL training on HPC.
+# Build:  apptainer build training.sif deploy/apptainer/training.def
+# Run:    apptainer run --nv training.sif   (--nv exposes the GPU)
+#
+# Scaffold placeholder. Pin CUDA/torch versions to the HPC's drivers.
+Bootstrap: docker
+From: nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+%files
+    training /opt/f1tenth/training
+    libs /opt/f1tenth/libs
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends python3-pip git
+    # Editable shared contract + training deps.
+    pip3 install -e /opt/f1tenth/libs/f1tenth_contract
+    pip3 install -r /opt/f1tenth/training/requirements.txt || true
+
+%environment
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    cd /opt/f1tenth
+    exec python3 -m training.trainer.standalone_trainer "$@"

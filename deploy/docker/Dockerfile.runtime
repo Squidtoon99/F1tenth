@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Runtime (car) image: base + a baked colcon install of the racing packages.
+# GENERIC — contains no per-car config and no policy weights. Those are supplied at
+# runtime by mounting a per-car overlay at /config and a policy at /policies.
+#
+# Build from the repo root, e.g. via deploy/scripts/build_image.sh.
+ARG ROS_DISTRO=humble
+
+# ---- build stage: compile the colcon workspace ----
+FROM f1tenth-base:latest AS build
+ARG ROS_DISTRO
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /ws
+COPY src ./src
+COPY libs ./libs
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && rosdep update \
+    && rosdep install --from-paths src libs --ignore-src -y -r || true \
+    && colcon build --merge-install
+
+# ---- runtime stage: only the built install + entrypoint ----
+FROM f1tenth-base:latest AS runtime
+ARG ROS_DISTRO
+ENV ROS_DISTRO=${ROS_DISTRO}
+WORKDIR /ws
+COPY --from=build /ws/install /ws/install
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+# Default: bring up racing using the mounted per-car overlay.
+CMD ["ros2", "launch", "f1tenth_bringup", "race.launch.py"]

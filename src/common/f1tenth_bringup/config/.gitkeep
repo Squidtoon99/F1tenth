@@ -1,0 +1,3 @@
+# Placeholder so the config/ dir exists for launch data_files globbing.
+# Generic (non-car-specific) launch configs live here. Per-car config lives in
+# deploy/cars/<carNN>/.

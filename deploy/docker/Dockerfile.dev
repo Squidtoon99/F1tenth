@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# Dev image: base + developer conveniences. Source is mounted live at /ws (see
+# tools/dev.sh), so nothing is baked in — you build the workspace inside.
+ARG ROS_DISTRO=humble
+FROM f1tenth-base:latest
+ARG ROS_DISTRO
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      vim less bash-completion \
+      ros-${ROS_DISTRO}-foxglove-bridge \
+      ros-${ROS_DISTRO}-rviz2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Auto-source ROS + the workspace overlay (if built) for interactive shells.
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc \
+    && echo "[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash" >> /etc/bash.bashrc
+
+WORKDIR /ws
+CMD ["bash"]

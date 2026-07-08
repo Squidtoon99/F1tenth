@@ -1,0 +1,5 @@
+# Release manifest: maps a source commit to the exact image snapshot and the car(s)
+# it was deployed to. Append one row per snapshot/deploy for traceability.
+git_sha,image_sha256,car_id,deployed_at,notes
+# example (remove once real entries exist):
+# a1b2c3d,sha256:0000...,car01,2026-07-07,initial shakedown

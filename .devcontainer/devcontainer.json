@@ -1,0 +1,21 @@
+{
+  "name": "F1TENTH dev",
+  // Build the base image first (the dev image extends it), then bring up the dev
+  // service defined in the compose file.
+  "initializeCommand": "docker buildx build --load -f deploy/docker/Dockerfile.base -t f1tenth-base:latest .",
+  "dockerComposeFile": ["../deploy/docker/docker-compose.dev.yml"],
+  "service": "dev",
+  "workspaceFolder": "/ws",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-vscode.cpptools",
+        "ms-iot.vscode-ros",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  // Handy: build the workspace the first time the container is created.
+  "postCreateCommand": "echo 'Dev container ready. Run ./tools/build.sh to build the workspace.'"
+}

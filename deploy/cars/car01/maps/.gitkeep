@@ -1,0 +1,3 @@
+# Per-car / per-track map assets: occupancy grid YAML + centerline/raceline CSV for
+# the track this car is currently set up for. Large rendered grids (*.png/*.pgm) are
+# gitignored; keep the small YAML/CSV here (force-add a reference PNG if truly needed).

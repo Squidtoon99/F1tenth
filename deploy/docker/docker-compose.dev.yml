@@ -1,0 +1,28 @@
+# Dev container: builds the dev image and mounts the live source at /ws.
+# Requires the base image (f1tenth-base:latest) to exist first — tools/dev.sh
+# builds it for you.
+services:
+  dev:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dev
+    image: f1tenth-dev:latest
+    working_dir: /ws
+    volumes:
+      - ../../:/ws:cached
+    # host networking so ROS 2 DDS discovery works with sim / other machines.
+    network_mode: host
+    # GPU access for local RL inference/eval, if the host has NVIDIA + toolkit.
+    # Uncomment to enable:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    environment:
+      - ROS_DISTRO=humble
+    stdin_open: true
+    tty: true
+    command: bash

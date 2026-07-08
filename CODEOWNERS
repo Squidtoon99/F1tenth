@@ -1,0 +1,39 @@
+# Code ownership. Each src/ module group is owned by the team responsible for it,
+# so modules can evolve independently and reviews route to the right people.
+#
+# TODO: replace the placeholder @org/team-* handles with real GitHub teams.
+# Syntax: <path>  <owner> [<owner> ...]  (last matching pattern wins)
+
+# Default owner for anything not otherwise matched.
+*                               @org/team-maintainers
+
+# Shared interfaces + utilities (changes here ripple everywhere; review carefully).
+/src/common/                    @org/team-maintainers
+
+# Perception, mapping, localization (shared by both racing stacks).
+/src/perception/                @org/team-perception
+/src/mapping/                   @org/team-mapping
+/src/localization/              @org/team-localization
+
+# Planning + control (algorithmic path).
+/src/planning/                  @org/team-planning
+/src/control/                   @org/team-control
+
+# Racing stacks.
+/src/racing_rl/                 @org/team-rl
+/src/racing_algo/               @org/team-algo
+
+# Vehicle driver layer (vendored; coordinate before editing).
+/src/vehicle/                   @org/team-vehicle
+
+# RL training + the shared contract.
+/training/                      @org/team-rl
+/libs/f1tenth_contract/         @org/team-rl @org/team-maintainers
+
+# Simulator integration.
+/sim/                           @org/team-rl @org/team-maintainers
+
+# Deploy, tooling, CI (infra).
+/deploy/                        @org/team-infra
+/tools/                         @org/team-infra
+/.github/                       @org/team-infra

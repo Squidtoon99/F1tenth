@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# Base image: ROS 2 Humble + all apt/rosdep dependencies + build tooling.
+# Changes rarely; prebuilt and shared. Both dev and runtime images extend this so
+# development and the car run identical dependencies.
+ARG ROS_DISTRO=humble
+FROM ros:${ROS_DISTRO}-ros-base
+ARG ROS_DISTRO
+
+SHELL ["/bin/bash", "-lc"]
+
+# Build tooling + workspace system/rosdep dependencies. Generic upstream driver
+# deps (not vendored) are installed here.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+      python3-rosdep \
+      python3-vcstool \
+      python3-pip \
+      git \
+      ros-${ROS_DISTRO}-ackermann-msgs \
+      ros-${ROS_DISTRO}-joy \
+      ros-${ROS_DISTRO}-teleop-tools \
+      ros-${ROS_DISTRO}-urg-node \
+      ros-${ROS_DISTRO}-slam-toolbox \
+    && rm -rf /var/lib/apt/lists/*
+
+# LiDAR driver: install if a prebuilt package exists for the target arch; otherwise
+# it can be built from source when needed.
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends ros-${ROS_DISTRO}-sick-scan-xd \
+        || echo "sick_scan_xd apt package unavailable for this arch; build from source if needed") \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python runtime deps for the on-car RL inference node.
+# TODO: on the Jetson, install a torch wheel matching the JetPack/CUDA version
+#       instead of the default index. Kept out of the base scaffold to stay light.
+RUN pip3 install --no-cache-dir numpy
+
+WORKDIR /ws

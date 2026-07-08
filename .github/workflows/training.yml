@@ -1,0 +1,41 @@
+name: training
+
+# Lint + CPU tests for the pure-Python training code and the shared contract.
+# Heavy deps (torch, genesis) are intentionally NOT installed — no GPU CI.
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "training/**"
+      - "libs/**"
+      - ".flake8"
+      - ".github/workflows/training.yml"
+  pull_request:
+    paths:
+      - "training/**"
+      - "libs/**"
+      - ".flake8"
+      - ".github/workflows/training.yml"
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install light deps (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest numpy
+          # Editable shared contract only; skip torch/genesis in CI.
+          pip install -e libs/f1tenth_contract
+
+      - name: Lint
+        run: flake8 training libs/f1tenth_contract
+
+      - name: Test (contract)
+        run: pytest -q libs/f1tenth_contract

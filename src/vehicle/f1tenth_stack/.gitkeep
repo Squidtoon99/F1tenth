@@ -1,0 +1,3 @@
+# Vendor drop target for the upstream f1tenth_stack package.
+# Replace this file with the copied-in package contents (package.xml, setup.py,
+# launch/, config/, f1tenth_stack/ module). See ../VENDORED.md.

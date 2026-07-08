@@ -1,0 +1,12 @@
+# vcstool manifest for the external gym bridge (the ROS 2 wrapper around the
+# F1TENTH gym simulator). Import it into this directory with:
+#
+#   vcs import sim < sim/f1tenth_gym_ros.repos
+#
+# The imported clone is gitignored (it is external and pinned here). Replace the
+# url/version with your fork/branch if needed.
+repositories:
+  f1tenth_gym_ros:
+    type: git
+    url: https://github.com/f1tenth/f1tenth_gym_ros.git
+    version: main

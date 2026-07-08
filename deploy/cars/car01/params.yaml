@@ -1,0 +1,15 @@
+# Per-car parameters, overlaid on the generic launch defaults at runtime.
+# Chassis-specific calibration (measured per car) and conservative safety limits.
+# Scaffold placeholder values — replace with measured values.
+vesc:
+  speed_to_erpm_gain: 0.0
+  speed_to_erpm_offset: 0.0
+  steering_angle_to_servo_gain: 0.0
+  steering_angle_to_servo_offset: 0.0
+  wheelbase: 0.33
+
+control:
+  speed_limit_mps: 2.0        # start conservative during shakedown
+
+racing_rl:
+  policy_path: /policies/policy.pt   # RL checkpoint, mounted at runtime (not baked in)

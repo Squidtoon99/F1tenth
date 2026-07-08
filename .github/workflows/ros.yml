@@ -1,0 +1,43 @@
+name: ros
+
+# Build + test the colcon workspace (includes ament lint via each package's tests).
+# Path-filtered so it only runs when ROS code changes. CPU only — no GPU.
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "src/**"
+      - "libs/**"
+      - ".github/workflows/ros.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "libs/**"
+      - ".github/workflows/ros.yml"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install workspace dependencies
+        shell: bash
+        run: |
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src libs --ignore-src -y || true
+
+      - name: Build
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --symlink-install
+
+      - name: Test (build/unit tests + ament lint)
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test
+          colcon test-result --verbose
