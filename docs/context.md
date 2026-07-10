@@ -34,8 +34,8 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Hand-designed observation** — car state (velocity, acceleration, yaw rate),
   the track geometry ahead (curvature / boundary distances), and, for wheel-to-
   wheel racing, opponent-relative features. Ours is the single source of truth in
-  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 380-dim base vector
-  plus an optional 7-dim opponent block).
+  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 384-dim base vector
+  plus an optional 6-dim opponent block).
 - **Reward shaping** — progress along the track, staying within the boundaries,
   and penalties that encourage clean, rule-abiding overtakes rather than
   collisions.

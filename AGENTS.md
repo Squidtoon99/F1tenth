@@ -90,6 +90,65 @@ Everything runs inside the dev container (ROS 2 sourced). See
 Vendored upstream packages are **built** (our code depends on them) but **not
 tested/linted**.
 
+### ROS 2 nodes are built and tested in the Docker dev container
+
+The `src/` colcon workspace (all ROS 2 packages: `f1tenth_common`, `racing_rl`,
+`f1tenth_control`, `f1tenth_bringup`, …) **must** be built and tested inside the
+dev container — the host / `.venv` has no `rclpy`, no ROS 2, and no colcon. The
+images already exist locally (`f1tenth-base`, `f1tenth-dev`, and the generic car
+image `f1tenth-racing`); `tools/dev.sh` builds/pulls them if missing. `colcon test`
+runs the C++ gtests, the real-`rclpy` node integration tests, and ament lint.
+
+To run non-interactively (e.g. from an agent) instead of dropping into a shell:
+
+```bash
+docker compose -f deploy/docker/docker-compose.dev.yml run --rm dev bash -lc \
+  'source /opt/ros/humble/setup.bash && \
+   colcon build --symlink-install --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control f1tenth_bringup f1tenth_common && \
+   source install/setup.bash && \
+   colcon test --packages-select f1tenth_common f1tenth_rl_vehicle f1tenth_rl_agent f1tenth_control && \
+   colcon test-result --verbose'
+```
+
+The training `.venv` is only for pure-Python parity checks (e.g.
+`test_obs_parity.py`, `test_contract_parity.py`); anything importing `rclpy` or a
+built C++ node runs in the container, never the venv.
+
+### End-to-end ROS testing against f1tenth_gym
+
+Closed-loop testing of the deployed nodes + ML policy uses the two-container gym
+stack (gym bridge + our agent graph). `tools/sim.sh` orchestrates it; the on-car
+C++ graph (`STACK=vehicle`, default) is the release gate and the Python graph
+(`STACK=python`) is the regression check. See
+[`docs/deployment.md`](docs/deployment.md) for the full certification sequence and
+acceptance criteria.
+
+```bash
+CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh up        # bring up the graph
+CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh validate  # closed-loop acceptance gate
+tools/sim.sh down
+```
+
+### Training Python environment (`.venv`)
+
+The pure-Python [`training/`](training/) stack (QR-SAC trainer, `f1tenth_env`,
+`f1tenth_sim`) is **not** built by colcon and does not need the dev container. It
+runs against a local virtualenv exposed at the repo root as `.venv`, which is a
+**symlink** to a venv living outside the repo (so `find`/globs that skip symlinks
+miss it — reference it explicitly). Use its interpreter directly:
+
+```bash
+.venv/bin/python training/standalone_trainer.py --help   # run the trainer
+.venv/bin/python -m pytest training/tests                # training unit tests
+.venv/bin/python -m flake8 training                      # lint (max line 99)
+```
+
+It provides `torch`, `genesis`, `wandb`, etc. It is CPU-only on this host (no
+CUDA/MPS), so use `--physics torch` for fast standalone runs and expect long
+wall-clock for large step counts. `f1tenth_contract` is not installed there and
+training does not import it (the contract constants are mirrored in
+`training/config.py`).
+
 ## Testing philosophy
 
 - Real-dependency tests over mocks: exercise the actual module or functionality.
