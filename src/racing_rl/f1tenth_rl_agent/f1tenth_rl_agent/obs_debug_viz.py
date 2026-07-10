@@ -90,7 +90,7 @@ def decode_scalars(obs: np.ndarray, num_points: int) -> np.ndarray:
         out[ifc.OBS_DEBUG_OPP_REL_VY] = float(opp[3])
         out[ifc.OBS_DEBUG_OPP_GAP_NORM] = float(opp[4])
         out[ifc.OBS_DEBUG_OPP_LATERAL] = float(opp[5])
-        out[ifc.OBS_DEBUG_OPP_PRESENT] = float(opp[6])
+        out[ifc.OBS_DEBUG_OPP_PRESENT] = float(np.any(opp != 0.0))
 
     return out
 

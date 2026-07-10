@@ -1,16 +1,15 @@
 """Parity test: obs_core vs the real f1tenth_env observation pipeline.
 
 This guarantees the deployed observation equals the one the policy trained on. It
-loads the original ``f1tenth_env/observations.py`` and ``f1tenth_env/utils.py`` as
-standalone modules (so we do not pull in the genesis-heavy ``env.py``) and compares
-their ``build_observation`` output against ``obs_core.ObservationBuilder``.
+imports the real ``f1tenth_env.observations`` and ``f1tenth_env.utils`` modules
+(genesis-free after configuring the env runtime dtype/device; the lazy package
+``__init__`` keeps ``env.py`` out of the import) and compares their
+``build_observation`` output against ``obs_core.ObservationBuilder``.
 
-Requires ``genesis`` to be importable (it is in the training venv). The test
-configures the few module-level ``genesis`` constants (tc_float, device, EPS) that
-the pure geometry helpers need, without a full ``gs.init()``.
+The test is gated on ``genesis`` being importable (it is in the training venv, not
+the amd64 ROS dev container) purely to keep the existing skip behaviour there.
 """
 
-import importlib.util
 import os
 import sys
 import tempfile
@@ -53,21 +52,10 @@ def _find_monorepo_root() -> str:
 _REPO_ROOT = _find_monorepo_root()
 
 
-def _configure_genesis(gs):
-    gs.tc_float = torch.float32
-    gs.device = torch.device("cpu")
-    if getattr(gs, "EPS", None) is None:
-        gs.EPS = 1e-12
-
-
-def _load_module(name: str, relpath: str):
-    """Load a repo module by file path without running f1tenth_env/__init__.py."""
-    path = os.path.join(_REPO_ROOT, relpath)
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+def _ensure_training_on_path() -> None:
+    training_dir = os.path.join(_REPO_ROOT, "training")
+    if training_dir not in sys.path:
+        sys.path.insert(0, training_dir)
 
 
 def _stub_requests():
@@ -88,15 +76,15 @@ def _stub_requests():
 
 @pytest.fixture(scope="module")
 def real_modules():
-    gs = pytest.importorskip("genesis")
-    _configure_genesis(gs)
+    pytest.importorskip("genesis")
+    _ensure_training_on_path()
     _stub_requests()
-    real_utils = _load_module(
-        "real_f1tenth_utils", "training/f1tenth_env/utils.py"
-    )
-    real_obs = _load_module(
-        "real_f1tenth_observations", "training/f1tenth_env/observations.py"
-    )
+    from f1tenth_env import runtime as rt
+
+    rt.configure(float_dtype=torch.float32, int_dtype=torch.int32,
+                 dev=torch.device("cpu"), eps=1e-12)
+    from f1tenth_env import observations as real_obs
+    from f1tenth_env import utils as real_utils
     return real_utils, real_obs
 
 
@@ -175,9 +163,8 @@ def test_obs_parity(real_modules):
             device=device,
             cache_id="parity",
         )
-        step_state["tyre_slip"] = base_lin_vel.new_zeros(
-            (b, obs_cfg["num_obs"] - 372)
-        )
+        step_state["tyre_slip"] = base_lin_vel.new_zeros((b, 8))
+        step_state["tyre_load"] = base_lin_vel.new_zeros((b, 4))
 
         real = real_obs.build_observation(
             num_obs=obs_cfg["num_obs"],
@@ -194,9 +181,8 @@ def test_obs_parity(real_modules):
         )
 
         # Gym/ROS deploy has no per-wheel state; parity uses genesis slip values.
-        slip = step_state.get("tyre_slip")
-        if slip is None:
-            slip = base_lin_vel.new_zeros((b, obs_cfg["num_obs"] - 372))
+        slip = step_state["tyre_slip"]
+        load = step_state["tyre_load"]
 
         mine = builder.build(
             base_lin_vel=base_lin_vel,
@@ -206,6 +192,7 @@ def test_obs_parity(real_modules):
             base_pos=base_pos,
             base_quat_wxyz=base_quat,
             tyre_slip=slip,
+            tyre_load=load,
         )
 
         diff = (real - mine).abs().max().item()
@@ -215,12 +202,12 @@ def test_obs_parity(real_modules):
 
 
 def test_obs_parity_1v1_opponent_block(real_modules):
-    """387-dim parity with a non-trivial opponent-relative block appended."""
+    """390-dim parity with a non-trivial opponent-relative block appended."""
     real_utils, real_obs = real_modules
     device = torch.device("cpu")
     cl, wl, wr = _make_track()
     obs_cfg = default_obs_cfg(enable_opponent_obs=True)
-    assert obs_cfg["num_obs"] == 387
+    assert obs_cfg["num_obs"] == 390
 
     builder = obs_core.ObservationBuilder(cl, wl, wr, obs_cfg, device=device)
     track_state = {
@@ -259,7 +246,8 @@ def test_obs_parity_1v1_opponent_block(real_modules):
         device=device,
         cache_id="parity_1v1",
     )
-    step_state["tyre_slip"] = base_lin_vel.new_zeros((b, obs_cfg["base_num_obs"] - 372))
+    step_state["tyre_slip"] = base_lin_vel.new_zeros((b, 8))
+    step_state["tyre_load"] = base_lin_vel.new_zeros((b, 4))
 
     # Opponent ~7 m ahead on the synthetic oval (arc-length via index offset).
     mean_seg = float(np.mean(np.linalg.norm(cl[1:] - cl[:-1], axis=1)))
@@ -315,6 +303,7 @@ def test_obs_parity_1v1_opponent_block(real_modules):
     )
 
     slip = step_state["tyre_slip"]
+    load = step_state["tyre_load"]
     mine = builder.build(
         base_lin_vel=base_lin_vel,
         base_ang_vel=base_ang_vel,
@@ -323,6 +312,7 @@ def test_obs_parity_1v1_opponent_block(real_modules):
         base_pos=base_pos,
         base_quat_wxyz=base_quat,
         tyre_slip=slip,
+        tyre_load=load,
         opponent_block=opponent_block,
     )
 

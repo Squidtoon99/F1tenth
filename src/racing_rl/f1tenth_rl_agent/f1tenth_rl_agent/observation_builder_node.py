@@ -1,4 +1,4 @@
-"""observation_builder_node: build the policy observation from odometry (380 or 387).
+"""observation_builder_node: build the policy observation from odometry (384 or 390).
 
 Subscribes to ground-truth odometry and the latched track topics, reconstructs the
 exact training observation via obs_core, and publishes it at the control rate.
@@ -20,7 +20,11 @@ from visualization_msgs.msg import MarkerArray
 
 from f1tenth_rl_agent import interfaces as ifc
 from f1tenth_rl_agent import obs_debug_viz
-from f1tenth_rl_agent.obs_core import ObservationBuilder, quat_xyzw_to_wxyz
+from f1tenth_rl_agent.obs_core import (
+    ObservationBuilder,
+    quasi_static_load_ratio,
+    quat_xyzw_to_wxyz,
+)
 
 
 def _latched_qos() -> QoSProfile:
@@ -44,6 +48,16 @@ class ObservationBuilderNode(Node):
         self.declare_parameter("enable_opponent_obs", False)
         self.declare_parameter("zero_opponent_obs", False)
         self.declare_parameter("opponent_odom_topic", ifc.TOPIC_OPP_ODOM)
+        # Quasi-static tyre-load estimate from body accel (ADR 0002 follow-up).
+        # Off -> static ratio 1.0 (no wheel-load sensing), matching the C++ builder
+        # default and the parity fixture. Enable only to match a checkpoint trained
+        # with dynamic load; geometry defaults track f1tenth_sim VehicleParams.
+        self.declare_parameter("enable_load_estimation", False)
+        self.declare_parameter("cg_height_m", 0.05)
+        self.declare_parameter("lf_m", 0.1773)
+        self.declare_parameter("lr_m", 0.1477)
+        self.declare_parameter("track_width_m", 0.20)
+        self.declare_parameter("roll_stiffness_front", 0.5)
 
         gp = self.get_parameter
         self.control_hz = gp("control_hz").get_parameter_value().double_value
@@ -59,6 +73,18 @@ class ObservationBuilderNode(Node):
         self.zero_opponent = (
             gp("zero_opponent_obs").get_parameter_value().bool_value
         )
+        self.enable_load_estimation = (
+            gp("enable_load_estimation").get_parameter_value().bool_value
+        )
+        self.load_geom = {
+            "h_cg": gp("cg_height_m").get_parameter_value().double_value,
+            "lf": gp("lf_m").get_parameter_value().double_value,
+            "lr": gp("lr_m").get_parameter_value().double_value,
+            "track_width": gp("track_width_m").get_parameter_value().double_value,
+            "roll_stiffness_front": (
+                gp("roll_stiffness_front").get_parameter_value().double_value
+            ),
+        }
         self.obs_cfg = ifc.default_obs_cfg(self.enable_opponent)
         self.obs_cfg["zero_opponent_obs"] = self.zero_opponent
         self.obs_cfg["contact_margin_m"] = (
@@ -210,13 +236,6 @@ class ObservationBuilderNode(Node):
             else:
                 opp = self._last_opp_odom
                 opp_pos = opp.pose.pose.position
-                oq = opp.pose.pose.orientation
-                opp_yaw = float(
-                    math.atan2(
-                        2.0 * (oq.w * oq.z + oq.x * oq.y),
-                        1.0 - 2.0 * (oq.y * oq.y + oq.z * oq.z),
-                    )
-                )
                 ego_vel_world = torch.tensor(
                     [[msg.twist.twist.linear.x, msg.twist.twist.linear.y]],
                     dtype=torch.float32,
@@ -233,8 +252,16 @@ class ObservationBuilderNode(Node):
                     ego_vel_world=ego_vel_world,
                     opp_pos=opp_pos_t,
                     opp_vel_world=opp_vel_world,
-                    present=torch.tensor([1.0], dtype=torch.float32),
                 )
+
+        tyre_load = None
+        if self.enable_load_estimation:
+            ratio = quasi_static_load_ratio(
+                float(self._body_accel[0]),
+                float(self._body_accel[1]),
+                **self.load_geom,
+            )
+            tyre_load = torch.tensor([ratio], dtype=torch.float32)
 
         obs = self.builder.build(
             base_lin_vel=base_lin_vel,
@@ -243,6 +270,7 @@ class ObservationBuilderNode(Node):
             last_actions=last_actions,
             base_pos=base_pos,
             base_quat_wxyz=quat_wxyz,
+            tyre_load=tyre_load,
             opponent_block=opponent_block,
         )
         obs_np = obs.squeeze(0).numpy().astype(np.float32)

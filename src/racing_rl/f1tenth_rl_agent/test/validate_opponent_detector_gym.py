@@ -241,7 +241,7 @@ class OpponentDetectorValidator(Node):
 
         gt_block = (
             self.builder.build_opponent_block(
-                ego_pos, ego_yaw, ego_vel, gt_pos, gt_vel, present=None
+                ego_pos, ego_yaw, ego_vel, gt_pos, gt_vel
             )
             .detach()
             .cpu()
@@ -249,7 +249,7 @@ class OpponentDetectorValidator(Node):
         )
         det_block = (
             self.builder.build_opponent_block(
-                ego_pos, ego_yaw, ego_vel, det_pos, det_vel, present=None
+                ego_pos, ego_yaw, ego_vel, det_pos, det_vel
             )
             .detach()
             .cpu()

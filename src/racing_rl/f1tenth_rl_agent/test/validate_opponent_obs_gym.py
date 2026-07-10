@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Gym validation: compare deployed obs[380:387] to ground-truth opponent block.
+"""Gym validation: compare deployed obs[384:390] to ground-truth opponent block.
 
 Run inside the f1tenth_gym_ros container with the 1v1 sim bridge and agent stack
 (observation_builder with enable_opponent_obs) already up. Computes the expected
-7-dim opponent block from /ego_racecar/opp_odom (gym ground truth) and compares
-it to /rl/observation[380:387].
+6-dim opponent block from /ego_racecar/opp_odom (gym ground truth) and compares
+it to /rl/observation[384:390].
 
 Exit 0 when max channel error stays within tolerance for enough samples; non-zero
 otherwise. No mocks — requires live ROS topics from the gym sim.
@@ -25,7 +25,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
-from f1tenth_rl_agent.obs_core import ObservationBuilder, quat_xyzw_to_wxyz
+from f1tenth_rl_agent.obs_core import ObservationBuilder
 
 
 def _yaw_from_odom(msg: Odometry) -> float:
@@ -113,17 +113,17 @@ class OpponentObsValidator(Node):
 
         gt_block = (
             self.builder.build_opponent_block(
-                ego_pos, ego_yaw, ego_vel, opp_pos, opp_vel, present=None
+                ego_pos, ego_yaw, ego_vel, opp_pos, opp_vel
             )
             .detach()
             .cpu()
             .numpy()[0]
         )
-        obs_block = obs[380:387]
+        obs_block = obs[384:390]
         err = np.abs(obs_block - gt_block)
         self.errors.append(err)
         self.present_flags.append(
-            1.0 if float(np.abs(obs_block[:6]).max()) > 1e-6 else 0.0
+            1.0 if float(np.abs(obs_block).max()) > 1e-6 else 0.0
         )
 
     def report(self) -> int:
@@ -141,8 +141,8 @@ class OpponentObsValidator(Node):
         mean_err = err_mat.mean(axis=0)
         present_frac = float(np.mean(np.asarray(self.present_flags) > 0.5))
 
-        labels = ["rel_x", "rel_y", "rel_vx", "rel_vy", "gap_norm", "ey_opp", "present"]
-        print("Opponent obs[380:387] vs gym GT block:")
+        labels = ["rel_x", "rel_y", "rel_vx", "rel_vy", "gap_norm", "ey_opp"]
+        print("Opponent obs[384:390] vs gym GT block:")
         for i, name in enumerate(labels):
             print(
                 f"  {name}: mean={mean_err[i]:.4f} p95={p95_err[i]:.4f} max={max_err[i]:.4f}"
@@ -155,11 +155,10 @@ class OpponentObsValidator(Node):
             self.vel_tol,
             self.gap_tol,
             self.ey_tol,
-            0.05,
         ]
         failures = [
             f"{labels[i]} p95={p95_err[i]:.4f} > tol={tols[i]}"
-            for i in range(7)
+            for i in range(6)
             if p95_err[i] > tols[i]
         ]
         if present_frac < self.min_present_frac:

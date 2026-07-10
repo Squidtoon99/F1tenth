@@ -299,15 +299,54 @@ def obs_future_track_points(
     return all_ego.reshape(batch, -1)
 
 
+def quasi_static_load_ratio(
+    ax: float,
+    ay: float,
+    *,
+    h_cg: float = 0.05,
+    lf: float = 0.1773,
+    lr: float = 0.1477,
+    track_width: float = 0.20,
+    roll_stiffness_front: float = 0.5,
+    gravity: float = 9.81,
+) -> np.ndarray:
+    """Per-wheel normal-load ratio Fz / Fz_static from body specific forces.
+
+    Closed-form of ``f1tenth_sim/suspension.py::quasi_static_loads`` divided by the
+    static per-wheel load; vehicle mass cancels, so only geometry is needed. ``ax``
+    (forward, m/s^2) shifts load rearward; ``ay`` (leftward, m/s^2) shifts load onto
+    the right (outer) wheels. Wheel order [LR, RR, LF, RF]. This is the on-car /
+    gym estimate for the tyre-load block when no wheel-load sensing is available.
+    """
+    g = max(gravity, 1e-6)
+    lf = max(lf, 1e-6)
+    lr = max(lr, 1e-6)
+    tw = max(track_width, 1e-6)
+    wheelbase = lf + lr
+
+    rear_base = 1.0 + ax * h_cg / (g * lf)
+    front_base = 1.0 - ax * h_cg / (g * lr)
+    lat_rear = (1.0 - roll_stiffness_front) * ay * h_cg * 2.0 * wheelbase / (g * tw * lf)
+    lat_front = roll_stiffness_front * ay * h_cg * 2.0 * wheelbase / (g * tw * lr)
+
+    ratio = np.array(
+        [
+            rear_base - lat_rear,
+            rear_base + lat_rear,
+            front_base - lat_front,
+            front_base + lat_front,
+        ],
+        dtype=np.float32,
+    )
+    return np.clip(ratio, 0.0, None)
 
 
 def obs_opponent(
     self_agent: dict[str, torch.Tensor],
     other_agent: dict[str, torch.Tensor],
     obs_cfg: dict[str, Any],
-    present: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Port of ``f1tenth_env.observations.obs_opponent`` (7-dim opponent block)."""
+    """Port of ``f1tenth_env.observations.obs_opponent`` (6-dim opponent block)."""
     pos_s = self_agent["pos_xy"]
     yaw_s = self_agent["yaw"].reshape(-1)
     vel_s = self_agent["vel_xy"]
@@ -340,15 +379,9 @@ def obs_opponent(
     gap = torch.where(gap < -half, gap + track_len, gap)
     gap_norm = gap / half.clamp_min(1e-6)
 
-    if present is None:
-        present_f = torch.ones_like(rel_x)
-    else:
-        present_f = present.reshape(-1).to(rel_x.dtype)
-
-    block = torch.stack(
-        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o, present_f], dim=-1
+    return torch.stack(
+        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o], dim=-1
     )
-    return block * present_f.unsqueeze(-1)
 
 
 class ObservationBuilder:
@@ -387,6 +420,7 @@ class ObservationBuilder:
         base_pos: torch.Tensor,
         base_quat_wxyz: torch.Tensor,
         tyre_slip: torch.Tensor | None = None,
+        tyre_load: torch.Tensor | None = None,
         opponent_block: torch.Tensor | None = None,
     ) -> torch.Tensor:
         frenet_state = frenet_projection(base_pos, self.geom, self.device)
@@ -400,9 +434,11 @@ class ObservationBuilder:
         lin_acc_scale = float(obs_scales.get("lin_acc", 1.0))
 
         batch = base_lin_vel.shape[0]
-        slip_dim = self.base_num_obs - 372
         if tyre_slip is None:
-            tyre_slip = base_lin_vel.new_zeros((batch, slip_dim))
+            tyre_slip = base_lin_vel.new_zeros((batch, 8))
+        if tyre_load is None:
+            # At-rest normal-load ratio Fz / Fz_static is 1.0 on each wheel.
+            tyre_load = base_lin_vel.new_ones((batch, 4))
 
         obs = torch.cat(
             (
@@ -426,12 +462,13 @@ class ObservationBuilder:
                     frenet_state,
                 ),
                 tyre_slip,
+                tyre_load,
             ),
             dim=-1,
         )
 
         if bool(self.obs_cfg.get("enable_opponent_obs", False)):
-            opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 7))
+            opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 6))
             if opponent_block is None:
                 opponent_block = base_lin_vel.new_zeros((batch, opp_dim))
             obs = torch.cat((obs, opponent_block), dim=-1)
@@ -448,7 +485,6 @@ class ObservationBuilder:
             )
         return obs
 
-
     def build_opponent_block(
         self,
         ego_pos: torch.Tensor,
@@ -456,7 +492,6 @@ class ObservationBuilder:
         ego_vel_world: torch.Tensor,
         opp_pos: torch.Tensor,
         opp_vel_world: torch.Tensor,
-        present: torch.Tensor | None = None,
     ) -> torch.Tensor:
         ego_frenet = frenet_projection(ego_pos, self.geom, self.device)
         ego_boundary = build_boundary_state(ego_frenet, self.w_tr_left, self.w_tr_right)
@@ -479,7 +514,7 @@ class ObservationBuilder:
             "ey": opp_boundary["ey"],
             "L": track_len,
         }
-        return obs_opponent(self_agent, other_agent, self.obs_cfg, present=present)
+        return obs_opponent(self_agent, other_agent, self.obs_cfg)
 
     def frenet(self, base_pos: torch.Tensor) -> tuple[dict[str, Any], dict[str, Any]]:
         """Expose Frenet + boundary state (used by evaluation_node)."""

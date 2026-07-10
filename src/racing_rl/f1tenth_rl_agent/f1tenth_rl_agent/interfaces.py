@@ -32,14 +32,15 @@ FRAME_MAP = "map"
 FRAME_BASE_LINK = "ego_racecar/base_link"
 
 # --- Dimensions ---------------------------------------------------------------
-NUM_OBS_BASE = 380
+NUM_OBS_BASE = 384
 NUM_OBS = NUM_OBS_BASE
-OPPONENT_OBS_DIM = 7
+OPPONENT_OBS_DIM = 6
 NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4] per training env
+NUM_TYRE_LOAD = 4  # per-wheel normal-load ratio Fz / Fz_static
 
-# Observation field slices (start, stop) within the 380-dim vector.
+# Observation field slices (start, stop) within the 384-dim vector.
 OBS_LIN_VEL = (0, 2)
 OBS_ANG_VEL = (2, 3)
 OBS_LIN_ACC = (3, 5)
@@ -50,7 +51,8 @@ OBS_CENTERLINE_DISTANCE = (10, 11)
 OBS_CONTACT_FLAG = (11, 12)
 OBS_FUTURE_POINTS = (12, 372)
 OBS_TYRE_SLIP = (372, 380)
-OBS_OPPONENT = (380, 387)
+OBS_TYRE_LOAD = (380, 384)
+OBS_OPPONENT = (384, 390)
 
 # Match DEFAULT_CONFIG["obs"]["obs_scales"] and clip_obs in config.py. The trainer
 # now standardizes observations with a running ObsNormalizer, so the env-side fixed
@@ -107,7 +109,7 @@ OBS_DEBUG_LEN = 24
 
 # --- Policy / vehicle constants (DEFAULT_CONFIG in config.py) -----------------
 MAX_SPEED = 15.0
-MAX_STEER = 0.44
+MAX_STEER = 0.33  # radians at |steer| == 1.0 (real servo hard-clamp; matches training)
 CLIP_ACTIONS = 1.0
 CONTACT_MARGIN_M = 0.08
 FUTURE_TRACK_NUM_POINTS = 60
@@ -120,7 +122,7 @@ CONTROL_HZ = 10.0
 
 
 def expected_num_obs(enable_opponent_obs: bool) -> int:
-    """Policy observation dimension (380 solo, 387 with opponent block)."""
+    """Policy observation dimension (384 solo, 390 with opponent block)."""
     if enable_opponent_obs:
         return NUM_OBS_1V1
     return NUM_OBS_BASE

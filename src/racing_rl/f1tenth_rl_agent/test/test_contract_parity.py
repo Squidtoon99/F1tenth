@@ -19,6 +19,14 @@ def test_dimensions_match():
     assert contract.OPPONENT_OBS_DIM == ifc.OPPONENT_OBS_DIM
     assert contract.NUM_ACTIONS == ifc.NUM_ACTIONS
     assert contract.NUM_TYRE_SLIP == ifc.NUM_TYRE_SLIP
+    assert contract.NUM_TYRE_LOAD == ifc.NUM_TYRE_LOAD
+
+
+def test_opponent_block_is_six_dims_without_presence():
+    """The 1v1 layout appends a 6-dim opponent block (no presence flag): 384 -> 390."""
+    assert ifc.OPPONENT_OBS_DIM == 6
+    assert ifc.NUM_OBS_1V1 == ifc.NUM_OBS_BASE + 6 == 390
+    assert tuple(ifc.OBS_OPPONENT) == (ifc.NUM_OBS_BASE, ifc.NUM_OBS_1V1)
 
 
 def test_field_slices_match():
@@ -39,6 +47,7 @@ def test_field_slices_match():
         "OBS_CONTACT_FLAG": (contract.OBS_CONTACT_FLAG, ifc.OBS_CONTACT_FLAG),
         "OBS_FUTURE_POINTS": (contract.OBS_FUTURE_POINTS, ifc.OBS_FUTURE_POINTS),
         "OBS_TYRE_SLIP": (contract.OBS_TYRE_SLIP, ifc.OBS_TYRE_SLIP),
+        "OBS_TYRE_LOAD": (contract.OBS_TYRE_LOAD, ifc.OBS_TYRE_LOAD),
         "OBS_OPPONENT": (contract.OBS_OPPONENT, ifc.OBS_OPPONENT),
     }
     for name, (a, b) in pairs.items():
