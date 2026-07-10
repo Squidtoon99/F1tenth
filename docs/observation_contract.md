@@ -48,6 +48,18 @@ flowchart TD
   cpp -->|parity test| ci[CI / deploy check]
 ```
 
+## Layout summary
+
+| Mode | `num_obs` | Opponent block |
+| --- | ---: | --- |
+| Solo (1v0) | 384 | — |
+| 1v1 | 390 | `[384:390)` — 6 dims: `rel_x`, `rel_y`, `rel_vx`, `rel_vy`, `gap_norm`, `ey_o` |
+
+Block builders emit the 6 relative features with no masking. Callers zero the
+block when the opponent is out of range (training: ±40 m ahead / 20 m behind on
+arc length) or not confidently detected (deploy). An all-zero opponent block is
+the sole “no relevant opponent” signal.
+
 ## Migration note
 
 The observation math is currently duplicated in three places:

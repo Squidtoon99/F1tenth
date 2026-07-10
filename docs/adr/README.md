@@ -12,3 +12,7 @@ trade-off. Routine work is captured by the PR instead (see
 - [0000](0000-template.md) — Template (copy this).
 - [0001](0001-single-monorepo-and-generic-car-image.md) — Single monorepo, single
   colcon workspace, and a generic car image with per-car runtime config.
+- [0002](0002-physx-tyre-slip-and-tyre-load-observation.md) — PhysX-grounded tyre
+  slip and a per-wheel tyre-load observation block (380 → 384 layout change).
+- [0003](0003-opponent-obs-range-mask.md) — Remove opponent `present` channel;
+  6-dim opponent block with caller-side range/certainty masking (391 → 390).

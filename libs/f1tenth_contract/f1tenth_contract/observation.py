@@ -19,13 +19,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # --- Dimensions ---------------------------------------------------------------
-NUM_OBS_BASE = 380
-OPPONENT_OBS_DIM = 7
-NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 387
+NUM_OBS_BASE = 384
+OPPONENT_OBS_DIM = 6
+NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 390
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4]
+NUM_TYRE_LOAD = 4  # per-wheel normal-load ratio Fz / Fz_static
 
-# --- Field slices (start, stop) within the base 380-dim vector ----------------
+# --- Field slices (start, stop) within the base 384-dim vector ----------------
 OBS_LIN_VEL = (0, 2)
 OBS_ANG_VEL = (2, 3)
 OBS_LIN_ACC = (3, 5)
@@ -36,8 +37,9 @@ OBS_CENTERLINE_DISTANCE = (10, 11)
 OBS_CONTACT_FLAG = (11, 12)
 OBS_FUTURE_POINTS = (12, 372)
 OBS_TYRE_SLIP = (372, 380)
+OBS_TYRE_LOAD = (380, 384)
 # Opponent-relative block, appended only when opponent observations are enabled.
-OBS_OPPONENT = (380, 387)
+OBS_OPPONENT = (384, 390)
 
 # Ordered (name, start, stop) table for the base observation. Kept in field order
 # and contiguous from 0 to NUM_OBS_BASE.
@@ -52,16 +54,17 @@ OBS_FIELDS_BASE: tuple[tuple[str, int, int], ...] = (
     ("contact_flag", *OBS_CONTACT_FLAG),
     ("future_points", *OBS_FUTURE_POINTS),
     ("tyre_slip", *OBS_TYRE_SLIP),
+    ("tyre_load", *OBS_TYRE_LOAD),
 )
 
-# The opponent block, appended for the 1v1 (387-dim) observation.
+# The opponent block, appended for the 1v1 (390-dim) observation.
 OBS_FIELDS_OPPONENT: tuple[tuple[str, int, int], ...] = (
     ("opponent", *OBS_OPPONENT),
 )
 
 
 def expected_num_obs(enable_opponent_obs: bool) -> int:
-    """Policy observation dimension (380 solo, 387 with the opponent block)."""
+    """Policy observation dimension (384 solo, 390 with the opponent block)."""
     return NUM_OBS_1V1 if enable_opponent_obs else NUM_OBS_BASE
 
 

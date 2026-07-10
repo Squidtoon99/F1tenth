@@ -19,13 +19,14 @@ namespace f1tenth_common
 struct ObservationLayout
 {
   // Dimensions.
-  static constexpr std::size_t kObservationDim = 380;       // base (solo)
-  static constexpr std::size_t kOpponentObsDim = 7;         // appended for 1v1
-  static constexpr std::size_t kObservationDim1v1 = 387;    // base + opponent
+  static constexpr std::size_t kObservationDim = 384;       // base (solo)
+  static constexpr std::size_t kOpponentObsDim = 6;         // appended for 1v1
+  static constexpr std::size_t kObservationDim1v1 = 390;    // base + opponent
   static constexpr std::size_t kActionDim = 2;              // (throttle, steer)
   static constexpr std::size_t kTyreSlipDim = 8;
+  static constexpr std::size_t kTyreLoadDim = 4;
 
-  // Field slices [start, stop) within the base 380-dim vector.
+  // Field slices [start, stop) within the base 384-dim vector.
   static constexpr std::size_t kLinVelStart = 0, kLinVelStop = 2;
   static constexpr std::size_t kAngVelStart = 2, kAngVelStop = 3;
   static constexpr std::size_t kLinAccStart = 3, kLinAccStop = 5;
@@ -36,7 +37,8 @@ struct ObservationLayout
   static constexpr std::size_t kContactFlagStart = 11, kContactFlagStop = 12;
   static constexpr std::size_t kFuturePointsStart = 12, kFuturePointsStop = 372;
   static constexpr std::size_t kTyreSlipStart = 372, kTyreSlipStop = 380;
-  static constexpr std::size_t kOpponentStart = 380, kOpponentStop = 387;
+  static constexpr std::size_t kTyreLoadStart = 380, kTyreLoadStop = 384;
+  static constexpr std::size_t kOpponentStart = 384, kOpponentStop = 390;
 };
 
 }  // namespace f1tenth_common

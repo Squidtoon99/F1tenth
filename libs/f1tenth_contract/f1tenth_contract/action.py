@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 # --- Action -> drive mapping constants (mirror of deploy interfaces.py) --------
 MAX_SPEED = 15.0
-MAX_STEER = 0.44  # radians at |steer| == 1.0
+MAX_STEER = 0.33  # radians at |steer| == 1.0 (real servo hard-clamp; matches training)
 CLIP_ACTIONS = 1.0
 ACT_LIMIT = 1.0
 CONTROL_HZ = 10.0

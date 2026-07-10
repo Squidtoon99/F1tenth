@@ -25,17 +25,17 @@ def test_action_dim_is_two():
 
 
 def test_base_observation_dim():
-    assert OBSERVATION.dim == NUM_OBS_BASE == 380
+    assert OBSERVATION.dim == NUM_OBS_BASE == 384
 
 
 def test_opponent_observation_dim():
-    assert NUM_OBS_1V1 == NUM_OBS_BASE + OPPONENT_OBS_DIM == 387
+    assert NUM_OBS_1V1 == NUM_OBS_BASE + OPPONENT_OBS_DIM == 390
     assert OBSERVATION_1V1.dim == NUM_OBS_1V1
 
 
 def test_expected_num_obs():
-    assert expected_num_obs(False) == 380
-    assert expected_num_obs(True) == 387
+    assert expected_num_obs(False) == 384
+    assert expected_num_obs(True) == 390
 
 
 def test_base_fields_are_contiguous():
