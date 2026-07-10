@@ -7,8 +7,9 @@ from typing import Any
 
 import numpy as np
 import torch
-import genesis as gs
-import genesis.utils.geom as gu
+
+from . import geom as gu
+from . import runtime as rt
 
 URDF_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "F110.export.urdf")
@@ -64,10 +65,22 @@ def ackermann_left_right(
 def compute_tyre_slip(
     wheel_state: dict[str, torch.Tensor],
     wheel_radius: float,
-    slip_eps: float = 0.1,
+    active: torch.Tensor | None = None,
+    min_lat: float = 0.2,
+    min_active_long: float = 0.1,
+    min_passive_long: float = 0.4,
 ) -> torch.Tensor:
     """
     Per-wheel slip ratio and slip angle for observation / reward.
+
+    Follows the modern PhysX vehicle definition (``VhTireFunctions.cpp``): both
+    quantities normalize by the longitudinal ground speed plus a fixed offset,
+    rather than the legacy ``max(|wheel_speed|, |v_fwd|)`` denominator. The
+    longitudinal offset switches between an active value (drive or brake torque
+    applied) and a larger passive value (coasting); ``active`` is a per-env
+    boolean (broadcast over the four wheels), and ``None`` treats every wheel as
+    active. Offsets are in m/s and scaled down from the PhysX full-car defaults
+    (1.0 / 0.1 / 4.0) for the 1/10-scale car.
 
     Wheel order: [left_rear, right_rear, left_front, right_front].
     Returns (N, 8): [slip_ratio x4, slip_angle x4].
@@ -87,12 +100,21 @@ def compute_tyre_slip(
 
     v_fwd = lin_vel_local[:, :, 0]
     v_lat = lin_vel_local[:, :, 1]
+    v_fwd_abs = torch.abs(v_fwd)
 
-    slip_angle = torch.atan2(v_lat, torch.abs(v_fwd).clamp_min(slip_eps))
+    slip_angle = torch.atan(v_lat / (v_fwd_abs + min_lat))
 
     wheel_speed = wheel_radius * spin_rate
-    denom = torch.maximum(torch.abs(wheel_speed), torch.abs(v_fwd)).clamp_min(slip_eps)
-    slip_ratio = (wheel_speed - v_fwd) / denom
+    if active is None:
+        min_long = min_active_long
+    else:
+        active_b = active.reshape(active.shape[0], -1).to(device=v_fwd.device).bool()
+        min_long = torch.where(
+            active_b,
+            v_fwd.new_full((), min_active_long),
+            v_fwd.new_full((), min_passive_long),
+        )
+    slip_ratio = (wheel_speed - v_fwd) / (v_fwd_abs + min_long)
 
     return torch.cat([slip_ratio, slip_angle], dim=-1)
 
@@ -121,11 +143,11 @@ def compute_wheel_torques(
         mue = torch.full(
             (throttle_cmd.shape[0],),
             float(env_cfg.get("tire_friction", 0.7)),
-            dtype=gs.tc_float,
+            dtype=rt.tc_float,
             device=throttle_cmd.device,
         )
     else:
-        mue = tire_friction.reshape(-1).to(dtype=gs.tc_float, device=throttle_cmd.device)
+        mue = tire_friction.reshape(-1).to(dtype=rt.tc_float, device=throttle_cmd.device)
     c_roll = float(env_cfg.get("c_roll", 0.0))
     drive_sign = float(env_cfg.get("drive_torque_sign", 1.0))
 
@@ -135,12 +157,12 @@ def compute_wheel_torques(
     v_mag = torch.linalg.norm(base_lin_vel_body[:, :2], dim=-1)
 
     if isinstance(vehicle_mass, torch.Tensor):
-        mass = vehicle_mass.reshape(-1).to(dtype=gs.tc_float, device=throttle_cmd.device)
+        mass = vehicle_mass.reshape(-1).to(dtype=rt.tc_float, device=throttle_cmd.device)
     else:
         mass = torch.full(
             (throttle_cmd.shape[0],),
             float(vehicle_mass),
-            dtype=gs.tc_float,
+            dtype=rt.tc_float,
             device=throttle_cmd.device,
         )
     traction_cap = mue * mass * 9.81
@@ -240,13 +262,13 @@ def compute_chassis_longitudinal_force(
     f_drive = torch.minimum(f_drive, power_max / torch.clamp(v_mag, min=v_eps))
     f_drive = torch.minimum(
         f_drive,
-        torch.tensor(traction_cap, dtype=gs.tc_float, device=throttle_cmd.device),
+        torch.tensor(traction_cap, dtype=rt.tc_float, device=throttle_cmd.device),
     )
 
     f_brake = brake * f_brake_max
     f_brake = torch.minimum(
         f_brake,
-        torch.tensor(traction_cap, dtype=gs.tc_float, device=throttle_cmd.device),
+        torch.tensor(traction_cap, dtype=rt.tc_float, device=throttle_cmd.device),
     )
 
     f_long = torch.zeros_like(f_drive)
@@ -266,9 +288,7 @@ def chassis_force_to_root_world(
     base_quat: torch.Tensor,
 ) -> torch.Tensor:
     """Map body-frame longitudinal force to world-frame root linear force."""
-    from genesis.utils.geom import quat_to_xyz
-
-    yaw = quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
+    yaw = gu.quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
     fx = f_long_body * torch.cos(yaw)
     fy = f_long_body * torch.sin(yaw)
     return torch.stack([fx, fy, torch.zeros_like(fx)], dim=-1)
@@ -330,6 +350,6 @@ def setup_entity_controls(
         ],
         dtype=np.float32,
     )
-    ratios_t = torch.from_numpy(ratios[None, :]).to(device=gs.device)
+    ratios_t = torch.from_numpy(ratios[None, :]).to(device=rt.device)
     car.set_friction_ratio(ratios_t, links_idx_local=link_ids)
     return (wheel_dofs, steer_dofs)

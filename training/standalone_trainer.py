@@ -24,13 +24,16 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
+from f1tenth_env import runtime as rt
 from f1tenth_env.utils import episode_length_for_track
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
 LOGGER_NAME = "standalone_trainer"
 RECENT_EPISODES_MAX = 50
-OPP_OBS_BASE_IDX = 380
+# Opponent-relative block starts right after the base observation (tyre_load ends
+# the base vector); index 4 within it is the signed along-track gap s_other-s_self.
+OPP_OBS_BASE_IDX = 384
 OPP_TRACK_GAP_IDX = OPP_OBS_BASE_IDX + 4
 
 
@@ -150,6 +153,16 @@ class SelfPlayManager:
             snap["step"],
             len(self.pool),
         )
+
+    def refresh_eval_opponent(self, env: F1tenthEnv) -> bool:
+        """Inject a pool snapshot into a separate eval env (same sampling as
+        ``maybe_refresh`` but ungated), so eval videos race the ego against the
+        self-play pool instead of an untrained default opponent."""
+        snap = self._sample_snapshot()
+        if snap is None:
+            return False
+        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        return True
 
     def record_episode_outcomes(self, ego_minus_opp_gap: torch.Tensor) -> None:
         """Win proxy: ego ahead on track when ``s_self - s_other > 0``."""
@@ -601,7 +614,9 @@ def build_config(args: argparse.Namespace) -> dict:
         if args.opponent_ckpt is not None:
             cfg["env"]["opponent_ckpt"] = args.opponent_ckpt
         cfg["obs"]["enable_opponent_obs"] = True
-        cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+        cfg["obs"]["num_obs"] = int(cfg["obs"]["num_obs"]) + int(
+            cfg["obs"]["opponent_obs_dim"]
+        )
         # Activate the passing reward term (gated by presence of this scale).
         cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
         # Activate the GT Sophy any-collision penalty (gated by this scale).
@@ -718,6 +733,7 @@ def run_eval_video(
     live: bool,
     wandb_run,
     log: logging.Logger,
+    selfplay_mgr: "SelfPlayManager | None" = None,
 ) -> None:
     """Deterministic eval rollout rendered to an mp4 (and optionally live Rerun).
 
@@ -762,6 +778,8 @@ def run_eval_video(
 
     was_training = models.actor.training
     models.actor.eval()
+    if selfplay_mgr is not None and getattr(env, "has_opponent", False):
+        selfplay_mgr.refresh_eval_opponent(env)
     obs, _ = env.reset()
     obs = obs.to(torch.float32)
     with torch.no_grad():
@@ -771,7 +789,7 @@ def run_eval_video(
             )
             actions = actions.clamp(-clip_actions, clip_actions)
             obs, _, done, _ = env.step(
-                actions.to(gs.tc_float), n_steps=control_interval
+                actions.to(rt.tc_float), n_steps=control_interval
             )
             obs = obs.to(torch.float32)
             st = env.backend.read_state()
@@ -1085,14 +1103,14 @@ def main():
     physics_backend = str(cfg["env"].get("physics_backend", "genesis"))
     if physics_backend == "torch":
         # The pure-Torch vehicle sim is Genesis-free: skip gs.init() entirely and
-        # just set the few module constants the env buffers reference. This keeps
-        # the torch training path fully standalone (no Genesis runtime / no GL).
+        # configure the env's own dtype/device runtime. No Genesis runtime / no GL.
         device = select_device(args.device)
-        gs.tc_float = torch.float64 if args.precision == "64" else torch.float32
-        gs.tc_int = torch.int32
-        gs.device = device
-        if getattr(gs, "EPS", None) is None:
-            gs.EPS = 1e-12
+        rt.configure(
+            float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+            int_dtype=torch.int32,
+            dev=device,
+            eps=1e-12,
+        )
     else:
         _maybe_patch_headless_rasterizer()
         backend = select_genesis_backend(args.backend)
@@ -1109,6 +1127,9 @@ def main():
             device = select_device(args.device)
         else:
             device = gs.device
+        rt.configure(
+            float_dtype=gs.tc_float, int_dtype=gs.tc_int, dev=device, eps=gs.EPS,
+        )
     run_id = args.run_id or uuid.uuid4().hex[:8]
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1256,7 +1277,7 @@ def main():
 
             try:
                 next_obs, reward, done, extras = env.step(
-                    actions.to(gs.tc_float), n_steps=control_interval
+                    actions.to(rt.tc_float), n_steps=control_interval
                 )
             except gs.GenesisException as exc:
                 consecutive_nan_steps += 1
@@ -1308,7 +1329,9 @@ def main():
             diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
 
             if use_1v1 and obs.shape[-1] > OPP_OBS_BASE_IDX:
-                diag.add_mean("metric/opponent_presence", obs[:, -1])
+                opp_block = obs[:, OPP_OBS_BASE_IDX:]
+                in_range = (opp_block != 0).any(dim=-1).to(obs.dtype)
+                diag.add_mean("metric/opponent_presence", in_range)
 
             bad_obs_mask = (~torch.isfinite(next_obs)).any(dim=1)
             finite_ok = bool(
@@ -1596,6 +1619,7 @@ def main():
                         live=args.eval_video_live,
                         wandb_run=wandb_run,
                         log=log,
+                        selfplay_mgr=selfplay_mgr,
                     )
                 except Exception as exc:
                     log.warning("Eval video rollout failed (continuing): %s", exc)

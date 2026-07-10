@@ -2,10 +2,11 @@ import math
 import os
 from typing import Any
 
-import genesis as gs
-import genesis.utils.geom as gu
 import numpy as np
 import torch
+
+from . import geom as gu
+from . import runtime as rt
 
 from .domain_randomization import (
     apply_obs_dr,
@@ -14,6 +15,8 @@ from .domain_randomization import (
     latency_actions,
     sample_dr_on_reset,
 )
+from f1tenth_sim.params import VehicleParams
+from f1tenth_sim.suspension import quasi_static_loads
 from .backends import make_backend
 from .car import compute_tyre_slip
 from .observations import build_observation, obs_opponent
@@ -63,7 +66,7 @@ class F1tenthEnv:
         self.reward_cfg = reward_cfg
         self.show_viewer = show_viewer
 
-        self.device = gs.device if gs.device is not None else torch.device("cpu")
+        self.device = rt.device if rt.device is not None else torch.device("cpu")
         self.simulate_action_latency = self.env_cfg.get(
             "simulate_action_latency", False
         )
@@ -92,7 +95,7 @@ class F1tenthEnv:
 
         # On-device copies for sync-free reset sampling.
         self.centerline_t = torch.as_tensor(
-            self.centerline, device=self.device, dtype=gs.tc_float
+            self.centerline, device=self.device, dtype=rt.tc_float
         )
         self.num_pts = int(self.centerline_t.shape[0])
         self.w_tr_left_torch = self.track_state["w_tr_left_torch"]
@@ -128,6 +131,9 @@ class F1tenthEnv:
         )
 
         self.vehicle_mass = 3.74
+        # Backend-agnostic vehicle geometry/mass, used to turn body-frame
+        # accelerations into per-wheel normal-load ratios for the observation.
+        self._susp_params = VehicleParams.from_config(self.env_cfg)
         base_action_latency = 1 if self.simulate_action_latency else 0
         self._dr = init_dr_state(
             num_envs=self.num_envs,
@@ -140,65 +146,65 @@ class F1tenthEnv:
         )
         self._dr["num_obs"] = self.num_obs
         self.base_lin_vel = torch.zeros(
-            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
         )
         self.base_ang_vel = torch.zeros(
-            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
         )
 
         self.base_lin_acc = torch.zeros(
-            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
         )
 
         self.base_pos = torch.empty(
-            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
         )
         self.base_quat = torch.empty(
-            (self.num_envs, 4), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 4), dtype=rt.tc_float, device=rt.device
         )
         # World-frame ego velocity, retained for the opponent-relative observation
         # block (which works in world deltas rotated into each car's body frame).
         self.base_vel_world = torch.zeros(
-            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
         )
 
         # Opponent state buffers (only used when an opponent entity exists).
         if self.has_opponent:
             self.opp_base_pos = torch.zeros(
-                (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+                (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
             )
             self.opp_base_quat = torch.zeros(
-                (self.num_envs, 4), dtype=gs.tc_float, device=gs.device
+                (self.num_envs, 4), dtype=rt.tc_float, device=rt.device
             )
             self.opp_vel_world = torch.zeros(
-                (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+                (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
             )
             self.opp_ang_world = torch.zeros(
-                (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+                (self.num_envs, 3), dtype=rt.tc_float, device=rt.device
             )
             self.opp_last_actions = torch.zeros(
-                (self.num_envs, self.num_actions), dtype=gs.tc_float, device=gs.device
+                (self.num_envs, self.num_actions), dtype=rt.tc_float, device=rt.device
             )
 
         self.obs_buf = torch.zeros(
-            (self.num_envs, self.num_obs), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, self.num_obs), dtype=rt.tc_float, device=rt.device
         )
         self.reward_buf = torch.zeros(
-            (self.num_envs,), dtype=gs.tc_float, device=gs.device
+            (self.num_envs,), dtype=rt.tc_float, device=rt.device
         )
         self.reset_buf = torch.zeros(
-            (self.num_envs,), dtype=torch.bool, device=gs.device
+            (self.num_envs,), dtype=torch.bool, device=rt.device
         )
 
         self.episode_steps_buf = torch.zeros(
-            (self.num_envs,), dtype=torch.int32, device=gs.device
+            (self.num_envs,), dtype=torch.int32, device=rt.device
         )
         self.lap_count_buf = torch.zeros(
-            (self.num_envs,), dtype=torch.int32, device=gs.device
+            (self.num_envs,), dtype=torch.int32, device=rt.device
         )
 
         self.actions = torch.zeros(
-            (self.num_envs, self.num_actions), dtype=gs.tc_float, device=gs.device
+            (self.num_envs, self.num_actions), dtype=rt.tc_float, device=rt.device
         )
         self.last_actions = torch.zeros_like(self.actions)
 
@@ -243,7 +249,7 @@ class F1tenthEnv:
         c = torch.cos(half)
         s = torch.sin(half)
 
-        quat = torch.zeros((yaw.shape[0], 4), dtype=gs.tc_float, device=self.device)
+        quat = torch.zeros((yaw.shape[0], 4), dtype=rt.tc_float, device=self.device)
         if str(self.env_cfg.get("reset_quat_order", "wxyz")).lower() == "wxyz":
             quat[:, 0] = c
             quat[:, 3] = s
@@ -267,9 +273,9 @@ class F1tenthEnv:
     def _sample_reset_speed(self) -> torch.Tensor:
         v_min, v_max = self._reset_speed_range()
         if abs(v_min) < 1e-8 and abs(v_max) < 1e-8:
-            return torch.zeros((self.num_envs,), dtype=gs.tc_float, device=self.device)
+            return torch.zeros((self.num_envs,), dtype=rt.tc_float, device=self.device)
         return (
-            torch.rand((self.num_envs,), device=self.device, dtype=gs.tc_float)
+            torch.rand((self.num_envs,), device=self.device, dtype=rt.tc_float)
             * (v_max - v_min)
             + v_min
         )
@@ -306,14 +312,14 @@ class F1tenthEnv:
         max_left = (w_left - spawn_margin).clamp_min(0.05)
         max_right = (w_right - spawn_margin).clamp_min(0.05)
         lateral = (
-            torch.rand((B,), device=self.device, dtype=gs.tc_float)
+            torch.rand((B,), device=self.device, dtype=rt.tc_float)
             * (max_left + max_right)
             - max_right
         )
 
         along_jitter = float(self.env_cfg.get("reset_along_track_jitter_m", 0.1))
         along = (
-            torch.rand((B,), device=self.device, dtype=gs.tc_float) * 2.0 - 1.0
+            torch.rand((B,), device=self.device, dtype=rt.tc_float) * 2.0 - 1.0
         ) * along_jitter
 
         spawn_xy = p_curr + normal * lateral.unsqueeze(1) + tangent * along.unsqueeze(1)
@@ -322,11 +328,11 @@ class F1tenthEnv:
         yaw_jitter = float(self.env_cfg.get("reset_yaw_jitter_rad", 0.2))
         yaw = (
             yaw
-            + (torch.rand((B,), device=self.device, dtype=gs.tc_float) * 2.0 - 1.0)
+            + (torch.rand((B,), device=self.device, dtype=rt.tc_float) * 2.0 - 1.0)
             * yaw_jitter
         )
 
-        z = torch.full((B, 1), self.spawn_z, dtype=gs.tc_float, device=self.device)
+        z = torch.full((B, 1), self.spawn_z, dtype=rt.tc_float, device=self.device)
         pos = torch.cat([spawn_xy, z], dim=1)
         quat = self._yaw_to_quat(yaw)
         return pos, quat
@@ -367,7 +373,7 @@ class F1tenthEnv:
 
         tangent, _, _ = self._centerline_frame(opp_idx)
         yaw = torch.atan2(tangent[:, 1], tangent[:, 0])
-        z = torch.full((ego_pos.shape[0], 1), self.spawn_z, dtype=gs.tc_float, device=self.device)
+        z = torch.full((ego_pos.shape[0], 1), self.spawn_z, dtype=rt.tc_float, device=self.device)
         pos = torch.cat([spawn_xy, z], dim=1)
         quat = self._yaw_to_quat(yaw)
         return pos, quat
@@ -383,7 +389,7 @@ class F1tenthEnv:
                 pos = (
                     torch.tensor(
                         self.env_cfg["car_spawn_pos"],
-                        dtype=gs.tc_float,
+                        dtype=rt.tc_float,
                         device=self.device,
                     )
                     .reshape(1, 3)
@@ -392,7 +398,7 @@ class F1tenthEnv:
                 )
                 euler = torch.tensor(
                     self.env_cfg["car_spawn_rot"],
-                    dtype=gs.tc_float,
+                    dtype=rt.tc_float,
                     device=self.device,
                 )
                 q = gu.xyz_to_quat(euler, rpy=True, degrees=False)
@@ -490,16 +496,66 @@ class F1tenthEnv:
                 cache_id=self.track_cache_id,
             )
 
-            self._step_state["wheel_state"] = self.backend.read_wheel_state("ego")
-            wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
-            slip_eps = float(self.reward_cfg.get("slip_eps", 0.1))
-            self._step_state["tyre_slip"] = compute_tyre_slip(
-                self._step_state["wheel_state"],
-                wheel_radius=wheel_radius,
-                slip_eps=slip_eps,
+            ws = self.backend.read_wheel_state("ego")
+            self._step_state["wheel_state"] = ws
+            active = self.actions[:, 0].abs() > 1e-3
+            self._step_state["tyre_slip"] = self._tyre_slip_from(ws, active)
+            ego_mass = self._dr["vehicle_mass"] * self._dr["mass_scale"]
+            self._step_state["tyre_load"] = self._tyre_load_from(
+                ws, self.base_lin_acc, ego_mass
             )
             self._step_state_valid = True
         return self._step_state
+
+    def _tyre_slip_from(
+        self, wheel_state: dict[str, Any], active: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-wheel slip (N,8): backend-native if provided, else computed.
+
+        The TorchSim backend evaluates the slip inside its (PhysX-grounded) tyre
+        model and returns it directly; Genesis has no tyre model, so fall back to
+        the same modern-PhysX definition applied to the wheel-frame velocities.
+        """
+        native = wheel_state.get("tyre_slip")
+        if native is not None:
+            return native
+        wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
+        return compute_tyre_slip(
+            wheel_state,
+            wheel_radius=wheel_radius,
+            active=active,
+            min_lat=self._susp_params.slip_min_lat,
+            min_active_long=self._susp_params.slip_min_active_long,
+            min_passive_long=self._susp_params.slip_min_passive_long,
+        )
+
+    def _tyre_load_from(
+        self,
+        wheel_state: dict[str, Any],
+        base_lin_acc: torch.Tensor,
+        mass: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Per-wheel normal-load ratio (N,4): backend-native if provided, else
+        the quasi-static load transfer from body accel (matches the on-car IMU
+        derivation)."""
+        native = wheel_state.get("tyre_load")
+        if native is not None:
+            return native
+        return self._compute_tyre_load(base_lin_acc, mass)
+
+    def _compute_tyre_load(
+        self, base_lin_acc: torch.Tensor, mass: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Per-wheel normal-load ratio Fz / Fz_static from body accel (N,4).
+
+        Backend-agnostic (uses the quasi-static load transfer), so it matches what
+        the on-car observation builder derives from IMU. ``mass`` is the per-env
+        (optionally DR-sampled) mass; ``None`` uses the nominal mass.
+        """
+        fz = quasi_static_loads(
+            self._susp_params, base_lin_acc[:, 0], base_lin_acc[:, 1], mass
+        )
+        return fz / max(self._susp_params.static_wheel_load(), 1e-6)
 
     def _update_state_buffers(self):
         st = self.backend.read_state()
@@ -618,7 +674,7 @@ class F1tenthEnv:
             else:
                 collision = overlap
             self.reset_buf = self.reset_buf | collision
-            self.extras["termination"]["collision"] = collision.to(dtype=gs.tc_float)
+            self.extras["termination"]["collision"] = collision.to(dtype=rt.tc_float)
 
         boundary = step_state["boundary"]
         oob_mask, oob_dist = compute_oob_from_boundary_state(
@@ -627,23 +683,23 @@ class F1tenthEnv:
         )
         progress_ds = step_state.get(
             "progress_ds",
-            torch.zeros((self.num_envs,), dtype=gs.tc_float, device=self.device),
+            torch.zeros((self.num_envs,), dtype=rt.tc_float, device=self.device),
         )
         speed_xy = torch.linalg.norm(self.base_lin_vel[:, :2], dim=-1)
 
         self.extras["metrics"] = {
             "progress_ds": progress_ds,
             "oob_dist": oob_dist,
-            "oob_mask": oob_mask.to(dtype=gs.tc_float),
+            "oob_mask": oob_mask.to(dtype=rt.tc_float),
             "boundary_dist": boundary["boundary_dist"],
             "lateral_error": boundary["ey"],
             "speed_xy": speed_xy,
-            "episode_steps": self.episode_steps_buf.to(dtype=gs.tc_float),
-            "lap_count": self.lap_count_buf.to(dtype=gs.tc_float),
+            "episode_steps": self.episode_steps_buf.to(dtype=rt.tc_float),
+            "lap_count": self.lap_count_buf.to(dtype=rt.tc_float),
             "laps_completed": self.reward_state.get(
                 "last_lap_cross",
                 torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device),
-            ).to(dtype=gs.tc_float),
+            ).to(dtype=rt.tc_float),
         }
         if self.has_opponent:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
@@ -670,24 +726,24 @@ class F1tenthEnv:
                 torch.isfinite(self.opp_base_pos).all(dim=1)
                 & torch.isfinite(self.opp_base_quat).all(dim=1)
             )
-        self.extras["metrics"]["nonfinite_obs_envs"] = nf_obs.to(dtype=gs.tc_float)
+        self.extras["metrics"]["nonfinite_obs_envs"] = nf_obs.to(dtype=rt.tc_float)
         self.extras["metrics"]["nonfinite_reward_envs"] = nf_reward.to(
-            dtype=gs.tc_float
+            dtype=rt.tc_float
         )
-        self.extras["metrics"]["nonfinite_state_envs"] = nf_state.to(dtype=gs.tc_float)
+        self.extras["metrics"]["nonfinite_state_envs"] = nf_state.to(dtype=rt.tc_float)
 
     def _normalize_reset_mask(self, envs_idx) -> torch.Tensor:
         """Coerce a None / index-list / index-tensor / bool-mask into a bool mask."""
         if envs_idx is None:
-            return torch.ones((self.num_envs,), dtype=torch.bool, device=gs.device)
+            return torch.ones((self.num_envs,), dtype=torch.bool, device=rt.device)
         if isinstance(envs_idx, (list, tuple, np.ndarray)):
-            mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=gs.device)
+            mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=rt.device)
             if len(envs_idx) > 0:
                 mask[list(envs_idx)] = True
             return mask
         if envs_idx.dtype == torch.bool:
             return envs_idx
-        mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=gs.device)
+        mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=rt.device)
         mask[envs_idx] = True
         return mask
 
@@ -753,6 +809,28 @@ class F1tenthEnv:
             "L": step_state["frenet"]["L"],
         }
 
+    def _wrapped_track_gap(
+        self, s_self: torch.Tensor, s_other: torch.Tensor, track_len: torch.Tensor
+    ) -> torch.Tensor:
+        gap = s_other.reshape(-1) - s_self.reshape(-1)
+        half = 0.5 * track_len.reshape(-1).to(gap.dtype)
+        gap = torch.where(gap > half, gap - track_len.reshape(-1).to(gap.dtype), gap)
+        gap = torch.where(gap < -half, gap + track_len.reshape(-1).to(gap.dtype), gap)
+        return gap
+
+    def _apply_opponent_range_mask(
+        self,
+        block: torch.Tensor,
+        s_self: torch.Tensor,
+        s_other: torch.Tensor,
+        track_len: torch.Tensor,
+    ) -> torch.Tensor:
+        ahead_m = float(self.obs_cfg.get("opp_obs_ahead_m", 40.0))
+        behind_m = float(self.obs_cfg.get("opp_obs_behind_m", 20.0))
+        gap = self._wrapped_track_gap(s_self, s_other, track_len)
+        in_range = (gap <= ahead_m) & (gap >= -behind_m)
+        return block * in_range.to(block.dtype).unsqueeze(-1)
+
     def _ego_opponent_block(self, ego_step_state: dict[str, Any]) -> torch.Tensor | None:
         """Opponent-relative observation block from the ego's frame (or None)."""
         if not self.has_opponent or not bool(
@@ -760,7 +838,7 @@ class F1tenthEnv:
         ):
             return None
         opp_ss = self._opponent_step_state(self.opp_base_pos)
-        return obs_opponent(
+        block = obs_opponent(
             self._agent_state(
                 self.base_pos, self.base_quat, self.base_vel_world, ego_step_state
             ),
@@ -768,6 +846,12 @@ class F1tenthEnv:
                 self.opp_base_pos, self.opp_base_quat, self.opp_vel_world, opp_ss
             ),
             self.obs_cfg,
+        )
+        return self._apply_opponent_range_mask(
+            block,
+            ego_step_state["frenet"]["s"],
+            opp_ss["frenet"]["s"],
+            ego_step_state["frenet"]["L"],
         )
 
     def _build_opponent_obs(self, opp_step_state: dict[str, Any]) -> torch.Tensor:
@@ -777,12 +861,11 @@ class F1tenthEnv:
         opp_acc = torch.zeros_like(opp_body_vel)
 
         opp_ss = dict(opp_step_state)
-        opp_ss["wheel_state"] = self.backend.read_wheel_state("opp")
-        wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
-        slip_eps = float(self.reward_cfg.get("slip_eps", 0.1))
-        opp_ss["tyre_slip"] = compute_tyre_slip(
-            opp_ss["wheel_state"], wheel_radius=wheel_radius, slip_eps=slip_eps
-        )
+        opp_ws = self.backend.read_wheel_state("opp")
+        opp_ss["wheel_state"] = opp_ws
+        opp_active = self.opp_last_actions[:, 0].abs() > 1e-3
+        opp_ss["tyre_slip"] = self._tyre_slip_from(opp_ws, opp_active)
+        opp_ss["tyre_load"] = self._tyre_load_from(opp_ws, opp_acc)
 
         ego_ss = self._get_step_state()
         opp_block = obs_opponent(
@@ -793,6 +876,12 @@ class F1tenthEnv:
                 self.base_pos, self.base_quat, self.base_vel_world, ego_ss
             ),
             self.obs_cfg,
+        )
+        opp_block = self._apply_opponent_range_mask(
+            opp_block,
+            opp_ss["frenet"]["s"],
+            ego_ss["frenet"]["s"],
+            opp_ss["frenet"]["L"],
         )
         return build_observation(
             num_obs=self.num_obs,

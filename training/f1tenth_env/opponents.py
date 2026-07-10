@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from genesis.utils.geom import quat_to_xyz
+
+from .geom import quat_to_xyz
 
 
 @dataclass

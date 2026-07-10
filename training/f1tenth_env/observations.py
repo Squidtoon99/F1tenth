@@ -4,8 +4,8 @@ from typing import Any
 import numpy as np
 import torch
 
-import genesis as gs
-from genesis.utils.geom import quat_to_xyz
+from . import runtime as rt
+from .geom import quat_to_xyz
 
 
 def obs_track_progress(
@@ -88,7 +88,7 @@ def obs_future_track_points(
     speed = torch.linalg.vector_norm(lin_vel, dim=-1)
     lookahead = torch.clamp(speed * horizon_s, min=min_lookahead)
 
-    steps = torch.arange(1, samples + 1, device=device, dtype=gs.tc_float) / samples
+    steps = torch.arange(1, samples + 1, device=device, dtype=rt.tc_float) / samples
     s_targets = s0.unsqueeze(1) + lookahead.unsqueeze(1) * steps.unsqueeze(0)
     s_targets = torch.remainder(s_targets, total_len)
 
@@ -146,29 +146,28 @@ def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
     return step_state["tyre_slip"]
 
 
+def obs_tyre_load(step_state: dict[str, Any]) -> torch.Tensor:
+    """Per-wheel normal-load ratio Fz / Fz_static (N,4), order [LR, RR, LF, RF]."""
+    return step_state["tyre_load"]
+
+
 def obs_opponent(
     self_agent: dict[str, torch.Tensor],
     other_agent: dict[str, torch.Tensor],
     obs_cfg: dict[str, Any],
-    present: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Symmetric opponent-relative observation block (default K=7).
+    """Symmetric opponent-relative observation block (6 dims).
 
-    Built from "self"'s ego frame with "other" as the opponent, so the exact same
-    function serves the ego (other = opponent) and the opponent's own egocentric
-    observation (other = ego). Components, in order:
+    Built from "self"'s ego frame with "other" as the opponent. Components:
 
     0,1  other position relative to self, rotated into self's body frame (m)
     2,3  other velocity relative to self, rotated into self's body frame (m/s)
     4    signed along-track gap ``s_other - s_self`` wrapped to ``[-L/2, L/2]`` and
-         normalized by ``L/2`` (so it lives in ``[-1, 1]``; positive => other ahead)
+         normalized by ``L/2`` (positive => other ahead)
     5    other's signed lateral offset from the centerline ``ey_other`` (m)
-    6    presence flag (1.0 if the opponent is present, else 0.0)
 
-    Each ``*_agent`` dict provides ``pos_xy (B,2)``, ``yaw (B,)``,
-    ``vel_xy (B,2)`` (world frame), ``s (B,)``, ``ey (B,)`` and ``L`` (``(B,)`` or
-    scalar). When ``present`` is False for a row, the entire block (including the
-    presence flag) is zeroed - this is the exact 1v0 sentinel.
+    Masking (range gate in training, detection certainty on deploy) is applied by
+    the caller; an all-zero block is the sole "no relevant opponent" sentinel.
     """
     pos_s = self_agent["pos_xy"]
     yaw_s = self_agent["yaw"].reshape(-1)
@@ -202,17 +201,9 @@ def obs_opponent(
     gap = torch.where(gap < -half, gap + track_len, gap)
     gap_norm = gap / half.clamp_min(1e-6)
 
-    if present is None:
-        present_f = torch.ones_like(rel_x)
-    else:
-        present_f = present.reshape(-1).to(rel_x.dtype)
-
-    block = torch.stack(
-        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o, present_f], dim=-1
+    return torch.stack(
+        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o], dim=-1
     )
-    # Zero the whole block (incl. presence flag) where the opponent is absent so
-    # the 1v0 sentinel is exactly zeros.
-    return block * present_f.unsqueeze(-1)
 
 
 def build_observation(
@@ -252,13 +243,14 @@ def build_observation(
             step_state,
         ),
         obs_tyre_slip(step_state),
+        obs_tyre_load(step_state),
     )
 
     # 1v1: append the opponent-relative block as the final component. When
     # enabled but no block is provided (e.g. opponent absent for this batch), use
     # the exact zero sentinel so num_obs stays consistent.
     if bool(obs_cfg.get("enable_opponent_obs", False)):
-        opp_dim = int(obs_cfg.get("opponent_obs_dim", 7))
+        opp_dim = int(obs_cfg.get("opponent_obs_dim", 6))
         if opponent_block is None:
             opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
         components = components + (opponent_block,)

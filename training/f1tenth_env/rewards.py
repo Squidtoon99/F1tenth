@@ -1,8 +1,8 @@
 from typing import Any
 
 import torch
-import genesis as gs
-from .car import compute_tyre_slip
+
+from . import runtime as rt
 from .utils import compute_oob_from_boundary_state
 
 
@@ -12,7 +12,7 @@ def init_reward_state(
     device: torch.device,
 ) -> dict[str, Any]:
     episode_sums = {
-        name: torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
+        name: torch.zeros((num_envs,), dtype=rt.tc_float, device=device)
         for name in reward_scales.keys()
     }
     return {
@@ -21,7 +21,7 @@ def init_reward_state(
         "last_reward_terms": {},
         "prev_s": None,
         "prev_step_counter": None,
-        "last_progress_ds": torch.zeros((num_envs,), dtype=gs.tc_float, device=device),
+        "last_progress_ds": torch.zeros((num_envs,), dtype=rt.tc_float, device=device),
         "prev_off_track": None,
     }
 
@@ -39,7 +39,7 @@ def ensure_progress_delta(
     frenet_state = step_state["frenet"]
     s = frenet_state["s"].reshape(-1)
     length = frenet_state["L"]
-    step_now = episode_steps_buf.to(dtype=gs.tc_float)
+    step_now = episode_steps_buf.to(dtype=rt.tc_float)
     batch = s.shape[0]
 
     prev_step_counter = reward_state["prev_step_counter"]
@@ -94,7 +94,7 @@ def sync_progress_state_for_resets(
     else:
         prev_s[reset_mask] = s[reset_mask].detach()
 
-    step_now = episode_steps_buf.to(dtype=gs.tc_float)
+    step_now = episode_steps_buf.to(dtype=rt.tc_float)
     prev_step_counter = reward_state["prev_step_counter"]
     if prev_step_counter is None or prev_step_counter.numel() != s.numel():
         reward_state["prev_step_counter"] = step_now.detach().clone()
@@ -125,7 +125,7 @@ def ensure_opp_progress_delta(
 
     opp_s = step_state["opp_s"].reshape(-1)
     length = step_state["frenet"]["L"]
-    step_now = episode_steps_buf.to(dtype=gs.tc_float)
+    step_now = episode_steps_buf.to(dtype=rt.tc_float)
     batch = opp_s.shape[0]
 
     prev_step_counter = reward_state.get("prev_opp_step_counter")
@@ -162,9 +162,11 @@ def reward_passing(
 ) -> torch.Tensor:
     """Reward gaining track position on the opponent: ``k * (ego_ds - opp_ds)``.
 
-    Built from the per-step arc-length deltas of both cars, so it is naturally
-    zeroed on reset (both deltas are) and never spikes at the start/finish line.
-    Returns zeros when no opponent is present.
+    Gated to opponents within ``[-behind_m, +ahead_m]`` on the centerline (GT
+    Sophy ``1_(b,f)`` locality; current-state indicator only). Built from the
+    per-step arc-length deltas of both cars, so it is naturally zeroed on reset
+    (both deltas are) and never spikes at the start/finish line. Returns zeros
+    when no opponent is present.
     """
     if "opp_s" not in step_state:
         return torch.zeros_like(step_state["progress_ds"])
@@ -178,7 +180,20 @@ def reward_passing(
     ego_ds = step_state["progress_ds"]
     opp_ds = step_state["opp_progress_ds"]
     k = float(reward_cfg.get("passing_k", 5.0))
-    return k * (ego_ds - opp_ds)
+    passing = k * (ego_ds - opp_ds)
+
+    ego_s = step_state["frenet"]["s"].reshape(-1)
+    opp_s = step_state["opp_s"].reshape(-1)
+    length = step_state["frenet"]["L"]
+    gap = opp_s - ego_s
+    half = 0.5 * length
+    gap = torch.where(gap > half, gap - length, gap)
+    gap = torch.where(gap < -half, gap + length, gap)
+
+    ahead_m = float(reward_cfg.get("passing_gate_ahead_m", 40.0))
+    behind_m = float(reward_cfg.get("passing_gate_behind_m", 20.0))
+    in_window = (gap <= ahead_m) & (gap >= -behind_m)
+    return passing * in_window.to(passing.dtype)
 
 
 def reward_collision(
@@ -321,24 +336,30 @@ def reward_tyre_slip_penalty(
     step_state: dict[str, Any],
     reward_cfg: dict[str, Any],
 ) -> torch.Tensor:
-    """
-    Tyre-slip penalty using per-wheel slip ratio and angle.
-    """
-    wheel_state = step_state["wheel_state"]
-    eps = float(reward_cfg.get("slip_eps", 0.1))
-    wheel_radius = float(reward_cfg.get("wheel_radius_m", 0.05))
+    """Additive combined-slip penalty over the four tyres.
 
-    slip = compute_tyre_slip(wheel_state, wheel_radius=wheel_radius, slip_eps=eps)
+    Reads the per-wheel slip already computed by the env (single source of truth)
+    and penalizes the longitudinal (slip ratio) and lateral (slip angle) channels
+    additively, so pure wheelspin and pure drift are each penalized on their own.
+    A per-channel deadzone leaves a controlled grip-limit regime unpenalized:
+
+        R_ts = -( sum_i relu(min(|ratio_i|, 1) - d_ratio)
+                  + w_angle * sum_i relu(|angle_i| - d_angle) )
+
+    With both deadzones 0 this is the plain additive all-slip penalty.
+    """
+    slip = step_state["tyre_slip"]
     slip_ratio_mag = torch.clamp(torch.abs(slip[:, :4]), max=1.0)
     slip_angle_mag = torch.abs(slip[:, 4:])
 
-    # GT Sophy R_ts = -sum_i min(|slip_ratio_i|, 1.0) * |slip_angle_i| over all four
-    # tyres, with no deadzone: every bit of slip is penalized so the shaping term
-    # nudges the policy toward grip-preserving control at all times.
-    per_wheel = slip_ratio_mag * slip_angle_mag
-    penalty = -torch.sum(per_wheel, dim=1)
+    d_ratio = float(reward_cfg.get("slip_deadzone_ratio", 0.0))
+    d_angle = float(reward_cfg.get("slip_deadzone_angle", 0.0))
+    w_angle = float(reward_cfg.get("slip_angle_weight", 1.0))
 
-    return penalty
+    ratio_excess = torch.clamp(slip_ratio_mag - d_ratio, min=0.0)
+    angle_excess = torch.clamp(slip_angle_mag - d_angle, min=0.0)
+
+    return -(ratio_excess.sum(dim=1) + w_angle * angle_excess.sum(dim=1))
 
 
 def compute_rewards(
@@ -358,7 +379,7 @@ def compute_rewards(
 
     num_envs = episode_steps_buf.shape[0]
     device = episode_steps_buf.device
-    reward_buf = torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
+    reward_buf = torch.zeros((num_envs,), dtype=rt.tc_float, device=device)
 
     progress = reward_progress(step_state, reward_cfg)
     lateral = reward_lateral(step_state, reward_cfg)

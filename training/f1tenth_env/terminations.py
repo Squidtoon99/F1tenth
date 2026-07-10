@@ -3,9 +3,8 @@ from typing import Any
 
 import torch
 
-import genesis as gs
-from genesis.utils.geom import quat_to_xyz
-
+from . import runtime as rt
+from .geom import quat_to_xyz
 from .utils import compute_oob_from_boundary_state
 
 
@@ -155,9 +154,9 @@ def compute_terminations(
     reset = time_out | out_of_bounds | not_moving | invalid_state
 
     termination_extras = {
-        "time_out": time_out.to(dtype=gs.tc_float),
-        "out_of_bounds": out_of_bounds.to(dtype=gs.tc_float),
-        "not_moving": not_moving.to(dtype=gs.tc_float),
-        "invalid_state": invalid_state.to(dtype=gs.tc_float),
+        "time_out": time_out.to(dtype=rt.tc_float),
+        "out_of_bounds": out_of_bounds.to(dtype=rt.tc_float),
+        "not_moving": not_moving.to(dtype=rt.tc_float),
+        "invalid_state": invalid_state.to(dtype=rt.tc_float),
     }
-    return reset, termination_extras, time_out.to(dtype=gs.tc_float)
+    return reset, termination_extras, time_out.to(dtype=rt.tc_float)

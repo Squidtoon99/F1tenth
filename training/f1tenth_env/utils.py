@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import torch
 
-import genesis as gs
+from . import runtime as rt
 
 # load racetracks from f1tenth_racetracks
 import requests
@@ -158,9 +158,9 @@ def load_track_state(
         "centerline": centerline,
         "w_tr_right": w_tr_right,
         "w_tr_left": w_tr_left,
-        "w_tr_left_torch": torch.as_tensor(w_tr_left, device=device, dtype=gs.tc_float),
+        "w_tr_left_torch": torch.as_tensor(w_tr_left, device=device, dtype=rt.tc_float),
         "w_tr_right_torch": torch.as_tensor(
-            w_tr_right, device=device, dtype=gs.tc_float
+            w_tr_right, device=device, dtype=rt.tc_float
         ),
         "track_geom_cache": {},
         "frenet_step_cache": {},
@@ -189,8 +189,8 @@ def episode_length_for_track(
     multi-lap horizon from the actual centerline length so each track gets enough
     time for several laps plus overtakes instead of the previous single-lap 45 s.
 
-    Reads only the centerline CSV (no Genesis tensors), so it is safe to call
-    before ``gs.init()`` during config construction.
+    Reads only the centerline CSV (no device tensors), so it is safe to call
+    before the runtime dtype/device is configured during config construction.
     """
     data = resolve_track_data(track, workspace_dir)
     if data is None or data.dtype.names is None:
@@ -253,7 +253,7 @@ def build_track_cache(
     device: torch.device,
     coarse_stride: int = 10,
 ) -> dict[str, Any]:
-    cl = torch.as_tensor(centerline, device=device, dtype=gs.tc_float)
+    cl = torch.as_tensor(centerline, device=device, dtype=rt.tc_float)
     if torch.linalg.norm(cl[0] - cl[-1]) > 1e-6:
         cl = torch.cat([cl, cl[0:1]], dim=0)
 
@@ -296,13 +296,13 @@ def build_obs_track_cache(
         return cache
 
     centerline_t = torch.as_tensor(
-        track_state["centerline"], device=device, dtype=gs.tc_float
+        track_state["centerline"], device=device, dtype=rt.tc_float
     )
     seg = centerline_t[1:] - centerline_t[:-1]
     seg_len = torch.linalg.vector_norm(seg, dim=-1)
     cumlen = torch.cat(
         [
-            torch.zeros(1, device=device, dtype=gs.tc_float),
+            torch.zeros(1, device=device, dtype=rt.tc_float),
             torch.cumsum(seg_len, dim=0),
         ],
         dim=0,
@@ -310,12 +310,12 @@ def build_obs_track_cache(
     w_tr_left = track_state.get("w_tr_left_torch")
     if w_tr_left is None:
         w_tr_left = torch.as_tensor(
-            track_state["w_tr_left"], device=device, dtype=gs.tc_float
+            track_state["w_tr_left"], device=device, dtype=rt.tc_float
         )
     w_tr_right = track_state.get("w_tr_right_torch")
     if w_tr_right is None:
         w_tr_right = torch.as_tensor(
-            track_state["w_tr_right"], device=device, dtype=gs.tc_float
+            track_state["w_tr_right"], device=device, dtype=rt.tc_float
         )
     cache = {
         "centerline_t": centerline_t,
@@ -352,7 +352,7 @@ def frenet_projection_cached(
     # Within a step the env caches the full step_state (see ``_step_state_valid``)
     # and clears it once per step, so an extra GPU-syncing equality check here
     # would never hit; the projection is computed exactly once per step.
-    pos = base_pos[:, :2].to(device=device, dtype=gs.tc_float)
+    pos = base_pos[:, :2].to(device=device, dtype=rt.tc_float)
     batch = pos.shape[0]
 
     c_all = geom["C"]

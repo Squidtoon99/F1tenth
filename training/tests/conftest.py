@@ -1,15 +1,14 @@
 """Shared fixtures/helpers for the observation accuracy audit tests.
 
 These tests verify the training-side observation pipeline (`f1tenth_env`) without
-spinning up a Genesis simulation. They load `f1tenth_env/utils.py`,
-`f1tenth_env/observations.py` and `f1tenth_env/car.py` as standalone modules with
-the few module-level `genesis` constants configured, mirroring the approach in
+spinning up a Genesis simulation. They import `f1tenth_env.utils`,
+`f1tenth_env.observations` and `f1tenth_env.car` (genesis-free after configuring
+the env runtime dtype/device), mirroring the approach in
 `ros2_deploy/f1tenth_rl_agent/test/test_obs_parity.py`.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 import tempfile
@@ -29,6 +28,8 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 import genesis as gs  # noqa: E402
 
 import torch  # noqa: E402
+
+from f1tenth_env import runtime as rt  # noqa: E402
 
 
 def init_genesis_headless(*, precision: str = "32") -> None:
@@ -50,6 +51,8 @@ def init_genesis_headless(*, precision: str = "32") -> None:
 
     if not gs._initialized:
         gs.init(backend=gs.cpu, precision=precision, logging_level="warning")
+    rt.configure(float_dtype=gs.tc_float, int_dtype=gs.tc_int,
+                 dev=torch.device("cpu"), eps=gs.EPS)
 
 
 @pytest.fixture(scope="module")
@@ -63,15 +66,10 @@ def genesis_backend_f64():
     init_genesis_headless(precision="64")
     return gs
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-
-def _configure_genesis() -> None:
-    gs.tc_float = torch.float32
-    gs.tc_int = torch.int32
-    gs.device = torch.device("cpu")
-    if getattr(gs, "EPS", None) is None:
-        gs.EPS = 1e-12
+def _configure_runtime() -> None:
+    rt.configure(float_dtype=torch.float32, int_dtype=torch.int32,
+                 dev=torch.device("cpu"), eps=1e-12)
 
 
 def _stub_requests() -> None:
@@ -90,23 +88,11 @@ def _stub_requests() -> None:
     sys.modules["requests"] = stub
 
 
-def _load_module(name: str, relpath: str):
-    path = os.path.join(_REPO_ROOT, relpath)
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture(scope="session")
 def real_modules():
-    _configure_genesis()
+    _configure_runtime()
     _stub_requests()
-    utils = _load_module("audit_f1tenth_utils", "f1tenth_env/utils.py")
-    observations = _load_module("audit_f1tenth_observations", "f1tenth_env/observations.py")
-    car = _load_module("audit_f1tenth_car", "f1tenth_env/car.py")
+    from f1tenth_env import car, observations, utils
     return types.SimpleNamespace(utils=utils, observations=observations, car=car)
 
 
@@ -114,7 +100,7 @@ def real_modules():
 def obs_cfg() -> dict[str, Any]:
     """Mirror of config.py DEFAULT_CONFIG['obs'] (clip disabled for clean asserts)."""
     return {
-        "num_obs": 380,
+        "num_obs": 384,
         "obs_scales": {"lin_vel": 1.0, "ang_vel": 1.0, "lin_acc": 1.0},
         "clip_obs": 0.0,
         "norm_clip": 10.0,

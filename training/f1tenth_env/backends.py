@@ -18,9 +18,7 @@ from typing import Any, Protocol
 import numpy as np
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-
+from . import runtime as rt
 from .car import (
     URDF_PATH,
     ackermann_left_right,
@@ -79,6 +77,11 @@ class GenesisBackend:
 
     def __init__(self, *, num_envs, env_cfg, obs_cfg, reward_cfg, track_state,
                  device, show_viewer=False, enable_recording=False):
+        import genesis as gs
+        import genesis.utils.geom as gu
+
+        self._gs = gs
+        self._gu = gu
         self.num_envs = num_envs
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
@@ -98,38 +101,38 @@ class GenesisBackend:
 
     def build(self) -> None:
         env_cfg = self.env_cfg
-        self.scene = gs.Scene(
-            viewer_options=gs.options.ViewerOptions(
+        self.scene = self._gs.Scene(
+            viewer_options=self._gs.options.ViewerOptions(
                 camera_pos=(0.0, -5.0, 3.5),
                 camera_lookat=(0.4, 0.0, 0.2),
                 camera_fov=35,
                 res=(960, 640),
                 max_FPS=int(1.0 / self.dt),
             ),
-            rigid_options=gs.options.RigidOptions(
+            rigid_options=self._gs.options.RigidOptions(
                 enable_self_collision=False,
                 batch_links_info=True,
-                constraint_solver=gs.constraint_solver.Newton,
+                constraint_solver=self._gs.constraint_solver.Newton,
                 constraint_timeconst=float(
                     env_cfg.get("constraint_timeconst", max(0.02, 2.0 * self.dt))
                 ),
                 iterations=int(env_cfg.get("solver_iterations", 50)),
                 ls_iterations=int(env_cfg.get("solver_ls_iterations", 50)),
             ),
-            sim_options=gs.options.SimOptions(
+            sim_options=self._gs.options.SimOptions(
                 dt=self.dt, substeps=int(env_cfg.get("sim_substeps", 10))
             ),
-            profiling_options=gs.options.ProfilingOptions(
+            profiling_options=self._gs.options.ProfilingOptions(
                 show_FPS=bool(env_cfg.get("show_fps", False)),
             ),
             show_viewer=self.show_viewer,
         )
 
-        self.ground = self.scene.add_entity(gs.morphs.Plane())
+        self.ground = self.scene.add_entity(self._gs.morphs.Plane())
         self.ground.set_friction(float(env_cfg.get("tire_friction", 0.7)))
 
         self.car = self.scene.add_entity(
-            gs.morphs.URDF(
+            self._gs.morphs.URDF(
                 file=URDF_PATH,
                 pos=env_cfg["car_spawn_pos"],
                 euler=env_cfg["car_spawn_rot"],
@@ -139,7 +142,7 @@ class GenesisBackend:
         )
         if self.has_opponent:
             self.opponent = self.scene.add_entity(
-                gs.morphs.URDF(
+                self._gs.morphs.URDF(
                     file=URDF_PATH,
                     pos=env_cfg["car_spawn_pos"],
                     euler=env_cfg["car_spawn_rot"],
@@ -200,10 +203,10 @@ class GenesisBackend:
             self.car.get_link("right_steering_hinge").idx_local,
         ]
 
-        self.steer_state = torch.zeros((self.num_envs,), dtype=gs.tc_float,
-                                       device=gs.device)
-        self.opp_steer_state = torch.zeros((self.num_envs,), dtype=gs.tc_float,
-                                           device=gs.device)
+        self.steer_state = torch.zeros((self.num_envs,), dtype=rt.tc_float,
+                                       device=rt.device)
+        self.opp_steer_state = torch.zeros((self.num_envs,), dtype=rt.tc_float,
+                                           device=rt.device)
         self._drag_force = None
 
     def reset(self, mask, pos, quat, speed, opp_pos, opp_quat, dr) -> None:
@@ -244,9 +247,9 @@ class GenesisBackend:
         wheel_omega = (sp / wheel_radius).unsqueeze(1).expand(
             n, len(self.wheel_dofs)
         ).contiguous()
-        steer_zeros = torch.zeros((n, len(self.steer_dofs)), dtype=gs.tc_float,
+        steer_zeros = torch.zeros((n, len(self.steer_dofs)), dtype=rt.tc_float,
                                   device=self.device)
-        yaw = gu.quat_to_xyz(quat[env_ids], rpy=True, degrees=False)[:, 2]
+        yaw = self._gu.quat_to_xyz(quat[env_ids], rpy=True, degrees=False)[:, 2]
         root_vel = torch.stack(
             [sp * torch.cos(yaw), sp * torch.sin(yaw), torch.zeros_like(sp)], dim=-1
         )
@@ -284,8 +287,8 @@ class GenesisBackend:
             vehicle_mass=dr["vehicle_mass"] * dr["mass_scale"],
             tire_friction=dr["tire_friction"],
         )
-        entity.control_dofs_force(wheel_torques.to(device=gs.device), self.wheel_dofs)
-        entity.control_dofs_position(steer_targets.to(device=gs.device),
+        entity.control_dofs_force(wheel_torques.to(device=rt.device), self.wheel_dofs)
+        entity.control_dofs_position(steer_targets.to(device=rt.device),
                                      self.steer_dofs)
         return steer_state
 
@@ -342,9 +345,9 @@ class GenesisBackend:
             "base_pos": car.get_pos(),
             "base_quat": quat,
             "base_vel_world": vel_world,
-            "base_lin_vel": gu.inv_transform_by_quat(vel_world, quat),
-            "base_ang_vel": gu.inv_transform_by_quat(car.get_ang(), quat),
-            "base_lin_acc": gu.inv_transform_by_quat(
+            "base_lin_vel": self._gu.inv_transform_by_quat(vel_world, quat),
+            "base_ang_vel": self._gu.inv_transform_by_quat(car.get_ang(), quat),
+            "base_lin_acc": self._gu.inv_transform_by_quat(
                 car.get_links_acc(links_idx_local=[self.base_link_idx_local])[:, 0, :],
                 quat,
             ),
@@ -382,7 +385,7 @@ class TorchSimBackend:
         self.num_envs = num_envs
         self.env_cfg = env_cfg
         self.device = device or torch.device("cpu")
-        self.dtype = getattr(gs, "tc_float", None) or torch.float32
+        self.dtype = rt.tc_float
         self.has_opponent = env_cfg.get("opponent_strategy") is not None
 
         self.dt = float(env_cfg.get("sim_dt", 0.005))

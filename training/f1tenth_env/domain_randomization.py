@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-import genesis as gs
+from . import runtime as rt
 
 CHASSIS_FRICTION = 0.05
 
@@ -14,7 +14,7 @@ CHASSIS_FRICTION = 0.05
 def _uniform(
     low: float, high: float, shape: tuple[int, ...], device: torch.device
 ) -> torch.Tensor:
-    return torch.rand(shape, device=device, dtype=gs.tc_float) * (high - low) + low
+    return torch.rand(shape, device=device, dtype=rt.tc_float) * (high - low) + low
 
 
 def init_dr_state(
@@ -40,30 +40,30 @@ def init_dr_state(
         "base_action_latency": int(base_action_latency),
         "max_latency": max_latency,
         "tire_friction": torch.full(
-            (num_envs,), base_tire_friction, dtype=gs.tc_float, device=device
+            (num_envs,), base_tire_friction, dtype=rt.tc_float, device=device
         ),
         "ground_friction": torch.full(
-            (num_envs,), base_tire_friction, dtype=gs.tc_float, device=device
+            (num_envs,), base_tire_friction, dtype=rt.tc_float, device=device
         ),
         "vehicle_mass": torch.full(
-            (num_envs,), base_vehicle_mass, dtype=gs.tc_float, device=device
+            (num_envs,), base_vehicle_mass, dtype=rt.tc_float, device=device
         ),
-        "mass_scale": torch.ones((num_envs,), dtype=gs.tc_float, device=device),
+        "mass_scale": torch.ones((num_envs,), dtype=rt.tc_float, device=device),
         # Torch-backend physical DR (neutral by default; Genesis ignores these).
         # drive_scale multiplies the drive force (motor/gearing strength) and
         # steer_bias (rad) adds a steering-alignment offset.
-        "drive_scale": torch.ones((num_envs,), dtype=gs.tc_float, device=device),
-        "steer_bias": torch.zeros((num_envs,), dtype=gs.tc_float, device=device),
+        "drive_scale": torch.ones((num_envs,), dtype=rt.tc_float, device=device),
+        "steer_bias": torch.zeros((num_envs,), dtype=rt.tc_float, device=device),
         "action_latency_steps": torch.full(
             (num_envs,), base_action_latency, dtype=torch.int32, device=device
         ),
         "obs_latency_steps": torch.zeros(
             (num_envs,), dtype=torch.int32, device=device
         ),
-        "obs_noise_std": torch.zeros((num_envs,), dtype=gs.tc_float, device=device),
+        "obs_noise_std": torch.zeros((num_envs,), dtype=rt.tc_float, device=device),
         "action_history": torch.zeros(
             (num_envs, max_latency + 1, num_actions),
-            dtype=gs.tc_float,
+            dtype=rt.tc_float,
             device=device,
         ),
         "obs_history": None,
@@ -141,7 +141,7 @@ def apply_dr_physics(
         return
 
     n = int(env_ids.numel())
-    ratios = torch.ones((n, len(wheel_link_ids)), dtype=gs.tc_float, device=gs.device)
+    ratios = torch.ones((n, len(wheel_link_ids)), dtype=rt.tc_float, device=rt.device)
     tf = dr["tire_friction"][env_ids]
     ratios[:, 1:] = (tf / CHASSIS_FRICTION).unsqueeze(1).expand(-1, len(wheel_link_ids) - 1)
 
@@ -163,11 +163,11 @@ def apply_dr_physics(
             current = torch.full(
                 (new_mass.shape[0],),
                 float(arr),
-                dtype=gs.tc_float,
+                dtype=rt.tc_float,
                 device=new_mass.device,
             )
         else:
-            current = torch.as_tensor(arr, dtype=gs.tc_float, device=new_mass.device).clone()
+            current = torch.as_tensor(arr, dtype=rt.tc_float, device=new_mass.device).clone()
     current[env_ids] = new_mass[env_ids]
     base_link.set_mass(current)
 
@@ -223,7 +223,7 @@ def dr_metrics(dr: dict[str, Any]) -> dict[str, torch.Tensor]:
         "dr/mass_scale": dr["mass_scale"],
         "dr/drive_scale": dr["drive_scale"],
         "dr/steer_bias": dr["steer_bias"],
-        "dr/action_latency_steps": dr["action_latency_steps"].to(gs.tc_float),
-        "dr/obs_latency_steps": dr["obs_latency_steps"].to(gs.tc_float),
+        "dr/action_latency_steps": dr["action_latency_steps"].to(rt.tc_float),
+        "dr/obs_latency_steps": dr["obs_latency_steps"].to(rt.tc_float),
         "dr/obs_noise_std": dr["obs_noise_std"],
     }
