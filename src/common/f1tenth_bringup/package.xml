@@ -9,6 +9,11 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <!-- Composed stacks (car / sim / race launch includes). -->
+  <exec_depend>f1tenth_rl_vehicle</exec_depend>
+  <exec_depend>f1tenth_rl_agent</exec_depend>
+  <exec_depend>f1tenth_racing_algo</exec_depend>
+  <exec_depend>f1tenth_stack</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

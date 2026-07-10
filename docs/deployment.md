@@ -61,11 +61,89 @@ flowchart LR
 Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 
 - `car.yaml` — identity, authored on the car, **never overwritten**.
-- `params.yaml` — chassis calibration + safety limits + RL policy path.
+- `params.yaml` — **node-scoped ROS 2 parameters** (keyed by node name with a
+  `ros__parameters` block) layered on top of the package launch defaults. Covers the
+  RL `drive` limits, `vehicle_obs` observation mode (390-dim solo, opponent block
+  zeroed), and the vendored VESC calibration. It is passed directly to the nodes —
+  `race.launch.py` forwards it as `overlay_params_file:=/config/params.yaml` and
+  `car.launch.py` as `vesc_config:=/config/params.yaml`; there is no custom parser.
 - `maps/` — occupancy grid + centerline/raceline for the current track.
 
-The same image runs the algorithmic or RL stack; select with `stack:=algo|rl` and,
-for RL, point `racing_rl.policy_path` at a mounted checkpoint.
+The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
+or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`;
+localization (the particle filter on `/pf/pose/odom`) is an external prerequisite —
+`race.launch.py` runs a read-only `localization_preflight` node that reports its
+health, and the RL graph emits no drive command until pose + twist are live.
+
+## Certification gate (f1tenth_gym)
+
+Before a release, the stack is certified against the `f1tenth_gym` bridge with a
+real 390-dim checkpoint. The exact on-car C++ autonomy graph is the gate; the Python
+graph is a regression check. All commands run from the repo root.
+
+1. **Contract, parity, unit (host `.venv`)** — the 390-dim contract and the
+   training↔deploy observation parity:
+
+   ```bash
+   PYTHONPATH="libs/f1tenth_contract:src/racing_rl/f1tenth_rl_agent:training" \
+     .venv/bin/python -m pytest \
+       libs/f1tenth_contract/test/test_contract.py \
+       src/racing_rl/f1tenth_rl_agent/test/test_contract_parity.py \
+       src/racing_rl/f1tenth_rl_agent/test/test_quasi_static_load.py
+   NUMBA_DISABLE_JIT=1 PYTHONPATH="libs/f1tenth_contract:src/racing_rl/f1tenth_rl_agent:training" \
+     .venv/bin/python -m pytest src/racing_rl/f1tenth_rl_agent/test/test_obs_parity.py
+   ```
+
+2. **Build + ROS/C++ tests (dev container)** — the C++ obs/action mirror, tyre
+   slip/load math, fixture parity, node integration, and drive-watchdog / bad-obs
+   safety tests:
+
+   ```bash
+   ./tools/build.sh -t racing_rl
+   ./tools/test.sh --packages-select f1tenth_common f1tenth_rl_vehicle f1tenth_rl_agent f1tenth_control
+   ```
+
+3. **Closed-loop gym gate (multi-container)** — the exact on-car C++ graph against
+   gym physics with a real checkpoint, then the automated acceptance validator:
+
+   ```bash
+   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh up      # (leave running)
+   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle \
+     VALIDATE_ARGS="--duration-s 600 --min-samples 2000" tools/sim.sh validate
+   STACK=python tools/sim.sh up ...    # regression check: at least one lap
+   ```
+
+4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
+   with the per-car overlay, so `/config` + `/policies` wiring is exercised:
+
+   ```bash
+   deploy/scripts/build_image.sh
+   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt CONFIG_DIR=deploy/cars/car01 \
+     STACK=vehicle MODE=release tools/sim.sh up
+   ```
+
+### Acceptance criteria (validator PASS)
+
+- observations are all finite and exactly 390-dim; actions in `[-1, 1]`; drive speed
+  in `[0, speed_limit]` and `|steer|` within `max_steer`;
+- the car moves (odom speed above the floor for enough samples);
+- the opponent block `[384:390)` stays zero in solo mode;
+- ≥ 3 consecutive IV_2026 laps and a 10-minute soak with no process exits and no
+  watchdog trips during normal operation;
+- policy-loss and non-finite-input fault tests command a safe stop within the 0.5 s
+  drive watchdog (covered by the `f1tenth_control` node tests).
+
+Retain the validator stdout and the sim/agent container logs (`tools/sim.sh logs`)
+with the run, and record the release in
+[`../deploy/releases/manifest.csv`](../deploy/releases/manifest.csv).
+
+### Remaining prerequisite before a powered on-car run
+
+`deploy/cars/car01/params.yaml` ships **placeholder zero** VESC gains
+(`speed_to_erpm_gain`, `steering_angle_to_servo_*`). These MUST be replaced with
+measured per-car calibration before any powered run — zero gains produce zero or
+undefined actuation. The observation mode (`enable_load_estimation` /
+`enable_slip_estimation`) must also match how the deployed checkpoint was trained.
 
 ## Releases
 

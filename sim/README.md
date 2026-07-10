@@ -23,18 +23,24 @@ Use [`../tools/sim.sh`](../tools/sim.sh) — it stands up a **two-container** st
 docker bridge network, plus a noVNC container for RViz:
 
 ```bash
-CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
+# STACK=vehicle (default) runs the exact on-car C++ graph; STACK=python is the
+# regression check. The policy is mounted at /policies/${CKPT}.
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt STACK=vehicle ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt STACK=vehicle ./tools/sim.sh validate
 ./tools/sim.sh down
 ```
 
 It launches the fork's bridge-only `rl_agent_sim_launch.py` (the built-in
 gap/pid/pp drivers are omitted so they don't fight the agent on `/drive`) together
-with our `bringup_agent_launch.py`. The two ROS containers discover each other over
-DDS via a shared `ROS_DOMAIN_ID` (no host networking — unreliable on macOS Docker
-Desktop). The `evaluation` node spawns the car forward-facing along the centerline
-so it matches the training distribution.
+with our `f1tenth_bringup/sim.launch.py` (the on-car C++ graph or the Python graph,
+selected by `STACK`). The two ROS containers discover each other over DDS via a
+shared `ROS_DOMAIN_ID` (no host networking — unreliable on macOS Docker Desktop).
+The `evaluation` node spawns the car forward-facing along the centerline so it
+matches the training distribution. `tools/sim.sh validate` then runs the closed-loop
+acceptance gate; see [`../docs/deployment.md`](../docs/deployment.md) for the full
+certification sequence and acceptance criteria.
 
 - **Synthetic-data simulator** ([`genesis/`](genesis/)) — used by RL training for
   large-scale synthetic rollouts. It is a pip dependency of `training/`
