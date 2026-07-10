@@ -23,15 +23,21 @@ def generate_launch_description():
     agent_share = get_package_share_directory("f1tenth_rl_agent")
 
     default_vehicle_params = os.path.join(vehicle_share, "config", "vehicle.yaml")
+    default_overlay_params = os.path.join(
+        vehicle_share, "config", "overlay_defaults.yaml"
+    )
     default_agent_params = os.path.join(agent_share, "config", "agent.yaml")
     default_track_csv = os.path.join(
         agent_share, "assets", "IV_2026_SIM_centerline.csv"
     )
 
     params_file = LaunchConfiguration("params_file")
+    overlay_params_file = LaunchConfiguration("overlay_params_file")
     agent_params_file = LaunchConfiguration("agent_params_file")
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     track_csv = LaunchConfiguration("track_csv")
+    pose_topic = LaunchConfiguration("pose_topic")
+    twist_topic = LaunchConfiguration("twist_topic")
     enable_opponent = LaunchConfiguration("enable_opponent")
     enable_obs_debug = LaunchConfiguration("enable_obs_debug")
 
@@ -40,6 +46,11 @@ def generate_launch_description():
         default_value=default_vehicle_params,
         description="vehicle_obs + drive parameter YAML.",
     )
+    declare_overlay = DeclareLaunchArgument(
+        "overlay_params_file",
+        default_value=default_overlay_params,
+        description="Per-car overlay layered after params_file (e.g. /config/params.yaml).",
+    )
     declare_agent_params = DeclareLaunchArgument(
         "agent_params_file",
         default_value=default_agent_params,
@@ -47,13 +58,23 @@ def generate_launch_description():
     )
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path",
-        default_value="/checkpoints/policy.pt",
+        default_value="/policies/policy.pt",
         description="Trained policy .pt (must include obs_norm to match training).",
     )
     declare_track = DeclareLaunchArgument(
         "track_csv",
         default_value=default_track_csv,
         description="Centerline CSV in the same frame as the localization map.",
+    )
+    declare_pose_topic = DeclareLaunchArgument(
+        "pose_topic",
+        default_value="/pf/pose/odom",
+        description="Map-frame pose source (particle filter on-car; gym GT odom in sim).",
+    )
+    declare_twist_topic = DeclareLaunchArgument(
+        "twist_topic",
+        default_value="/odom",
+        description="Body-frame twist source (VESC odom on-car; gym GT odom in sim).",
     )
     declare_opponent = DeclareLaunchArgument(
         "enable_opponent",
@@ -97,7 +118,12 @@ def generate_launch_description():
             name="vehicle_obs",
             parameters=[
                 params_file,
-                {"track_csv": track_csv},
+                overlay_params_file,
+                {
+                    "track_csv": track_csv,
+                    "pose_topic": pose_topic,
+                    "twist_topic": twist_topic,
+                },
             ],
             output="screen",
         ),
@@ -123,7 +149,7 @@ def generate_launch_description():
             package="f1tenth_rl_vehicle",
             executable="drive",
             name="drive",
-            parameters=[params_file],
+            parameters=[params_file, overlay_params_file],
             output="screen",
         ),
         Node(
@@ -147,9 +173,12 @@ def generate_launch_description():
     return LaunchDescription(
         [
             declare_params,
+            declare_overlay,
             declare_agent_params,
             declare_ckpt,
             declare_track,
+            declare_pose_topic,
+            declare_twist_topic,
             declare_opponent,
             declare_obs_debug,
             declare_enable_profiler,

@@ -5,8 +5,9 @@
   <version>0.1.0</version>
   <description>
     ROS 2 nodes that run a trained F1TENTH QRSAC policy in closed loop against the
-    f1tenth_gym_ros simulator. Builds the 372-dim observation from odometry and the
-    track centerline, runs the policy, and publishes Ackermann drive commands.
+    f1tenth_gym_ros simulator. Builds the 384-dim observation (390 with the opponent
+    block) from odometry and the track centerline, runs the policy, and publishes
+    Ackermann drive commands.
   </description>
   <maintainer email="dev@todo.todo">f1tenth-genesis</maintainer>
   <license>MIT</license>

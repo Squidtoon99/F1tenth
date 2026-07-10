@@ -1,0 +1,6 @@
+# No-op default overlay for bringup_vehicle.launch.py.
+# The launch layers this AFTER vehicle.yaml so a per-car file (e.g. /config/params.yaml)
+# can override drive/vehicle_obs parameters without duplicating the package defaults.
+# This default intentionally sets nothing (wildcard node, empty parameters).
+/**:
+  ros__parameters: {}

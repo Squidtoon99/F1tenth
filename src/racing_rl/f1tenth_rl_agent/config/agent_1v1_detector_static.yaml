@@ -34,12 +34,12 @@ scripted_opponent:
     opponent_target_speed: 0.0
     kp_ey: 1.0
     kh_heading: 1.0
-    max_steer: 0.44
+    max_steer: 0.33
 
 drive_command:
   ros__parameters:
     max_speed: 6.0
-    max_steer: 0.44
+    max_steer: 0.33
     clip_actions: 1.0
     speed_limit_mps: 2.0
     watchdog_timeout_s: 0.5

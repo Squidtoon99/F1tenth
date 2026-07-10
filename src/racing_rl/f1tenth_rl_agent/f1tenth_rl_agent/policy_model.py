@@ -98,7 +98,7 @@ class ObsNormalizer:
     Mirrors ``standalone_trainer.ObsNormalizer.normalize``: standardize each feature
     by the running mean/variance accumulated during training, then clamp. The policy
     was trained on normalized observations, so deploy MUST apply the same transform
-    before the actor sees the raw 380-dim observation.
+    before the actor sees the raw observation (384 solo / 390 with the opponent block).
     """
 
     def __init__(

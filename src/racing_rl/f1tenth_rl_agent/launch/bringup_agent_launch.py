@@ -28,7 +28,7 @@ def generate_launch_description():
     )
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path",
-        default_value="/checkpoints/policy.pt",
+        default_value="/policies/policy.pt",
         description="Path to the trained policy .pt checkpoint.",
     )
 

@@ -17,6 +17,12 @@ observation_builder:
     # set this True to rotate linear velocity into the body frame before building obs.
     twist_in_world_frame: false
     publish_debug_markers: false
+    # The deployed checkpoint uses the 390-dim (1v1) layout. Solo racing keeps the
+    # 6-dim opponent block at [384:390) but zeroes it (absent-opponent sentinel), so
+    # the assembled observation matches the policy input. Set zero_opponent_obs:
+    # false only when a working opponent source publishes on opponent_odom_topic.
+    enable_opponent_obs: true
+    zero_opponent_obs: true
 
 obs_debug:
   ros__parameters:
@@ -29,16 +35,21 @@ obs_debug:
 
 policy_inference:
   ros__parameters:
-    # Empty -> random-init actor (plumbing demo). Mount a real .pt at /checkpoints to run trained policy.
+    # Path to the trained .pt (must include obs_norm). With require_checkpoint true
+    # (default) an empty/invalid path or a checkpoint without obs_norm is a hard
+    # startup error, so a mis-launched car never rolls a random-init actor. Set
+    # require_checkpoint:=false only for a deliberate plumbing demo.
     checkpoint_path: ""
+    require_checkpoint: true
     state_dict_key: "actor"
     device: "cpu"
     deterministic: true
-    # Must match observation_builder's dim: false -> 380 (solo / clean_1v0 checkpoints),
-    # true -> 387 (1v1 checkpoints; see agent_1v1.yaml). This default targets the solo
-    # IV_2026_SIM demo checkpoint.
-    enable_opponent_obs: false
-    # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads).
+    # Must match observation_builder's dim: false -> 384 (solo-only checkpoints),
+    # true -> 390 (1v1 layout). The deployed checkpoint uses the 390-dim layout with
+    # the opponent block zeroed for solo racing, so this is true.
+    enable_opponent_obs: true
+    # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads
+    # and only reachable with require_checkpoint:=false).
     demo_throttle_floor: 0.55
     # ObsNormalizer (match config.py norm_clip / norm_eps); applied to raw obs using
     # the checkpoint's saved obs_norm stats before the actor.
@@ -49,7 +60,9 @@ drive_command:
   ros__parameters:
     # Cap below training envelope (~3–6 m/s in Genesis) to reduce wall collisions in gym.
     max_speed: 3.0
-    max_steer: 0.30
+    # Match training/deploy steering envelope (config.py delta_max=0.33); a policy
+    # trained at 0.33 rad must be commanded at 0.33 rad in the gym too.
+    max_steer: 0.33
     clip_actions: 1.0
     # Hard cap on commanded speed (m/s). Matches real-car shakedown in vehicle.yaml.
     speed_limit_mps: 2.0

@@ -6,7 +6,8 @@
   <description>
     Lean C++ vehicle integration layer for the F1TENTH QRSAC policy. Bridges the
     f1tenth_stack (particle filter + VESC + ackermann_mux) to the RL agent: builds
-    the 380-dim observation from map-frame pose and body twist at a fixed 10 Hz
+    the 384-dim observation (390 with the opponent block) from map-frame pose and
+    body twist at a fixed 10 Hz
     (vehicle_obs), and converts policy actions into Ackermann drive commands with a
     watchdog stop (drive). The Python policy_inference node runs the actor.
   </description>

@@ -1,8 +1,10 @@
 """policy_inference_node: run the trained actor on incoming observations.
 
-Subscribes to ``/rl/observation`` (372-dim) and publishes ``/rl/action`` (2-dim,
-in [-1, 1]). If no checkpoint is available it falls back to a randomly initialized
-actor so the rest of the pipeline can still be exercised (logged as a warning).
+Subscribes to ``/rl/observation`` (384 solo / 390 for the 1v1 layout) and publishes
+``/rl/action`` (2-dim, in [-1, 1]). By default (``require_checkpoint`` true) a
+missing or incompatible checkpoint, or a checkpoint without ``obs_norm``, is a hard
+startup error so a mis-launched car never rolls a random-init actor. Set
+``require_checkpoint`` false to allow the random-init plumbing demo.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ class PolicyInferenceNode(Node):
     def __init__(self, **kwargs):
         super().__init__("policy_inference", **kwargs)
         self.declare_parameter("checkpoint_path", "")
+        self.declare_parameter("require_checkpoint", True)
         self.declare_parameter("state_dict_key", "actor")
         self.declare_parameter("device", "cpu")
         self.declare_parameter("deterministic", True)
@@ -39,6 +42,9 @@ class PolicyInferenceNode(Node):
 
         gp = self.get_parameter
         checkpoint_path = gp("checkpoint_path").get_parameter_value().string_value
+        self.require_checkpoint = (
+            gp("require_checkpoint").get_parameter_value().bool_value
+        )
         state_dict_key = gp("state_dict_key").get_parameter_value().string_value
         device_str = gp("device").get_parameter_value().string_value
         self.deterministic = gp("deterministic").get_parameter_value().bool_value
@@ -79,11 +85,23 @@ class PolicyInferenceNode(Node):
                 self.get_logger().info(f"Loaded policy checkpoint: {checkpoint_path}")
                 return actor, True
             except Exception as exc:  # noqa: BLE001
+                if self.require_checkpoint:
+                    raise RuntimeError(
+                        f"Failed to load checkpoint '{checkpoint_path}': {exc}. "
+                        "require_checkpoint is true; refusing to run a random-init "
+                        "actor. Fix the checkpoint or set require_checkpoint:=false."
+                    ) from exc
                 self.get_logger().error(
                     f"Failed to load checkpoint '{checkpoint_path}': {exc}. "
                     "Falling back to random-init actor."
                 )
         else:
+            if self.require_checkpoint:
+                raise RuntimeError(
+                    "No checkpoint_path provided and require_checkpoint is true; "
+                    "refusing to run a random-init actor. Provide a trained .pt or "
+                    "set require_checkpoint:=false for a deliberate plumbing demo."
+                )
             self.get_logger().warn(
                 "No checkpoint_path provided; using random-init actor (plumbing only)."
             )
@@ -108,12 +126,25 @@ class PolicyInferenceNode(Node):
                 clip=self.norm_clip,
             )
         except Exception as exc:  # noqa: BLE001
+            if self.require_checkpoint:
+                raise RuntimeError(
+                    f"Failed to load obs_norm from '{checkpoint_path}': {exc}. "
+                    "require_checkpoint is true; refusing to run without the "
+                    "observation normalization the policy was trained with."
+                ) from exc
             self.get_logger().error(
                 f"Failed to load obs_norm from '{checkpoint_path}': {exc}. "
                 "Running without observation normalization."
             )
             return None
         if normalizer is None:
+            if self.require_checkpoint:
+                raise RuntimeError(
+                    "Checkpoint has no 'obs_norm' stats and require_checkpoint is "
+                    "true; refusing to run un-normalized. Export the checkpoint with "
+                    "its obs_norm, or set require_checkpoint:=false if the policy was "
+                    "genuinely trained without ObsNormalizer."
+                )
             self.get_logger().warn(
                 "Checkpoint has no 'obs_norm' stats; running without observation "
                 "normalization. This is correct only if the policy was trained "
@@ -132,6 +163,11 @@ class PolicyInferenceNode(Node):
             )
             return
         obs = torch.tensor([list(msg.data)], dtype=torch.float32, device=self.device)
+        if not bool(torch.isfinite(obs).all()):
+            # Never feed a non-finite observation to the actor: it would emit a
+            # non-finite action. Skip so the drive watchdog stops the car instead.
+            self.get_logger().warn("non-finite observation; skipping inference")
+            return
         if self.obs_normalizer is not None:
             obs = self.obs_normalizer.normalize(obs)
 

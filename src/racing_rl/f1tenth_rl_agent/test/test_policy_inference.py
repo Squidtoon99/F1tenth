@@ -5,6 +5,7 @@ import pytest
 
 rclpy = pytest.importorskip("rclpy")
 
+from rclpy.parameter import Parameter  # noqa: E402
 from std_msgs.msg import Float32MultiArray  # noqa: E402
 
 from f1tenth_rl_agent import interfaces as ifc  # noqa: E402
@@ -16,7 +17,13 @@ def test_policy_inference_publishes_valid_action():
     node = None
     pub = None
     try:
-        node = PolicyInferenceNode()  # no checkpoint -> random-init actor
+        # No checkpoint -> random-init actor; opt out of the fail-closed default so
+        # the plumbing path can be exercised without a trained .pt.
+        node = PolicyInferenceNode(
+            parameter_overrides=[
+                Parameter("require_checkpoint", Parameter.Type.BOOL, False)
+            ]
+        )
         pub = rclpy.create_node("obs_pub")
         obs_pub = pub.create_publisher(Float32MultiArray, ifc.TOPIC_OBSERVATION, 10)
 
@@ -41,6 +48,47 @@ def test_policy_inference_publishes_valid_action():
         a = np.asarray(received["a"].data, dtype=np.float32)
         assert a.shape == (ifc.NUM_ACTIONS,)
         assert bool(np.all(np.abs(a) <= ifc.CLIP_ACTIONS + 1e-5))
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if pub is not None:
+            pub.destroy_node()
+        rclpy.shutdown()
+
+
+def test_policy_inference_rejects_bad_observations():
+    """Wrong-sized and non-finite observations must not produce an action."""
+    rclpy.init()
+    node = None
+    pub = None
+    try:
+        node = PolicyInferenceNode(
+            parameter_overrides=[
+                Parameter("require_checkpoint", Parameter.Type.BOOL, False)
+            ]
+        )
+        pub = rclpy.create_node("bad_obs_pub")
+        obs_pub = pub.create_publisher(Float32MultiArray, ifc.TOPIC_OBSERVATION, 10)
+
+        received = {"count": 0}
+        pub.create_subscription(
+            Float32MultiArray, ifc.TOPIC_ACTION,
+            lambda m: received.__setitem__("count", received["count"] + 1), 10)
+
+        wrong_size = Float32MultiArray()
+        wrong_size.data = [0.0] * (ifc.NUM_OBS - 3)
+        non_finite = Float32MultiArray()
+        non_finite.data = [0.0] * ifc.NUM_OBS
+        non_finite.data[0] = float("nan")
+
+        end = node.get_clock().now().nanoseconds + int(2e9)
+        while node.get_clock().now().nanoseconds < end:
+            obs_pub.publish(wrong_size)
+            obs_pub.publish(non_finite)
+            rclpy.spin_once(pub, timeout_sec=0.02)
+            rclpy.spin_once(node, timeout_sec=0.05)
+
+        assert received["count"] == 0, "policy emitted an action for a bad observation"
     finally:
         if node is not None:
             node.destroy_node()
