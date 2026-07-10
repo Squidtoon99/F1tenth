@@ -24,6 +24,14 @@ ARG ROS_DISTRO
 ENV ROS_DISTRO=${ROS_DISTRO}
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
+
+# CPU-only PyTorch for the on-car RL inference node (policy_inference / the obs
+# builder import torch). The trainer runs on a separate GPU box; the car only runs
+# inference. On a Jetson, replace this with a wheel matching the JetPack/CUDA
+# version instead of the default CPU index.
+RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      "torch==2.4.1"
+
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

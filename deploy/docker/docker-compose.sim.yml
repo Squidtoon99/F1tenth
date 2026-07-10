@@ -57,9 +57,10 @@ services:
     working_dir: /ws
     volumes:
       - ../../:/ws:cached
-      # Trained policy checkpoint(s), read-only. Point CHECKPOINT_DIR at the dir
-      # holding the .pt file; the launch default reads /checkpoints/policy.pt.
-      - ${CHECKPOINT_DIR:-./}:/checkpoints:ro
+      # Trained policy checkpoint(s), read-only, mounted at the production path.
+      # Point CHECKPOINT_DIR at the dir holding the .pt; launches default to
+      # /policies/policy.pt (matches the car overlay at deploy/cars/*/).
+      - ${CHECKPOINT_DIR:-./}:/policies:ro
     environment:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
@@ -74,6 +75,33 @@ services:
     tty: true
     # Overridden by tools/sim.sh (which builds the workspace first). Default just
     # drops into a shell so `docker compose run agent` is usable interactively.
+    command: bash
+
+  # Release-mode certification: the exact generic runtime (car) image, with the
+  # per-car overlay at /config and the policy at /policies mounted read-only, just
+  # like the Jetson. tools/sim.sh (MODE=release) overrides the command to the sim
+  # launch so no hardware drivers start. Build with deploy/scripts/build_image.sh.
+  runtime:
+    image: f1tenth-racing:latest
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.runtime
+    working_dir: /ws
+    volumes:
+      - ${CONFIG_DIR:-../cars/car01}:/config:ro
+      - ${CHECKPOINT_DIR:-./}:/policies:ro
+    environment:
+      - ROS_DISTRO=humble
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - ROS_LOCALHOST_ONLY=0
+      - DISPLAY=novnc:0.0
+    networks:
+      - rosnet
+    depends_on:
+      - sim
+      - novnc
+    stdin_open: true
+    tty: true
     command: bash
 
   novnc:

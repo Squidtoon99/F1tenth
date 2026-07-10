@@ -1,15 +1,44 @@
-# Per-car parameters, overlaid on the generic launch defaults at runtime.
-# Chassis-specific calibration (measured per car) and conservative safety limits.
-# Scaffold placeholder values — replace with measured values.
-vesc:
-  speed_to_erpm_gain: 0.0
-  speed_to_erpm_offset: 0.0
-  steering_angle_to_servo_gain: 0.0
-  steering_angle_to_servo_offset: 0.0
-  wheelbase: 0.33
+# Per-car overlay: node-scoped ROS 2 parameters layered on top of the package
+# launch defaults at runtime (mounted at /config/params.yaml). This file is passed
+# directly to the nodes as a parameter file -- there is no custom parser, so every
+# section must be keyed by the node name with a `ros__parameters` block.
+#
+# Scaffold placeholder values -- replace VESC calibration with measured values
+# before any powered run (zero gains produce zero/undefined actuation).
 
-control:
-  speed_limit_mps: 2.0        # start conservative during shakedown
+# --- RL drive output (f1tenth_rl_vehicle drive node) ---
+drive:
+  ros__parameters:
+    max_speed: 15.0
+    max_steer: 0.33            # real servo hard-clamp; matches training
+    speed_limit_mps: 2.0       # start conservative during shakedown; raise once validated
 
-racing_rl:
-  policy_path: /policies/policy.pt   # RL checkpoint, mounted at runtime (not baked in)
+# --- RL observation builder (f1tenth_rl_vehicle vehicle_obs node) ---
+vehicle_obs:
+  ros__parameters:
+    # 390-dim (1v1) layout with the opponent block zeroed for solo racing.
+    num_obs: 390
+    enable_opponent_obs: true
+    zero_opponent_obs: true
+    # Quasi-static tyre-load estimate: enable only for a checkpoint trained with
+    # dynamic load. Geometry defaults track f1tenth_sim VehicleParams; override with
+    # measured values if enabling.
+    enable_load_estimation: false
+    # Per-wheel slip estimation from IMU + PF; off by default (emits zeros).
+    enable_slip_estimation: false
+
+# --- VESC calibration (vendored vesc_ackermann / vesc_driver nodes) ---
+# Measured per car. Passed to car.launch.py via vesc_config:=/config/params.yaml.
+# NOTE: zero gains are placeholders -- MUST be replaced with measured values.
+ackermann_to_vesc_node:
+  ros__parameters:
+    speed_to_erpm_gain: 0.0
+    speed_to_erpm_offset: 0.0
+    steering_angle_to_servo_gain: 0.0
+    steering_angle_to_servo_offset: 0.0
+
+vesc_to_odom_node:
+  ros__parameters:
+    speed_to_erpm_gain: 0.0
+    speed_to_erpm_offset: 0.0
+    wheelbase: 0.33
