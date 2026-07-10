@@ -35,7 +35,7 @@ def _build_cfg(*, term_speed: float) -> dict:
     cfg["env"]["collision_term_speed_mps"] = term_speed
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     # Enable the any-collision penalty so we can detect raw overlaps independently
     # of whether they terminate the episode.
     cfg["reward"]["reward_scales"]["collision"] = 1.0

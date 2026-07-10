@@ -34,6 +34,7 @@ except Exception:
 import genesis as gs  # noqa: E402
 import torch  # noqa: E402
 
+from f1tenth_env import runtime as rt  # noqa: E402
 from standalone_trainer import (  # noqa: E402
     DEFAULT_CONFIG,
     episode_length_for_track,
@@ -65,12 +66,11 @@ def main() -> None:
     if args.physics == "genesis":
         _maybe_patch_headless_rasterizer()
         gs.init(backend=gs.cpu, precision="32", performance_mode=True)
+        rt.configure(float_dtype=gs.tc_float, int_dtype=gs.tc_int, dev=device,
+                     eps=gs.EPS)
     else:
-        gs.tc_float = torch.float32
-        gs.tc_int = torch.int32
-        gs.device = device
-        if getattr(gs, "EPS", None) is None:
-            gs.EPS = 1e-12
+        rt.configure(float_dtype=torch.float32, int_dtype=torch.int32, dev=device,
+                     eps=1e-12)
 
     from f1tenth_env.env import F1tenthEnv
 
@@ -87,7 +87,7 @@ def main() -> None:
             show_viewer=False, enable_recording=False,
         )
         env.reset()
-        a = torch.zeros(n, 2, device=device, dtype=gs.tc_float)
+        a = torch.zeros(n, 2, device=device, dtype=rt.tc_float)
         a[:, 0] = 0.5
         for _ in range(args.warmup):
             env.step(a, n_steps=ci)

@@ -92,6 +92,7 @@ def test_rejoin_step_zeros_progress(rewards_mod, real_modules):
             "motion_link_vel": torch.zeros(1, 4, 3),
             "dof_vel": torch.zeros(1, 4),
         },
+        "tyre_slip": torch.zeros(1, 8),
     }
 
     off_state = {**base, "boundary": boundary_off}

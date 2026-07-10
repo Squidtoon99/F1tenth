@@ -21,11 +21,12 @@ from f1tenth_env import F1tenthEnv  # noqa: E402
 
 def _build_cfg(*, spawn_gap_m: float, enable_collision_reward: bool) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["env"]["physics_backend"] = "genesis"
     cfg["env"]["opponent_strategy"] = "scripted"
     cfg["env"]["opponent_spawn_gap_m"] = spawn_gap_m
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     if enable_collision_reward:
         cfg["reward"]["reward_scales"]["collision"] = 1.0

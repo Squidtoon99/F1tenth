@@ -26,7 +26,7 @@ def _build_cfg(*, spawn_gap_m: float) -> dict:
     cfg["env"]["opponent_target_speed"] = 1.5
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     return cfg
 

@@ -1,7 +1,7 @@
 """End-to-end integration smoke for F1tenthEnv on the Torch physics backend.
 
 Runs the full env pipeline (reset -> obs -> reward -> termination -> step) with
-``physics_backend="torch"`` on a synthetic circular track, asserting the 380-dim
+``physics_backend="torch"`` on a synthetic circular track, asserting the 384-dim
 observation contract holds, rewards/terminations stay finite, and a forward
 throttle produces forward progress (a learning-relevant signal). No Genesis
 scene is built on this path, so it runs headless anywhere.
@@ -14,18 +14,16 @@ import copy
 import numpy as np
 import torch
 
-import genesis as gs  # noqa: F401  (ensures gs constants exist)
+from f1tenth_env import runtime as rt
 
 
 def _configure_gs():
-    if getattr(gs, "tc_float", None) is None:
-        gs.tc_float = torch.float32
-    if getattr(gs, "tc_int", None) is None:
-        gs.tc_int = torch.int32
-    if getattr(gs, "device", None) is None:
-        gs.device = torch.device("cpu")
-    if getattr(gs, "EPS", None) is None:
-        gs.EPS = 1e-12
+    rt.configure(
+        float_dtype=torch.float32,
+        int_dtype=torch.int32,
+        dev=torch.device("cpu"),
+        eps=1e-12,
+    )
 
 
 def _fake_track_state(track, workspace_dir, device):
@@ -67,7 +65,7 @@ def _make_env(monkeypatch, num_envs=16):
 def test_torch_env_end_to_end(monkeypatch):
     env = _make_env(monkeypatch, num_envs=16)
     obs, extras = env.reset()
-    assert obs.shape == (16, 380)
+    assert obs.shape == (16, 384)
     assert torch.isfinite(obs).all()
 
     rewards = []
