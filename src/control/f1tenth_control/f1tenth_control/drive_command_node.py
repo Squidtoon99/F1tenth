@@ -7,6 +7,8 @@ Includes a watchdog that commands a safe stop if no action arrives within
 
 from __future__ import annotations
 
+import math
+
 import rclpy
 from rclpy.node import Node
 
@@ -74,6 +76,14 @@ class DriveCommandNode(Node):
     def _on_action(self, msg: Float32MultiArray):
         if len(msg.data) < 2:
             self.get_logger().warn("action message has < 2 elements; ignoring")
+            return
+        if not (math.isfinite(msg.data[0]) and math.isfinite(msg.data[1])):
+            # A non-finite action must never reach the actuator. Command a safe stop
+            # and let the watchdog hold it if actions stay bad.
+            self.get_logger().warn("non-finite action; commanding safe stop")
+            self._filtered_steer = 0.0
+            self._publish_drive(0.0, 0.0)
+            self._last_action_time = self.get_clock().now()
             return
         speed, steering_angle = map_action_to_drive(
             throttle=msg.data[0],
