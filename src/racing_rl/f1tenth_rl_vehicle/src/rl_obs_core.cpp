@@ -97,18 +97,57 @@ std::array<double, 8> computeTyreSlip(
   const std::array<double, 4> & v_lat,
   const std::array<double, 4> & spin_rate,
   double wheel_radius,
-  double slip_eps)
+  const std::array<bool, 4> & active,
+  double min_lat,
+  double min_active_long,
+  double min_passive_long)
 {
   std::array<double, 8> out{};
   for (int i = 0; i < 4; ++i) {
-    double slip_angle = std::atan2(v_lat[i], std::max(std::abs(v_fwd[i]), slip_eps));
-    double wheel_speed = wheel_radius * spin_rate[i];
-    double denom = std::max(std::max(std::abs(wheel_speed), std::abs(v_fwd[i])), slip_eps);
-    double slip_ratio = (wheel_speed - v_fwd[i]) / denom;
+    const double v_fwd_abs = std::abs(v_fwd[i]);
+    const double slip_angle = std::atan(v_lat[i] / (v_fwd_abs + min_lat));
+    const double wheel_speed = wheel_radius * spin_rate[i];
+    const double min_long = active[i] ? min_active_long : min_passive_long;
+    const double slip_ratio = (wheel_speed - v_fwd[i]) / (v_fwd_abs + min_long);
     out[i] = slip_ratio;
     out[i + 4] = slip_angle;
   }
   return out;
+}
+
+std::array<double, 4> computeQuasiStaticLoad(
+  double ax,
+  double ay,
+  double h_cg,
+  double lf,
+  double lr,
+  double track_width,
+  double roll_stiffness_front,
+  double gravity)
+{
+  const double g = std::max(gravity, 1e-6);
+  lf = std::max(lf, 1e-6);
+  lr = std::max(lr, 1e-6);
+  const double tw = std::max(track_width, 1e-6);
+  const double wheelbase = lf + lr;
+
+  const double rear_base = 1.0 + ax * h_cg / (g * lf);
+  const double front_base = 1.0 - ax * h_cg / (g * lr);
+  const double lat_rear =
+    (1.0 - roll_stiffness_front) * ay * h_cg * 2.0 * wheelbase / (g * tw * lf);
+  const double lat_front =
+    roll_stiffness_front * ay * h_cg * 2.0 * wheelbase / (g * tw * lr);
+
+  std::array<double, 4> ratio{{
+    rear_base - lat_rear,
+    rear_base + lat_rear,
+    front_base - lat_front,
+    front_base + lat_front,
+  }};
+  for (double & r : ratio) {
+    r = std::max(r, 0.0);
+  }
+  return ratio;
 }
 
 double lagAlpha(double control_dt, double t_delta)
@@ -392,18 +431,22 @@ std::vector<float> TrackObservationBuilder::build(
     obs[slip_base + i] = static_cast<float>(st.tyre_slip[i]);
   }
 
-  // [380:387] opponent-relative block (port of f1tenth_env obs_opponent). Built
-  // in the ego body frame; zeroed (incl. presence flag) when the opponent is
-  // absent so the 1v0 sentinel is exactly zeros.
+  // [380:384] per-wheel normal-load ratio Fz / Fz_static.
+  const int load_base = 380;
+  for (int i = 0; i < 4 && load_base + i < cfg_.num_obs; ++i) {
+    obs[load_base + i] = static_cast<float>(st.tyre_load[i]);
+  }
+
+  // [384:390] opponent-relative block (port of f1tenth_env obs_opponent). Pure
+  // relative features; the caller zeros the block when the opponent is masked out.
   if (cfg_.enable_opponent_obs) {
-    const int opp_base = 380;
+    const int opp_base = 384;
     if (opp_base + cfg_.opponent_obs_dim <= cfg_.num_obs) {
       if (cfg_.zero_opponent_obs) {
         for (int i = 0; i < cfg_.opponent_obs_dim; ++i) {
           obs[opp_base + i] = 0.0f;
         }
       } else {
-        const double present_f = opp.present ? 1.0 : 0.0;
         // Ego world-frame velocity from body velocity + yaw (obs_opponent rotates
         // the relative world velocity into the ego frame).
         const double ego_vx_w = cos_y * st.vx - sin_y * st.vy;
@@ -430,13 +473,12 @@ std::vector<float> TrackObservationBuilder::build(
         }
         const double gap_norm = gap / std::max(half, 1e-6);
 
-        obs[opp_base + 0] = static_cast<float>(rel_x * present_f);
-        obs[opp_base + 1] = static_cast<float>(rel_y * present_f);
-        obs[opp_base + 2] = static_cast<float>(rel_vx * present_f);
-        obs[opp_base + 3] = static_cast<float>(rel_vy * present_f);
-        obs[opp_base + 4] = static_cast<float>(gap_norm * present_f);
-        obs[opp_base + 5] = static_cast<float>(opp_lat.ey * present_f);
-        obs[opp_base + 6] = static_cast<float>(present_f);
+        obs[opp_base + 0] = static_cast<float>(rel_x);
+        obs[opp_base + 1] = static_cast<float>(rel_y);
+        obs[opp_base + 2] = static_cast<float>(rel_vx);
+        obs[opp_base + 3] = static_cast<float>(rel_vy);
+        obs[opp_base + 4] = static_cast<float>(gap_norm);
+        obs[opp_base + 5] = static_cast<float>(opp_lat.ey);
       }
     }
   }

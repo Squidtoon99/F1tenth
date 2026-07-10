@@ -1,4 +1,5 @@
-// vehicle_obs_node: build the 380-dim policy observation on the real car.
+// vehicle_obs_node: build the policy observation on the real car (384 base, or 390
+// with the 6-dim opponent block appended at [384:390) for the 1v1 layout).
 //
 // Merges the sim stack's track_server + observation_builder (+ odom adapter) into a
 // single lean C++ node. It loads the training centerline CSV directly, samples the
@@ -42,6 +43,10 @@ namespace f1tenth_rl_vehicle
 
 namespace
 {
+// Base (solo) observation dimension; the opponent block is appended at [384:390).
+// Mirror of f1tenth_common::ObservationLayout::kObservationDim.
+constexpr int kBaseObsDim = 384;
+
 double quatToYaw(double x, double y, double z, double w)
 {
   double siny_cosp = 2.0 * (w * z + x * y);
@@ -85,13 +90,21 @@ public:
     imu_ay_sign_ = declare_parameter<double>("imu_ay_sign", 1.0);
     imu_yaw_rate_sign_ = declare_parameter<double>("imu_yaw_rate_sign", 1.0);
     imu_use_for_yaw_rate_ = declare_parameter<bool>("imu_use_for_yaw_rate", true);
-    // Vehicle geometry (F1TENTH defaults).
+    // Vehicle geometry (f1tenth_sim VehicleParams / URDF defaults).
     wheel_radius_ = declare_parameter<double>("wheel_radius_m", 0.05);
-    lf_ = declare_parameter<double>("lf_m", 0.165);
-    lr_ = declare_parameter<double>("lr_m", 0.165);
-    half_track_ = 0.5 * declare_parameter<double>("track_width_m", 0.24);
-    max_steer_ = declare_parameter<double>("max_steer_rad", 0.44);
-    slip_eps_ = declare_parameter<double>("slip_eps", 0.1);
+    lf_ = declare_parameter<double>("lf_m", 0.1773);
+    lr_ = declare_parameter<double>("lr_m", 0.1477);
+    track_width_ = declare_parameter<double>("track_width_m", 0.20);
+    half_track_ = 0.5 * track_width_;
+    max_steer_ = declare_parameter<double>("max_steer_rad", 0.33);
+    // --- quasi-static tyre-load estimation (off by default -> static ratio 1.0,
+    // matching the deploy default and the C++ parity fixture; ADR 0002 follow-up).
+    enable_load_estimation_ = declare_parameter<bool>("enable_load_estimation", false);
+    cg_height_ = declare_parameter<double>("cg_height_m", 0.05);
+    roll_stiffness_front_ = declare_parameter<double>("roll_stiffness_front", 0.5);
+    slip_min_lat_ = declare_parameter<double>("slip_min_lat", 0.2);
+    slip_min_active_long_ = declare_parameter<double>("slip_min_active_long", 0.1);
+    slip_min_passive_long_ = declare_parameter<double>("slip_min_passive_long", 0.4);
     // Complementary-filter time constant for body lateral velocity (s) and a
     // low-pass for the PF ground forward speed used in slip ratio.
     vy_filter_tau_s_ = declare_parameter<double>("vy_filter_tau_s", 0.5);
@@ -108,7 +121,7 @@ public:
     }
 
     ObsConfig cfg;
-    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 380));
+    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 384));
     cfg.future_track_num_points =
       static_cast<int>(declare_parameter<int>("future_track_num_points", 60));
     cfg.future_track_horizon_s = declare_parameter<double>("future_track_horizon_s", 6.0);
@@ -122,12 +135,13 @@ public:
     cfg.lin_acc_scale = declare_parameter<double>("lin_acc_scale", 1.0);
     const int coarse_stride = static_cast<int>(declare_parameter<int>("coarse_stride", 10));
 
-    // 1v1: append the 7-dim opponent block. If num_obs was left at the solo
+    // 1v1: append the 6-dim opponent block. If num_obs was left at the solo
     // default, bump it to the 1v1 size so the assembled vector matches the policy.
     cfg.enable_opponent_obs = enable_opponent_obs_;
     cfg.zero_opponent_obs = zero_opponent_obs_;
-    if (enable_opponent_obs_ && cfg.num_obs < 380 + cfg.opponent_obs_dim) {
-      cfg.num_obs = 380 + cfg.opponent_obs_dim;
+    opponent_obs_dim_ = cfg.opponent_obs_dim;
+    if (enable_opponent_obs_ && cfg.num_obs < kBaseObsDim + cfg.opponent_obs_dim) {
+      cfg.num_obs = kBaseObsDim + cfg.opponent_obs_dim;
     }
 
     if (track_csv.empty()) {
@@ -284,8 +298,13 @@ private:
       // overwritten with the training mean below.
       spin[i] = ((i < 2) ? vesc_vx : v_fwd[i]) / std::max(wheel_radius_, 1e-6);
     }
-    std::array<double, 8> slip =
-      computeTyreSlip(v_fwd, v_lat, spin, wheel_radius_, slip_eps_);
+    // Rear wheels carry drive/brake torque (active) when throttle is applied;
+    // fronts are free-rolling (passive) and their slip ratio is pinned below.
+    const bool drive_active = std::abs(last_throttle_) > 1e-3;
+    const std::array<bool, 4> active = {drive_active, drive_active, false, false};
+    std::array<double, 8> slip = computeTyreSlip(
+      v_fwd, v_lat, spin, wheel_radius_, active,
+      slip_min_lat_, slip_min_active_long_, slip_min_passive_long_);
     // Front slip-ratio channels are a sim free-wheel artifact; pin to training
     // mean so they normalize to ~0 rather than a large OOD value.
     slip[2] = slip_obs_mean_[2];
@@ -337,11 +356,19 @@ private:
     if (enable_slip_estimation_) {
       st.tyre_slip = estimateSlipBlock(vx, dt);
     }
+    // tyre_load defaults to the static ratio (1.0); estimate the quasi-static load
+    // transfer from body accel when enabled (mirrors observation_builder_node).
+    if (enable_load_estimation_) {
+      st.tyre_load = computeQuasiStaticLoad(
+        ax, ay, cg_height_, lf_, lr_, track_width_, roll_stiffness_front_);
+    }
 
     OpponentState opp;
+    bool opp_confident = false;
     if (enable_opponent_obs_ && have_opp_) {
       const double age = (now() - opp_stamp_).seconds();
       if (age <= opponent_timeout_s_) {
+        opp_confident = true;
         opp.present = true;
         opp.pos_x = opp_x_;
         opp.pos_y = opp_y_;
@@ -351,6 +378,15 @@ private:
     }
 
     std::vector<float> obs = builder_->build(st, opp);
+    // Mask seam: zero the opponent block when detection is not confident. Future
+    // work will drive this from an LSTM certainty threshold instead of timeout.
+    if (enable_opponent_obs_ && (zero_opponent_obs_ || !opp_confident)) {
+      const int opp_base = kBaseObsDim;
+      const int opp_dim = opponent_obs_dim_;
+      for (int i = 0; i < opp_dim && opp_base + i < static_cast<int>(obs.size()); ++i) {
+        obs[opp_base + i] = 0.0f;
+      }
+    }
     std_msgs::msg::Float32MultiArray out;
     out.data = std::move(obs);
     obs_pub_->publish(out);
@@ -370,6 +406,7 @@ private:
 
   bool enable_opponent_obs_ = false;
   bool zero_opponent_obs_ = false;
+  int opponent_obs_dim_ = 6;
   double opponent_timeout_s_ = 0.5;
   bool have_opp_ = false;
   double opp_x_ = 0.0, opp_y_ = 0.0, opp_vx_ = 0.0, opp_vy_ = 0.0;
@@ -389,8 +426,14 @@ private:
   double imu_accel_to_ms2_ = 9.80665, imu_gyro_to_rads_ = M_PI / 180.0;
   double imu_ay_sign_ = 1.0, imu_yaw_rate_sign_ = 1.0;
   bool imu_use_for_yaw_rate_ = true;
-  double wheel_radius_ = 0.05, lf_ = 0.165, lr_ = 0.165, half_track_ = 0.12;
-  double max_steer_ = 0.44, slip_eps_ = 0.1;
+  double wheel_radius_ = 0.05, lf_ = 0.1773, lr_ = 0.1477;
+  double track_width_ = 0.20, half_track_ = 0.10;
+  double max_steer_ = 0.33;
+
+  // --- quasi-static tyre-load estimation state ------------------------------
+  bool enable_load_estimation_ = false;
+  double cg_height_ = 0.05, roll_stiffness_front_ = 0.5;
+  double slip_min_lat_ = 0.2, slip_min_active_long_ = 0.1, slip_min_passive_long_ = 0.4;
   double vy_filter_tau_s_ = 0.5, vx_ground_lp_alpha_ = 0.5, slip_speed_min_ = 0.3;
   std::vector<double> slip_obs_mean_;
 

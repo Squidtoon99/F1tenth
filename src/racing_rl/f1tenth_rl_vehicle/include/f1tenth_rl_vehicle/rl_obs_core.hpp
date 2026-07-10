@@ -20,7 +20,7 @@ namespace f1tenth_rl_vehicle
 // after the training/deploy parity alignment (scales 1.0, loose clip 50).
 struct ObsConfig
 {
-  int num_obs = 380;
+  int num_obs = 384;
   int future_track_num_points = 60;
   double future_track_horizon_s = 6.0;
   // Lower bound on the future-point lookahead distance (matches training
@@ -32,18 +32,18 @@ struct ObsConfig
   double lin_vel_scale = 1.0;
   double ang_vel_scale = 1.0;
   double lin_acc_scale = 1.0;
-  // 1v1: when enabled, a 7-dim opponent-relative block is appended at [380:387]
-  // (num_obs becomes 387). Off by default to preserve the solo deploy.
+  // 1v1: when enabled, a 6-dim opponent-relative block is appended at [384:390]
+  // (num_obs becomes 390). Off by default to preserve the solo deploy.
   bool enable_opponent_obs = false;
-  int opponent_obs_dim = 7;
-  // Force [380:387] to zeros (1v0 sentinel) even when enable_opponent_obs is
-  // true, so a 387-dim checkpoint can run without a working opponent detector.
+  int opponent_obs_dim = 6;
+  // Force [384:390] to zeros (1v0 sentinel) even when enable_opponent_obs is
+  // true, so a 390-dim checkpoint can run without a working opponent detector.
   bool zero_opponent_obs = false;
 };
 
 // Opponent estimate in the map frame. Velocity is world-frame (the obs block
-// rotates the relative velocity into the ego body frame). When present is false
-// the appended block is the exact zero sentinel (matches training 1v0).
+// rotates the relative velocity into the ego body frame). ``present`` is set by
+// the detector; masking is applied by the caller (vehicle_obs_node).
 struct OpponentState
 {
   double pos_x = 0.0;
@@ -56,6 +56,8 @@ struct OpponentState
 // Current ego state in the track (map) frame. Velocities/accelerations are in the
 // body frame, matching the training observation. tyre_slip is [slip_ratio x4,
 // slip_angle x4]; deploy without per-wheel sensing passes zeros (gym parity).
+// tyre_load is the per-wheel normal-load ratio Fz / Fz_static (order [LR, RR, LF,
+// RF]); it defaults to the at-rest static ratio (1.0) when not estimated.
 struct VehicleState
 {
   double pos_x = 0.0;
@@ -69,6 +71,7 @@ struct VehicleState
   double last_throttle = 0.0;
   double last_steer = 0.0;
   std::array<double, 8> tyre_slip{};
+  std::array<double, 4> tyre_load{{1.0, 1.0, 1.0, 1.0}};
 };
 
 // Result of projecting a point onto the (closed) centerline.
@@ -110,13 +113,36 @@ struct TrackData
 TrackData loadTrackCsv(const std::string & path);
 
 // Per-wheel slip [slip_ratio x4, slip_angle x4]; port of f1tenth_env/car.py
-// compute_tyre_slip. Wheel order [LR, RR, LF, RF].
+// compute_tyre_slip. Wheel order [LR, RR, LF, RF]. Modern-PhysX denominators:
+// slip_ratio = (wheel_speed - v_fwd) / (|v_fwd| + min_long), with min_long the
+// active offset when the wheel has drive/brake torque applied (per-wheel `active`)
+// else the larger passive (coasting) offset; slip_angle = atan(v_lat /
+// (|v_fwd| + min_lat)). Offsets are scaled for the 1/10 car.
 std::array<double, 8> computeTyreSlip(
   const std::array<double, 4> & v_fwd,
   const std::array<double, 4> & v_lat,
   const std::array<double, 4> & spin_rate,
   double wheel_radius,
-  double slip_eps = 0.1);
+  const std::array<bool, 4> & active,
+  double min_lat = 0.2,
+  double min_active_long = 0.1,
+  double min_passive_long = 0.4);
+
+// Per-wheel normal-load ratio Fz / Fz_static from body specific forces (m/s^2).
+// Closed-form of f1tenth_sim/suspension.py quasi_static_loads divided by the static
+// per-wheel load (mass cancels). +ax (forward) shifts load rearward; +ay (leftward)
+// shifts load onto the right (outer) wheels. Wheel order [LR, RR, LF, RF]. Geometry
+// defaults track f1tenth_sim VehicleParams. This is the on-car tyre-load estimate
+// (ADR 0002 follow-up) used when no wheel-load sensing is available.
+std::array<double, 4> computeQuasiStaticLoad(
+  double ax,
+  double ay,
+  double h_cg = 0.05,
+  double lf = 0.1773,
+  double lr = 0.1477,
+  double track_width = 0.20,
+  double roll_stiffness_front = 0.5,
+  double gravity = 9.81);
 
 // First-order lag helpers (match F1tenthEnv steer_state / t_delta).
 double lagAlpha(double control_dt, double t_delta);
@@ -132,7 +158,7 @@ std::pair<double, double> mapActionToDrive(
   double clip_actions = 1.0,
   const std::string & brake_behavior = "stop");
 
-// Owns the track geometry and builds the 380-dim observation each control step.
+// Owns the track geometry and builds the 384-dim observation each control step.
 class TrackObservationBuilder
 {
 public:

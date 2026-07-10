@@ -56,7 +56,7 @@ TEST(RlObsCore, MatchesPythonFixture)
   ObsConfig cfg;
   double samples, horizon, width, contact, clip, sv, sa, sc;
   f >> samples >> horizon >> width >> contact >> clip >> sv >> sa >> sc;
-  cfg.num_obs = 380;
+  cfg.num_obs = 384;
   cfg.future_track_num_points = static_cast<int>(samples);
   cfg.future_track_horizon_s = horizon;
   cfg.future_track_width = width;
@@ -96,13 +96,13 @@ TEST(RlObsCore, MatchesPythonFixture)
   }
   EXPECT_LT(max_diff, 1e-4) << "max obs parity diff = " << max_diff;
 
-  // Opponent section (387-dim). Present only in fixtures regenerated after the
+  // Opponent section (390-dim). Present only in fixtures regenerated after the
   // opponent block was added; older fixtures simply skip this block.
   int num_opp_cases = 0;
   if (f >> num_opp_cases) {
     ObsConfig ocfg = cfg;
     ocfg.enable_opponent_obs = true;
-    ocfg.num_obs = 380 + ocfg.opponent_obs_dim;
+    ocfg.num_obs = 384 + ocfg.opponent_obs_dim;
     TrackObservationBuilder opp_builder(xs, ys, wl, wr, ocfg);
 
     double opp_max_diff = 0.0;
@@ -114,9 +114,8 @@ TEST(RlObsCore, MatchesPythonFixture)
         f >> st.tyre_slip[i];
       }
       OpponentState opp;
-      double present = 0.0;
-      f >> opp.pos_x >> opp.pos_y >> opp.vx >> opp.vy >> present;
-      opp.present = present > 0.5;
+      f >> opp.pos_x >> opp.pos_y >> opp.vx >> opp.vy;
+      opp.present = true;
 
       std::vector<double> expected(ocfg.num_obs);
       for (int i = 0; i < ocfg.num_obs; ++i) {
@@ -140,19 +139,56 @@ TEST(RlObsCore, TyreSlipMatchesFormula)
 {
   // Straight-rolling wheel: spin_rate * radius == v_fwd -> zero slip ratio,
   // zero lateral velocity -> zero slip angle.
+  const std::array<bool, 4> active{true, true, true, true};
+  const double min_lat = 0.2, min_active = 0.1, min_passive = 0.4;
   std::array<double, 4> v_fwd{2.0, 2.0, 2.0, 2.0};
   std::array<double, 4> v_lat{0.0, 0.0, 0.0, 0.0};
   std::array<double, 4> spin{40.0, 40.0, 40.0, 40.0};  // 40 rad/s * 0.05 m = 2 m/s
-  auto slip = f1tenth_rl_vehicle::computeTyreSlip(v_fwd, v_lat, spin, 0.05, 0.1);
+  auto slip = f1tenth_rl_vehicle::computeTyreSlip(
+    v_fwd, v_lat, spin, 0.05, active, min_lat, min_active, min_passive);
   for (int i = 0; i < 8; ++i) {
     EXPECT_NEAR(slip[i], 0.0, 1e-9);
   }
 
-  // Locked wheel (spin 0) while moving forward -> slip_ratio = -v_fwd/max(|v|,eps).
+  // Locked wheel (spin 0) while moving forward, drive active ->
+  // slip_ratio = (0 - v_fwd) / (|v_fwd| + min_active_long).
   std::array<double, 4> spin0{0.0, 0.0, 0.0, 0.0};
-  auto slip2 = f1tenth_rl_vehicle::computeTyreSlip(v_fwd, v_lat, spin0, 0.05, 0.1);
+  auto slip2 = f1tenth_rl_vehicle::computeTyreSlip(
+    v_fwd, v_lat, spin0, 0.05, active, min_lat, min_active, min_passive);
+  const double expected = -2.0 / (2.0 + min_active);
   for (int i = 0; i < 4; ++i) {
-    EXPECT_NEAR(slip2[i], -1.0, 1e-9);  // (0 - 2) / max(0, 2) = -1
+    EXPECT_NEAR(slip2[i], expected, 1e-9);
+  }
+}
+
+TEST(RlObsCore, QuasiStaticLoadTransfer)
+{
+  // At rest: every wheel carries its static share (ratio 1.0). Order [LR,RR,LF,RF].
+  auto rest = f1tenth_rl_vehicle::computeQuasiStaticLoad(0.0, 0.0);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_NEAR(rest[i], 1.0, 1e-9);
+  }
+
+  // +ax (forward accel) loads the rear axle, unloads the front; left/right balanced.
+  auto fwd = f1tenth_rl_vehicle::computeQuasiStaticLoad(4.0, 0.0);
+  EXPECT_GT(fwd[0], 1.0);
+  EXPECT_GT(fwd[1], 1.0);
+  EXPECT_LT(fwd[2], 1.0);
+  EXPECT_LT(fwd[3], 1.0);
+  EXPECT_NEAR(fwd[0], fwd[1], 1e-9);
+  EXPECT_NEAR(fwd[2], fwd[3], 1e-9);
+
+  // +ay (left turn) loads the right (outer) wheels; each axle mean stays static.
+  auto left = f1tenth_rl_vehicle::computeQuasiStaticLoad(0.0, 4.0);
+  EXPECT_GT(left[1], left[0]);
+  EXPECT_GT(left[3], left[2]);
+  EXPECT_NEAR(0.5 * (left[0] + left[1]), 1.0, 1e-9);
+  EXPECT_NEAR(0.5 * (left[2] + left[3]), 1.0, 1e-9);
+
+  // Extreme accel never yields a negative normal-load ratio.
+  auto extreme = f1tenth_rl_vehicle::computeQuasiStaticLoad(-50.0, 50.0);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_GE(extreme[i], 0.0);
   }
 }
 
@@ -472,12 +508,12 @@ std::vector<ScanPoint> rangesToMapBeams(
 }
 }  // namespace
 
-TEST(OpponentObs, SentinelAndPresence)
+TEST(OpponentObs, PureBlockBuildsFromState)
 {
   const CircleTrack t = makeCircle(20.0, 120, 1.5);
   ObsConfig cfg;
   cfg.enable_opponent_obs = true;
-  cfg.num_obs = 387;
+  cfg.num_obs = 390;
   TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
 
   VehicleState st;
@@ -486,24 +522,15 @@ TEST(OpponentObs, SentinelAndPresence)
   st.yaw = M_PI / 2.0;  // tangent at theta=0 points +y
   st.vx = 3.0;
 
-  // Absent opponent -> the whole 7-dim block is the exact zero sentinel.
-  std::vector<float> obs_absent = builder.build(st, OpponentState{});
-  ASSERT_EQ(static_cast<int>(obs_absent.size()), 387);
-  for (int i = 380; i < 387; ++i) {
-    EXPECT_FLOAT_EQ(obs_absent[i], 0.0f) << "absent block index " << i;
-  }
-
-  // Present opponent slightly ahead (larger angle) -> presence flag set and the
-  // forward (ego-x) relative position is positive.
   OpponentState opp;
   opp.present = true;
   const double th = 0.15;
   opp.pos_x = 20.0 * std::cos(th);
   opp.pos_y = 20.0 * std::sin(th);
   std::vector<float> obs = builder.build(st, opp);
-  EXPECT_FLOAT_EQ(obs[386], 1.0f);            // presence flag
-  EXPECT_GT(obs[380], 0.0f);                  // rel_x: opponent ahead in ego frame
-  EXPECT_GT(obs[384], 0.0f);                  // gap_norm: opponent ahead along track
+  ASSERT_EQ(static_cast<int>(obs.size()), 390);
+  EXPECT_GT(obs[384], 0.0f);                  // rel_x: opponent ahead in ego frame
+  EXPECT_GT(obs[388], 0.0f);                  // gap_norm: opponent ahead along track
 }
 
 TEST(OpponentObs, ZeroMaskForcesSentinel)
@@ -512,7 +539,7 @@ TEST(OpponentObs, ZeroMaskForcesSentinel)
   ObsConfig cfg;
   cfg.enable_opponent_obs = true;
   cfg.zero_opponent_obs = true;
-  cfg.num_obs = 387;
+  cfg.num_obs = 390;
   TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
 
   VehicleState st;
@@ -530,8 +557,8 @@ TEST(OpponentObs, ZeroMaskForcesSentinel)
   opp.vy = 0.5;
 
   std::vector<float> obs = builder.build(st, opp);
-  ASSERT_EQ(static_cast<int>(obs.size()), 387);
-  for (int i = 380; i < 387; ++i) {
+  ASSERT_EQ(static_cast<int>(obs.size()), 390);
+  for (int i = 384; i < 390; ++i) {
     EXPECT_FLOAT_EQ(obs[i], 0.0f) << "masked block index " << i;
   }
 }
