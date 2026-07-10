@@ -9,7 +9,7 @@ from f1tenth_env.opponents import OpponentContext, PolicyOpponent
 from qrsac import SquashedGaussianMLPActor
 
 DEVICE = torch.device("cpu")
-OBS_DIM = 387
+OBS_DIM = 390
 ACT_DIM = 2
 
 

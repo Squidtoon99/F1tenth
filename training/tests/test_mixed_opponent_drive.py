@@ -45,7 +45,7 @@ def _build_cfg(*, target_speed: float) -> dict:
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     return cfg
 

@@ -7,7 +7,7 @@ bootstrap, S3 parameter server) is intentionally not part of this trainer.
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 380,
+        "num_obs": 384,
         # Observation normalization is now done with empirical running statistics in
         # the trainer (ObsNormalizer), driven by values actually experienced. Keep
         # the env-side fixed scales at 1.0 so near-raw obs reach the normalizer.
@@ -23,14 +23,18 @@ DEFAULT_CONFIG = {
         "norm_clip": 10.0,
         "norm_eps": 1e-8,
         "contact_margin_m": 0.08,
-        # When True, zero obs[372:380] in training so a deploy model trained without
-        # tyre-slip sensing matches gym/car (which publish zeros). Default off.
+        # When True, zero obs[372:380] (tyre slip) in training so a deploy model
+        # trained without tyre-slip sensing matches gym/car (which publish zeros).
+        # Default off.
         "zero_tyre_slip_obs": False,
         # 1v1: when enabled, an opponent-relative block of size opponent_obs_dim is
-        # appended to the observation (num_obs becomes 380 + opponent_obs_dim). Off
-        # by default so the solo (1v0) observation stays 380-dim and unchanged.
+        # appended to the observation (num_obs becomes 384 + opponent_obs_dim). Off
+        # by default so the solo (1v0) observation stays 384-dim and unchanged.
         "enable_opponent_obs": False,
-        "opponent_obs_dim": 7,
+        "opponent_obs_dim": 6,
+        # Range gate for opponent-relative obs masking (matches passing_gate_*).
+        "opp_obs_ahead_m": 40.0,
+        "opp_obs_behind_m": 20.0,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
         # Floor for the speed-scaled lookahead so the policy still sees the upcoming
@@ -117,15 +121,26 @@ DEFAULT_CONFIG = {
         "v_eps": 0.1,
         "enable_aero_drag": True,
         "drive_torque_sign": 1.0,
-        # Physics backend: "genesis" (rigid-body engine, default) or "torch"
-        # (pure-Torch f1tenth_sim.TorchVehicleSim). The observation/action contract
-        # is identical for both so the trainer/deploy pipeline is backend-agnostic.
-        "physics_backend": "genesis",
-        # Torch-sim-only knobs (ignored by the Genesis backend). "model": "dynamic"
-        # (Pacejka tires + load transfer + wheel spin) or "kinematic" (Tier 0);
-        # "suspension_mode": "quasi_static" or "dynamic"; "internal_substeps"
-        # subdivides each sim_dt for extra stability; "throttle_mode" is set via the
-        # top-level env key of the same name.
+        # Tyre-slip denominators (modern PhysX form, m/s), scaled down from the
+        # full-car PhysX defaults 1.0 / 0.1 / 4.0 for the 1/10 car. Single source
+        # for the slip definition: the TorchSim tire model (f1tenth_sim.dynamics)
+        # and the on-car C++ builder both normalize by |v_fwd| + one of these
+        # offsets (active = drive/brake applied, passive = coasting). The deprecated
+        # Genesis-fallback car.compute_tyre_slip uses the same offsets.
+        "slip_min_lat": 0.2,
+        "slip_min_active_long": 0.1,
+        "slip_min_passive_long": 0.4,
+        # Physics backend: "torch" (default) is f1tenth_sim.TorchVehicleSim, a
+        # pure-Torch vehicle with a PhysX-grounded tire model that computes tyre
+        # slip/load natively. "genesis" (rigid-body engine) is deprecated and kept
+        # only for legacy comparison; new work targets the torch backend. The
+        # observation/action contract is identical for both.
+        "physics_backend": "torch",
+        # Torch-sim knobs (the deprecated Genesis backend ignores these). "model":
+        # "dynamic" (Pacejka tires + load transfer + wheel spin) or "kinematic"
+        # (Tier 0); "suspension_mode": "quasi_static" or "dynamic";
+        # "internal_substeps" subdivides each sim_dt for extra stability;
+        # "throttle_mode" is set via the top-level env key of the same name.
         "torch_sim": {
             "model": "dynamic",
             "suspension_mode": "quasi_static",
@@ -174,16 +189,20 @@ DEFAULT_CONFIG = {
         "collision_margin_m": 0.0,
         # Deprecated: superseded by car_length/car_width/collision_margin_m.
         "collision_dist_m": 0.4,
-        # Per-episode domain randomization (disabled by default).
+        # Per-episode domain randomization. Enabled with narrow bands around the
+        # nominal car so the policy does not overfit a razor-edge grip line, without
+        # forcing it to hedge against extreme physics. Widen these for a dedicated
+        # sim2real robustness phase; the remaining knobs (drive_scale, steer_bias)
+        # stay neutral for now.
         "domain_randomization": {
-            "enabled": False,
-            "tire_friction_range": [0.6, 0.85],
-            "ground_friction_range": [0.6, 0.85],
-            "vehicle_mass_range": [3.2, 4.2],
-            "mass_scale_range": [0.9, 1.1],
-            "action_latency_steps_range": [0, 2],
+            "enabled": True,
+            "tire_friction_range": [0.60, 0.70],
+            "ground_friction_range": [0.60, 0.70],
+            "vehicle_mass_range": [3.6, 3.9],
+            "mass_scale_range": [0.97, 1.03],
+            "action_latency_steps_range": [0, 1],
             "obs_latency_steps_range": [0, 1],
-            "obs_noise_std_range": [0.0, 0.02],
+            "obs_noise_std_range": [0.0, 0.01],
             "action_latency_steps_max": 3,
             # Torch-backend-only physical DR (Genesis ignores these). Neutral by
             # default: drive_scale multiplies drive force (motor/gearing spread),
@@ -212,6 +231,8 @@ DEFAULT_CONFIG = {
         # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
         # unaffected.
         "passing_k": 5.0,
+        "passing_gate_ahead_m": 40.0,
+        "passing_gate_behind_m": 20.0,
         # Any-collision penalty gain: per-step reward = -collision_k on car-to-car
         # overlap (same predicate as collision termination). Only active when a
         # "collision" entry is added to reward_scales (the trainer does this for
@@ -222,6 +243,15 @@ DEFAULT_CONFIG = {
         # Scales with squared closing speed so high-speed rear-ends are punished
         # hardest. Only active when a "rear_end" entry is added to reward_scales.
         "rear_end_k": 5.0,
+        # Additive combined-slip penalty shaping. slip_angle_weight balances the
+        # (radian) slip-angle term against the (unitless) slip-ratio term; the
+        # deadzones (ratio unitless, angle radians) carve out a controlled
+        # grip-limit regime that is not penalized. Both default to 0.0 so every bit
+        # of slip is penalized (GT Sophy-faithful); raise the deadzones only if the
+        # policy is found to be under-driving the tyres.
+        "slip_angle_weight": 1.0,
+        "slip_deadzone_ratio": 0.0,
+        "slip_deadzone_angle": 0.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.
@@ -230,7 +260,9 @@ DEFAULT_CONFIG = {
             "progress": 5.0,
             "lateral": 1.0,
             "oob_penalty": 0.6,
-            "tyre_slip_penalty": 0.05,
+            # Lowered from 0.05: the additive combined-slip penalty is larger in
+            # magnitude than the previous slip_ratio * slip_angle product.
+            "tyre_slip_penalty": 0.02,
             # Mild jerk penalty to curb bang-bang throttle/steer.
             "smoothness": 0.05,
         },

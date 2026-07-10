@@ -12,7 +12,7 @@ from qrsac import Models, QuantileCritic, SquashedGaussianMLPActor
 from standalone_trainer import ObsNormalizer, SelfPlayManager
 
 DEVICE = torch.device("cpu")
-OBS_DIM = 387
+OBS_DIM = 390
 ACT_DIM = 2
 
 
