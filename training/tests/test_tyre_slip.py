@@ -21,7 +21,10 @@ import pytest
 import torch
 
 WHEEL_RADIUS = 0.05
-SLIP_EPS = 0.1
+# Modern-PhysX slip denominators (match car.compute_tyre_slip defaults).
+MIN_LAT = 0.2
+MIN_ACTIVE_LONG = 0.1
+MIN_PASSIVE_LONG = 0.4
 
 
 def _wheel_state(motion_link_vel, dof_vel, frame_quat=None):
@@ -56,7 +59,7 @@ def test_slip_free_roll_is_zero(real_modules):
     omega = v / WHEEL_RADIUS
     mlv = np.tile([v, 0.0, 0.0], (1, 4, 1)).astype(np.float32)
     dof = np.full((1, 4), omega, dtype=np.float32)
-    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS, SLIP_EPS)
+    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS)
     ratio, angle = slip[0, :4], slip[0, 4:]
     assert torch.allclose(ratio, torch.zeros(4), atol=1e-5)
     assert torch.allclose(angle, torch.zeros(4), atol=1e-6)
@@ -68,32 +71,34 @@ def test_slip_ratio_positive_under_wheelspin(real_modules):
     omega = 4.0 / WHEEL_RADIUS  # surface speed 4 > ground 2
     mlv = np.tile([v, 0.0, 0.0], (1, 4, 1)).astype(np.float32)
     dof = np.full((1, 4), omega, dtype=np.float32)
-    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS, SLIP_EPS)
+    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS)
     ratio = slip[0, :4]
     assert torch.all(ratio > 0.0)
-    assert ratio[0].item() == pytest.approx((4.0 - 2.0) / 4.0, abs=1e-5)
+    # Modern PhysX denominator: (wheel_speed - v_fwd) / (|v_fwd| + min_active_long).
+    assert ratio[0].item() == pytest.approx((4.0 - 2.0) / (2.0 + MIN_ACTIVE_LONG), abs=1e-5)
 
 
 def test_slip_ratio_negative_under_lockup(real_modules):
-    """Locked wheel (omega=0) while moving -> slip ratio ~ -1."""
+    """Locked wheel (omega=0) while moving -> negative slip ratio (modern PhysX)."""
     v = 2.0
     mlv = np.tile([v, 0.0, 0.0], (1, 4, 1)).astype(np.float32)
     dof = np.zeros((1, 4), dtype=np.float32)
-    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS, SLIP_EPS)
+    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS)
     ratio = slip[0, :4]
-    assert torch.allclose(ratio, torch.full((4,), -1.0), atol=1e-5)
+    expected = (0.0 - v) / (v + MIN_ACTIVE_LONG)
+    assert torch.allclose(ratio, torch.full((4,), expected), atol=1e-5)
 
 
 @pytest.mark.parametrize("v_lat", [0.5, -0.8, 1.2])
 def test_slip_angle_matches_lateral(real_modules, v_lat):
-    """Slip angle equals atan2(v_lat, |v_fwd|) for wheel-frame inputs."""
+    """Slip angle equals atan(v_lat / (|v_fwd| + min_lat)) for wheel-frame inputs."""
     v_fwd = 3.0
     omega = v_fwd / WHEEL_RADIUS
     mlv = np.tile([v_fwd, v_lat, 0.0], (1, 4, 1)).astype(np.float32)
     dof = np.full((1, 4), omega, dtype=np.float32)
-    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS, SLIP_EPS)
+    slip = real_modules.car.compute_tyre_slip(_wheel_state(mlv, dof), WHEEL_RADIUS)
     angle = slip[0, 4:]
-    expected = math.atan2(v_lat, abs(v_fwd))
+    expected = math.atan(v_lat / (abs(v_fwd) + MIN_LAT))
     assert torch.allclose(angle, torch.full((4,), expected), atol=1e-5)
 
 
@@ -117,18 +122,22 @@ def test_world_frame_velocity_corrupts_slip_angle(real_modules, yaw):
     mlv_world = np.tile(world_vel, (1, 4, 1)).astype(np.float32)
     dof = np.full((1, 4), omega, dtype=np.float32)
     buggy = real_modules.car.compute_tyre_slip(
-        _wheel_state(mlv_world, dof), WHEEL_RADIUS, SLIP_EPS
+        _wheel_state(mlv_world, dof), WHEEL_RADIUS
     )
     buggy_angle = buggy[0, 4:]
-    assert torch.allclose(buggy_angle, torch.full((4,), float(yaw)), atol=1e-3), (
-        "world-frame velocity should make slip_angle track yaw"
+    # With the modern-PhysX lateral offset the corrupted angle is
+    # atan(v_world_lat / (|v_world_fwd| + min_lat)) rather than exactly yaw, but it
+    # is clearly non-zero and frame-dependent -- the point of the demonstration.
+    expected_buggy = math.atan(world_vel[1] / (abs(world_vel[0]) + MIN_LAT))
+    assert torch.allclose(buggy_angle, torch.full((4,), expected_buggy), atol=1e-3), (
+        "world-frame velocity should corrupt slip_angle away from zero"
     )
 
     # CORRECT path: rotate world->wheel frame first, then compute
     wheel_vel = _rotate_world_to_local(world_vel, quat)
     mlv_wheel = np.tile(wheel_vel, (1, 4, 1)).astype(np.float32)
     fixed = real_modules.car.compute_tyre_slip(
-        _wheel_state(mlv_wheel, dof), WHEEL_RADIUS, SLIP_EPS
+        _wheel_state(mlv_wheel, dof), WHEEL_RADIUS
     )
     assert torch.allclose(fixed[0, 4:], torch.zeros(4), atol=1e-3)
 
@@ -158,7 +167,7 @@ def test_frame_quat_rotation_recovers_zero_slip(real_modules, yaw):
     fquat = np.tile(quat, (1, 4, 1)).astype(np.float32)
 
     slip = real_modules.car.compute_tyre_slip(
-        _wheel_state(mlv, dof, frame_quat=fquat), WHEEL_RADIUS, SLIP_EPS
+        _wheel_state(mlv, dof, frame_quat=fquat), WHEEL_RADIUS
     )
     ratio, angle = slip[0, :4], slip[0, 4:]
     assert torch.allclose(angle, torch.zeros(4), atol=1e-3), f"yaw={yaw}, angle={angle}"
@@ -179,7 +188,7 @@ def test_frame_quat_rotation_preserves_lateral_slip(real_modules):
     fquat = np.tile(quat, (1, 4, 1)).astype(np.float32)
 
     slip = real_modules.car.compute_tyre_slip(
-        _wheel_state(mlv, dof, frame_quat=fquat), WHEEL_RADIUS, SLIP_EPS
+        _wheel_state(mlv, dof, frame_quat=fquat), WHEEL_RADIUS
     )
-    expected = math.atan2(v_lat, abs(v))
+    expected = math.atan(v_lat / (abs(v) + MIN_LAT))
     assert torch.allclose(slip[0, 4:], torch.full((4,), expected), atol=2e-3)

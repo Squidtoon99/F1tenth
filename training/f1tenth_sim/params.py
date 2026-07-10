@@ -81,6 +81,11 @@ class VehicleParams:
     max_steer: float = 0.33
     t_delta: float = 0.1
 
+    # --- tyre slip (modern PhysX denominators, m/s; scaled for the 1/10 car) ---
+    slip_min_lat: float = 0.2
+    slip_min_active_long: float = 0.1
+    slip_min_passive_long: float = 0.4
+
     # --- suspension (Tier 2 spring-damper; Tier 1 uses roll_stiffness_front only) ---
     roll_stiffness_front: float = 0.5
     susp_stiffness: float = 4000.0
@@ -128,6 +133,13 @@ class VehicleParams:
         self.wheel_radius = float(g("wheel_radius", self.wheel_radius))
         self.max_steer = float(g("delta_max", g("max_steer", self.max_steer)))
         self.t_delta = float(g("t_delta", self.t_delta))
+        self.slip_min_lat = float(g("slip_min_lat", self.slip_min_lat))
+        self.slip_min_active_long = float(
+            g("slip_min_active_long", self.slip_min_active_long)
+        )
+        self.slip_min_passive_long = float(
+            g("slip_min_passive_long", self.slip_min_passive_long)
+        )
         self.f_drive_max = float(g("f_drive_max", self.f_drive_max))
         self.f_brake_max = float(g("f_brake_max", self.f_brake_max))
         self.power_max = float(g("power_max", self.power_max))

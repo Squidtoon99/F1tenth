@@ -76,11 +76,22 @@ def step_dynamic(state, params, tire, dt, susp_filter=None):
 
     eps = params.v_eps
     v_blend = max(params.low_speed_blend, eps)
-    # Slip angle for the tyre force: the lateral force opposes the contact-patch
-    # lateral velocity, so use -v_lat (a wheel drifting right pushes left/+y).
-    alpha = torch.atan2(-v_lat, v_long.abs().clamp_min(v_blend))
+    # Modern-PhysX slip (VhTireFunctions.cpp): normalize by |v_long| + a fixed
+    # offset rather than the legacy max(|wheel_speed|, |v_long|). The longitudinal
+    # offset switches between an active value (drive or brake torque applied) and a
+    # larger passive value (coasting). Keep the -v_lat sign for the lateral force
+    # (the tyre force opposes the contact-patch lateral velocity); the observation
+    # slip angle uses the opposite (geometric) sign, see slip_angle_obs below.
+    v_long_abs = v_long.abs()
+    active = (state["throttle"].abs() > eps).unsqueeze(1)
+    min_long = torch.where(
+        active,
+        v_long.new_full((), params.slip_min_active_long),
+        v_long.new_full((), params.slip_min_passive_long),
+    )
+    denom = v_long_abs + min_long
+    alpha = torch.atan2(-v_lat, v_long_abs + params.slip_min_lat)
     wheel_speed = r_wheel * state["omega"]
-    denom = torch.maximum(wheel_speed.abs(), v_long.abs()).clamp_min(v_blend)
     kappa = (wheel_speed - v_long) / denom
 
     # Body accelerations from the previous substep drive the (quasi-static) load
@@ -163,6 +174,10 @@ def step_dynamic(state, params, tire, dt, susp_filter=None):
         "v_lat": v_lat,
         "kappa": kappa,
         "alpha": alpha,
+        # Geometric slip angle for the observation (positive when the contact patch
+        # slides toward +y), i.e. the sign convention of car.compute_tyre_slip. This
+        # is -alpha since alpha carries the force-opposing sign.
+        "slip_angle_obs": torch.atan2(v_lat, v_long_abs + params.slip_min_lat),
         "Fz": Fz,
         "fx_w": fx_w,
         "fy_w": fy_w,
@@ -197,4 +212,11 @@ def step_kinematic(state, params, dt):
     v_long, v_lat = wheel_frame_velocities(
         params, state["vx"], state["vy"], state["r"], delta_wheel, offsets
     )
-    return {"v_long": v_long, "v_lat": v_lat}
+    # Rigid rolling (omega = vx / r): longitudinal slip is ~0. Report the geometric
+    # slip angle so the observation slip block is consistent with the dynamic model.
+    return {
+        "v_long": v_long,
+        "v_lat": v_lat,
+        "kappa": torch.zeros_like(v_long),
+        "slip_angle_obs": torch.atan2(v_lat, v_long.abs() + params.slip_min_lat),
+    }

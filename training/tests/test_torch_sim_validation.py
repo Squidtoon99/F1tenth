@@ -124,8 +124,9 @@ def test_golden_trajectory_regression():
     yaw = 2.0 * math.atan2(st["base_quat"][0, 3].item(), st["base_quat"][0, 0].item())
     # Golden values captured from the validated model; guards against silent
     # dynamics regressions. Tolerance is loose enough for float ordering, tight
-    # enough to catch real changes.
-    gx, gy, gyaw = 2.9855, 8.8580, 2.4599
+    # enough to catch real changes. Regenerated for the modern-PhysX tyre-slip
+    # denominators (|v_long| + offset) in dynamics.step_dynamic.
+    gx, gy, gyaw = 3.6159, 8.2726, 2.2848
     assert abs(pos[0].item() - gx) < 0.25
     assert abs(pos[1].item() - gy) < 0.25
     assert abs(yaw - gyaw) < 0.1

@@ -63,6 +63,16 @@ class TorchVehicleSim:
             self.s["fx_lag"] = z4.clone()
             self.s["fy_lag"] = z4.clone()
 
+        # Native tyre readback (single source for the slip observation): per-wheel
+        # slip ratio + geometric slip angle from the tyre model, and normal-load
+        # ratio Fz / Fz_static. Filled each substep; defaults are the at-rest values
+        # (no slip, static load) so a readback before the first step is well-defined.
+        self._tyre_slip = torch.zeros((self.num_envs, 8), device=self.device,
+                                      dtype=dtype)
+        self._tyre_load = torch.ones((self.num_envs, 4), device=self.device,
+                                     dtype=dtype)
+        self._static_wheel_load = max(params.static_wheel_load(), 1e-6)
+
     # --- lifecycle ---------------------------------------------------------
     def reset(self, mask, pos, quat, speed):
         mask = self._as_mask(mask)
@@ -87,6 +97,10 @@ class TorchVehicleSim:
             if key in self.s:
                 self.s[key] = torch.where(m1, torch.zeros_like(self.s[key]),
                                           self.s[key])
+        self._tyre_slip = torch.where(m1, torch.zeros_like(self._tyre_slip),
+                                      self._tyre_slip)
+        self._tyre_load = torch.where(m1, torch.ones_like(self._tyre_load),
+                                      self._tyre_load)
         if self.susp is not None:
             self.susp.reset(mask, self.params)
 
@@ -120,12 +134,27 @@ class TorchVehicleSim:
     def substep(self, n_steps: int = 1):
         dt = self.sim_dt / self.internal_substeps
         total = int(n_steps) * self.internal_substeps
+        diag = None
         if self.params.model == "kinematic":
             for _ in range(total):
-                dynamics.step_kinematic(self.s, self.params, dt)
+                diag = dynamics.step_kinematic(self.s, self.params, dt)
         else:
             for _ in range(total):
-                dynamics.step_dynamic(self.s, self.params, self.tire, dt, self.susp)
+                diag = dynamics.step_dynamic(
+                    self.s, self.params, self.tire, dt, self.susp
+                )
+        self._update_tyre_readback(diag)
+
+    def _update_tyre_readback(self, diag) -> None:
+        if diag is None:
+            return
+        kappa = diag.get("kappa")
+        slip_angle = diag.get("slip_angle_obs")
+        if kappa is not None and slip_angle is not None:
+            self._tyre_slip = torch.cat([kappa, slip_angle], dim=-1)
+        Fz = diag.get("Fz")
+        if Fz is not None:
+            self._tyre_load = Fz / self._static_wheel_load
 
     def step(self, actions, n_steps: int = 1):
         self.apply_actions(actions)
@@ -168,7 +197,12 @@ class TorchVehicleSim:
             self.params, s["vx"], s["vy"], s["r"], delta_wheel, offsets
         )
         motion = torch.stack([v_long, v_lat, torch.zeros_like(v_long)], dim=-1)
-        return {"motion_link_vel": motion, "dof_vel": s["omega"]}
+        return {
+            "motion_link_vel": motion,
+            "dof_vel": s["omega"],
+            "tyre_slip": self._tyre_slip,
+            "tyre_load": self._tyre_load,
+        }
 
     # --- helpers -----------------------------------------------------------
     def _as_mask(self, mask) -> torch.Tensor:

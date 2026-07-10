@@ -2,7 +2,7 @@
 
 `test_sim_state_feeds_obs_contract` proves that :class:`TorchVehicleSim` state
 plugs straight into the deploy-side observation builder (`obs_core`, the same code
-that runs on the physical car), producing a well-formed 380-dim vector whose
+that runs on the physical car), producing a well-formed 384-dim vector whose
 velocity/accel/action slots equal the sim's readback -- i.e. the sim honours the
 observation contract. `test_throughput` is a smoke benchmark of batched steps/sec.
 """
@@ -42,7 +42,7 @@ def _circle_track(radius=8.0, n=400):
 
 def _obs_cfg():
     return {
-        "num_obs": 380,
+        "num_obs": 384,
         "obs_scales": {"lin_vel": 1.0, "ang_vel": 1.0, "lin_acc": 1.0},
         "clip_obs": 0.0,
         "contact_margin_m": 0.08,
@@ -52,18 +52,6 @@ def _obs_cfg():
         "future_track_width": 2.2,
         "enable_opponent_obs": False,
     }
-
-
-def _tyre_slip(sim, wheel_radius, slip_eps=0.1):
-    ws = sim.read_wheel_state()
-    v_long = ws["motion_link_vel"][:, :, 0]
-    v_lat = ws["motion_link_vel"][:, :, 1]
-    spin = ws["dof_vel"]
-    slip_angle = torch.atan2(v_lat, v_long.abs().clamp_min(slip_eps))
-    wheel_speed = wheel_radius * spin
-    denom = torch.maximum(wheel_speed.abs(), v_long.abs()).clamp_min(slip_eps)
-    slip_ratio = (wheel_speed - v_long) / denom
-    return torch.cat([slip_ratio, slip_angle], dim=-1)
 
 
 def test_sim_state_feeds_obs_contract():
@@ -87,7 +75,9 @@ def test_sim_state_feeds_obs_contract():
         sim.step(last_actions, n_steps=20)
 
     st = sim.read_state()
-    tyre_slip = _tyre_slip(sim, p.wheel_radius)
+    ws = sim.read_wheel_state()
+    tyre_slip = ws["tyre_slip"]
+    tyre_load = ws["tyre_load"]
     obs = builder.build(
         base_lin_vel=st["base_lin_vel"],
         base_ang_vel=st["base_ang_vel"],
@@ -96,17 +86,19 @@ def test_sim_state_feeds_obs_contract():
         base_pos=st["base_pos"],
         base_quat_wxyz=st["base_quat"],
         tyre_slip=tyre_slip,
+        tyre_load=tyre_load,
     )
 
-    assert obs.shape == (n, 380)
+    assert obs.shape == (n, 384)
     assert torch.isfinite(obs).all()
     # Contract slot wiring: leading dims are exactly the sim readback.
     assert torch.allclose(obs[:, :2], st["base_lin_vel"][:, :2], atol=1e-5)
     assert torch.allclose(obs[:, 2], st["base_ang_vel"][:, 2], atol=1e-5)
     assert torch.allclose(obs[:, 3:5], st["base_lin_acc"][:, :2], atol=1e-5)
     assert torch.allclose(obs[:, 5:7], last_actions, atol=1e-5)
-    # tyre-slip block is the final 8 dims.
-    assert torch.allclose(obs[:, -8:], tyre_slip, atol=1e-5)
+    # tyre-slip block is [372:380], tyre-load block is [380:384].
+    assert torch.allclose(obs[:, 372:380], tyre_slip, atol=1e-5)
+    assert torch.allclose(obs[:, 380:384], tyre_load, atol=1e-5)
 
 
 def test_throughput():

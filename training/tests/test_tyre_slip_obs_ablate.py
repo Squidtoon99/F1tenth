@@ -24,6 +24,10 @@ TYRE_SLIP_SLICE = slice(372, 380)
 def _make_env(*, zero_slip: bool, num_envs: int = 2) -> F1tenthEnv:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["obs"]["zero_tyre_slip_obs"] = zero_slip
+    # Isolate the ablation-zeroing check from observation noise: obs DR is applied
+    # after build_observation, so leaving it on would add noise to the zeroed slip
+    # channels and mask the exact-zero assertion.
+    cfg["env"]["domain_randomization"]["enabled"] = False
     env_cfg = {
         "launch_strategy": "uniform_jittered",
         "launch_strategy_data": {"num_cars": num_envs},
