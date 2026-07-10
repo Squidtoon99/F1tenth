@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import random
 from pathlib import Path
 
@@ -26,6 +27,7 @@ import genesis as gs
 import numpy as np
 import torch
 
+from f1tenth_env import runtime as rt
 from f1tenth_env.env import F1tenthEnv
 from f1tenth_env.eval_viz import RolloutVisualizer, yaw_from_quat_wxyz
 from standalone_trainer import (
@@ -40,12 +42,18 @@ from standalone_trainer import (
 
 
 def build_eval_config(args: argparse.Namespace) -> dict:
-    """Minimal 1v0 eval config: track + physics backend + derived episode length."""
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    """Eval config from run config.json when available, else DEFAULT_CONFIG."""
+    cfg_path = Path(args.checkpoint).resolve().parent.parent / "config.json"
+    if cfg_path.exists():
+        cfg = json.loads(cfg_path.read_text())["config"]
+    else:
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["track"] = args.track
     cfg["env"]["physics_backend"] = args.physics
     if args.throttle_mode is not None:
         cfg["env"]["throttle_mode"] = args.throttle_mode
+    if args.opponent_ckpt is not None:
+        cfg["env"]["opponent_strategy"] = args.opponent_strategy
     cfg["env"]["episode_length"] = episode_length_for_track(
         track=args.track,
         workspace_dir=str(Path(__file__).resolve().parent),
@@ -59,6 +67,11 @@ def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     p = argparse.ArgumentParser(description="Visualize a trained policy rollout")
     p.add_argument("--checkpoint", required=True, help="Path to ckpt_*.pt")
+    p.add_argument("--opponent-ckpt", type=str, default=None,
+                   help="Path to opponent ckpt_*.pt (enables 1v1 self-play eval).")
+    p.add_argument("--opponent-strategy", type=str, default="policy",
+                   choices=["policy", "mixed"],
+                   help="Opponent controller when --opponent-ckpt is set.")
     p.add_argument("--track", type=str, default=cfg["env"]["track"])
     p.add_argument("--physics", type=str, default="torch",
                    choices=["genesis", "torch"])
@@ -93,16 +106,19 @@ def parse_args() -> argparse.Namespace:
 def _init_physics_runtime(args, cfg) -> torch.device:
     if str(cfg["env"].get("physics_backend")) == "torch":
         device = select_device(args.device)
-        gs.tc_float = torch.float64 if args.precision == "64" else torch.float32
-        gs.tc_int = torch.int32
-        gs.device = device
-        if getattr(gs, "EPS", None) is None:
-            gs.EPS = 1e-12
+        rt.configure(
+            float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+            int_dtype=torch.int32,
+            dev=device,
+            eps=1e-12,
+        )
         return device
     _maybe_patch_headless_rasterizer()
     backend = select_genesis_backend(args.backend)
     gs.init(backend=backend, precision=args.precision, performance_mode=True)
-    return select_device(args.device) if backend == gs.cpu else gs.device
+    device = select_device(args.device) if backend == gs.cpu else gs.device
+    rt.configure(float_dtype=gs.tc_float, int_dtype=gs.tc_int, dev=device, eps=gs.EPS)
+    return device
 
 
 def main() -> None:
@@ -112,6 +128,9 @@ def main() -> None:
 
     args.num_show = max(1, args.num_show)
     args.num_envs = max(args.num_envs, args.num_show)
+    if args.opponent_ckpt is not None:
+        args.num_show = max(1, args.num_show)
+        args.num_envs = max(args.num_envs, args.num_show, 1)
 
     cfg = build_eval_config(args)
     device = _init_physics_runtime(args, cfg)
@@ -148,6 +167,30 @@ def main() -> None:
         print("WARNING: checkpoint has no obs_norm; using identity normalizer stats.")
     models.actor.eval()
 
+    if args.opponent_ckpt is not None:
+        opp_payload = torch.load(
+            args.opponent_ckpt, map_location=device, weights_only=False
+        )
+        opp_actor = {
+            k: v.detach().cpu().clone()
+            for k, v in opp_payload["actor"].items()
+        }
+        opp_normalizer = ObsNormalizer(
+            obs_dim=cfg["obs"]["num_obs"],
+            device=device,
+            eps=float(cfg["obs"].get("norm_eps", 1e-8)),
+            clip=float(cfg["obs"].get("norm_clip", 10.0)),
+        )
+        if "obs_norm" in opp_payload:
+            opp_normalizer.load_state_dict(opp_payload["obs_norm"])
+        else:
+            print("WARNING: opponent checkpoint has no obs_norm; using identity stats.")
+        env.refresh_opponent_policy(
+            opp_actor,
+            opp_normalizer.mean.detach().cpu().clone(),
+            opp_normalizer.var.detach().cpu().clone(),
+        )
+
     viz = RolloutVisualizer(
         centerline=env.track_state["centerline"],
         w_tr_left=env.track_state["w_tr_left"],
@@ -166,8 +209,9 @@ def main() -> None:
 
     obs, _ = env.reset()
     obs = obs.to(torch.float32)
-    print(f"Rolling out {args.steps} steps on '{args.track}' "
-          f"(physics={cfg['env']['physics_backend']}, "
+    duel = "1v1" if args.opponent_ckpt is not None else "1v0"
+    print(f"Rolling out {args.steps} steps on '{args.track}' ({duel}, "
+          f"physics={cfg['env']['physics_backend']}, "
           f"live={args.live}, mp4={args.mp4})")
 
     n = args.num_show
@@ -183,7 +227,7 @@ def main() -> None:
                 with_logprob=False,
             )
             actions = actions.clamp(-clip_actions, clip_actions)
-            obs, _, done, _ = env.step(actions.to(gs.tc_float), n_steps=control_interval)
+            obs, _, done, _ = env.step(actions.to(rt.tc_float), n_steps=control_interval)
             obs = obs.to(torch.float32)
 
             st = env.backend.read_state()
