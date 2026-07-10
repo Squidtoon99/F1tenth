@@ -3,8 +3,9 @@
 Verifies smoothness (bounded step-to-step change, including across the
 start/finish line), reset-safety (the opponent progress delta is exactly zero on
 the reset step, so resets never inject a spike), and sign correctness. The
-passing reward is ``passing_k * (ego_ds - opp_ds)`` built from per-step
-arc-length deltas, so it is smooth and reset-safe by construction.
+passing reward is ``passing_k * (ego_ds - opp_ds)`` gated to opponents within
+``[-passing_gate_behind_m, +passing_gate_ahead_m]`` on the centerline, built
+from per-step arc-length deltas, so it is smooth and reset-safe by construction.
 
 ``rewards.py`` uses package-relative imports, so we register a small
 ``f1tenth_env`` package shim pointing the relative ``.car`` / ``.utils`` at the
@@ -43,16 +44,24 @@ def rewards_mod(real_modules):
     return mod
 
 
-def _step_state(opp_s, ego_ds, L=100.0):
+def _step_state(opp_s, ego_ds, L=100.0, ego_s=5.0):
     return {
-        "frenet": {"L": torch.tensor(L, dtype=torch.float32)},
+        "frenet": {
+            "L": torch.tensor(L, dtype=torch.float32),
+            "s": torch.tensor([ego_s], dtype=torch.float32),
+        },
         "progress_ds": torch.tensor([ego_ds], dtype=torch.float32),
         "opp_s": torch.tensor([opp_s], dtype=torch.float32),
     }
 
 
-def _cfg(passing_k=5.0):
-    return {"passing_k": passing_k, "progress_max_step_frac": 0.05}
+def _cfg(passing_k=5.0, ahead_m=40.0, behind_m=20.0):
+    return {
+        "passing_k": passing_k,
+        "passing_gate_ahead_m": ahead_m,
+        "passing_gate_behind_m": behind_m,
+        "progress_max_step_frac": 0.05,
+    }
 
 
 # --- sign correctness ---------------------------------------------------------
@@ -134,3 +143,33 @@ def test_passing_scale_comparable_to_progress(rewards_mod):
     ss = _step_state(10.0, 0.4)  # opponent static, ego advances 0.4
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
     assert r[0].item() == pytest.approx(5.0 * 0.4, abs=1e-5)
+
+
+# --- locality gate ------------------------------------------------------------
+def test_gate_opponent_far_ahead_is_zero(rewards_mod):
+    rs = {}
+    cfg = _cfg()
+    rewards_mod.reward_passing(_step_state(90.0, 0.0, L=1000.0), cfg, rs, torch.tensor([5]))
+    ss = _step_state(90.5, 0.5, L=1000.0)  # gap=85.5 > 40, ego gaining
+    r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
+    assert r[0].item() == pytest.approx(0.0, abs=1e-5)
+
+
+def test_gate_opponent_far_behind_is_zero(rewards_mod):
+    rs = {}
+    cfg = _cfg()
+    rewards_mod.reward_passing(
+        _step_state(1.0, 0.0, L=1000.0, ego_s=50.0), cfg, rs, torch.tensor([5])
+    )
+    ss = _step_state(1.5, 0.5, L=1000.0, ego_s=50.0)  # gap=-48.5 < -20
+    r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
+    assert r[0].item() == pytest.approx(0.0, abs=1e-5)
+
+
+def test_gate_opponent_in_window_passes_through(rewards_mod):
+    rs = {}
+    cfg = _cfg()
+    rewards_mod.reward_passing(_step_state(10.0, 0.0), cfg, rs, torch.tensor([5]))
+    ss = _step_state(10.1, 0.5)  # gap=5.1, within [-20, +40]
+    r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
+    assert r[0].item() == pytest.approx(5.0 * (0.5 - 0.1), abs=1e-5)
