@@ -1,4 +1,4 @@
-"""Real-Genesis test: config-gated collision reward penalty."""
+"""TorchSim test: config-gated collision reward penalty."""
 
 from __future__ import annotations
 
@@ -6,24 +6,31 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-gs = pytest.importorskip("genesis")
-
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
 
 
+def _pin_deterministic_spawn(cfg: dict, *, gap_m: float) -> None:
+    cfg["env"]["opponent_spawn_gap_min_m"] = gap_m
+    cfg["env"]["opponent_spawn_gap_max_m"] = gap_m
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 0.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
+    cfg["env"]["reset_speed_min_mps"] = 0.0
+    cfg["env"]["reset_speed_max_mps"] = 0.0
+
+
 def _build_cfg(*, spawn_gap_m: float, enable_collision_reward: bool) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["env"]["physics_backend"] = "genesis"
     cfg["env"]["opponent_strategy"] = "scripted"
-    cfg["env"]["opponent_spawn_gap_m"] = spawn_gap_m
+    _pin_deterministic_spawn(cfg, gap_m=spawn_gap_m)
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
     cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
@@ -50,14 +57,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
-def test_collision_penalty_fires_on_contact(genesis_backend):
+def test_collision_penalty_fires_on_contact(torch_backend):
     num_envs = 2
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
     cfg = _build_cfg(spawn_gap_m=0.25, enable_collision_reward=True)
@@ -84,7 +84,7 @@ def test_collision_penalty_fires_on_contact(genesis_backend):
         env.close()
 
 
-def test_collision_penalty_zero_when_separated(genesis_backend):
+def test_collision_penalty_zero_when_separated(torch_backend):
     num_envs = 2
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
     cfg = _build_cfg(spawn_gap_m=25.0, enable_collision_reward=True)

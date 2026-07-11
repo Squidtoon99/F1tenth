@@ -1,4 +1,4 @@
-"""Real-Genesis test: the mixed opponent population drives correctly per row.
+"""TorchSim test: the mixed opponent population drives correctly per row.
 
 Instantiates ``F1tenthEnv`` with ``opponent_strategy="mixed"`` (50/50 scripted vs
 policy), steps the simulator, and asserts:
@@ -14,14 +14,11 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-gs = pytest.importorskip("genesis")
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
@@ -34,13 +31,24 @@ def _wrap_ds(ds: torch.Tensor, length: float) -> torch.Tensor:
     return ds
 
 
+def _pin_deterministic_spawn(cfg: dict, *, gap_m: float) -> None:
+    cfg["env"]["opponent_spawn_gap_min_m"] = gap_m
+    cfg["env"]["opponent_spawn_gap_max_m"] = gap_m
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 0.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
+    cfg["env"]["reset_speed_min_mps"] = 0.0
+    cfg["env"]["reset_speed_max_mps"] = 0.0
+
+
 def _build_cfg(*, target_speed: float) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["opponent_strategy"] = "mixed"
     cfg["env"]["opponent_mix"] = {"scripted_weight": 0.5, "policy_weight": 0.5}
     cfg["env"]["opponent_target_speed"] = target_speed
     cfg["env"]["opponent_kp_speed"] = 1.0
-    cfg["env"]["opponent_spawn_gap_m"] = 25.0
+    _pin_deterministic_spawn(cfg, gap_m=25.0)
     # Keep episodes from resetting while we observe the opponents.
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
@@ -66,14 +74,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
-def test_mixed_opponents_drive_per_mode(genesis_backend):
+def test_mixed_opponents_drive_per_mode(torch_backend):
     target_speed = 2.5
     num_envs = 16
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])

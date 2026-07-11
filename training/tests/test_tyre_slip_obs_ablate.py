@@ -1,4 +1,4 @@
-"""Real-Genesis tests for config-gated tyre-slip observation ablation."""
+"""TorchSim tests for config-gated tyre-slip observation ablation."""
 
 from __future__ import annotations
 
@@ -6,14 +6,11 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-gs = pytest.importorskip("genesis")
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
@@ -43,7 +40,7 @@ def _make_env(*, zero_slip: bool, num_envs: int = 2) -> F1tenthEnv:
     )
 
 
-def test_zero_tyre_slip_obs_zeros_channels(genesis_backend):
+def test_zero_tyre_slip_obs_zeros_channels(torch_backend):
     num_envs = 2
     expected_dim = int(DEFAULT_CONFIG["obs"]["num_obs"])
     env = _make_env(zero_slip=True, num_envs=num_envs)
@@ -63,7 +60,7 @@ def test_zero_tyre_slip_obs_zeros_channels(genesis_backend):
         env.close()
 
 
-def test_tyre_slip_obs_populated_when_not_zeroed(genesis_backend):
+def test_tyre_slip_obs_populated_when_not_zeroed(torch_backend):
     num_envs = 2
     env = _make_env(zero_slip=False, num_envs=num_envs)
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])

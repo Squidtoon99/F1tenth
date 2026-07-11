@@ -10,7 +10,7 @@ Two throttle interpretations, selected by ``params.throttle_mode``:
   reliable default and matches the deployed action semantics.
 - ``"force"`` (alternative): throttle in [-1, 1] maps to an open-loop drive force
   capped by ``power_max`` and a friction traction cap, split AWD by
-  ``k_drive_front``; negative throttle brakes. Mirrors ``f1tenth_env/car.py``.
+  ``k_drive_front``; negative throttle brakes.
 
 Returned torque is the net axle torque per wheel (drive minus brake / rolling
 resistance) fed into the wheel-spin ODE alongside the tyre longitudinal reaction.

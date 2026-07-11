@@ -1,4 +1,4 @@
-"""Real-Genesis test: scripted opponent closed-loop speed control.
+"""TorchSim test: scripted opponent closed-loop speed control.
 
 Instantiates ``F1tenthEnv`` with a scripted opponent, steps the simulator, and
 asserts the opponent converges near ``opponent_target_speed`` and advances along
@@ -11,14 +11,11 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-gs = pytest.importorskip("genesis")
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
@@ -31,12 +28,23 @@ def _wrap_ds(ds: torch.Tensor, length: float) -> torch.Tensor:
     return ds
 
 
+def _pin_deterministic_spawn(cfg: dict, *, gap_m: float) -> None:
+    cfg["env"]["opponent_spawn_gap_min_m"] = gap_m
+    cfg["env"]["opponent_spawn_gap_max_m"] = gap_m
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 0.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
+    cfg["env"]["reset_speed_min_mps"] = 0.0
+    cfg["env"]["reset_speed_max_mps"] = 0.0
+
+
 def _build_cfg(*, num_envs: int, target_speed: float) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["opponent_strategy"] = "scripted"
     cfg["env"]["opponent_target_speed"] = target_speed
     cfg["env"]["opponent_kp_speed"] = 1.0
-    cfg["env"]["opponent_spawn_gap_m"] = 25.0
+    _pin_deterministic_spawn(cfg, gap_m=25.0)
     # Keep the ego from ending episodes while the opponent accelerates.
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
@@ -62,14 +70,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
-def test_scripted_opponent_holds_target_speed(genesis_backend):
+def test_scripted_opponent_holds_target_speed(torch_backend):
     target_speed = 2.5
     num_envs = 4
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])

@@ -5,8 +5,7 @@ randomized quantities (mass, friction) live on the simulator state, not here, so
 this object stays a small immutable description of the nominal car.
 
 Wheel ordering everywhere in this package is ``[LR, RR, LF, RF]`` (left-rear,
-right-rear, left-front, right-front) to match ``f1tenth_env/car.py`` and the
-Genesis link ordering used by the observation/reward pipeline.
+right-rear, left-front, right-front) to match the observation/reward pipeline.
 """
 
 from __future__ import annotations

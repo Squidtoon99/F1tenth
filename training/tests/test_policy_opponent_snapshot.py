@@ -56,7 +56,6 @@ def _ctx(obs: torch.Tensor) -> OpponentContext:
 
 def test_load_snapshot_matches_actor_a():
     actor_a = _make_actor(1)
-    actor_b = _make_actor(2)
     obs = torch.randn(3, OBS_DIM)
 
     opponent = PolicyOpponent(actor=actor_a, device=DEVICE)

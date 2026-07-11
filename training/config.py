@@ -6,6 +6,8 @@ bootstrap, S3 parameter server) is intentionally not part of this trainer.
 """
 
 DEFAULT_CONFIG = {
+    "config_version": 1,
+    "policy_format_version": 1,
     "obs": {
         "num_obs": 384,
         # Observation normalization is now done with empirical running statistics in
@@ -42,8 +44,6 @@ DEFAULT_CONFIG = {
         # onto the current point). Only affects speeds below
         # future_track_min_lookahead_m / future_track_horizon_s.
         "future_track_min_lookahead_m": 5.0,
-        # Deprecated: corridor edges use per-vertex w_tr_left_m / w_tr_right_m.
-        "future_track_width": 2.2,
     },
     "env": {
         "num_actions": 2,
@@ -62,21 +62,6 @@ DEFAULT_CONFIG = {
         # length in seconds and max_episode_steps unchanged (~450 for 45 s).
         "control_interval": 20,
         "sim_dt": 0.005,
-        # Tuned via scripts/sweep_physics_integration.py: substep counts 2..10 pass
-        # the physics_check stability gate for normal upright driving. Finer substeps
-        # (effective 0.625 ms with sim_dt=0.005) help car-car contact stability in
-        # 1v1; raised 4->8 after high-speed contacts into a near-stationary self-play
-        # opponent produced constraint-force NaNs at high env counts.
-        "sim_substeps": 8,
-        # Softer constraint solve window; must stay >= 2 * sim_dt (Genesis Newton gate).
-        "constraint_timeconst": 0.02,
-        "solver_iterations": 50,
-        "solver_ls_iterations": 50,
-        "show_fps": False,
-        # Opt-in torch.compile of the pure-tensor observation math. Off by default
-        # (no warmup/recompile risk); enable on the GPU training target after
-        # confirming a steady-state throughput gain that outweighs compile warmup.
-        "compile_obs": False,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
@@ -89,14 +74,11 @@ DEFAULT_CONFIG = {
         "term_heading_error_rad": 3.0,
         "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
-        "joint_names": [
-            "left_rear_wheel_joint",
-            "right_rear_wheel_joint",
-        ],
-        "default_joint_angles": {
-            "left_rear_wheel_joint": 0.0,
-            "right_rear_wheel_joint": 0.0,
-        },
+        "reset_speed_min_mps": 1.0,
+        "reset_speed_max_mps": 4.0,
+        # Lateral inset (m) from each track edge when sampling a spawn offset, so a
+        # car never starts with a wheel on the boundary.
+        "reset_spawn_margin_m": 0.2,
         # Observation/reset throttle scaling only — longitudinal cap comes from power+drag.
         "max_speed": 15.0,
         # Real F1TENTH servo hard-clamps the steering at ~0.33 rad (19 deg): see
@@ -126,17 +108,11 @@ DEFAULT_CONFIG = {
         # for the slip definition: the TorchSim tire model (f1tenth_sim.dynamics)
         # and the on-car C++ builder both normalize by |v_fwd| + one of these
         # offsets (active = drive/brake applied, passive = coasting). The deprecated
-        # Genesis-fallback car.compute_tyre_slip uses the same offsets.
+        # compute_tyre_slip uses the same offsets.
         "slip_min_lat": 0.2,
         "slip_min_active_long": 0.1,
         "slip_min_passive_long": 0.4,
-        # Physics backend: "torch" (default) is f1tenth_sim.TorchVehicleSim, a
-        # pure-Torch vehicle with a PhysX-grounded tire model that computes tyre
-        # slip/load natively. "genesis" (rigid-body engine) is deprecated and kept
-        # only for legacy comparison; new work targets the torch backend. The
-        # observation/action contract is identical for both.
-        "physics_backend": "torch",
-        # Torch-sim knobs (the deprecated Genesis backend ignores these). "model":
+        # Torch-sim knobs. "model":
         # "dynamic" (Pacejka tires + load transfer + wheel spin) or "kinematic"
         # (Tier 0); "suspension_mode": "quasi_static" or "dynamic";
         # "internal_substeps" subdivides each sim_dt for extra stability;
@@ -146,11 +122,9 @@ DEFAULT_CONFIG = {
             "suspension_mode": "quasi_static",
             "internal_substeps": 1,
         },
-        # Throttle semantics for the torch backend (Genesis is force-based and
-        # ignores this). Default "speed": normalized throttle is a VESC-style speed
-        # command v_cmd = throttle * max_speed, matching the deployed car's
-        # drive_math.py -- a self-regulating closed loop chosen for stable, reliable
-        # physics. "force" is an open-loop drive-force envelope alternative.
+        # Throttle semantics. Default "speed": normalized throttle is a VESC-style
+        # speed command v_cmd = throttle * max_speed, matching the deployed car's
+        # drive_math.py. "force" is an open-loop drive-force envelope alternative.
         "throttle_mode": "speed",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
         "track": "IV_2026_SIM",
@@ -168,7 +142,12 @@ DEFAULT_CONFIG = {
         # Scripted opponent: centerline follower kept below ego pace so an overtake
         # is feasible. Closed-loop P-control holds this setpoint in m/s.
         "opponent_target_speed": 2.5,
-        "opponent_spawn_gap_m": 7.0,
+        "opponent_spawn_gap_min_m": 3.0,
+        "opponent_spawn_gap_max_m": 20.0,
+        "opponent_spawn_behind_prob": 0.3,
+        "opponent_spawn_lateral_independent": True,
+        "opponent_reset_speed_min_mps": 1.0,
+        "opponent_reset_speed_max_mps": 4.0,
         "opponent_kp_ey": 1.0,
         "opponent_kh_heading": 1.0,
         "opponent_kp_speed": 1.0,
@@ -184,11 +163,13 @@ DEFAULT_CONFIG = {
         # instead of resetting on every minor rub. Set to 0.0 to terminate on any
         # overlap (legacy behavior).
         "collision_term_speed_mps": 2.0,
-        "car_length": 0.46,
-        "car_width": 0.30,
+        # Body envelope (full length x width, metres) used for the oriented-box
+        # collision predicate, car-car contact, and eval rendering. Provisional
+        # standard 1/10 Traxxas Slash 4x4 spec (0.568 x 0.296 m); replace with a
+        # tape measurement of the assembled car when available.
+        "car_length": 0.568,
+        "car_width": 0.296,
         "collision_margin_m": 0.0,
-        # Deprecated: superseded by car_length/car_width/collision_margin_m.
-        "collision_dist_m": 0.4,
         # Per-episode domain randomization. Enabled with narrow bands around the
         # nominal car so the policy does not overfit a razor-edge grip line, without
         # forcing it to hedge against extreme physics. Widen these for a dedicated
@@ -197,16 +178,14 @@ DEFAULT_CONFIG = {
         "domain_randomization": {
             "enabled": True,
             "tire_friction_range": [0.60, 0.70],
-            "ground_friction_range": [0.60, 0.70],
             "vehicle_mass_range": [3.6, 3.9],
             "mass_scale_range": [0.97, 1.03],
             "action_latency_steps_range": [0, 1],
             "obs_latency_steps_range": [0, 1],
             "obs_noise_std_range": [0.0, 0.01],
             "action_latency_steps_max": 3,
-            # Torch-backend-only physical DR (Genesis ignores these). Neutral by
-            # default: drive_scale multiplies drive force (motor/gearing spread),
-            # steer_bias (rad) is a steering-alignment offset. Widen for sim2real.
+            # drive_scale multiplies drive force (motor/gearing spread), steer_bias
+            # (rad) is a steering-alignment offset. Widen for sim2real.
             "drive_scale_range": [1.0, 1.0],
             "steer_bias_range": [0.0, 0.0],
         },
@@ -272,16 +251,23 @@ DEFAULT_CONFIG = {
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
         "n_step": 7,
-        "replay_tables": ["1v0"],  # "1v1", "mistake_learning"],
-        "minimum_train_samples": 40000,
-        "batches_per_epoch": 6000,
+        "alpha": 0.01,
         "replay_buffer_limit": 10**7,
         "batch_size": 1024,
-        "update_to_data_ratio": 0.01,
+        "minimum_train_transitions": 5_000,
+        # With the canonical 512 envs and batch size 1024, the former one update
+        # per vector tick sampled two replay rows per collected transition.
+        "sampled_replay_rows_per_transition": 2.0,
+    },
+    "schedule": {
+        "total_transitions": 256_000_000,
+        "log_interval_transitions": 51_200,
+        "export_interval_transitions": 5_120_000,
+        "eval_interval_transitions": 0,
     },
     "selfplay": {
-        "snapshot_interval": 20_000,
-        "refresh_interval": 5_000,
+        "snapshot_interval_transitions": 10_240_000,
+        "refresh_interval_transitions": 2_560_000,
         "pool_size": 5,
         "sample_mode": "mixed",
         "mixed_latest_prob": 0.8,

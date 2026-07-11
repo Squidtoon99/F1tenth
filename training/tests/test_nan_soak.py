@@ -1,4 +1,4 @@
-"""Real-Genesis long 1v1 contact soak: assert zero non-finite obs/reward/state."""
+"""TorchSim long 1v1 contact soak: assert zero non-finite obs/reward/state."""
 
 from __future__ import annotations
 
@@ -6,23 +6,31 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-gs = pytest.importorskip("genesis")
-
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
+
+
+def _pin_deterministic_spawn(cfg: dict, *, gap_m: float) -> None:
+    cfg["env"]["opponent_spawn_gap_min_m"] = gap_m
+    cfg["env"]["opponent_spawn_gap_max_m"] = gap_m
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 0.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
+    cfg["env"]["reset_speed_min_mps"] = 0.0
+    cfg["env"]["reset_speed_max_mps"] = 0.0
 
 
 def _build_cfg(*, spawn_gap_m: float) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["opponent_strategy"] = "scripted"
-    cfg["env"]["opponent_spawn_gap_m"] = spawn_gap_m
+    _pin_deterministic_spawn(cfg, gap_m=spawn_gap_m)
     cfg["env"]["opponent_target_speed"] = 1.5
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
@@ -47,7 +55,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-def test_1v1_contact_soak_zero_nonfinite(genesis_backend_f64):
+def test_1v1_contact_soak_zero_nonfinite(torch_backend_f64):
     """Spawn ego close behind opponent and chase for many steps with repeated contact."""
     num_envs = 4
     steps = 600

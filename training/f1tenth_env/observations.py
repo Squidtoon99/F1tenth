@@ -1,7 +1,6 @@
 import math
 from typing import Any
 
-import numpy as np
 import torch
 
 from . import runtime as rt
@@ -66,7 +65,6 @@ def obs_future_track_points(
 ) -> torch.Tensor:
     obs_track = step_state["obs_track"]
     centerline_t = obs_track["centerline_t"]
-    seg = obs_track["seg"]
     seg_len = obs_track["seg_len"]
     cumlen = obs_track["cumlen"]
     n = obs_track["n"]
@@ -78,7 +76,6 @@ def obs_future_track_points(
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))
     horizon_s = float(obs_cfg.get("future_track_horizon_s", 6.0))
-    # future_track_width is deprecated: corridor edges use per-vertex CSV widths.
 
     frenet = step_state["frenet"]
     s0 = frenet["s"]

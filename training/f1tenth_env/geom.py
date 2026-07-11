@@ -1,9 +1,4 @@
-"""Genesis-free quaternion/geometry helpers used by the training env.
-
-Torch-only reimplementations of the handful of ``genesis.utils.geom`` functions
-the env relies on, using the same (w, x, y, z) quaternion convention and the same
-formulas so results match the Genesis implementations.
-"""
+"""Torch quaternion and geometry helpers using the (w, x, y, z) convention."""
 
 from __future__ import annotations
 

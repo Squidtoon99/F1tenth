@@ -68,7 +68,11 @@ def _recording_env() -> _RecordingEnv:
 
 
 def test_pool_push_and_maxlen_eviction():
-    mgr = SelfPlayManager(pool_size=3, snapshot_interval=1, refresh_interval=10_000)
+    mgr = SelfPlayManager(
+        pool_size=3,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=10_000,
+    )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
 
@@ -76,28 +80,38 @@ def test_pool_push_and_maxlen_eviction():
         mgr.maybe_snapshot(models, normalizer, step)
 
     assert len(mgr.pool) == 3
-    assert [s["step"] for s in mgr.pool] == [2000, 3000, 4000]
+    assert [s["transitions"] for s in mgr.pool] == [2000, 3000, 4000]
 
 
 def test_snapshot_cadence_gating():
-    mgr = SelfPlayManager(pool_size=5, snapshot_interval=100, refresh_interval=10_000)
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=100,
+        refresh_interval_transitions=10_000,
+    )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
 
     assert not mgr.maybe_snapshot(models, normalizer, 50)
-    assert not mgr.maybe_snapshot(models, normalizer, 150)
+    assert not mgr.maybe_snapshot(models, normalizer, 99)
     assert mgr.maybe_snapshot(models, normalizer, 100)
     assert len(mgr.pool) == 1
     assert not mgr.maybe_snapshot(models, normalizer, 100)
 
 
 def test_refresh_cadence_gating():
-    mgr = SelfPlayManager(pool_size=5, snapshot_interval=1, refresh_interval=50)
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=50,
+    )
     models = _make_models()
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
     env = _recording_env()
 
-    mgr.seed_snapshot(SelfPlayManager.make_snapshot(models, normalizer, 0))
+    mgr.seed_snapshot(
+        SelfPlayManager.make_snapshot(models, normalizer, transitions=0)
+    )
 
     assert not mgr.maybe_refresh(env, 25)
     assert mgr.maybe_refresh(env, 50)
@@ -110,8 +124,8 @@ def test_refresh_cadence_gating():
 def test_sample_latest():
     mgr = SelfPlayManager(
         pool_size=5,
-        snapshot_interval=1,
-        refresh_interval=1,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
         sample_mode="latest",
     )
     models = _make_models()
@@ -122,14 +136,14 @@ def test_sample_latest():
         mgr.maybe_snapshot(models, normalizer, step)
         mgr.maybe_refresh(env, step)
 
-    assert mgr.opponent_step == 30
+    assert mgr.opponent_transitions == 30
 
 
 def test_sample_uniform_covers_pool():
     mgr = SelfPlayManager(
         pool_size=5,
-        snapshot_interval=1,
-        refresh_interval=1,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
         sample_mode="uniform",
     )
     models = _make_models()
@@ -142,7 +156,7 @@ def test_sample_uniform_covers_pool():
     counts: Counter[int] = Counter()
     for refresh_step in range(100, 1100, 1):
         mgr.maybe_refresh(env, refresh_step)
-        counts[mgr.opponent_step] += 1
+        counts[mgr.opponent_transitions] += 1
 
     assert counts[10] > 0
     assert counts[20] > 0
@@ -152,8 +166,8 @@ def test_sample_uniform_covers_pool():
 def test_sample_mixed_favors_latest():
     mgr = SelfPlayManager(
         pool_size=5,
-        snapshot_interval=1,
-        refresh_interval=1,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
         sample_mode="mixed",
         mixed_latest_prob=0.8,
     )
@@ -167,7 +181,7 @@ def test_sample_mixed_favors_latest():
     latest_hits = 0
     for refresh_step in range(200, 1200, 1):
         mgr.maybe_refresh(env, refresh_step)
-        if mgr.opponent_step == 30:
+        if mgr.opponent_transitions == 30:
             latest_hits += 1
 
     assert latest_hits > 700

@@ -10,7 +10,6 @@ dependencies:
   - pip:
       # Editable shared contract: obs-space edits picked up with no rebuild.
       - -e ../libs/f1tenth_contract
-      - genesis-world==0.4.3
       - torch
       - numpy
       - requests

@@ -290,33 +290,13 @@ def reward_oob_penalty(
     # what remains is a penalty proportional to squared speed while off course (and
     # exactly zero while on course). This punishes fast excursions far harder than
     # slow ones and lets the boundary bind without an explicit speed cap.
-    margin_m = float(reward_cfg.get("oob_margin_m", 0.5))
+    margin_m = float(reward_cfg.get("oob_margin_m", 0.2))
     k_oob = float(reward_cfg.get("oob_k", 0.15))
     oob_mask, _ = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=margin_m
     )
     v = torch.linalg.norm(step_state["base_lin_vel"][:, :2], dim=-1)
     return -k_oob * oob_mask.to(v.dtype) * v * v
-
-
-def reward_speed(
-    step_state: dict[str, Any], reward_cfg: dict[str, Any]
-) -> torch.Tensor:
-    """
-    Forward (track-aligned) speed reward, capped at a target speed.
-
-    Rewards velocity projected onto the track tangent (so spinning/sliding does
-    not pay), normalized to [0, 1] and saturated at speed_target_mps. The cap
-    keeps the agent below the unstable high-speed spin-out regime instead of
-    letting it farm raw speed.
-    """
-    v_xy = step_state["base_lin_vel"][:, :2]
-    seg_dir = step_state["frenet"]["seg_dir"]
-    seg_dir = seg_dir / torch.linalg.norm(seg_dir, dim=-1, keepdim=True).clamp_min(1e-6)
-    v_long = (v_xy * seg_dir).sum(dim=-1)
-
-    target = float(reward_cfg.get("speed_target_mps", 3.0))
-    return torch.clamp(v_long, min=0.0, max=target) / target
 
 
 def reward_smoothness_penalty(
@@ -411,7 +391,7 @@ def compute_rewards(
     # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
     # be used as a reliable off-track indicator.
     off_track, _ = compute_oob_from_boundary_state(
-        step_state["boundary"], margin_m=float(reward_cfg.get("oob_margin_m", 0.5))
+        step_state["boundary"], margin_m=float(reward_cfg.get("oob_margin_m", 0.2))
     )
     prev_off = reward_state.get("prev_off_track")
     if prev_off is None or prev_off.numel() != off_track.numel():
