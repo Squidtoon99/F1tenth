@@ -17,7 +17,7 @@ from .domain_randomization import (
 )
 from f1tenth_sim.params import VehicleParams
 from f1tenth_sim.suspension import quasi_static_loads
-from .backends import make_backend
+from .backends import TorchSimBackend
 from .car import compute_tyre_slip
 from .observations import build_observation, obs_opponent
 from .opponents import (
@@ -41,7 +41,6 @@ from .terminations import (
 from .utils import (
     build_step_state,
     compute_oob_from_boundary_state,
-    invalidate_step_caches,
     load_track_state,
 )
 
@@ -102,9 +101,7 @@ class F1tenthEnv:
         self.w_tr_right_torch = self.track_state["w_tr_right_torch"]
         self.spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.01))[2])
 
-        self.physics_backend = str(self.env_cfg.get("physics_backend", "genesis"))
-        self.backend = make_backend(
-            self.physics_backend,
+        self.backend = TorchSimBackend(
             num_envs=num_envs,
             env_cfg=self.env_cfg,
             obs_cfg=self.obs_cfg,
@@ -229,16 +226,12 @@ class F1tenthEnv:
 
         self._step_state: dict[str, Any] = {}
         self._step_state_valid = False
+        self._opp_step_state: dict[str, Any] = {}
+        self._opp_step_state_valid = False
+        self._collision_state: dict[str, torch.Tensor] = {}
+        self._collision_state_valid = False
         self._eval_launch_initialized = False
-
-        # Optionally compile the pure-tensor observation builder. Default off; the
-        # eager function is used unless explicitly enabled for the GPU target.
-        if bool(self.env_cfg.get("compile_obs", False)):
-            self._build_observation = torch.compile(
-                build_observation, dynamic=False
-            )
-        else:
-            self._build_observation = build_observation
+        self._build_observation = build_observation
 
         self.reset()
 
@@ -280,6 +273,40 @@ class F1tenthEnv:
             + v_min
         )
 
+    def _opp_reset_speed_range(self) -> tuple[float, float]:
+        opp_min = self.env_cfg.get("opponent_reset_speed_min_mps")
+        opp_max = self.env_cfg.get("opponent_reset_speed_max_mps")
+        if opp_min is not None and opp_max is not None:
+            v_min, v_max = float(opp_min), float(opp_max)
+        else:
+            v_min, v_max = self._reset_speed_range()
+        if v_max < v_min:
+            v_min, v_max = v_max, v_min
+        return v_min, v_max
+
+    def _sample_opp_reset_speed(self) -> torch.Tensor:
+        v_min, v_max = self._opp_reset_speed_range()
+        if abs(v_min) < 1e-8 and abs(v_max) < 1e-8:
+            return torch.zeros((self.num_envs,), dtype=rt.tc_float, device=self.device)
+        return (
+            torch.rand((self.num_envs,), device=self.device, dtype=rt.tc_float)
+            * (v_max - v_min)
+            + v_min
+        )
+
+    def _sample_lateral_offset(self, idx: torch.Tensor) -> torch.Tensor:
+        w_left = self.w_tr_left_torch[idx]
+        w_right = self.w_tr_right_torch[idx]
+        spawn_margin = float(self.env_cfg.get("reset_spawn_margin_m", 0.2))
+        max_left = (w_left - spawn_margin).clamp_min(0.05)
+        max_right = (w_right - spawn_margin).clamp_min(0.05)
+        B = idx.shape[0]
+        return (
+            torch.rand((B,), device=self.device, dtype=rt.tc_float)
+            * (max_left + max_right)
+            - max_right
+        )
+
     def _sample_track_spawn_batch(
         self, centerline_idx: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -306,16 +333,7 @@ class F1tenthEnv:
         )
         normal = torch.stack([-tangent[:, 1], tangent[:, 0]], dim=-1)
 
-        w_left = self.w_tr_left_torch[idx]
-        w_right = self.w_tr_right_torch[idx]
-        spawn_margin = float(self.env_cfg.get("reset_spawn_margin_m", 0.2))
-        max_left = (w_left - spawn_margin).clamp_min(0.05)
-        max_right = (w_right - spawn_margin).clamp_min(0.05)
-        lateral = (
-            torch.rand((B,), device=self.device, dtype=rt.tc_float)
-            * (max_left + max_right)
-            - max_right
-        )
+        lateral = self._sample_lateral_offset(idx)
 
         along_jitter = float(self.env_cfg.get("reset_along_track_jitter_m", 0.1))
         along = (
@@ -351,32 +369,51 @@ class F1tenthEnv:
         normal = torch.stack([-tangent[:, 1], tangent[:, 0]], dim=-1)
         return tangent, normal, p_curr
 
-    def _spawn_opponent_ahead_of_ego(
+    def _spawn_opponent_distributed(
         self, ego_pos: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Place the opponent ``opponent_spawn_gap_m`` ahead on the centerline.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Floor the along-track gap at the body length (+ collision margin) so two
+        # cars can never spawn already overlapping under the oriented-box predicate.
+        car_len = float(self.env_cfg.get("car_length", 0.568))
+        min_gap = car_len + float(self.env_cfg.get("collision_margin_m", 0.0))
+        gap_min = max(float(self.env_cfg.get("opponent_spawn_gap_min_m", 3.0)), min_gap)
+        gap_max = max(float(self.env_cfg.get("opponent_spawn_gap_max_m", 20.0)), gap_min)
+        behind_prob = float(self.env_cfg.get("opponent_spawn_behind_prob", 0.3))
+        lateral_independent = bool(
+            self.env_cfg.get("opponent_spawn_lateral_independent", True)
+        )
 
-        Reuses the ego's lateral offset so the two cars start in the same lane
-        with no independent lateral jitter that could place them side-by-side or
-        overlapping at reset.
-        """
-        gap_m = float(self.env_cfg.get("opponent_spawn_gap_m", 7.0))
-        gap_pts = max(1, int(round(gap_m / self._mean_seg_len)))
+        B = ego_pos.shape[0]
         ego_idx = self._closest_centerline_indices(ego_pos[:, :2])
-        opp_idx = (ego_idx + gap_pts) % self.num_pts
 
-        _, normal_ego, p_ego = self._centerline_frame(ego_idx)
-        lateral = ((ego_pos[:, :2] - p_ego) * normal_ego).sum(dim=-1)
+        mag = (
+            torch.rand((B,), device=self.device, dtype=rt.tc_float)
+            * (gap_max - gap_min)
+            + gap_min
+        )
+        behind = torch.rand((B,), device=self.device, dtype=rt.tc_float) < behind_prob
+        sign = torch.where(behind, -1, 1)
+        gap_pts = torch.clamp(
+            (mag / self._mean_seg_len).round().to(dtype=torch.long), min=1
+        )
+        opp_idx = (ego_idx + sign * gap_pts) % self.num_pts
+
+        if lateral_independent:
+            lateral = self._sample_lateral_offset(opp_idx)
+        else:
+            _, normal_ego, p_ego = self._centerline_frame(ego_idx)
+            lateral = ((ego_pos[:, :2] - p_ego) * normal_ego).sum(dim=-1)
 
         _, normal_opp, p_opp = self._centerline_frame(opp_idx)
         spawn_xy = p_opp + normal_opp * lateral.unsqueeze(1)
 
         tangent, _, _ = self._centerline_frame(opp_idx)
         yaw = torch.atan2(tangent[:, 1], tangent[:, 0])
-        z = torch.full((ego_pos.shape[0], 1), self.spawn_z, dtype=rt.tc_float, device=self.device)
+        z = torch.full((B, 1), self.spawn_z, dtype=rt.tc_float, device=self.device)
         pos = torch.cat([spawn_xy, z], dim=1)
         quat = self._yaw_to_quat(yaw)
-        return pos, quat
+        opp_speed = self._sample_opp_reset_speed()
+        return pos, quat, opp_speed
 
     def _sample_spawn_batch(
         self,
@@ -437,12 +474,14 @@ class F1tenthEnv:
         m = mask.unsqueeze(1)
 
         if self.has_opponent:
-            opp_pos, opp_quat = self._spawn_opponent_ahead_of_ego(pos)
+            opp_pos, opp_quat, opp_speed = self._spawn_opponent_distributed(pos)
         else:
-            opp_pos, opp_quat = None, None
+            opp_pos, opp_quat, opp_speed = None, None, None
 
         sample_dr_on_reset(self._dr, mask, self.device)
-        self.backend.reset(mask, pos, quat, speed, opp_pos, opp_quat, self._dr)
+        self.backend.reset(
+            mask, pos, quat, speed, opp_pos, opp_quat, opp_speed, self._dr
+        )
 
         if self.has_opponent:
             m_opp = mask.unsqueeze(1)
@@ -510,12 +549,7 @@ class F1tenthEnv:
     def _tyre_slip_from(
         self, wheel_state: dict[str, Any], active: torch.Tensor
     ) -> torch.Tensor:
-        """Per-wheel slip (N,8): backend-native if provided, else computed.
-
-        The TorchSim backend evaluates the slip inside its (PhysX-grounded) tyre
-        model and returns it directly; Genesis has no tyre model, so fall back to
-        the same modern-PhysX definition applied to the wheel-frame velocities.
-        """
+        """Per-wheel slip (N,8): simulator-native if provided, else computed."""
         native = wheel_state.get("tyre_slip")
         if native is not None:
             return native
@@ -572,8 +606,9 @@ class F1tenthEnv:
             self.opp_vel_world = st["opp_vel_world"]
             self.opp_ang_world = st["opp_ang_world"]
 
-        invalidate_step_caches(self.track_state)
         self._step_state_valid = False
+        self._opp_step_state_valid = False
+        self._collision_state_valid = False
 
     def _update_observation(self):
         step_state = self._get_step_state()
@@ -600,7 +635,7 @@ class F1tenthEnv:
         step_state["actions"] = self.actions
         step_state["last_actions"] = self.last_actions
         if self.has_opponent:
-            opp_ss = self._opponent_step_state(self.opp_base_pos)
+            opp_ss = self._opponent_step_state()
             step_state["opp_s"] = opp_ss["frenet"]["s"]
             # World-frame ego and opponent velocities for the GT Sophy rear-end
             # penalty (Rr), which scales with the squared closing speed
@@ -610,17 +645,7 @@ class F1tenthEnv:
             step_state["opp_vel_world"] = self.opp_vel_world
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
-            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
-            step_state["car_collision"] = collision_mask(
-                self.base_pos[:, :2],
-                self.opp_base_pos[:, :2],
-                ego_yaw,
-                car_length=float(self.env_cfg.get("car_length", 0.46)),
-                car_width=float(self.env_cfg.get("car_width", 0.30)),
-                collision_margin_m=float(
-                    self.env_cfg.get("collision_margin_m", 0.0)
-                ),
-            )
+            step_state["car_collision"] = self._get_collision_state()["overlap"]
         self.reward_buf, self._step_state = compute_rewards(
             step_state=step_state,
             reward_cfg=self.reward_cfg,
@@ -654,23 +679,11 @@ class F1tenthEnv:
         if self.has_opponent and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
-            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
-            overlap = collision_mask(
-                self.base_pos[:, :2],
-                self.opp_base_pos[:, :2],
-                ego_yaw,
-                car_length=float(self.env_cfg.get("car_length", 0.46)),
-                car_width=float(self.env_cfg.get("car_width", 0.30)),
-                collision_margin_m=float(
-                    self.env_cfg.get("collision_margin_m", 0.0)
-                ),
-            )
+            collision_state = self._get_collision_state()
+            overlap = collision_state["overlap"]
             term_speed = float(self.env_cfg.get("collision_term_speed_mps", 0.0))
             if term_speed > 0.0:
-                closing_speed = torch.linalg.norm(
-                    self.base_vel_world[:, :2] - self.opp_vel_world[:, :2], dim=-1
-                )
-                collision = overlap & (closing_speed > term_speed)
+                collision = overlap & (collision_state["closing_speed"] > term_speed)
             else:
                 collision = overlap
             self.reset_buf = self.reset_buf | collision
@@ -702,7 +715,7 @@ class F1tenthEnv:
             ).to(dtype=rt.tc_float),
         }
         if self.has_opponent:
-            opp_ss = self._opponent_step_state(self.opp_base_pos)
+            opp_ss = self._opponent_step_state()
             seg_dir = opp_ss["frenet"]["seg_dir"]
             seg_dir = seg_dir / torch.linalg.norm(
                 seg_dir, dim=-1, keepdim=True
@@ -752,6 +765,10 @@ class F1tenthEnv:
         all-False) done mask: masked envs are teleported/zeroed and the rest are
         untouched, with no host-device synchronization."""
         mask = self._normalize_reset_mask(envs_idx)
+        if not bool(mask.any()):
+            self._update_observation()
+            self.extras["observations"]["critic"] = self.obs_buf
+            return self.obs_buf, self.extras
 
         self._reset_envs(mask)
 
@@ -781,15 +798,54 @@ class F1tenthEnv:
         """Apply throttle/brake and lagged steering to the ego car via the backend."""
         self.backend.apply_ego_actions(exec_actions, self.base_lin_vel, self._dr)
 
-    def _opponent_step_state(self, pos: torch.Tensor) -> dict[str, Any]:
-        """Frenet/boundary/obs-track state for the opponent (separate geom cache)."""
-        return build_step_state(
-            base_pos=pos,
-            episode_steps_buf=self.episode_steps_buf,
-            track_state=self.track_state,
-            device=self.device,
-            cache_id="opponent",
-        )
+    def _opponent_step_state(
+        self, pos: torch.Tensor | None = None
+    ) -> dict[str, Any]:
+        target_pos = self.opp_base_pos if pos is None else pos
+        use_cache = pos is None or pos is self.opp_base_pos
+        if not use_cache:
+            return build_step_state(
+                base_pos=target_pos,
+                episode_steps_buf=self.episode_steps_buf,
+                track_state=self.track_state,
+                device=self.device,
+                cache_id="opponent",
+            )
+        if not self._opp_step_state_valid:
+            self._opp_step_state = build_step_state(
+                base_pos=target_pos,
+                episode_steps_buf=self.episode_steps_buf,
+                track_state=self.track_state,
+                device=self.device,
+                cache_id="opponent",
+            )
+            self._opp_step_state_valid = True
+        return self._opp_step_state
+
+    def _get_collision_state(self) -> dict[str, torch.Tensor]:
+        if not self._collision_state_valid:
+            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+            opp_yaw = gu.quat_to_xyz(
+                self.opp_base_quat, rpy=True, degrees=False
+            )[:, 2]
+            self._collision_state = {
+                "overlap": collision_mask(
+                    self.base_pos[:, :2],
+                    self.opp_base_pos[:, :2],
+                    ego_yaw,
+                    opp_yaw,
+                    car_length=float(self.env_cfg.get("car_length", 0.568)),
+                    car_width=float(self.env_cfg.get("car_width", 0.296)),
+                    collision_margin_m=float(
+                        self.env_cfg.get("collision_margin_m", 0.0)
+                    ),
+                ),
+                "closing_speed": torch.linalg.norm(
+                    self.base_vel_world[:, :2] - self.opp_vel_world[:, :2], dim=-1
+                ),
+            }
+            self._collision_state_valid = True
+        return self._collision_state
 
     def _agent_state(
         self,
@@ -837,7 +893,7 @@ class F1tenthEnv:
             self.obs_cfg.get("enable_opponent_obs", False)
         ):
             return None
-        opp_ss = self._opponent_step_state(self.opp_base_pos)
+        opp_ss = self._opponent_step_state()
         block = obs_opponent(
             self._agent_state(
                 self.base_pos, self.base_quat, self.base_vel_world, ego_step_state
@@ -902,7 +958,7 @@ class F1tenthEnv:
         """Query the opponent controller and actuate the opponent entity."""
         if not self.has_opponent or self.opponent_ctrl is None:
             return
-        opp_ss = self._opponent_step_state(self.opp_base_pos)
+        opp_ss = self._opponent_step_state()
         opp_obs = None
         if self.opponent_ctrl.requires_observation:
             opp_obs = self._build_opponent_obs(opp_ss)

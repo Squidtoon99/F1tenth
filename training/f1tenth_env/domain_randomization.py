@@ -1,4 +1,4 @@
-"""Per-episode domain randomization (config-gated, default off)."""
+"""Per-episode domain randomization for training and nominal evaluation."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ from typing import Any
 import torch
 
 from . import runtime as rt
-
-CHASSIS_FRICTION = 0.05
 
 
 def _uniform(
@@ -42,14 +40,10 @@ def init_dr_state(
         "tire_friction": torch.full(
             (num_envs,), base_tire_friction, dtype=rt.tc_float, device=device
         ),
-        "ground_friction": torch.full(
-            (num_envs,), base_tire_friction, dtype=rt.tc_float, device=device
-        ),
         "vehicle_mass": torch.full(
             (num_envs,), base_vehicle_mass, dtype=rt.tc_float, device=device
         ),
         "mass_scale": torch.ones((num_envs,), dtype=rt.tc_float, device=device),
-        # Torch-backend physical DR (neutral by default; Genesis ignores these).
         # drive_scale multiplies the drive force (motor/gearing strength) and
         # steer_bias (rad) adds a steering-alignment offset.
         "drive_scale": torch.ones((num_envs,), dtype=rt.tc_float, device=device),
@@ -90,7 +84,6 @@ def sample_dr_on_reset(
         return float(val[0]), float(val[1])
 
     tf_lo, tf_hi = _range("tire_friction_range", (0.6, 0.85))
-    gf_lo, gf_hi = _range("ground_friction_range", (0.6, 0.85))
     mass_lo, mass_hi = _range("vehicle_mass_range", (3.2, 4.2))
     scale_lo, scale_hi = _range("mass_scale_range", (0.9, 1.1))
     act_lat_lo, act_lat_hi = _range(
@@ -105,7 +98,6 @@ def sample_dr_on_reset(
     obs_lat_hi = max(obs_lat_hi, obs_lat_lo)
 
     dr["tire_friction"][reset_mask] = _uniform(tf_lo, tf_hi, (n,), device)
-    dr["ground_friction"][reset_mask] = _uniform(gf_lo, gf_hi, (n,), device)
     dr["vehicle_mass"][reset_mask] = _uniform(mass_lo, mass_hi, (n,), device)
     dr["mass_scale"][reset_mask] = _uniform(scale_lo, scale_hi, (n,), device)
     dr["drive_scale"][reset_mask] = _uniform(drive_lo, drive_hi, (n,), device)
@@ -125,53 +117,6 @@ def sample_dr_on_reset(
         dr["obs_history"][reset_mask] = 0.0
 
 
-def apply_dr_physics(
-    car,
-    opponent,
-    dr: dict[str, Any],
-    reset_mask: torch.Tensor,
-    wheel_link_ids: list[int],
-) -> None:
-    """Push sampled friction (and optional mass scale) into Genesis for reset envs."""
-    if not dr["enabled"]:
-        return
-
-    env_ids = torch.nonzero(reset_mask, as_tuple=False).squeeze(-1)
-    if env_ids.numel() == 0:
-        return
-
-    n = int(env_ids.numel())
-    ratios = torch.ones((n, len(wheel_link_ids)), dtype=rt.tc_float, device=rt.device)
-    tf = dr["tire_friction"][env_ids]
-    ratios[:, 1:] = (tf / CHASSIS_FRICTION).unsqueeze(1).expand(-1, len(wheel_link_ids) - 1)
-
-    for entity in (car, opponent):
-        if entity is None:
-            continue
-        entity.set_friction_ratio(ratios, links_idx_local=wheel_link_ids, envs_idx=env_ids)
-
-    base_link = car.get_link("base_link")
-    new_mass = (dr["vehicle_mass"] * dr["mass_scale"]).detach()
-    current = base_link.get_mass()
-    if isinstance(current, torch.Tensor):
-        current = current.clone()
-    else:
-        import numpy as np
-
-        arr = np.asarray(current, dtype=np.float32)
-        if arr.ndim == 0:
-            current = torch.full(
-                (new_mass.shape[0],),
-                float(arr),
-                dtype=rt.tc_float,
-                device=new_mass.device,
-            )
-        else:
-            current = torch.as_tensor(arr, dtype=rt.tc_float, device=new_mass.device).clone()
-    current[env_ids] = new_mass[env_ids]
-    base_link.set_mass(current)
-
-
 def latency_actions(
     dr: dict[str, Any], actions: torch.Tensor
 ) -> torch.Tensor:
@@ -180,10 +125,7 @@ def latency_actions(
     hist.copy_(torch.roll(hist, shifts=1, dims=1))
     hist[:, 0] = actions
 
-    if not dr["enabled"]:
-        lat = dr["action_latency_steps"]
-    else:
-        lat = dr["action_latency_steps"]
+    lat = dr["action_latency_steps"]
     lat = lat.clamp(0, hist.shape[1] - 1)
     batch = torch.arange(actions.shape[0], device=actions.device)
     return hist[batch, lat]
@@ -218,7 +160,6 @@ def dr_metrics(dr: dict[str, Any]) -> dict[str, torch.Tensor]:
     """Expose current DR parameters for logging/tests."""
     return {
         "dr/tire_friction": dr["tire_friction"],
-        "dr/ground_friction": dr["ground_friction"],
         "dr/vehicle_mass": dr["vehicle_mass"],
         "dr/mass_scale": dr["mass_scale"],
         "dr/drive_scale": dr["drive_scale"],

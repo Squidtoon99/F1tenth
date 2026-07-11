@@ -1,4 +1,4 @@
-"""Real-Genesis test: collision termination is gated by closing speed.
+"""TorchSim test: collision termination is gated by closing speed.
 
 Drives the ego full-throttle into a (near-)stationary scripted opponent and checks:
 - with a high ``collision_term_speed_mps`` threshold, overlaps still occur (the
@@ -13,24 +13,32 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-gs = pytest.importorskip("genesis")
-
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
+
+
+def _pin_deterministic_spawn(cfg: dict, *, gap_m: float) -> None:
+    cfg["env"]["opponent_spawn_gap_min_m"] = gap_m
+    cfg["env"]["opponent_spawn_gap_max_m"] = gap_m
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 0.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
+    cfg["env"]["reset_speed_min_mps"] = 0.0
+    cfg["env"]["reset_speed_max_mps"] = 0.0
 
 
 def _build_cfg(*, term_speed: float) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["opponent_strategy"] = "scripted"
     cfg["env"]["opponent_target_speed"] = 0.0  # near-stationary pace car to ram
-    cfg["env"]["opponent_spawn_gap_m"] = 2.0
+    _pin_deterministic_spawn(cfg, gap_m=2.0)
     cfg["env"]["term_on_collision"] = True
     cfg["env"]["collision_term_speed_mps"] = term_speed
     cfg["env"]["term_not_moving_time_s"] = 999.0
@@ -82,14 +90,7 @@ def _rollout(cfg: dict, num_envs: int, steps: int) -> tuple[bool, float]:
         env.close()
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
-def test_high_threshold_does_not_terminate_on_contact(genesis_backend):
+def test_high_threshold_does_not_terminate_on_contact(torch_backend):
     torch.manual_seed(0)
     cfg = _build_cfg(term_speed=100.0)
     overlap_seen, term_collisions = _rollout(cfg, num_envs=8, steps=200)
@@ -99,7 +100,7 @@ def test_high_threshold_does_not_terminate_on_contact(genesis_backend):
     )
 
 
-def test_zero_threshold_terminates_on_contact(genesis_backend):
+def test_zero_threshold_terminates_on_contact(torch_backend):
     torch.manual_seed(0)
     cfg = _build_cfg(term_speed=0.0)
     overlap_seen, term_collisions = _rollout(cfg, num_envs=8, steps=200)

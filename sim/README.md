@@ -42,15 +42,15 @@ matches the training distribution. `tools/sim.sh validate` then runs the closed-
 acceptance gate; see [`../docs/deployment.md`](../docs/deployment.md) for the full
 certification sequence and acceptance criteria.
 
-- **Synthetic-data simulator** ([`genesis/`](genesis/)) — used by RL training for
-  large-scale synthetic rollouts. It is a pip dependency of `training/`
-  (`genesis-world`), not a ROS package.
+- **Training simulator** ([`../training/f1tenth_sim/`](../training/f1tenth_sim/)) —
+  the batched TorchSim vehicle model used for RL rollouts. It is pure Python/Torch,
+  not a ROS package.
 
 ## Which sim, when?
 
 | Task | Simulator |
 | --- | --- |
-| RL training / synthetic data | `genesis/` (pip, in `training/`) |
+| RL training / synthetic data | `training/f1tenth_sim/` (TorchSim) |
 | Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
 
 See [`docs/development.md`](../docs/development.md) for launch instructions.

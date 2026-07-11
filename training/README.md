@@ -10,12 +10,9 @@ Linux + NVIDIA GPU box / HPC (there is intentionally **no GPU CI**).
 The modules are top-level (imported as `config`, `run_layout`, `standalone_trainer`,
 `f1tenth_env`, `qrsac`), so run commands from this `training/` directory.
 
-- `f1tenth_env/` — the simulation environment used for training (env, car,
-  observations, rewards, terminations, opponents, domain randomization). Loads the
-  vehicle model from `F110.export.urdf` and track geometry from
-  `f1tenth_env/tracks.pickle`. Physics is provided by a pluggable **backend**
-  (`f1tenth_env/backends.py`): `genesis` (rigid-body engine, default) or `torch`.
-- `f1tenth_sim/` — a pure-Torch, Genesis-free vehicle simulator (Pacejka tyres,
+- `f1tenth_env/` — the simulation environment used for training (observations,
+  rewards, terminations, opponents, and domain randomization).
+- `f1tenth_sim/` — the Torch vehicle simulator (Pacejka tyres,
   load transfer, wheel-spin, VESC/force drivetrain) used by the `torch` backend.
   Fully batched over `num_envs` and runs on CPU / CUDA / MPS.
 - `qrsac/` — the RL algorithm: Quantile-Regression Soft Actor-Critic
@@ -24,8 +21,8 @@ The modules are top-level (imported as `config`, `run_layout`, `standalone_train
   in-memory n-step replay; no Reverb/Redis/S3).
 - `run_layout.py` — per-run output directory layout (`outputs/runs/<run-id>/`).
 - `config.py` — `DEFAULT_CONFIG` (the single source of the trainer's config).
-- `tests/` — observation-geometry / reward / termination / opponent unit tests
-  (they run against the real env, so Genesis must be installed).
+- `tests/` — learner, replay, environment, observation, reward, termination,
+  opponent, export, and evaluation tests.
 
 ## Setup
 
@@ -48,48 +45,53 @@ pip install -r requirements-gpu.txt \
 
 ```bash
 cd training
-python standalone_trainer.py --num-envs 512 --total-steps 500000
+python standalone_trainer.py --num-envs 512 --total-transitions 256000000
 ```
 
-### Physics backend (Genesis vs Torch)
-
-The physics engine is selectable and the observation/action contract is identical
-for both, so the trainer and the deployed car are backend-agnostic:
+### TorchSim physics
 
 ```bash
-# Pure-Torch vehicle sim (no Genesis; runs headless on CPU/CUDA/MPS). The torch
-# sim prioritizes stable physics + throughput over bit-for-bit Genesis parity.
-# It defaults to the VESC-style speed-command throttle (v_cmd = throttle * max_speed,
-# matching the deployed car's drive_math.py):
-python standalone_trainer.py --physics torch --num-envs 4096
+# TorchSim runs headless on CPU/CUDA/MPS and defaults to the deployed VESC-style
+# speed-command throttle.
+python standalone_trainer.py --num-envs 4096
 
 # Open-loop drive-force throttle envelope instead of the speed loop:
-python standalone_trainer.py --physics torch --throttle-mode force
+python standalone_trainer.py --throttle-mode force
 ```
 
-To make Torch the **default** backend, set `DEFAULT_CONFIG["env"]["physics_backend"]
-= "torch"` in `config.py` (and optionally the `torch_sim` / `throttle_mode` keys
-there). The `--physics` flag always overrides the config default.
+Training domain randomization is always enabled. Evaluation and deterministic
+tests use the nominal profile.
+
+Budgets and all cadences are cumulative environment transitions. Telemetry keeps
+separate counts for vector ticks, environment transitions, replay inserts,
+sampled replay rows, and gradient updates. The default learner budget samples two
+replay rows per collected transition, preserving the former 512-env,
+1024-row-batch update ratio independently of vector width.
+
+Policy exports under `outputs/runs/<id>/checkpoints/` are compact artifacts. They
+retain the required `actor` and `obs_norm` keys plus transition count, dimensions,
+action scaling, and format version; critic and optimizer state are not persisted,
+and runs do not resume.
 
 ### Eval visualization (live + mp4)
 
-`eval_visualize.py` runs a trained checkpoint deterministically in a single env and
+`eval_visualize.py` runs a policy artifact deterministically in a single env and
 renders a top-down view (track corridor, car + heading, breadcrumb trail, live
 speed). It is **eval-only** — it never trains or touches a training run — and is
-backend-agnostic (`f1tenth_env/eval_viz.py`).
+uses the same rollout path as in-training and diagnostic evaluation.
 
 ```bash
 # Watch LIVE in a Rerun viewer — updates in real time, no waiting for a file:
-python eval_visualize.py --checkpoint outputs/runs/<id>/checkpoints/ckpt_8000.pt --live
+python eval_visualize.py --checkpoint outputs/runs/<id>/checkpoints/policy_8000.pt --live
 
 # Save an mp4 (e.g. to share or attach to W&B):
-python eval_visualize.py --checkpoint .../ckpt_8000.pt --mp4 outputs/eval.mp4
+python eval_visualize.py --checkpoint .../policy_8000.pt --mp4 outputs/eval.mp4
 
 # Overlay many env instances at once (swarm view of the behaviour spread):
-python eval_visualize.py --checkpoint .../ckpt_8000.pt --live --num-show 24
+python eval_visualize.py --checkpoint .../policy_8000.pt --live --num-show 24
 
 # Both at once; headless box: stream to a saved .rrd instead of spawning a viewer:
-python eval_visualize.py --checkpoint .../ckpt_8000.pt --live --no-spawn \
+python eval_visualize.py --checkpoint .../policy_8000.pt --live --no-spawn \
     --rr-save outputs/eval.rrd --mp4 outputs/eval.mp4
 ```
 
@@ -97,17 +99,20 @@ During training you can also emit periodic eval videos (rendered on a separate
 1-env instance, logged to W&B; add `--eval-video-live` to also stream to Rerun):
 
 ```bash
-python standalone_trainer.py --physics torch --num-envs 4096 \
-    --eval-video-interval 5000 --eval-video-steps 600 --eval-video-num-envs 16
+python standalone_trainer.py --num-envs 4096 \
+    --eval-interval-transitions 20480000 --eval-video-steps 600 \
+    --eval-video-num-envs 16
 ```
 
 Live view needs `rerun-sdk`; mp4 needs `opencv-python` + `imageio[ffmpeg]` (all in
 the requirements files).
 
-Run the unit tests (skipped if Genesis is not installed):
+Run the unit tests and lint:
 
 ```bash
-cd training && pytest
+cd training
+../.venv/bin/python -m pytest tests
+../.venv/bin/python -m flake8 .
 ```
 
 ## Offboard / HPC
@@ -116,6 +121,3 @@ Build an Apptainer image for HPC and run there — see
 [`deploy/apptainer/training.def`](../deploy/apptainer/training.def) and
 [`docs/deployment.md`](../docs/deployment.md). Outputs (checkpoints, logs, wandb) are
 kept out of git (see [`.gitignore`](../.gitignore)).
-
-The synthetic-data simulator (Genesis) is a pip dependency (`genesis-world`); see
-[`../sim/genesis/`](../sim/genesis/).

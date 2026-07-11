@@ -18,7 +18,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-import genesis as gs
 import torch
 import torch.nn as nn
 
@@ -26,6 +25,7 @@ from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.utils import episode_length_for_track
+from evaluation import deterministic_rollout
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
@@ -38,12 +38,12 @@ OPP_TRACK_GAP_IDX = OPP_OBS_BASE_IDX + 4
 
 
 class SelfPlaySnapshot(dict):
-    """CPU snapshot: actor state_dict + obs-norm stats + learner step."""
+    """CPU snapshot: actor state_dict + obs-norm stats + transition count."""
 
     actor: dict[str, torch.Tensor]
     mean: torch.Tensor
     var: torch.Tensor
-    step: int
+    transitions: int
 
 
 class SelfPlayManager:
@@ -52,28 +52,28 @@ class SelfPlayManager:
     def __init__(
         self,
         pool_size: int = 5,
-        snapshot_interval: int = 20_000,
-        refresh_interval: int = 5_000,
+        snapshot_interval_transitions: int = 10_240_000,
+        refresh_interval_transitions: int = 2_560_000,
         sample_mode: str = "mixed",
         mixed_latest_prob: float = 0.8,
         log: logging.Logger | None = None,
     ):
         self.pool_size = pool_size
-        self.snapshot_interval = snapshot_interval
-        self.refresh_interval = refresh_interval
+        self.snapshot_interval_transitions = snapshot_interval_transitions
+        self.refresh_interval_transitions = refresh_interval_transitions
         self.sample_mode = sample_mode
         self.mixed_latest_prob = mixed_latest_prob
         self.log = log or logging.getLogger(LOGGER_NAME)
         self.pool: deque[SelfPlaySnapshot] = deque(maxlen=pool_size)
-        self.opponent_step: int | None = None
-        self._last_snapshot_step = -1
-        self._last_refresh_step = -1
+        self.opponent_transitions: int | None = None
+        self._last_snapshot_transitions = 0
+        self._last_refresh_transitions = 0
         self._episode_wins = 0
         self._episode_total = 0
 
     @staticmethod
     def make_snapshot(
-        models: Models, normalizer: ObsNormalizer, step: int
+        models: Models, normalizer: ObsNormalizer, transitions: int
     ) -> SelfPlaySnapshot:
         return SelfPlaySnapshot(
             actor={
@@ -82,27 +82,28 @@ class SelfPlayManager:
             },
             mean=normalizer.mean.detach().cpu().clone(),
             var=normalizer.var.detach().cpu().clone(),
-            step=step,
+            transitions=transitions,
         )
 
     def seed_snapshot(self, snapshot: SelfPlaySnapshot) -> None:
         self.pool.append(snapshot)
-        if self.opponent_step is None:
-            self.opponent_step = snapshot["step"]
+        if self.opponent_transitions is None:
+            self.opponent_transitions = snapshot["transitions"]
 
     def maybe_snapshot(
-        self, models: Models, normalizer: ObsNormalizer, step: int
+        self, models: Models, normalizer: ObsNormalizer, transitions: int
     ) -> bool:
-        if step <= 0 or step % self.snapshot_interval != 0:
+        if (
+            transitions - self._last_snapshot_transitions
+            < self.snapshot_interval_transitions
+        ):
             return False
-        if step == self._last_snapshot_step:
-            return False
-        snap = self.make_snapshot(models, normalizer, step)
+        snap = self.make_snapshot(models, normalizer, transitions)
         self.pool.append(snap)
-        self._last_snapshot_step = step
+        self._last_snapshot_transitions = transitions
         self.log.info(
-            "Self-play snapshot pushed at step=%d (pool_size=%d)",
-            step,
+            "Self-play snapshot pushed at transitions=%d (pool_size=%d)",
+            transitions,
             len(self.pool),
         )
         return True
@@ -118,39 +119,40 @@ class SelfPlayManager:
             return self.pool[-1]
         return random.choice(list(self.pool))
 
-    def maybe_refresh(self, env: F1tenthEnv, step: int) -> bool:
+    def maybe_refresh(self, env: F1tenthEnv, transitions: int) -> bool:
         if not self.pool:
             return False
-        if step <= 0 or step % self.refresh_interval != 0:
-            return False
-        if step == self._last_refresh_step:
+        if (
+            transitions - self._last_refresh_transitions
+            < self.refresh_interval_transitions
+        ):
             return False
         snap = self._sample_snapshot()
         if snap is None:
             return False
         env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
-        self.opponent_step = snap["step"]
-        self._last_refresh_step = step
+        self.opponent_transitions = snap["transitions"]
+        self._last_refresh_transitions = transitions
         self.log.info(
-            "Self-play opponent refreshed at step=%d from snapshot step=%d "
+            "Self-play opponent refreshed at transitions=%d from snapshot transitions=%d "
             "(pool_size=%d sample=%s)",
-            step,
-            snap["step"],
+            transitions,
+            snap["transitions"],
             len(self.pool),
             self.sample_mode,
         )
         return True
 
     def bootstrap_opponent(self, env: F1tenthEnv) -> None:
-        """Load the newest pool snapshot into the env opponent (step-0 warm start)."""
+        """Load the initial learner snapshot into the environment opponent."""
         if not self.pool:
             return
         snap = self.pool[-1]
         env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
-        self.opponent_step = snap["step"]
+        self.opponent_transitions = snap["transitions"]
         self.log.info(
-            "Self-play opponent bootstrapped from snapshot step=%d (pool_size=%d)",
-            snap["step"],
+            "Self-play opponent bootstrapped from snapshot transitions=%d (pool_size=%d)",
+            snap["transitions"],
             len(self.pool),
         )
 
@@ -180,44 +182,6 @@ class SelfPlayManager:
         self._episode_total = 0
 
 
-def load_init_checkpoint(
-    ckpt_path: str | Path,
-    models: Models,
-    normalizer: ObsNormalizer,
-    device: torch.device,
-    log: logging.Logger,
-) -> None:
-    """Warm-start learner actor + obs normalizer from a standalone checkpoint."""
-    path = Path(ckpt_path)
-    payload = torch.load(path, map_location=device, weights_only=False)
-    models.actor.load_state_dict(payload["actor"])
-    if "obs_norm" in payload:
-        normalizer.load_state_dict(payload["obs_norm"])
-    log.info("Loaded init checkpoint from %s", path)
-
-
-def _maybe_patch_headless_rasterizer() -> None:
-    """Skip pyglet offscreen init when no GUI display is available (CI / agents).
-
-    Matches scripts/physics_check.headless_gs_init; only applied when
-    try_get_display_size fails so interactive Mac runs stay unchanged.
-    """
-    try:
-        gs.utils.try_get_display_size()
-    except Exception:
-        import pyglet
-        from genesis.vis.rasterizer import Rasterizer
-
-        pyglet.options["headless"] = True
-
-        def _headless_build(self):
-            if self._context is None:
-                return
-            self.visualizer = self._context.visualizer
-
-        Rasterizer.build = _headless_build
-
-
 class FlushingStreamHandler(logging.StreamHandler):
     """StreamHandler that flushes after every record so lines appear promptly."""
 
@@ -230,7 +194,7 @@ def setup_trainer_logging(
     level: int = logging.INFO,
     log_file: Path | None = None,
 ) -> logging.Logger:
-    """Dedicated logger isolated from Genesis root-logger / FPS timer output."""
+    """Dedicated trainer logger."""
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(level)
     logger.propagate = False
@@ -328,6 +292,29 @@ class NStepReplayBuffer:
         self.w_pos = 0
         self._arange_n = torch.arange(n_step, device=device)
 
+    def _store(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        reward: torch.Tensor,
+        next_obs: torch.Tensor,
+        done: torch.Tensor,
+    ) -> int:
+        count = int(obs.shape[0])
+        if count == 0:
+            return 0
+        positions = (
+            self.ptr + torch.arange(count, device=self.device)
+        ) % self.capacity
+        self.obs[positions] = obs
+        self.action[positions] = action
+        self.reward[positions] = reward
+        self.next_obs[positions] = next_obs
+        self.done[positions] = done
+        self.ptr = int((self.ptr + count) % self.capacity)
+        self.size = min(self.size + count, self.capacity)
+        return count
+
     def add(
         self,
         obs: torch.Tensor,
@@ -335,7 +322,7 @@ class NStepReplayBuffer:
         rewards: torch.Tensor,
         next_obs: torch.Tensor,
         dones: torch.Tensor,
-    ):
+    ) -> int:
         """Vectorized n-step accumulation. Writes the current transition into each
         env's circular window, emits completed n-step samples for all full windows
         in a single batched scatter, then clears windows for done envs. The only
@@ -356,25 +343,48 @@ class NStepReplayBuffer:
         act0 = self.w_act[:, oldest]
         done_f = dones.detach().to(torch.float32)
 
-        emit_mask = self.w_len == self.n_step
+        emit_mask = (self.w_len == self.n_step) & ~dones.bool()
         idx = torch.nonzero(emit_mask, as_tuple=False).squeeze(-1)
-        n_emit = int(idx.numel())
-        if n_emit > 0:
-            positions = (
-                self.ptr + torch.arange(n_emit, device=self.device)
-            ) % self.capacity
-            self.obs[positions] = obs0[idx]
-            self.action[positions] = act0[idx]
-            self.reward[positions] = n_step_reward[idx]
-            self.next_obs[positions] = next_obs[idx].detach()
-            self.done[positions] = done_f[idx]
-            self.ptr = int((self.ptr + n_emit) % self.capacity)
-            self.size = min(self.size + n_emit, self.capacity)
+        n_emit = self._store(
+            obs0[idx],
+            act0[idx],
+            n_step_reward[idx],
+            next_obs[idx].detach(),
+            done_f[idx],
+        )
+
+        done_mask = dones.bool()
+        env_arange = torch.arange(self.num_envs, device=self.device)
+        for offset in range(self.n_step):
+            terminal_mask = done_mask & (self.w_len > offset)
+            terminal_idx = torch.nonzero(
+                terminal_mask, as_tuple=False
+            ).squeeze(-1)
+            if terminal_idx.numel() == 0:
+                continue
+            start = (self.w_pos - self.w_len + offset) % self.n_step
+            horizon = self.w_len - offset
+            columns = (
+                start.unsqueeze(1) + self._arange_n.unsqueeze(0)
+            ) % self.n_step
+            rewards = self.w_rew[env_arange.unsqueeze(1), columns]
+            valid = self._arange_n.unsqueeze(0) < horizon.unsqueeze(1)
+            returns = (
+                rewards * self._gamma_powers.unsqueeze(0) * valid
+            ).sum(dim=1)
+            n_emit += self._store(
+                self.w_obs[terminal_idx, start[terminal_idx]],
+                self.w_act[terminal_idx, start[terminal_idx]],
+                returns[terminal_idx],
+                next_obs[terminal_idx].detach(),
+                torch.ones_like(done_f[terminal_idx]),
+            )
 
         # Clear windows for done envs (sync-free masked write).
         self.w_len = torch.where(
             dones.bool(), torch.zeros_like(self.w_len), self.w_len
         )
+        return n_emit
 
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
         if self.size < batch_size:
@@ -453,6 +463,21 @@ class ObsNormalizer:
         self.count = float(state["count"])
 
 
+def learner_updates_for_transitions(
+    collected_transitions: int,
+    batch_size: int,
+    sampled_rows_per_transition: float,
+    row_budget: float,
+) -> tuple[int, float]:
+    row_budget += collected_transitions * sampled_rows_per_transition
+    updates = int(row_budget // batch_size)
+    return updates, row_budget - updates * batch_size
+
+
+def interval_crossed(previous: int, current: int, interval: int) -> bool:
+    return interval > 0 and current // interval > previous // interval
+
+
 class RunningStats:
     """Accumulates scalar means / min / max / totals for named diagnostics.
 
@@ -466,17 +491,20 @@ class RunningStats:
         self._min: dict[str, torch.Tensor] = {}
         self._max: dict[str, torch.Tensor] = {}
 
-    def add_mean(self, key: str, value: torch.Tensor) -> None:
+    def add_mean(
+        self, key: str, value: torch.Tensor, *, track_range: bool = False
+    ) -> None:
         v = value.detach().float()
         self._sum[key] = self._sum.get(key, v.new_zeros(())) + v.mean()
         self._count[key] = self._count.get(key, 0) + 1
-        vmin, vmax = v.min(), v.max()
-        self._min[key] = (
-            vmin if key not in self._min else torch.minimum(self._min[key], vmin)
-        )
-        self._max[key] = (
-            vmax if key not in self._max else torch.maximum(self._max[key], vmax)
-        )
+        if track_range:
+            vmin, vmax = v.min(), v.max()
+            self._min[key] = (
+                vmin if key not in self._min else torch.minimum(self._min[key], vmin)
+            )
+            self._max[key] = (
+                vmax if key not in self._max else torch.maximum(self._max[key], vmax)
+            )
 
     def add_total(self, key: str, value: torch.Tensor) -> None:
         v = value.detach().float()
@@ -511,7 +539,7 @@ def accumulate_step_diagnostics(
     extras: dict,
 ) -> None:
     """Fold one env step's reward terms, metrics and terminations into diag."""
-    diag.add_mean("reward/step", reward)
+    diag.add_mean("reward/step", reward, track_range=True)
 
     for name, value in extras.get("rewards", {}).get("terms", {}).items():
         if isinstance(value, torch.Tensor):
@@ -529,29 +557,52 @@ def accumulate_step_diagnostics(
         "nonfinite_obs_envs",
         "nonfinite_reward_envs",
         "nonfinite_state_envs",
+        "dr/tire_friction",
+        "dr/vehicle_mass",
+        "dr/mass_scale",
+        "dr/drive_scale",
+        "dr/steer_bias",
+        "dr/action_latency_steps",
+        "dr/obs_latency_steps",
+        "dr/obs_noise_std",
     ):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
             if name.startswith("nonfinite_") or name == "laps_completed":
                 diag.add_total(f"metric/{name}", value)
             else:
-                diag.add_mean(f"metric/{name}", value)
+                diag.add_mean(
+                    f"metric/{name}",
+                    value,
+                    track_range=name.startswith("dr/"),
+                )
 
     for name, value in extras.get("termination", {}).items():
         if isinstance(value, torch.Tensor):
             diag.add_total(f"term/{name}", value)
 
     if actions.ndim == 2 and actions.shape[1] >= 2:
-        diag.add_mean("action/throttle", actions[:, 0])
-        diag.add_mean("action/steer", actions[:, 1])
-    diag.add_mean("obs/abs", obs.abs())
+        diag.add_mean("action/throttle", actions[:, 0], track_range=True)
+        diag.add_mean("action/steer", actions[:, 1], track_range=True)
+    diag.add_mean("obs/abs", obs.abs(), track_range=True)
 
 
 def build_config(args: argparse.Namespace) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["track"] = args.track
-    if getattr(args, "physics", None) is not None:
-        cfg["env"]["physics_backend"] = args.physics
+    cfg["model"]["batch_size"] = args.batch_size
+    cfg["model"]["minimum_train_transitions"] = args.min_train_transitions
+    cfg["model"]["sampled_replay_rows_per_transition"] = (
+        args.sampled_rows_per_transition
+    )
+    cfg["model"]["replay_buffer_limit"] = args.buffer_capacity
+    cfg["model"]["alpha"] = args.alpha
+    cfg["schedule"]["total_transitions"] = args.total_transitions
+    cfg["schedule"]["log_interval_transitions"] = args.log_interval_transitions
+    cfg["schedule"]["export_interval_transitions"] = (
+        args.export_interval_transitions
+    )
+    cfg["schedule"]["eval_interval_transitions"] = args.eval_interval_transitions
     if getattr(args, "throttle_mode", None) is not None:
         cfg["env"]["throttle_mode"] = args.throttle_mode
 
@@ -576,19 +627,18 @@ def build_config(args: argparse.Namespace) -> dict:
     if args.n_step is not None:
         cfg["model"]["n_step"] = args.n_step
 
-    if getattr(args, "domain_randomization", False):
-        cfg["env"]["domain_randomization"] = {
-            **DEFAULT_CONFIG["env"]["domain_randomization"],
-            "enabled": True,
-        }
+    cfg["env"]["domain_randomization"] = {
+        **DEFAULT_CONFIG["env"]["domain_randomization"],
+        "enabled": True,
+    }
 
     if getattr(args, "zero_tyre_slip_obs", False):
         cfg["obs"]["zero_tyre_slip_obs"] = True
 
     sp_defaults = DEFAULT_CONFIG["selfplay"]
     cfg["selfplay"] = {
-        "snapshot_interval": args.selfplay_snapshot_interval,
-        "refresh_interval": args.selfplay_refresh_interval,
+        "snapshot_interval_transitions": args.selfplay_snapshot_interval,
+        "refresh_interval_transitions": args.selfplay_refresh_interval,
         "pool_size": args.selfplay_pool_size,
         "sample_mode": args.selfplay_sample,
         "mixed_latest_prob": sp_defaults["mixed_latest_prob"],
@@ -610,7 +660,14 @@ def build_config(args: argparse.Namespace) -> dict:
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
         cfg["env"]["opponent_target_speed"] = args.opponent_target_speed
-        cfg["env"]["opponent_spawn_gap_m"] = args.opponent_spawn_gap
+        cfg["env"]["opponent_spawn_gap_min_m"] = args.opponent_spawn_gap_min
+        cfg["env"]["opponent_spawn_gap_max_m"] = args.opponent_spawn_gap_max
+        cfg["env"]["opponent_spawn_behind_prob"] = args.opponent_spawn_behind_prob
+        cfg["env"]["opponent_spawn_lateral_independent"] = (
+            args.opponent_spawn_lateral_independent
+        )
+        cfg["env"]["opponent_reset_speed_min_mps"] = args.opponent_reset_speed_min
+        cfg["env"]["opponent_reset_speed_max_mps"] = args.opponent_reset_speed_max
         if args.opponent_ckpt is not None:
             cfg["env"]["opponent_ckpt"] = args.opponent_ckpt
         cfg["obs"]["enable_opponent_obs"] = True
@@ -630,16 +687,6 @@ def build_config(args: argparse.Namespace) -> dict:
         # continues.
         if args.collision_term_speed is not None:
             cfg["env"]["collision_term_speed_mps"] = float(args.collision_term_speed)
-        # Car-car contacts need a slightly softer / better-resolved constraint solve.
-        cfg["env"]["solver_iterations"] = max(
-            int(cfg["env"].get("solver_iterations", 50)), 80
-        )
-        cfg["env"]["solver_ls_iterations"] = max(
-            int(cfg["env"].get("solver_ls_iterations", 50)), 80
-        )
-        cfg["env"]["constraint_timeconst"] = max(
-            float(cfg["env"].get("constraint_timeconst", 0.02)), 0.04
-        )
     return cfg
 
 
@@ -649,29 +696,10 @@ def select_device(device_arg: str) -> torch.device:
     return torch.device(device_arg)
 
 
-def select_genesis_backend(name: str):
-    """Resolve a Genesis compute backend. 'gpu' uses CUDA on NVIDIA and Metal on
-    Apple Silicon. 'auto' only auto-selects a discrete CUDA GPU and otherwise
-    stays on CPU (on Apple Silicon the CPU backend is faster for this workload,
-    so Metal must be requested explicitly via --backend gpu/metal)."""
-    if name == "cpu":
-        return gs.cpu
-    if name == "gpu":
-        return gs.gpu
-    if name == "metal":
-        return getattr(gs, "metal", gs.gpu)
-    if name == "cuda":
-        return getattr(gs, "cuda", gs.gpu)
-    return gs.gpu if torch.cuda.is_available() else gs.cpu
-
-
 def build_models(
     cfg: dict, device: torch.device, alpha: float = 0.01
 ) -> tuple[Models, QRSACTrainer]:
-    # Networks/optimizers stay float32 even when Genesis runs in precision="64"
-    # (which flips torch's default dtype to float64); env outputs are bridged to
-    # float32 at the boundary. Pin dtype explicitly so module creation under a
-    # float64 default still yields float32 weights.
+    # Networks/optimizers stay float32 even when the simulator uses float64.
     net_dtype = torch.float32
     models = Models(
         actor=make_policy_network(cfg).to(device=device, dtype=net_dtype),
@@ -694,26 +722,27 @@ def build_models(
     return models, trainer
 
 
-def save_checkpoint(
+def save_policy_artifact(
     models: Models,
-    step: int,
-    ckpt_dir: Path,
-    normalizer: "ObsNormalizer | None" = None,
+    env_transitions: int,
+    artifact_dir: Path,
+    normalizer: ObsNormalizer,
+    cfg: dict,
 ):
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    path = ckpt_dir / f"ckpt_{step}.pt"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / f"policy_{env_transitions}.pt"
     payload = {
-        "step": step,
         "actor": models.actor.state_dict(),
-        "critic1": models.critic1.state_dict(),
-        "critic2": models.critic2.state_dict(),
+        "obs_norm": normalizer.state_dict(),
+        "env_transitions": env_transitions,
+        "obs_dim": int(cfg["obs"]["num_obs"]),
+        "action_dim": int(cfg["env"]["num_actions"]),
+        "action_scale": float(cfg["env"]["clip_actions"]),
+        "config_version": int(cfg["config_version"]),
+        "policy_format_version": int(cfg["policy_format_version"]),
     }
-    if normalizer is not None:
-        # Eval/deploy MUST apply these same obs stats (e.g. ros2_deploy) since the
-        # policy was trained on normalized observations.
-        payload["obs_norm"] = normalizer.state_dict()
     torch.save(payload, path)
-    logging.getLogger(LOGGER_NAME).info("Saved checkpoint to %s", path)
+    logging.getLogger(LOGGER_NAME).info("Saved policy artifact to %s", path)
     return path
 
 
@@ -750,7 +779,14 @@ def run_eval_video(
     if env is None:
         env = F1tenthEnv(
             num_envs=num_show,
-            env_cfg={**env_cfg, "launch_strategy_data": {"num_cars": num_show}},
+            env_cfg={
+                **env_cfg,
+                "launch_strategy_data": {"num_cars": num_show},
+                "domain_randomization": {
+                    **env_cfg["domain_randomization"],
+                    "enabled": False,
+                },
+            },
             obs_cfg=obs_cfg,
             reward_cfg=reward_cfg,
             show_viewer=False,
@@ -765,8 +801,8 @@ def run_eval_video(
         centerline=env.track_state["centerline"],
         w_tr_left=env.track_state["w_tr_left"],
         w_tr_right=env.track_state["w_tr_right"],
-        car_length=float(env_cfg.get("car_length", 0.46)),
-        car_width=float(env_cfg.get("car_width", 0.30)),
+        car_length=float(env_cfg.get("car_length", 0.568)),
+        car_width=float(env_cfg.get("car_width", 0.296)),
         num_show=num_show,
         live=live,
         mp4_path=mp4_path,
@@ -780,38 +816,38 @@ def run_eval_video(
     models.actor.eval()
     if selfplay_mgr is not None and getattr(env, "has_opponent", False):
         selfplay_mgr.refresh_eval_opponent(env)
-    obs, _ = env.reset()
-    obs = obs.to(torch.float32)
-    with torch.no_grad():
-        for _ in range(num_steps):
-            actions, _ = models.actor(
-                normalizer.normalize(obs), deterministic=True, with_logprob=False
+
+    def render_step(_step, rollout_env, _state_before, _reward, done, _extras):
+        st = rollout_env.backend.read_state()
+        ego_xy = st["base_pos"][:, :2].cpu().numpy()
+        ego_yaw = np.array(
+            [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"]]
+        )
+        speed = torch.linalg.norm(st["base_lin_vel"][:, :2], dim=-1).cpu().numpy()
+        opp_xy = opp_yaw = None
+        if rollout_env.has_opponent and "opp_base_pos" in st:
+            opp_xy = st["opp_base_pos"][:, :2].cpu().numpy()
+            opp_yaw = np.array(
+                [yaw_from_quat_wxyz(q.tolist()) for q in st["opp_base_quat"]]
             )
-            actions = actions.clamp(-clip_actions, clip_actions)
-            obs, _, done, _ = env.step(
-                actions.to(rt.tc_float), n_steps=control_interval
-            )
-            obs = obs.to(torch.float32)
-            st = env.backend.read_state()
-            ego_xy = st["base_pos"][:, :2].cpu().numpy()
-            ego_yaw = np.array(
-                [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"]]
-            )
-            spd = torch.linalg.norm(st["base_lin_vel"][:, :2], dim=-1).cpu().numpy()
-            opp_xy = opp_yaw = None
-            if env.has_opponent and "opp_base_pos" in st:
-                opp_xy = st["opp_base_pos"][:, :2].cpu().numpy()
-                opp_yaw = np.array(
-                    [yaw_from_quat_wxyz(q.tolist()) for q in st["opp_base_quat"]]
-                )
-            viz.render(
-                ego_xy=ego_xy,
-                ego_yaw=ego_yaw,
-                speed=spd,
-                opp_xy=opp_xy,
-                opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
-                done=done.cpu().numpy(),
-            )
+        viz.render(
+            ego_xy=ego_xy,
+            ego_yaw=ego_yaw,
+            speed=speed,
+            opp_xy=opp_xy,
+            opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
+            done=done.cpu().numpy(),
+        )
+
+    deterministic_rollout(
+        env,
+        models.actor,
+        normalizer.normalize,
+        num_steps=num_steps,
+        control_interval=control_interval,
+        clip_actions=clip_actions,
+        callback=render_step,
+    )
     out = viz.close()
     models.actor.train(was_training)
     if wandb_run is not None and out is not None:
@@ -825,18 +861,30 @@ def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(description="Standalone QRSAC trainer (1v0, single process)")
     parser.add_argument("--num-envs", type=int, default=512)
-    parser.add_argument("--total-steps", type=int, default=500_000)
+    parser.add_argument(
+        "--total-transitions",
+        type=int,
+        default=cfg["schedule"]["total_transitions"],
+    )
     parser.add_argument("--batch-size", type=int, default=cfg["model"]["batch_size"])
-    parser.add_argument("--updates-per-step", type=int, default=1)
+    parser.add_argument(
+        "--sampled-rows-per-transition",
+        type=float,
+        default=cfg["model"]["sampled_replay_rows_per_transition"],
+    )
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0.01,
+        default=cfg["model"]["alpha"],
         help="SAC entropy coefficient (fixed). Default 0.01 matches GT Sophy; "
         "lower temperature lets the policy commit to a fast racing line rather "
         "than staying overly stochastic.",
     )
-    parser.add_argument("--min-train-samples", type=int, default=5000)
+    parser.add_argument(
+        "--min-train-transitions",
+        type=int,
+        default=cfg["model"]["minimum_train_transitions"],
+    )
     parser.add_argument(
         "--n-step",
         type=int,
@@ -845,19 +893,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--track", type=str, default=cfg["env"]["track"])
     parser.add_argument(
-        "--physics",
-        type=str,
-        default=cfg["env"].get("physics_backend", "genesis"),
-        choices=["genesis", "torch"],
-        help="Physics backend: 'genesis' (rigid-body, default) or 'torch' "
-        "(pure-Torch f1tenth_sim vehicle model). Same obs/action contract.",
-    )
-    parser.add_argument(
         "--throttle-mode",
         type=str,
         default=None,
         choices=["force", "speed"],
-        help="Throttle semantics for the torch backend: 'force' (drive-force "
+        help="Throttle semantics: 'force' (drive-force "
         "envelope) or 'speed' (VESC-style speed command). Default from config.",
     )
     parser.add_argument(
@@ -891,10 +931,40 @@ def parse_args() -> argparse.Namespace:
         "overtake is feasible.",
     )
     parser.add_argument(
-        "--opponent-spawn-gap",
+        "--opponent-spawn-gap-min",
         type=float,
-        default=cfg["env"]["opponent_spawn_gap_m"],
-        help="Meters the opponent spawns ahead of the ego on the centerline.",
+        default=cfg["env"]["opponent_spawn_gap_min_m"],
+        help="Minimum opponent spawn gap magnitude (m) along the centerline.",
+    )
+    parser.add_argument(
+        "--opponent-spawn-gap-max",
+        type=float,
+        default=cfg["env"]["opponent_spawn_gap_max_m"],
+        help="Maximum opponent spawn gap magnitude (m) along the centerline.",
+    )
+    parser.add_argument(
+        "--opponent-spawn-behind-prob",
+        type=float,
+        default=cfg["env"]["opponent_spawn_behind_prob"],
+        help="Probability the opponent spawns behind the ego (else ahead).",
+    )
+    parser.add_argument(
+        "--opponent-spawn-lateral-independent",
+        action=argparse.BooleanOptionalAction,
+        default=cfg["env"]["opponent_spawn_lateral_independent"],
+        help="Sample an independent lateral offset for the opponent at reset.",
+    )
+    parser.add_argument(
+        "--opponent-reset-speed-min",
+        type=float,
+        default=cfg["env"]["opponent_reset_speed_min_mps"],
+        help="Minimum opponent launch speed at reset (m/s).",
+    )
+    parser.add_argument(
+        "--opponent-reset-speed-max",
+        type=float,
+        default=cfg["env"]["opponent_reset_speed_max_mps"],
+        help="Maximum opponent launch speed at reset (m/s).",
     )
     parser.add_argument(
         "--opponent-ckpt",
@@ -940,12 +1010,6 @@ def parse_args() -> argparse.Namespace:
         help="Zero obs[372:380] in training to match deploy/gym (no slip sensing).",
     )
     parser.add_argument(
-        "--domain-randomization",
-        action="store_true",
-        default=False,
-        help="Enable per-episode domain randomization (friction, mass, latency, obs noise).",
-    )
-    parser.add_argument(
         "--self-play",
         action="store_true",
         default=False,
@@ -963,14 +1027,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--selfplay-snapshot-interval",
         type=int,
-        default=cfg["selfplay"]["snapshot_interval"],
-        help="Environment steps between learner snapshots added to the opponent pool.",
+        default=cfg["selfplay"]["snapshot_interval_transitions"],
+        help="Environment transitions between learner snapshots.",
     )
     parser.add_argument(
         "--selfplay-refresh-interval",
         type=int,
-        default=cfg["selfplay"]["refresh_interval"],
-        help="Environment steps between opponent policy refreshes from the pool.",
+        default=cfg["selfplay"]["refresh_interval_transitions"],
+        help="Environment transitions between opponent policy refreshes.",
     )
     parser.add_argument(
         "--selfplay-pool-size",
@@ -986,44 +1050,39 @@ def parse_args() -> argparse.Namespace:
         help="How to sample an opponent snapshot from the pool (mixed: 80%% latest).",
     )
     parser.add_argument(
-        "--init-ckpt",
-        type=str,
-        default=None,
-        help="Warm-start the learner actor (+ obs_norm) and seed the self-play pool "
-        "from this standalone checkpoint.",
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default="auto",
         choices=["auto", "cpu", "cuda"],
     )
     parser.add_argument(
-        "--backend",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "gpu", "cuda", "metal"],
-        help="Genesis sim backend. 'gpu' uses CUDA (NVIDIA) or Metal (Apple "
-        "Silicon); 'auto' prefers any available GPU. Note: the Metal backend "
-        "only supports precision=32.",
-    )
-    parser.add_argument(
         "--precision",
         type=str,
         default="64",
         choices=["32", "64"],
-        help="Genesis float precision. 64 is the strongest NaN-stability lever "
-        "(slower / 2x memory); use 32 for fast iteration or GPU throughput.",
+        help="Torch simulator precision.",
     )
-    parser.add_argument("--ckpt-interval", type=int, default=10_000)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--buffer-capacity", type=int, default=100_000)
-    parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument(
-        "--eval-video-interval",
+        "--export-interval-transitions",
         type=int,
-        default=0,
-        help="Render a deterministic eval rollout every N steps (0=off). Uses a "
+        default=cfg["schedule"]["export_interval_transitions"],
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--buffer-capacity",
+        type=int,
+        default=cfg["model"]["replay_buffer_limit"],
+    )
+    parser.add_argument(
+        "--log-interval-transitions",
+        type=int,
+        default=cfg["schedule"]["log_interval_transitions"],
+    )
+    parser.add_argument(
+        "--eval-interval-transitions",
+        type=int,
+        default=cfg["schedule"]["eval_interval_transitions"],
+        help="Render a deterministic eval rollout every N transitions (0=off). Uses a "
         "separate 1-env instance so training data/state is never touched. Logs an "
         "mp4 to W&B (and/or streams live to Rerun with --eval-video-live).",
     )
@@ -1100,36 +1159,13 @@ def main():
     control_interval = cfg["env"]["control_interval"]
     n_step = model_cfg["n_step"]
 
-    physics_backend = str(cfg["env"].get("physics_backend", "genesis"))
-    if physics_backend == "torch":
-        # The pure-Torch vehicle sim is Genesis-free: skip gs.init() entirely and
-        # configure the env's own dtype/device runtime. No Genesis runtime / no GL.
-        device = select_device(args.device)
-        rt.configure(
-            float_dtype=torch.float64 if args.precision == "64" else torch.float32,
-            int_dtype=torch.int32,
-            dev=device,
-            eps=1e-12,
-        )
-    else:
-        _maybe_patch_headless_rasterizer()
-        backend = select_genesis_backend(args.backend)
-        gs.init(
-            backend=backend,
-            precision=args.precision,
-            performance_mode=True,
-        )
-        # Keep the RL pipeline (normalizer, networks, replay buffer) on the same
-        # device as the Genesis sim so env outputs don't straddle two devices. On a
-        # GPU backend gs.device is the accelerator (CUDA / Apple MPS); on CPU it is
-        # cpu and we honour the explicit --device choice.
-        if backend == gs.cpu:
-            device = select_device(args.device)
-        else:
-            device = gs.device
-        rt.configure(
-            float_dtype=gs.tc_float, int_dtype=gs.tc_int, dev=device, eps=gs.EPS,
-        )
+    device = select_device(args.device)
+    rt.configure(
+        float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+        int_dtype=torch.int32,
+        dev=device,
+        eps=1e-12,
+    )
     run_id = args.run_id or uuid.uuid4().hex[:8]
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1182,22 +1218,19 @@ def main():
         clip=float(obs_cfg.get("norm_clip", 10.0)),
     )
 
-    if args.init_ckpt is not None:
-        load_init_checkpoint(args.init_ckpt, models, normalizer, device, log)
-
     selfplay_mgr: SelfPlayManager | None = None
     if args.self_play or args.mixed_opponents:
         sp_cfg = cfg["selfplay"]
         selfplay_mgr = SelfPlayManager(
             pool_size=sp_cfg["pool_size"],
-            snapshot_interval=sp_cfg["snapshot_interval"],
-            refresh_interval=sp_cfg["refresh_interval"],
+            snapshot_interval_transitions=sp_cfg["snapshot_interval_transitions"],
+            refresh_interval_transitions=sp_cfg["refresh_interval_transitions"],
             sample_mode=sp_cfg["sample_mode"],
             mixed_latest_prob=sp_cfg["mixed_latest_prob"],
             log=log,
         )
         selfplay_mgr.seed_snapshot(
-            SelfPlayManager.make_snapshot(models, normalizer, step=0)
+            SelfPlayManager.make_snapshot(models, normalizer, transitions=0)
         )
         selfplay_mgr.bootstrap_opponent(env)
 
@@ -1210,10 +1243,9 @@ def main():
         if platform.system() == "Darwin":
             tags.append("mac")
         init_kwargs = {
-            "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
+            "project": os.getenv("WANDB_PROJECT", "f1tenth-torchsim"),
             "name": f"standalone_{run_id}",
             "id": run_id,
-            "resume": "allow",
             "config": {**cfg, **vars(args)},
             "mode": os.getenv("WANDB_MODE", args.wandb_mode),
             "dir": str(run_dir),
@@ -1231,23 +1263,29 @@ def main():
     obs = obs.to(torch.float32)
     normalizer.update(obs)
     act_dim = cfg["env"]["num_actions"]
-    global_step = 0
-    train_updates = 0
+    vector_ticks = 0
+    env_transitions = 0
+    replay_inserts = 0
+    sampled_replay_rows = 0
+    gradient_updates = 0
+    learner_row_budget = 0.0
     episode_rewards = torch.zeros(args.num_envs, device=device, dtype=torch.float32)
     recent_episode_rewards: deque[float] = deque(maxlen=RECENT_EPISODES_MAX)
-    policy_loss_accum = 0.0
-    critic_loss_accum = 0.0
+    policy_loss_accum = torch.zeros((), device=device)
+    critic_loss_accum = torch.zeros((), device=device)
     loss_count = 0
     diag = RunningStats()
-    last_batch: dict[str, torch.Tensor] | None = None
     t_start = time.perf_counter()
-    consecutive_nan_steps = 0
-    total_nan_resets = 0
-    max_consecutive_nan = 20
+    last_log_time = t_start
+    last_log_transitions = 0
+    last_log_replay_inserts = 0
+    last_log_gradient_updates = 0
+    last_log_sampled_rows = 0
     eval_state: dict = {}
 
     try:
-        while global_step < args.total_steps:
+        while env_transitions < args.total_transitions:
+            previous_transitions = env_transitions
             bad_obs_mask = (~torch.isfinite(obs)).any(dim=1)
             if bad_obs_mask.any():
                 diag.add_total(
@@ -1257,7 +1295,7 @@ def main():
                 obs = obs.clone()
                 obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
 
-            if buffer.size < args.min_train_samples:
+            if env_transitions < args.min_train_transitions:
                 actions = (
                     torch.rand(
                         args.num_envs, act_dim, device=device, dtype=torch.float32
@@ -1275,36 +1313,11 @@ def main():
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
 
-            try:
-                next_obs, reward, done, extras = env.step(
-                    actions.to(rt.tc_float), n_steps=control_interval
-                )
-            except gs.GenesisException as exc:
-                consecutive_nan_steps += 1
-                total_nan_resets += 1
-                diag.add_total("nonfinite/genesis_exceptions", torch.ones((), device=device))
-                log.warning(
-                    "Genesis raised at step %d (NaN constraint forces): %s. "
-                    "Resetting envs (consecutive=%d total=%d).",
-                    global_step,
-                    exc,
-                    consecutive_nan_steps,
-                    total_nan_resets,
-                )
-                obs, _ = env.reset()
-                obs = obs.to(torch.float32)
-                episode_rewards.zero_()
-                global_step += 1
-                if global_step % args.ckpt_interval == 0:
-                    save_checkpoint(models, global_step, ckpt_dir, normalizer)
-                if consecutive_nan_steps >= max_consecutive_nan:
-                    raise RuntimeError(
-                        f"Physics NaN persisted for {consecutive_nan_steps} "
-                        f"consecutive steps ({total_nan_resets} total NaN resets). "
-                        "Decrease sim_dt or abort corrupted run."
-                    ) from exc
-                continue
-            consecutive_nan_steps = 0
+            next_obs, reward, done, extras = env.step(
+                actions.to(rt.tc_float), n_steps=control_interval
+            )
+            vector_ticks += 1
+            env_transitions += args.num_envs
             next_obs = next_obs.to(torch.float32)
             reward = reward.to(torch.float32)
             episode_rewards += reward
@@ -1326,7 +1339,11 @@ def main():
             )
 
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
-            diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
+            diag.add_mean(
+                "obs/norm_abs",
+                normalizer.normalize(obs).abs(),
+                track_range=True,
+            )
 
             if use_1v1 and obs.shape[-1] > OPP_OBS_BASE_IDX:
                 opp_block = obs[:, OPP_OBS_BASE_IDX:]
@@ -1338,7 +1355,7 @@ def main():
                 torch.isfinite(reward).all() and not bad_obs_mask.any()
             )
             if finite_ok:
-                buffer.add(obs, actions, reward, next_obs, done)
+                replay_inserts += buffer.add(obs, actions, reward, next_obs, done)
                 # Update running stats only from finite observations so a NaN/Inf
                 # spin transient can never corrupt the normalizer.
                 normalizer.update(next_obs)
@@ -1354,9 +1371,10 @@ def main():
                     (~torch.isfinite(reward)).to(torch.float32),
                 )
                 log.warning(
-                    "Non-finite step at %d (reward_bad=%d obs_bad_envs=%d); "
+                    "Non-finite transition batch at %d transitions "
+                    "(reward_bad=%d obs_bad_envs=%d); "
                     "skipping buffer add.",
-                    global_step,
+                    env_transitions,
                     n_bad_reward,
                     n_bad_obs_envs,
                 )
@@ -1365,68 +1383,93 @@ def main():
                     next_obs = next_obs.clone()
                     next_obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
             obs = next_obs
-            global_step += 1
 
-            if buffer.size >= args.min_train_samples:
-                for _ in range(args.updates_per_step):
+            if env_transitions >= args.min_train_transitions:
+                updates_due, learner_row_budget = learner_updates_for_transitions(
+                    args.num_envs,
+                    args.batch_size,
+                    args.sampled_rows_per_transition,
+                    learner_row_budget,
+                )
+                if buffer.size < args.batch_size:
+                    learner_row_budget += updates_due * args.batch_size
+                    updates_due = 0
+                for _ in range(updates_due):
                     batch = buffer.sample(args.batch_size)
                     # Buffer stores RAW obs; normalize with current stats at input.
                     batch["obs"] = normalizer.normalize(batch["obs"])
                     batch["next_obs"] = normalizer.normalize(batch["next_obs"])
                     losses = trainer.update(batch)
-                    train_updates += 1
+                    gradient_updates += 1
+                    sampled_replay_rows += args.batch_size
                     policy_loss_accum += losses.policy_loss
                     critic_loss_accum += losses.critic_loss
                     loss_count += 1
-                last_batch = batch
 
             if selfplay_mgr is not None:
-                selfplay_mgr.maybe_snapshot(models, normalizer, global_step)
-                selfplay_mgr.maybe_refresh(env, global_step)
+                selfplay_mgr.maybe_snapshot(models, normalizer, env_transitions)
+                selfplay_mgr.maybe_refresh(env, env_transitions)
 
-            if global_step % args.log_interval == 0:
-                elapsed = time.perf_counter() - t_start
-                steps_per_sec = global_step / max(elapsed, 1e-6)
+            if interval_crossed(
+                previous_transitions,
+                env_transitions,
+                args.log_interval_transitions,
+            ):
+                now = time.perf_counter()
+                elapsed = now - last_log_time
+                window_transitions = env_transitions - last_log_transitions
+                vector_ticks_per_sec = (
+                    window_transitions / args.num_envs / max(elapsed, 1e-6)
+                )
+                transitions_per_sec = window_transitions / max(elapsed, 1e-6)
+                inserts_per_sec = (
+                    replay_inserts - last_log_replay_inserts
+                ) / max(elapsed, 1e-6)
+                sampled_rows_per_sec = (
+                    sampled_replay_rows - last_log_sampled_rows
+                ) / max(elapsed, 1e-6)
+                updates_per_sec = (
+                    gradient_updates - last_log_gradient_updates
+                ) / max(elapsed, 1e-6)
                 mean_ep_reward = (
                     sum(recent_episode_rewards) / len(recent_episode_rewards)
                     if recent_episode_rewards
                     else float("nan")
                 )
                 mean_policy_loss = (
-                    policy_loss_accum / loss_count if loss_count else float("nan")
+                    float(policy_loss_accum / loss_count)
+                    if loss_count
+                    else float("nan")
                 )
                 mean_critic_loss = (
-                    critic_loss_accum / loss_count if loss_count else float("nan")
+                    float(critic_loss_accum / loss_count)
+                    if loss_count
+                    else float("nan")
                 )
                 buffer_fill_pct = 100.0 * buffer.size / buffer.capacity
                 log.info(
-                    "step=%d buffer=%d/%d (%.1f%%) train_updates=%d steps/s=%.1f "
+                    "ticks=%d transitions=%d replay_inserts=%d buffer=%d/%d (%.1f%%) "
+                    "gradient_updates=%d ticks/s=%.1f transitions/s=%.1f "
+                    "inserts/s=%.1f sampled_rows/s=%.1f updates/s=%.2f "
                     "policy_loss=%.4f critic_loss=%.4f mean_ep_reward=%.4f (n=%d)",
-                    global_step,
+                    vector_ticks,
+                    env_transitions,
+                    replay_inserts,
                     buffer.size,
                     buffer.capacity,
                     buffer_fill_pct,
-                    train_updates,
-                    steps_per_sec,
+                    gradient_updates,
+                    vector_ticks_per_sec,
+                    transitions_per_sec,
+                    inserts_per_sec,
+                    sampled_rows_per_sec,
+                    updates_per_sec,
                     mean_policy_loss,
                     mean_critic_loss,
                     mean_ep_reward,
                     len(recent_episode_rewards),
                 )
-                mean_q = float("nan")
-                if last_batch is not None:
-                    with torch.no_grad():
-                        mean_q = (
-                            models.critic1(last_batch["obs"], last_batch["action"])
-                            .mean()
-                            .item()
-                        )
-                nstep_buf_reward_mean = (
-                    float(buffer.reward[: buffer.size].mean())
-                    if buffer.size > 0
-                    else float("nan")
-                )
-                window_env_steps = float(args.log_interval * args.num_envs)
+                window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
                 nf_reward_rate = (
                     diag.total("metric/nonfinite_reward_envs") / window_env_steps
@@ -1439,7 +1482,7 @@ def main():
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
                         "progress=%.4f passing=%.4f collision=%.4f oob_penalty=%.4f "
-                        "tyre_slip=%.4f smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        "tyre_slip=%.4f smooth=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
@@ -1449,14 +1492,12 @@ def main():
                         diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
-                        nstep_buf_reward_mean,
-                        mean_q,
                     )
                 else:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
                         "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f "
-                        "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        "smooth=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
@@ -1464,8 +1505,6 @@ def main():
                         diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
-                        nstep_buf_reward_mean,
-                        mean_q,
                     )
                 log.info(
                     "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
@@ -1485,12 +1524,26 @@ def main():
                     diag.vmax("obs/norm_abs"),
                 )
                 log.info(
+                    "  dr: tire_mu[%.3f..%.3f] mass[%.3f..%.3f] "
+                    "act_latency[%.0f..%.0f] obs_latency[%.0f..%.0f] "
+                    "obs_noise[%.4f..%.4f]",
+                    diag.vmin("metric/dr/tire_friction"),
+                    diag.vmax("metric/dr/tire_friction"),
+                    diag.vmin("metric/dr/vehicle_mass"),
+                    diag.vmax("metric/dr/vehicle_mass"),
+                    diag.vmin("metric/dr/action_latency_steps"),
+                    diag.vmax("metric/dr/action_latency_steps"),
+                    diag.vmin("metric/dr/obs_latency_steps"),
+                    diag.vmax("metric/dr/obs_latency_steps"),
+                    diag.vmin("metric/dr/obs_noise_std"),
+                    diag.vmax("metric/dr/obs_noise_std"),
+                )
+                log.info(
                     "  nonfinite: obs_rate=%.2e reward_rate=%.2e state_rate=%.2e "
-                    "genesis_exc=%d pre_obs_reset=%d post_obs_bad=%d post_reward_bad=%d",
+                    "pre_obs_reset=%d post_obs_bad=%d post_reward_bad=%d",
                     nf_obs_rate,
                     nf_reward_rate,
                     nf_state_rate,
-                    int(diag.total("nonfinite/genesis_exceptions")),
                     int(diag.total("nonfinite/pre_step_obs_resets")),
                     int(diag.total("nonfinite/post_step_obs_bad")),
                     int(diag.total("nonfinite/post_step_reward_bad")),
@@ -1508,15 +1561,15 @@ def main():
                     )
                     if selfplay_mgr is not None:
                         opp_age = (
-                            global_step - selfplay_mgr.opponent_step
-                            if selfplay_mgr.opponent_step is not None
+                            env_transitions - selfplay_mgr.opponent_transitions
+                            if selfplay_mgr.opponent_transitions is not None
                             else -1
                         )
                         log.info(
-                            "  selfplay: pool_size=%d opp_step=%s opp_age=%d "
+                            "  selfplay: pool_size=%d opp_transitions=%s opp_age=%d "
                             "win_rate=%.3f (n=%d)",
                             len(selfplay_mgr.pool),
-                            selfplay_mgr.opponent_step,
+                            selfplay_mgr.opponent_transitions,
                             opp_age,
                             selfplay_mgr.win_rate(),
                             selfplay_mgr._episode_total,
@@ -1534,15 +1587,20 @@ def main():
                 if wandb_run is not None:
                     wandb_run.log(
                         {
-                            "step": global_step,
+                            "env_transitions": env_transitions,
+                            "vector_ticks": vector_ticks,
+                            "replay_inserts": replay_inserts,
+                            "sampled_replay_rows": sampled_replay_rows,
+                            "gradient_updates": gradient_updates,
                             "buffer/size": buffer.size,
-                            "train/updates": train_updates,
                             "train/policy_loss": mean_policy_loss,
                             "train/critic_loss": mean_critic_loss,
                             "train/mean_ep_reward": mean_ep_reward,
-                            "train/mean_Q": mean_q,
-                            "train/nstep_buf_reward": nstep_buf_reward_mean,
-                            "perf/steps_per_sec": steps_per_sec,
+                            "perf/vector_ticks_per_sec": vector_ticks_per_sec,
+                            "perf/env_transitions_per_sec": transitions_per_sec,
+                            "perf/replay_inserts_per_sec": inserts_per_sec,
+                            "perf/sampled_replay_rows_per_sec": sampled_rows_per_sec,
+                            "perf/gradient_updates_per_sec": updates_per_sec,
                             "reward/total_mean": diag.mean("reward/step"),
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
@@ -1565,6 +1623,18 @@ def main():
                             "env/progress_ds": diag.mean("metric/progress_ds"),
                             "env/lap_count": diag.mean("metric/lap_count"),
                             "env/laps_completed": diag.total("metric/laps_completed"),
+                            "dr/tire_friction_min": diag.vmin(
+                                "metric/dr/tire_friction"
+                            ),
+                            "dr/tire_friction_max": diag.vmax(
+                                "metric/dr/tire_friction"
+                            ),
+                            "dr/vehicle_mass_min": diag.vmin(
+                                "metric/dr/vehicle_mass"
+                            ),
+                            "dr/vehicle_mass_max": diag.vmax(
+                                "metric/dr/vehicle_mass"
+                            ),
                             "action/throttle_max": diag.vmax("action/throttle"),
                             "action/steer_max": diag.vmax("action/steer"),
                             "obs/absmax": diag.vmax("obs/abs"),
@@ -1575,9 +1645,6 @@ def main():
                             "nonfinite/obs_rate": nf_obs_rate,
                             "nonfinite/reward_rate": nf_reward_rate,
                             "nonfinite/state_rate": nf_state_rate,
-                            "nonfinite/genesis_exceptions": diag.total(
-                                "nonfinite/genesis_exceptions"
-                            ),
                             "nonfinite/pre_step_obs_resets": diag.total(
                                 "nonfinite/pre_step_obs_resets"
                             ),
@@ -1588,19 +1655,34 @@ def main():
                                 "nonfinite/post_step_reward_bad"
                             ),
                         },
-                        step=global_step,
+                        step=env_transitions,
                     )
-                policy_loss_accum = 0.0
-                critic_loss_accum = 0.0
+                policy_loss_accum.zero_()
+                critic_loss_accum.zero_()
                 loss_count = 0
                 diag.reset()
+                last_log_time = now
+                last_log_transitions = env_transitions
+                last_log_replay_inserts = replay_inserts
+                last_log_sampled_rows = sampled_replay_rows
+                last_log_gradient_updates = gradient_updates
 
-            if global_step % args.ckpt_interval == 0:
-                save_checkpoint(models, global_step, ckpt_dir, normalizer)
+            if interval_crossed(
+                previous_transitions,
+                env_transitions,
+                args.export_interval_transitions,
+            ):
+                save_policy_artifact(
+                    models, env_transitions, ckpt_dir, normalizer, cfg
+                )
 
             if (
-                args.eval_video_interval > 0
-                and global_step % args.eval_video_interval == 0
+                args.eval_interval_transitions > 0
+                and interval_crossed(
+                    previous_transitions,
+                    env_transitions,
+                    args.eval_interval_transitions,
+                )
             ):
                 try:
                     run_eval_video(
@@ -1613,7 +1695,7 @@ def main():
                         control_interval=control_interval,
                         clip_actions=clip_actions,
                         run_dir=run_dir,
-                        step=global_step,
+                        step=env_transitions,
                         num_steps=args.eval_video_steps,
                         num_show=args.eval_video_num_envs,
                         live=args.eval_video_live,
@@ -1624,7 +1706,7 @@ def main():
                 except Exception as exc:
                     log.warning("Eval video rollout failed (continuing): %s", exc)
 
-        save_checkpoint(models, global_step, ckpt_dir, normalizer)
+        save_policy_artifact(models, env_transitions, ckpt_dir, normalizer, cfg)
     finally:
         try:
             env.close()
@@ -1639,7 +1721,12 @@ def main():
         if wandb_run is not None:
             wandb_run.finish()
 
-    log.info("Training finished after %d steps (%d updates).", global_step, train_updates)
+    log.info(
+        "Training finished after %d vector ticks, %d transitions, and %d updates.",
+        vector_ticks,
+        env_transitions,
+        gradient_updates,
+    )
 
 
 if __name__ == "__main__":

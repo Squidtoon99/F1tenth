@@ -43,7 +43,6 @@ def test_lateral_penalty_scales_with_ey_squared(rewards_mod):
 
 def test_rejoin_step_zeros_progress(rewards_mod, real_modules):
     """First on-track step after an off-track excursion must not credit progress."""
-    utils = real_modules.utils
     w_l = torch.tensor([2.0])
     w_r = torch.tensor([2.0])
     # ey=0 -> on track at reward margin 0.2
@@ -77,7 +76,9 @@ def test_rejoin_step_zeros_progress(rewards_mod, real_modules):
             "smoothness": 0.0,
         },
     }
-    reward_state = rewards_mod.init_reward_state(reward_cfg["reward_scales"], 1, torch.device("cpu"))
+    reward_state = rewards_mod.init_reward_state(
+        reward_cfg["reward_scales"], 1, torch.device("cpu")
+    )
 
     base = {
         "frenet": {

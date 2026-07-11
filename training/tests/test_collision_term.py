@@ -18,9 +18,9 @@ import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# F110 envelope defaults (match config.py).
-_CAR_LENGTH = 0.46
-_CAR_WIDTH = 0.30
+# Body envelope defaults (match config.py: provisional Traxxas Slash 4x4 spec).
+_CAR_LENGTH = 0.568
+_CAR_WIDTH = 0.296
 
 
 @pytest.fixture(scope="session")
@@ -46,34 +46,44 @@ def _collision(
     ego_xy,
     opp_xy,
     ego_yaw=0.0,
+    opp_yaw=0.0,
     car_length=_CAR_LENGTH,
     car_width=_CAR_WIDTH,
     margin=0.0,
 ):
     ego = torch.tensor([ego_xy], dtype=torch.float32)
     opp = torch.tensor([opp_xy], dtype=torch.float32)
-    yaw = torch.tensor([ego_yaw], dtype=torch.float32)
+    eyaw = torch.tensor([ego_yaw], dtype=torch.float32)
+    oyaw = torch.tensor([opp_yaw], dtype=torch.float32)
     return term_mod.collision_mask(
-        ego, opp, yaw, car_length, car_width, margin
+        ego, opp, eyaw, oyaw, car_length, car_width, margin
     ).item()
 
 
-# --- anisotropic ego-frame collision -----------------------------------------
+# --- oriented-box (aligned) collision, sum of half-extents = full envelope ----
 def test_collision_rear_end_within_longitudinal(term_mod):
-    """Directly behind/ahead within long_thresh and ~0 lateral -> collision."""
-    assert _collision(term_mod, (0.0, 0.0), (0.3, 0.0)) is True
-    assert _collision(term_mod, (0.0, 0.0), (-0.3, 0.0)) is True
+    """Directly behind/ahead within car_length and ~0 lateral -> collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.4, 0.0)) is True
+    assert _collision(term_mod, (0.0, 0.0), (-0.4, 0.0)) is True
 
 
 def test_collision_beyond_longitudinal(term_mod):
-    """Directly behind beyond long_thresh -> no collision."""
-    assert _collision(term_mod, (0.0, 0.0), (0.5, 0.0)) is False
-    assert _collision(term_mod, (0.0, 0.0), (-0.5, 0.0)) is False
+    """Directly behind beyond car_length (0.568 m) -> no collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.6, 0.0)) is False
+    assert _collision(term_mod, (0.0, 0.0), (-0.6, 0.0)) is False
+
+
+def test_collision_exact_edge_touch(term_mod):
+    """Overlap is strict: exactly car_length apart is a clean separation."""
+    assert _collision(term_mod, (0.0, 0.0), (_CAR_LENGTH, 0.0)) is False
+    assert _collision(term_mod, (0.0, 0.0), (_CAR_LENGTH - 1e-3, 0.0)) is True
+    assert _collision(term_mod, (0.0, 0.0), (0.0, _CAR_WIDTH)) is False
+    assert _collision(term_mod, (0.0, 0.0), (0.0, _CAR_WIDTH - 1e-3)) is True
 
 
 def test_collision_clean_side_by_side_pass(term_mod):
     """Side-by-side with lateral separation >= car_width -> no collision."""
-    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.35)) is False
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.32)) is False
 
 
 def test_collision_side_by_side_lateral_overlap(term_mod):
@@ -84,12 +94,26 @@ def test_collision_side_by_side_lateral_overlap(term_mod):
 def test_collision_rotated_ego_longitudinal(term_mod):
     """Opponent offset along ego heading after yaw=90deg -> longitudinal."""
     yaw = math.pi / 2
-    # Opponent 0.3 m ahead in ego frame (north in world when ego faces north).
-    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.3), ego_yaw=yaw) is True
-    # Opponent 0.5 m ahead -> beyond long_thresh.
-    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.5), ego_yaw=yaw) is False
-    # Opponent 0.35 m to ego's left (west in world) -> lateral, no collision.
-    assert _collision(term_mod, (0.0, 0.0), (-0.35, 0.0), ego_yaw=yaw) is False
+    # Opponent (and ego) both face north; 0.4 m ahead in ego frame -> collision.
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.4), ego_yaw=yaw, opp_yaw=yaw) is True
+    # 0.6 m ahead -> beyond car_length.
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.6), ego_yaw=yaw, opp_yaw=yaw) is False
+    # 0.35 m to ego's left -> lateral gap exceeds car_width, no collision.
+    assert (
+        _collision(term_mod, (0.0, 0.0), (-0.35, 0.0), ego_yaw=yaw, opp_yaw=yaw) is False
+    )
+
+
+def test_collision_perpendicular_opponent(term_mod):
+    """T-bone: a perpendicular opponent uses its own (rotated) extent via SAT.
+
+    Along ego's heading the reach is ego half-length (0.284) + opponent half-width
+    (0.148) = 0.432 m, so 0.40 m overlaps but 0.45 m clears -- a result the old
+    ego-frame box test (which ignored opponent yaw) could not produce.
+    """
+    perp = math.pi / 2
+    assert _collision(term_mod, (0.0, 0.0), (0.40, 0.0), opp_yaw=perp) is True
+    assert _collision(term_mod, (0.0, 0.0), (0.45, 0.0), opp_yaw=perp) is False
 
 
 def test_collision_batched_mixed(term_mod):
@@ -98,20 +122,21 @@ def test_collision_batched_mixed(term_mod):
         [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [1.0, 2.0]], dtype=torch.float32
     )
     opp = torch.tensor(
-        [[0.3, 0.0], [0.0, 0.35], [0.0, 0.2], [10.0, 10.0]], dtype=torch.float32
+        [[0.4, 0.0], [0.0, 0.32], [0.0, 0.2], [10.0, 10.0]], dtype=torch.float32
     )
-    yaw = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
+    eyaw = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
+    oyaw = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
     mask = term_mod.collision_mask(
-        ego, opp, yaw, _CAR_LENGTH, _CAR_WIDTH, 0.0
+        ego, opp, eyaw, oyaw, _CAR_LENGTH, _CAR_WIDTH, 0.0
     )
     assert mask.tolist() == [True, False, True, False]
 
 
 def test_collision_margin_expands_thresholds(term_mod):
-    """Optional margin widens both longitudinal and lateral thresholds."""
-    # 0.48 m longitudinal: just outside default long_thresh (0.46).
-    assert _collision(term_mod, (0.0, 0.0), (0.48, 0.0), margin=0.0) is False
-    assert _collision(term_mod, (0.0, 0.0), (0.48, 0.0), margin=0.05) is True
+    """Optional margin widens the combined extent additively."""
+    # 0.60 m longitudinal: just outside car_length (0.568 m).
+    assert _collision(term_mod, (0.0, 0.0), (0.60, 0.0), margin=0.0) is False
+    assert _collision(term_mod, (0.0, 0.0), (0.60, 0.0), margin=0.05) is True
 
 
 # --- 1v0 no-regression --------------------------------------------------------

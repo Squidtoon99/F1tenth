@@ -73,29 +73,91 @@ def invalid_state_mask(
     return (~finite_ok) | heading_bad
 
 
+def _obb_axes(yaw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Unit heading (+x) and left (+y) axes for each yaw, shape (B, 2)."""
+    cos = torch.cos(yaw)
+    sin = torch.sin(yaw)
+    heading = torch.stack([cos, sin], dim=-1)
+    left = torch.stack([-sin, cos], dim=-1)
+    return heading, left
+
+
+def obb_overlap_mtv(
+    pa: torch.Tensor,
+    ya: torch.Tensor,
+    pb: torch.Tensor,
+    yb: torch.Tensor,
+    car_length: float,
+    car_width: float,
+    margin: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Oriented-box overlap between two equal cars via the separating-axis test.
+
+    Each car is a ``car_length`` x ``car_width`` rectangle centred on its position
+    and rotated by its own yaw. Returns ``(overlap, normal, depth)`` where
+    ``normal`` (B, 2) is the minimum-translation direction pointing from b toward a
+    and ``depth`` (B,) its positive penetration; both are zero where the boxes are
+    apart. ``margin`` inflates the combined extent (additive slack). With equal
+    headings this reduces to the ego-frame box test.
+    """
+    hl = 0.5 * float(car_length)
+    hw = 0.5 * float(car_width)
+    ax_a, ay_a = _obb_axes(ya)
+    ax_b, ay_b = _obb_axes(yb)
+    d = pa - pb
+
+    separated = torch.zeros(pa.shape[0], dtype=torch.bool, device=pa.device)
+    best_depth = torch.full(
+        (pa.shape[0],), float("inf"), device=pa.device, dtype=pa.dtype
+    )
+    best_normal = torch.zeros_like(pa)
+    for axis in (ax_a, ay_a, ax_b, ay_b):
+        proj = (d * axis).sum(dim=-1)
+        rad_a = hl * (ax_a * axis).sum(-1).abs() + hw * (ay_a * axis).sum(-1).abs()
+        rad_b = hl * (ax_b * axis).sum(-1).abs() + hw * (ay_b * axis).sum(-1).abs()
+        overlap_amt = (rad_a + rad_b + float(margin)) - proj.abs()
+        separated = separated | (overlap_amt <= 0)
+        sign = torch.where(proj >= 0, torch.ones_like(proj), -torch.ones_like(proj))
+        cand_normal = axis * sign.unsqueeze(-1)
+        take = overlap_amt < best_depth
+        best_depth = torch.where(take, overlap_amt, best_depth)
+        best_normal = torch.where(take.unsqueeze(-1), cand_normal, best_normal)
+
+    overlap = ~separated
+    depth = torch.where(
+        overlap, best_depth.clamp_min(0.0), torch.zeros_like(best_depth)
+    )
+    normal = torch.where(
+        overlap.unsqueeze(-1), best_normal, torch.zeros_like(best_normal)
+    )
+    return overlap, normal, depth
+
+
 def collision_mask(
     ego_pos_xy: torch.Tensor,
     opp_pos_xy: torch.Tensor,
     ego_yaw: torch.Tensor,
+    opp_yaw: torch.Tensor,
     car_length: float,
     car_width: float,
     collision_margin_m: float = 0.0,
 ) -> torch.Tensor:
-    """1v1 collision predicate: axis-aligned boxes in the ego heading frame.
+    """1v1 collision predicate: oriented-box (OBB) overlap for two equal cars.
 
-    Both cars are treated as rectangles aligned with the ego heading (cheap
-    interim, not full OBB-OBB).  Collision when longitudinal and lateral
-    separations are both below their respective half-extent sums plus margin.
+    Each car is a ``car_length`` x ``car_width`` rectangle rotated by its own yaw;
+    ``collision_margin_m`` inflates the combined extent. Reduces to the ego-frame
+    box test when both cars share a heading.
     """
-    dp = opp_pos_xy - ego_pos_xy
-    cos_yaw = torch.cos(ego_yaw)
-    sin_yaw = torch.sin(ego_yaw)
-    d_long = dp[:, 0] * cos_yaw + dp[:, 1] * sin_yaw
-    d_lat = -dp[:, 0] * sin_yaw + dp[:, 1] * cos_yaw
-
-    long_thresh = float(car_length) + float(collision_margin_m)
-    lat_thresh = float(car_width) + float(collision_margin_m)
-    return (torch.abs(d_long) < long_thresh) & (torch.abs(d_lat) < lat_thresh)
+    overlap, _, _ = obb_overlap_mtv(
+        ego_pos_xy,
+        ego_yaw,
+        opp_pos_xy,
+        opp_yaw,
+        car_length,
+        car_width,
+        collision_margin_m,
+    )
+    return overlap
 
 
 def compute_terminations(

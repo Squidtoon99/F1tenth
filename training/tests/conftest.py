@@ -1,9 +1,8 @@
 """Shared fixtures/helpers for the observation accuracy audit tests.
 
-These tests verify the training-side observation pipeline (`f1tenth_env`) without
-spinning up a Genesis simulation. They import `f1tenth_env.utils`,
-`f1tenth_env.observations` and `f1tenth_env.car` (genesis-free after configuring
-the env runtime dtype/device), mirroring the approach in
+These tests verify the training-side observation pipeline (`f1tenth_env`). They
+import `f1tenth_env.utils`, `f1tenth_env.observations` and `f1tenth_env.car` after
+configuring the environment runtime dtype/device, mirroring the approach in
 `ros2_deploy/f1tenth_rl_agent/test/test_obs_parity.py`.
 """
 
@@ -19,57 +18,45 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
-# Genesis is a hard test dependency (installed in the dev venv), so import it
-# directly instead of importorskip. Disabling numba JIT caching sidesteps a
-# "no locator available" cache error when genesis is imported from a symlinked
-# venv path, and keeps import fast for these constant-only tests.
+# Numba JIT caching can raise a "no locator available" error from a symlinked
+# venv path; disabling it keeps imports fast and robust for these tests.
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
-
-import genesis as gs  # noqa: E402
 
 import torch  # noqa: E402
 
 from f1tenth_env import runtime as rt  # noqa: E402
 
 
-def init_genesis_headless(*, precision: str = "32") -> None:
-    """Initialize Genesis without a display (CI / headless macOS)."""
-    try:
-        gs.utils.try_get_display_size()
-    except Exception:
-        import pyglet
-        from genesis.vis.rasterizer import Rasterizer
+def _configure_runtime(*, float_dtype=torch.float32) -> None:
+    """Configure the pure-Torch env runtime (CPU).
 
-        pyglet.options["headless"] = True
-
-        def _headless_build(self):
-            if self._context is None:
-                return
-            self.visualizer = self._context.visualizer
-
-        Rasterizer.build = _headless_build
-
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision=precision, logging_level="warning")
-    rt.configure(float_dtype=gs.tc_float, int_dtype=gs.tc_int,
-                 dev=torch.device("cpu"), eps=gs.EPS)
+    Every test uses ``f1tenth_sim.TorchVehicleSim``.
+    """
+    rt.configure(
+        float_dtype=float_dtype,
+        int_dtype=torch.int32,
+        dev=torch.device("cpu"),
+        eps=1e-12,
+    )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    init_genesis_headless(precision="32")
-    return gs
+@pytest.fixture
+def torch_backend():
+    """Pure-Torch runtime (float32, CPU) for a TorchSim env test."""
+    _configure_runtime(float_dtype=torch.float32)
+    return None
 
 
-@pytest.fixture(scope="module")
-def genesis_backend_f64():
-    init_genesis_headless(precision="64")
-    return gs
+@pytest.fixture
+def torch_backend_f64():
+    """float64 Torch runtime for numerically sensitive soak checks.
 
-
-def _configure_runtime() -> None:
-    rt.configure(float_dtype=torch.float32, int_dtype=torch.int32,
-                 dev=torch.device("cpu"), eps=1e-12)
+    Restores the float32 default on teardown so the global runtime dtype does not
+    leak into later tests.
+    """
+    _configure_runtime(float_dtype=torch.float64)
+    yield None
+    _configure_runtime(float_dtype=torch.float32)
 
 
 def _stub_requests() -> None:
@@ -109,7 +96,6 @@ def obs_cfg() -> dict[str, Any]:
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
         "future_track_min_lookahead_m": 5.0,
-        "future_track_width": 2.2,
     }
 
 
@@ -179,7 +165,6 @@ def build_track_state(utils, cl, wl, wr, device=None):
         "w_tr_left_torch": torch.tensor(wl, dtype=torch.float32, device=device),
         "w_tr_right_torch": torch.tensor(wr, dtype=torch.float32, device=device),
         "track_geom_cache": {},
-        "frenet_step_cache": {},
     }
 
 
@@ -211,7 +196,6 @@ def brute_force_frenet(pos_xy: np.ndarray, centerline: np.ndarray):
 
     pos = np.asarray(pos_xy, dtype=np.float64)[:, :2]
     b = pos.shape[0]
-    m = c.shape[0]
 
     # (b, m): projection param t of each pos onto each segment, clamped to [0,1]
     seg_len2 = (seg * seg).sum(-1)

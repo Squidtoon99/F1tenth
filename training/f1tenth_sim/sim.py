@@ -1,10 +1,9 @@
 """TorchVehicleSim: the batched state container + step/reset/readback surface.
 
 Owns all per-env state tensors and exposes exactly the buffers the training env
-needs, so ``TorchSimBackend`` is a thin adapter. No Genesis, no ROS.
+needs, so ``TorchSimBackend`` is a thin adapter.
 
-Wheel order is ``[LR, RR, LF, RF]``. Quaternions are ``wxyz`` (Genesis convention)
-so the existing observation pipeline consumes them unchanged.
+Wheel order is ``[LR, RR, LF, RF]``. Quaternions are ``wxyz``.
 """
 
 from __future__ import annotations

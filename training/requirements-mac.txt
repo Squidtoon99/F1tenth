@@ -10,10 +10,6 @@
 # no rebuild/reinstall during training.
 -e ../libs/f1tenth_contract
 
-# Simulator for synthetic-data generation + training. 1.1.2 is the version
-# validated on macOS Apple Silicon for this trainer.
-genesis-world==1.1.2
-
 # Core ML stack (arm64 wheels; torch selects the MPS/Metal or CPU backend).
 torch
 numpy

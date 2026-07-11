@@ -1,10 +1,10 @@
-"""Diagnostic eval: roll out a checkpoint over many envs and record *where* and
+"""Diagnostic eval: roll out a policy artifact over many envs and record *where* and
 *why* episodes end, plus how far each episode gets (in laps).
 
 Writes a summary to stdout and a diagnostic PNG (track outline + termination
 scatter colored by reason, plus histograms of lap-progress and oob track-location).
 
-    python diagnose_eval.py --checkpoint outputs/runs/<id>/checkpoints/ckpt_390000.pt \
+    python diagnose_eval.py --checkpoint outputs/runs/<id>/checkpoints/policy_390000.pt \
         --num-envs 200 --steps 4000 --out /tmp/diag.png
 """
 
@@ -13,15 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 from collections import defaultdict
 from pathlib import Path
-
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 
 import numpy as np
 import torch
 
+from evaluation import deterministic_rollout
 from f1tenth_env import runtime as rt
 from f1tenth_env.env import F1tenthEnv
 from standalone_trainer import (
@@ -30,6 +28,8 @@ from standalone_trainer import (
     build_models,
     select_device,
 )
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +46,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--precision", type=str, default=None, choices=["32", "64"])
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--stochastic", action="store_true")
     p.add_argument("--out", type=str, default="/tmp/diag.png")
     p.add_argument("--npz", type=str, default="/tmp/diag.npz")
     return p.parse_args()
@@ -59,8 +58,6 @@ def _cum_arclen(pts: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     args = parse_args()
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
     cfg_path = args.config or str(
@@ -75,7 +72,10 @@ def main() -> None:
         precision = args.precision or "32"
         print(f"WARNING: no config.json at {cfg_path}; using DEFAULT_CONFIG")
 
-    cfg["env"]["physics_backend"] = "torch"
+    cfg["env"]["domain_randomization"] = {
+        **cfg["env"]["domain_randomization"],
+        "enabled": False,
+    }
     # Use a scripted centerline opponent for eval (no external policy needed) so the
     # 390-dim obs stay in-distribution; or drop the opponent entirely.
     if args.opponent == "scripted":
@@ -136,15 +136,10 @@ def main() -> None:
     N = args.num_envs
     cum_ds = np.zeros(N)          # arc length this episode
     max_frac = np.zeros(N)        # deepest lap-fraction reached this episode
-    ep_started = np.zeros(N, dtype=int)
-
     events = []                   # (reason, x, y, s_frac_loc, laps_done, speed, ey)
     reason_counts = defaultdict(int)
     completed_laps = []           # laps completed at each episode END
     n_episodes = 0
-
-    obs, _ = env.reset()
-    obs = obs.to(torch.float32)
 
     def nearest_sfrac(xy: np.ndarray) -> np.ndarray:
         # xy: (M,2) -> nearest centerline arc-length fraction
@@ -152,49 +147,56 @@ def main() -> None:
         idx = d2.argmin(1)
         return cl_s[idx] / max(track_len, 1e-6)
 
-    with torch.no_grad():
-        for step in range(args.steps):
-            st = env.backend.read_state()
-            prev_xy = st["base_pos"][:, :2].cpu().numpy().copy()
+    def record_step(_step, _env, state_before, _reward, done, extras):
+        nonlocal n_episodes
+        prev_xy = state_before["base_pos"][:, :2].cpu().numpy().copy()
+        metrics = extras["metrics"]
+        ds = metrics["progress_ds"].detach().cpu().numpy()
+        ey = metrics["lateral_error"].detach().cpu().numpy()
+        speed = metrics["speed_xy"].detach().cpu().numpy()
+        cum_ds[:] += ds
+        max_frac[:] = np.maximum(max_frac, cum_ds / track_len)
 
-            actions, _ = models.actor(
-                normalizer.normalize(obs),
-                deterministic=not args.stochastic, with_logprob=False,
+        done_np = done.detach().cpu().numpy().astype(bool)
+        if not done_np.any():
+            return
+        sfrac = nearest_sfrac(prev_xy)
+        reason_masks = {
+            key: value.detach().cpu().numpy().astype(bool)
+            for key, value in extras["termination"].items()
+        }
+        for i in np.nonzero(done_np)[0]:
+            fired = [key for key, mask in reason_masks.items() if mask[i]]
+            reason = fired[0] if fired else "unknown"
+            reason_counts[reason] += 1
+            laps = cum_ds[i] / track_len
+            events.append(
+                (
+                    reason,
+                    float(prev_xy[i, 0]),
+                    float(prev_xy[i, 1]),
+                    float(sfrac[i]),
+                    float(laps),
+                    float(speed[i]),
+                    float(ey[i]),
+                )
             )
-            actions = actions.clamp(-clip_actions, clip_actions)
-            obs, _, done, extras = env.step(
-                actions.to(rt.tc_float), n_steps=control_interval)
-            obs = obs.to(torch.float32)
+            completed_laps.append(laps)
+            n_episodes += 1
+        cum_ds[done_np] = 0.0
+        max_frac[done_np] = 0.0
 
-            m = extras["metrics"]
-            ds = m["progress_ds"].detach().cpu().numpy()
-            ey = m["lateral_error"].detach().cpu().numpy()
-            spd = m["speed_xy"].detach().cpu().numpy()
-            cum_ds += ds
-            max_frac = np.maximum(max_frac, cum_ds / track_len)
-
-            term = extras["termination"]
-            done_np = done.detach().cpu().numpy().astype(bool)
-            if done_np.any():
-                sfrac = nearest_sfrac(prev_xy)
-                # per-reason masks
-                reason_masks = {
-                    k: term[k].detach().cpu().numpy().astype(bool)
-                    for k in term
-                }
-                for i in np.nonzero(done_np)[0]:
-                    # pick the reason(s) that fired for this env
-                    fired = [k for k, msk in reason_masks.items() if msk[i]]
-                    reason = fired[0] if fired else "unknown"
-                    reason_counts[reason] += 1
-                    laps = cum_ds[i] / track_len
-                    events.append((reason, float(prev_xy[i, 0]), float(prev_xy[i, 1]),
-                                   float(sfrac[i]), float(laps), float(spd[i]),
-                                   float(ey[i])))
-                    completed_laps.append(laps)
-                    n_episodes += 1
-                cum_ds[done_np] = 0.0
-                max_frac[done_np] = 0.0
+    deterministic_rollout(
+        env,
+        models.actor,
+        normalizer.normalize,
+        num_steps=args.steps,
+        control_interval=control_interval,
+        clip_actions=clip_actions,
+        seed=args.seed,
+        callback=record_step,
+        capture_state_before=True,
+    )
 
     env.close()
 

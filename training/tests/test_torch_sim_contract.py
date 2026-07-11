@@ -49,7 +49,6 @@ def _obs_cfg():
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
         "future_track_min_lookahead_m": 5.0,
-        "future_track_width": 2.2,
         "enable_opponent_obs": False,
     }
 

@@ -1,18 +1,18 @@
 """Evaluate a trained policy and visualize the rollout (live and/or mp4).
 
-This is an *eval-only* tool: it loads a checkpoint, runs the policy deterministically
+This is an *eval-only* tool: it loads a policy artifact and runs deterministically
 in a single environment, and renders a top-down view of the car on the track. It
 never trains, samples the replay buffer, or mutates a training run.
 
 Watch live (opens a Rerun viewer, updates in real time -- no waiting for a file):
 
-    python eval_visualize.py --checkpoint outputs/runs/<id>/checkpoints/ckpt_8000.pt --live
+    python eval_visualize.py --checkpoint outputs/runs/<id>/checkpoints/policy_8000.pt --live
 
 Save an mp4 (e.g. to attach to W&B or share):
 
-    python eval_visualize.py --checkpoint .../ckpt_8000.pt --mp4 outputs/eval.mp4
+    python eval_visualize.py --checkpoint .../policy_8000.pt --mp4 outputs/eval.mp4
 
-Both at once are fine. Defaults to the pure-Torch backend (Genesis-free).
+Both at once are fine.
 """
 
 from __future__ import annotations
@@ -20,13 +20,12 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import random
 from pathlib import Path
 
-import genesis as gs
 import numpy as np
 import torch
 
+from evaluation import deterministic_rollout
 from f1tenth_env import runtime as rt
 from f1tenth_env.env import F1tenthEnv
 from f1tenth_env.eval_viz import RolloutVisualizer, yaw_from_quat_wxyz
@@ -36,8 +35,6 @@ from standalone_trainer import (
     build_models,
     episode_length_for_track,
     select_device,
-    select_genesis_backend,
-    _maybe_patch_headless_rasterizer,
 )
 
 
@@ -49,7 +46,10 @@ def build_eval_config(args: argparse.Namespace) -> dict:
     else:
         cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["track"] = args.track
-    cfg["env"]["physics_backend"] = args.physics
+    cfg["env"]["domain_randomization"] = {
+        **cfg["env"]["domain_randomization"],
+        "enabled": False,
+    }
     if args.throttle_mode is not None:
         cfg["env"]["throttle_mode"] = args.throttle_mode
     if args.opponent_ckpt is not None:
@@ -66,15 +66,13 @@ def build_eval_config(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     p = argparse.ArgumentParser(description="Visualize a trained policy rollout")
-    p.add_argument("--checkpoint", required=True, help="Path to ckpt_*.pt")
+    p.add_argument("--checkpoint", required=True, help="Path to policy_*.pt")
     p.add_argument("--opponent-ckpt", type=str, default=None,
-                   help="Path to opponent ckpt_*.pt (enables 1v1 self-play eval).")
+                   help="Path to opponent policy_*.pt (enables 1v1 self-play eval).")
     p.add_argument("--opponent-strategy", type=str, default="policy",
                    choices=["policy", "mixed"],
                    help="Opponent controller when --opponent-ckpt is set.")
     p.add_argument("--track", type=str, default=cfg["env"]["track"])
-    p.add_argument("--physics", type=str, default="torch",
-                   choices=["genesis", "torch"])
     p.add_argument("--throttle-mode", type=str, default=None,
                    choices=["force", "speed"])
     p.add_argument("--steps", type=int, default=1500,
@@ -84,12 +82,8 @@ def parse_args() -> argparse.Namespace:
                    help="How many env instances to draw overlaid on the track "
                         "(swarm view). Bumps --num-envs up to match if needed.")
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--backend", type=str, default="cpu",
-                   choices=["cpu", "gpu", "cuda", "metal", "auto"])
     p.add_argument("--precision", type=str, default="32", choices=["32", "64"])
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--stochastic", action="store_true",
-                   help="Sample actions instead of using the deterministic mean.")
     # Visualization sinks (either/both).
     p.add_argument("--live", action="store_true", help="Stream live to Rerun.")
     p.add_argument("--mp4", type=str, default=None, help="Write an mp4 to this path.")
@@ -104,27 +98,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def _init_physics_runtime(args, cfg) -> torch.device:
-    if str(cfg["env"].get("physics_backend")) == "torch":
-        device = select_device(args.device)
-        rt.configure(
-            float_dtype=torch.float64 if args.precision == "64" else torch.float32,
-            int_dtype=torch.int32,
-            dev=device,
-            eps=1e-12,
-        )
-        return device
-    _maybe_patch_headless_rasterizer()
-    backend = select_genesis_backend(args.backend)
-    gs.init(backend=backend, precision=args.precision, performance_mode=True)
-    device = select_device(args.device) if backend == gs.cpu else gs.device
-    rt.configure(float_dtype=gs.tc_float, int_dtype=gs.tc_int, dev=device, eps=gs.EPS)
+    device = select_device(args.device)
+    rt.configure(
+        float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+        int_dtype=torch.int32,
+        dev=device,
+        eps=1e-12,
+    )
     return device
 
 
 def main() -> None:
     args = parse_args()
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
 
     args.num_show = max(1, args.num_show)
     args.num_envs = max(args.num_envs, args.num_show)
@@ -164,7 +149,7 @@ def main() -> None:
     if "obs_norm" in payload:
         normalizer.load_state_dict(payload["obs_norm"])
     else:
-        print("WARNING: checkpoint has no obs_norm; using identity normalizer stats.")
+        print("WARNING: artifact has no obs_norm; using identity normalizer stats.")
     models.actor.eval()
 
     if args.opponent_ckpt is not None:
@@ -184,7 +169,7 @@ def main() -> None:
         if "obs_norm" in opp_payload:
             opp_normalizer.load_state_dict(opp_payload["obs_norm"])
         else:
-            print("WARNING: opponent checkpoint has no obs_norm; using identity stats.")
+            print("WARNING: opponent artifact has no obs_norm; using identity stats.")
         env.refresh_opponent_policy(
             opp_actor,
             opp_normalizer.mean.detach().cpu().clone(),
@@ -195,8 +180,8 @@ def main() -> None:
         centerline=env.track_state["centerline"],
         w_tr_left=env.track_state["w_tr_left"],
         w_tr_right=env.track_state["w_tr_right"],
-        car_length=float(env_cfg.get("car_length", 0.46)),
-        car_width=float(env_cfg.get("car_width", 0.30)),
+        car_length=float(env_cfg.get("car_length", 0.568)),
+        car_width=float(env_cfg.get("car_width", 0.296)),
         num_show=args.num_show,
         live=args.live,
         mp4_path=args.mp4,
@@ -207,11 +192,9 @@ def main() -> None:
         rr_save_path=args.rr_save,
     )
 
-    obs, _ = env.reset()
-    obs = obs.to(torch.float32)
     duel = "1v1" if args.opponent_ckpt is not None else "1v0"
     print(f"Rolling out {args.steps} steps on '{args.track}' ({duel}, "
-          f"physics={cfg['env']['physics_backend']}, "
+          "physics=torch, "
           f"live={args.live}, mp4={args.mp4})")
 
     n = args.num_show
@@ -219,33 +202,34 @@ def main() -> None:
     def _yaws(quat_batch) -> np.ndarray:
         return np.array([yaw_from_quat_wxyz(q.tolist()) for q in quat_batch])
 
-    with torch.no_grad():
-        for step in range(args.steps):
-            actions, _ = models.actor(
-                normalizer.normalize(obs),
-                deterministic=not args.stochastic,
-                with_logprob=False,
-            )
-            actions = actions.clamp(-clip_actions, clip_actions)
-            obs, _, done, _ = env.step(actions.to(rt.tc_float), n_steps=control_interval)
-            obs = obs.to(torch.float32)
+    def render_step(_step, rollout_env, _state_before, _reward, done, _extras):
+        st = rollout_env.backend.read_state()
+        ego_xy = st["base_pos"][:n, :2].cpu().numpy()
+        ego_yaw = _yaws(st["base_quat"][:n])
+        speed = torch.linalg.norm(st["base_lin_vel"][:n, :2], dim=-1).cpu().numpy()
+        opp_xy = opp_yaw = None
+        if rollout_env.has_opponent and "opp_base_pos" in st:
+            opp_xy = st["opp_base_pos"][:n, :2].cpu().numpy()
+            opp_yaw = _yaws(st["opp_base_quat"][:n])
+        viz.render(
+            ego_xy=ego_xy,
+            ego_yaw=ego_yaw,
+            speed=speed,
+            opp_xy=opp_xy,
+            opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
+            done=done[:n].cpu().numpy(),
+        )
 
-            st = env.backend.read_state()
-            ego_xy = st["base_pos"][:n, :2].cpu().numpy()
-            ego_yaw = _yaws(st["base_quat"][:n])
-            speed = torch.linalg.norm(st["base_lin_vel"][:n, :2], dim=-1).cpu().numpy()
-            opp_xy = opp_yaw = None
-            if env.has_opponent and "opp_base_pos" in st:
-                opp_xy = st["opp_base_pos"][:n, :2].cpu().numpy()
-                opp_yaw = _yaws(st["opp_base_quat"][:n])
-            viz.render(
-                ego_xy=ego_xy,
-                ego_yaw=ego_yaw,
-                speed=speed,
-                opp_xy=opp_xy,
-                opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
-                done=done[:n].cpu().numpy(),
-            )
+    deterministic_rollout(
+        env,
+        models.actor,
+        normalizer.normalize,
+        num_steps=args.steps,
+        control_interval=control_interval,
+        clip_actions=clip_actions,
+        seed=args.seed,
+        callback=render_step,
+    )
 
     out = viz.close()
     env.close()

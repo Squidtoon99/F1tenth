@@ -9,8 +9,6 @@ A large discrepancy means the windowing is selecting the wrong segment.
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import torch
 
@@ -84,7 +82,10 @@ def _run_case(real_modules, cl, wl, wr, seed, *, proj_tol=2e-2, ey_tol=2e-2,
 
     # Position-level checks hold for EVERY sample: if the windowed search ever
     # picked a wrong far segment, proj/ey/s would blow up.
-    assert proj_err.max() < proj_tol, f"proj err {proj_err.max():.4f} (n_bad={int((proj_err>=proj_tol).sum())})"
+    assert proj_err.max() < proj_tol, (
+        f"proj err {proj_err.max():.4f} "
+        f"(n_bad={int((proj_err >= proj_tol).sum())})"
+    )
     assert ey_err.max() < ey_tol, f"ey err {ey_err.max():.4f}"
     assert ds.max() < proj_tol + 1e-2, f"arclen err {ds.max():.4f}"
 

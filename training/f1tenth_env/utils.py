@@ -163,7 +163,6 @@ def load_track_state(
             w_tr_right, device=device, dtype=rt.tc_float
         ),
         "track_geom_cache": {},
-        "frenet_step_cache": {},
     }
 
 
@@ -221,31 +220,6 @@ def compute_track_boundaries(
     left = cl + normal * w_tr_left[:, None]
     right = cl - normal * w_tr_right[:, None]
     return left, right
-
-
-def draw_track_boundaries_debug(
-    scene: Any,
-    centerline: np.ndarray,
-    w_tr_left: np.ndarray,
-    w_tr_right: np.ndarray,
-    reward_cfg: dict[str, Any],
-) -> None:
-    left, right = compute_track_boundaries(centerline, w_tr_left, w_tr_right)
-    z = float(reward_cfg.get("debug_boundary_z", 0.03))
-    radius = float(reward_cfg.get("debug_boundary_radius", 0.1))
-
-    draw_line = getattr(scene, "draw_debug_line")
-    n = left.shape[0]
-    for i in range(n):
-        j = (i + 1) % n
-
-        l0 = (float(left[i, 0]), float(left[i, 1]), z)
-        l1 = (float(left[j, 0]), float(left[j, 1]), z)
-        draw_line(l0, l1, radius=radius, color=(1.0, 0.1, 0.1, 0.85))
-
-        r0 = (float(right[i, 0]), float(right[i, 1]), z)
-        r1 = (float(right[j, 0]), float(right[j, 1]), z)
-        draw_line(r0, r1, radius=radius, color=(0.1, 0.3, 1.0, 0.85))
 
 
 def build_track_cache(
@@ -507,7 +481,3 @@ def build_step_state(
 
 #     wheel_radius = 0.05
 #     wheel_surface_speed = wheel_radius * wheel_spin_rate
-
-
-def invalidate_step_caches(track_state: dict[str, Any]) -> None:
-    track_state["frenet_step_cache"].clear()

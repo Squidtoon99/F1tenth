@@ -1,4 +1,4 @@
-"""Real-Genesis tests for config-gated domain randomization."""
+"""TorchSim tests for config-gated domain randomization."""
 
 from __future__ import annotations
 
@@ -6,14 +6,11 @@ import copy
 import os
 import sys
 
-import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-gs = pytest.importorskip("genesis")
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
@@ -69,7 +66,7 @@ def _collect_dr_samples(env: F1tenthEnv, resets: int) -> dict[str, list[float]]:
     return samples
 
 
-def test_dr_disabled_matches_baseline(genesis_backend):
+def test_dr_disabled_matches_baseline(torch_backend):
     num_envs = 4
     base_tf = float(DEFAULT_CONFIG["env"]["tire_friction"])
     base_mass = 3.74
@@ -100,7 +97,7 @@ def test_dr_disabled_matches_baseline(genesis_backend):
         env.close()
 
 
-def test_dr_enabled_samples_vary_and_respect_bounds(genesis_backend):
+def test_dr_enabled_samples_vary_and_respect_bounds(torch_backend):
     num_envs = 4
     env = _make_env(enable_dr=True, num_envs=num_envs)
     try:

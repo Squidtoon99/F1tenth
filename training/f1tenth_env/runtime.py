@@ -1,8 +1,7 @@
 """Runtime dtype/device configuration for the training environment.
 
-These values are backend-agnostic and owned by the env layer itself, so the
-torch backend never depends on Genesis. Entry points call :func:`configure`
-once at startup; the Genesis backend mirrors its engine dtype/device here too.
+Entry points call :func:`configure` once at startup so the environment and
+TorchSim use the same dtype and device.
 """
 
 from __future__ import annotations

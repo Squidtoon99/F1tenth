@@ -2,9 +2,8 @@
 
 Renders one or more environments' rollouts as a top-down 2D scene (track corridor,
 car poses + heading, breadcrumb trails, live speed) from generic quantities only:
-the track boundaries and the per-step car pose(s). It therefore works identically
-for the Genesis and the pure-Torch backends, and never touches the training loop
-or replay buffer.
+the track boundaries and the per-step car pose(s). It never touches the training
+loop or replay buffer.
 
 Because every parallel env shares the same track, any number of envs can be drawn
 overlaid on a single view (a "swarm" plot showing the spread of behaviours). Pass
@@ -56,6 +55,18 @@ def _car_color(i: int) -> tuple:
     return _PALETTE[i % len(_PALETTE)]
 
 
+_OPP_EGO_BLEND = 0.42
+
+
+def _opp_color(i: int) -> tuple:
+    """Muted gray tint of the ego color for env *i* (eval viz only)."""
+    ego = _car_color(i)
+    return tuple(
+        int(ego[c] * _OPP_EGO_BLEND + _C_OPP[c] * (1.0 - _OPP_EGO_BLEND))
+        for c in range(3)
+    )
+
+
 def _dim(color: tuple, f: float = 0.55) -> tuple:
     return tuple(int(c * f) for c in color)
 
@@ -93,8 +104,8 @@ class RolloutVisualizer:
         centerline: np.ndarray,
         w_tr_left: np.ndarray,
         w_tr_right: np.ndarray,
-        car_length: float = 0.46,
-        car_width: float = 0.30,
+        car_length: float = 0.568,
+        car_width: float = 0.296,
         *,
         num_show: int = 1,
         live: bool = False,
@@ -254,8 +265,8 @@ class RolloutVisualizer:
                 cv2.polylines(frame, [self._poly_px(np.array(trail))], False,
                               _dim(_car_color(i)), 2, lineType=cv2.LINE_AA)
         if opp_rects is not None:
-            for r in opp_rects:
-                cv2.fillPoly(frame, [self._poly_px(r)], _C_OPP)
+            for i, r in enumerate(opp_rects):
+                cv2.fillPoly(frame, [self._poly_px(r)], _opp_color(i))
         for i, r in enumerate(rects):
             cv2.fillPoly(frame, [self._poly_px(r)], _car_color(i))
         label = (f"step {self._step}  cars={len(rects)}  "
@@ -283,7 +294,8 @@ class RolloutVisualizer:
             rr.log("cars/trails", rr.LineStrips2D(trail_strips, colors=trail_colors))
         if opp_rects is not None:
             opp_strips = [self._rr_pts(np.vstack([r, r[:1]])) for r in opp_rects]
-            rr.log("cars/opp", rr.LineStrips2D(opp_strips, colors=[_C_OPP]))
+            opp_colors = [_opp_color(i) for i in range(len(opp_rects))]
+            rr.log("cars/opp", rr.LineStrips2D(opp_strips, colors=opp_colors))
         rr.log("metrics/speed_mean_mps", rr.Scalars(float(spd.mean())))
         rr.log("metrics/speed_max_mps", rr.Scalars(float(spd.max())))
 

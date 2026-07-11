@@ -8,9 +8,9 @@ from .quantile_critic import QuantileCritic
 from dataclasses import dataclass
 
 
-def quantile_huber_loss(pred, target, kappa=1.0):
+def quantile_huber_loss(pred, target, kappa=1.0, taus=None):
     # pred, target: (B, M)
-    B, M = pred.shape
+    _, M = pred.shape
 
     pred_expanded = pred.unsqueeze(1)  # (B, 1, M)
     target_expanded = target.unsqueeze(2)  # (B, M, 1)
@@ -23,8 +23,9 @@ def quantile_huber_loss(pred, target, kappa=1.0):
         kappa * (abs_diff - 0.5 * kappa),
     )
 
-    taus = (torch.arange(M, device=pred.device, dtype=torch.float32) + 0.5) / M
-    taus = taus.view(1, 1, M)
+    if taus is None:
+        taus = (torch.arange(M, device=pred.device, dtype=pred.dtype) + 0.5) / M
+    taus = taus.to(device=pred.device, dtype=pred.dtype).view(1, 1, M)
 
     indicator = (diff.detach() < 0).float()
     loss = torch.abs(taus - indicator) * huber
@@ -52,8 +53,8 @@ class Models:
 
 @dataclass
 class Losses:
-    policy_loss: float
-    critic_loss: float
+    policy_loss: torch.Tensor
+    critic_loss: torch.Tensor
 
 
 class QRSACTrainer:
@@ -85,6 +86,13 @@ class QRSACTrainer:
         self.alpha = alpha
         self.smooth_factor = smooth_factor
         self.kappa = kappa
+        self.critic_params = tuple(self.critic1.parameters()) + tuple(
+            self.critic2.parameters()
+        )
+        num_quantiles = self.critic1.head.out_features
+        self.quantile_fractions = (
+            torch.arange(num_quantiles, device=device, dtype=torch.float32) + 0.5
+        ) / num_quantiles
 
     def update(self, batch) -> Losses:
         obs = batch["obs"].to(self.device)
@@ -92,15 +100,6 @@ class QRSACTrainer:
         reward = batch["reward"].to(self.device)
         next_obs = batch["next_obs"].to(self.device)
         done = batch["done"].to(self.device)
-
-        if action is None or reward is None or next_obs is None:
-            raise KeyError(
-                "Batch must contain obs, action, reward, next_obs, and done."
-            )
-
-        critic_params = list(self.critic1.parameters()) + list(
-            self.critic2.parameters()
-        )
 
         # Values used for target construction should not backpropagate through target networks.
         with torch.no_grad():
@@ -118,7 +117,7 @@ class QRSACTrainer:
                 min_q_quantile_next - self.alpha * log_prob_next.unsqueeze(-1)
             )
 
-        for p in critic_params:
+        for p in self.critic_params:
             p.requires_grad = False
 
         self.actor_optimizer.zero_grad(set_to_none=True)
@@ -128,12 +127,11 @@ class QRSACTrainer:
         q1_mean = q1_sampled.mean(dim=-1, keepdim=True)
         q2_mean = q2_sampled.mean(dim=-1, keepdim=True)
         q_sampled = torch.minimum(q1_mean, q2_mean)
-        policy_loss = (self.alpha * log_prob - q_sampled).mean()
+        policy_loss = (self.alpha * log_prob.unsqueeze(-1) - q_sampled).mean()
         policy_loss.backward()
-        # actor_grad_norm = _grad_norm(self.actor.parameters())
         self.actor_optimizer.step()
 
-        for p in critic_params:
+        for p in self.critic_params:
             p.requires_grad = True
 
         # Critic Update
@@ -141,14 +139,20 @@ class QRSACTrainer:
         q1_quantile_observed = self.critic1(obs, action)
         q2_quantile_observed = self.critic2(obs, action)
         critic_loss = quantile_huber_loss(
-            q1_quantile_observed, target_quantiles, kappa=self.kappa
+            q1_quantile_observed,
+            target_quantiles,
+            kappa=self.kappa,
+            taus=self.quantile_fractions,
         ) + quantile_huber_loss(
-            q2_quantile_observed, target_quantiles, kappa=self.kappa
+            q2_quantile_observed,
+            target_quantiles,
+            kappa=self.kappa,
+            taus=self.quantile_fractions,
         )
         critic_loss.backward()
 
         # Gradient clipping for stability (gt sophy uses it)
-        nn.utils.clip_grad_norm_(critic_params, max_norm=10.0)
+        nn.utils.clip_grad_norm_(self.critic_params, max_norm=10.0)
 
         self.critic_optimizer.step()
 
@@ -167,6 +171,6 @@ class QRSACTrainer:
                 target_param.data.add_(self.smooth_factor * pred_param.data)
 
         return Losses(
-            policy_loss=policy_loss.detach().item(),
-            critic_loss=critic_loss.detach().item(),
+            policy_loss=policy_loss.detach(),
+            critic_loss=critic_loss.detach(),
         )
