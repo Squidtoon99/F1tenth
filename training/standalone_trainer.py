@@ -1243,7 +1243,7 @@ def main():
         if platform.system() == "Darwin":
             tags.append("mac")
         init_kwargs = {
-            "project": os.getenv("WANDB_PROJECT", "f1tenth-torchsim"),
+            "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
             "name": f"standalone_{run_id}",
             "id": run_id,
             "config": {**cfg, **vars(args)},
@@ -1655,7 +1655,7 @@ def main():
                                 "nonfinite/post_step_reward_bad"
                             ),
                         },
-                        step=env_transitions,
+                        step=vector_ticks,
                     )
                 policy_loss_accum.zero_()
                 critic_loss_accum.zero_()
@@ -1695,7 +1695,7 @@ def main():
                         control_interval=control_interval,
                         clip_actions=clip_actions,
                         run_dir=run_dir,
-                        step=env_transitions,
+                        step=vector_ticks,
                         num_steps=args.eval_video_steps,
                         num_show=args.eval_video_num_envs,
                         live=args.eval_video_live,
