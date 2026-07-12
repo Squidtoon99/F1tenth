@@ -430,12 +430,19 @@ def compute_oob_from_boundary_state(
     w_l_s = boundary_state["w_l_s"]
     w_r_s = boundary_state["w_r_s"]
 
-    left_oob = ey > (w_l_s - margin_m)
-    right_oob = ey < -(w_r_s - margin_m)
+    # Footprint-aware bound: the car body reaches ``half`` beyond its centre in the
+    # track-normal direction, so a corner leaves the track before the centre does.
+    # ``half`` is 0 when unset, recovering the centre-point check.
+    half = boundary_state.get("oob_half_extent_m", 0.0)
+    left_edge = ey + half
+    right_edge = ey - half
+
+    left_oob = left_edge > (w_l_s - margin_m)
+    right_oob = right_edge < -(w_r_s - margin_m)
     oob = left_oob | right_oob
 
-    outside_left = (ey - (w_l_s - margin_m)).clamp_min(0.0)
-    outside_right = (-(w_r_s - margin_m) - ey).clamp_min(0.0)
+    outside_left = (left_edge - (w_l_s - margin_m)).clamp_min(0.0)
+    outside_right = (-(w_r_s - margin_m) - right_edge).clamp_min(0.0)
     oob_dist = outside_left + outside_right
     return oob, oob_dist
 

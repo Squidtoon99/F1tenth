@@ -543,8 +543,31 @@ class F1tenthEnv:
             self._step_state["tyre_load"] = self._tyre_load_from(
                 ws, self.base_lin_acc, ego_mass
             )
+            self._step_state["boundary"]["oob_half_extent_m"] = (
+                self._oob_half_extent()
+            )
             self._step_state_valid = True
         return self._step_state
+
+    def _oob_half_extent(self) -> torch.Tensor:
+        """Car half-extent along the track normal, for footprint-aware OOB.
+
+        A rectangle of ``car_length`` x ``car_width`` yawed by ``heading_err``
+        relative to the track tangent reaches this far past its centre toward the
+        boundaries, so the whole body (not just the centre) is bounded.
+        """
+        seg_dir = self._step_state["frenet"]["seg_dir"]
+        track_angle = torch.atan2(seg_dir[:, 1], seg_dir[:, 0])
+        yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+        heading_err = torch.atan2(
+            torch.sin(yaw - track_angle), torch.cos(yaw - track_angle)
+        )
+        car_length = float(self.env_cfg.get("car_length", 0.0))
+        car_width = float(self.env_cfg.get("car_width", 0.0))
+        return 0.5 * (
+            car_length * heading_err.sin().abs()
+            + car_width * heading_err.cos().abs()
+        )
 
     def _tyre_slip_from(
         self, wheel_state: dict[str, Any], active: torch.Tensor
