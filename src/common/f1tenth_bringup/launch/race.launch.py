@@ -23,19 +23,13 @@ def generate_launch_description() -> LaunchDescription:
     bringup_share = get_package_share_directory("f1tenth_bringup")
     loc_share = get_package_share_directory("f1tenth_localization")
     vehicle_share = get_package_share_directory("f1tenth_rl_vehicle")
-    agent_share = get_package_share_directory("f1tenth_rl_agent")
     algo_share = get_package_share_directory("f1tenth_racing_algo")
-
-    default_track_csv = os.path.join(
-        agent_share, "assets", "IV_2026_SIM_centerline.csv"
-    )
 
     stack = LaunchConfiguration("stack")
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     overlay_params_file = LaunchConfiguration("overlay_params_file")
     track_csv = LaunchConfiguration("track_csv")
     map_yaml = LaunchConfiguration("map_yaml")
-    centerline_csv = LaunchConfiguration("centerline_csv")
     enable_drivers = LaunchConfiguration("enable_drivers")
     enable_localization = LaunchConfiguration("enable_localization")
     enable_opponent = LaunchConfiguration("enable_opponent")
@@ -54,16 +48,12 @@ def generate_launch_description() -> LaunchDescription:
         description="Per-car overlay (node-scoped ROS params) layered on the stack defaults.",
     )
     declare_track = DeclareLaunchArgument(
-        "track_csv", default_value=default_track_csv,
-        description="Surveyed centerline CSV in the localization map frame.",
+        "track_csv", default_value="/config/maps/centerline.csv",
+        description="Surveyed centerline CSV (map frame) for RL obs and PF relocalize.",
     )
     declare_map = DeclareLaunchArgument(
         "map_yaml", default_value="/config/maps/map.yaml",
         description="Occupancy grid YAML from the per-car overlay.",
-    )
-    declare_centerline = DeclareLaunchArgument(
-        "centerline_csv", default_value="/config/maps/centerline.csv",
-        description="Track centerline CSV for PF track-spread relocalize.",
     )
     declare_drivers = DeclareLaunchArgument(
         "enable_drivers", default_value="true",
@@ -102,7 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(enable_localization),
         launch_arguments={
             "map_yaml": map_yaml,
-            "track_centerline_csv": centerline_csv,
+            "track_centerline_csv": track_csv,
             "use_sim_time": use_sim_time,
         }.items(),
     )
@@ -146,7 +136,6 @@ def generate_launch_description() -> LaunchDescription:
             declare_overlay,
             declare_track,
             declare_map,
-            declare_centerline,
             declare_drivers,
             declare_localization,
             declare_opponent,
