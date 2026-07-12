@@ -1,0 +1,14 @@
+# Keep the build context lean. The car image only needs src/, libs/, and
+# deploy/docker/entrypoint.sh; everything below is host-only or a heavy artifact.
+.git
+.venv
+training
+sim
+build
+install
+log
+deploy/snapshots
+deploy/releases
+docs
+**/__pycache__
+**/*.pyc

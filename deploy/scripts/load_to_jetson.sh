@@ -38,6 +38,7 @@ cat <<EOF
 ==> Done. Run on the car (mount the overlay + policy):
 
   docker run --rm -it --net=host --privileged \\
+    -v /dev:/dev \\
     -v /opt/f1tenth/config:/config:ro \\
     -v /opt/f1tenth/policies:/policies:ro \\
     ${IMAGE}:develop
