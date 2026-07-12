@@ -1,0 +1,40 @@
+reactive_explorer:
+  ros__parameters:
+    # --- real-car interface (f1tenth_stack) ---
+    scan_topic: "/scan"          # urg_node (Hokuyo), ~270 deg FOV, frame "laser"
+    odom_topic: "/odom"          # vesc_to_odom (odom -> base_link)
+    drive_topic: "/drive"        # ackermann_mux "navigation" input (priority 10)
+    slam_map_topic: "/map"       # slam_toolbox online_async (mode: mapping)
+    # NEVER teleport a real car: the gym-only /initialpose reset must stay off.
+    reset_on_start: false
+    # Start in dry-run: compute steering/speed and log them, but command speed 0 so the
+    # car stays put. Flip to false (live drive) only with a finger on the e-stop/joystick.
+    dry_run: true
+    status_period_s: 1.0
+
+    # --- real-world speeds (m/s) ---
+    # min must clear the VESC low-speed deadband (~0.5 m/s barely turns the motor),
+    # otherwise the car stalls in tight, hard-steer sections.
+    cruise_speed_mps: 1.8
+    min_speed_mps: 1.0
+    max_steer_rad: 0.32
+    wheelbase_m: 0.33
+
+    # --- single-loop wall following ---
+    follow_side: "left"
+    wall_target_m: 0.8
+    wall_kp: 0.9
+    wall_lookahead_m: 1.0
+    wall_theta_deg: 50.0
+    front_stop_m: 1.5
+    front_turn_gain: 0.6
+    lookahead_clip_m: 8.0
+    steer_smooth: 0.4
+    speed_smooth: 0.7
+
+    # --- loop closure + map save (tune min_lap_m to the track length) ---
+    min_lap_m: 20.0
+    closure_radius_m: 2.0
+    stop_on_loop: true
+    auto_save_map: true
+    map_save_path: "/home/shereef/maps/f1tenth_map"

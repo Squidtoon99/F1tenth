@@ -1,0 +1,32 @@
+reactive_explorer:
+  ros__parameters:
+    scan_topic: "/scan"
+    odom_topic: "/ego_racecar/odom"
+    drive_topic: "/drive"
+    cruise_speed_mps: 1.5
+    min_speed_mps: 0.6
+    max_steer_rad: 0.4
+    wheelbase_m: 0.33
+    # Trace the closed ribbon once by hugging one wall: a wall follower commits to a single
+    # direction around the loop (no ping-pong / U-turns) and handles corners + hairpins.
+    follow_side: "left"
+    wall_target_m: 0.9
+    wall_kp: 0.9
+    wall_lookahead_m: 1.1
+    wall_theta_deg: 50.0
+    front_stop_m: 2.0
+    front_turn_gain: 0.6
+    lookahead_clip_m: 10.0
+    steer_smooth: 0.3
+    min_lap_m: 100.0
+    closure_radius_m: 5.0
+    map_save_path: "/tmp/slam_map"
+    slam_map_topic: "/slam_map"
+    auto_save_map: true
+    stop_on_loop: true
+    reset_on_start: true
+    initialpose_topic: "/initialpose"
+    start_x: 0.42
+    start_y: 0.16
+    start_yaw: -1.583
+    start_delay_s: 1.5

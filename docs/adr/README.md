@@ -16,3 +16,5 @@ trade-off. Routine work is captured by the PR instead (see
   slip and a per-wheel tyre-load observation block (380 → 384 layout change).
 - [0003](0003-opponent-obs-range-mask.md) — Remove opponent `present` channel;
   6-dim opponent block with caller-side range/certainty masking (391 → 390).
+- [0004](0004-on-car-stack-integration.md) — Integrate the on-car localization,
+  algorithmic drivers, and deploy image from `shereef@f1tenth`.

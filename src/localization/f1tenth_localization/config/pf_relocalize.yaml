@@ -1,0 +1,13 @@
+pf_relocalize:
+  ros__parameters:
+    joy_topic: /joy
+    initialpose_topic: /initialpose
+    track_relocalize_topic: /pf/relocalize_on_track
+    localize_button: 0
+    global_button: 3
+    start_x: 54.177
+    start_y: 12.958
+    start_yaw: -0.116
+    publish_repeats: 5
+    publish_interval_s: 0.1
+    cooldown_s: 1.0

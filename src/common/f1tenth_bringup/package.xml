@@ -3,7 +3,7 @@
 <package format="3">
   <name>f1tenth_bringup</name>
   <version>0.0.0</version>
-  <description>Top-level launch files composing the stack for race / sim / car. Scaffold placeholder.</description>
+  <description>Top-level launch files composing the stack for race / sim / car.</description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 
@@ -14,6 +14,8 @@
   <exec_depend>f1tenth_rl_agent</exec_depend>
   <exec_depend>f1tenth_racing_algo</exec_depend>
   <exec_depend>f1tenth_stack</exec_depend>
+  <exec_depend>f1tenth_control</exec_depend>
+  <exec_depend>f1tenth_localization</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

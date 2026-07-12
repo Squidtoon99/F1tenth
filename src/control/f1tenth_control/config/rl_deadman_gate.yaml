@@ -1,0 +1,7 @@
+rl_deadman_gate:
+  ros__parameters:
+    joy_topic: /joy
+    teleop_topic: /teleop
+    manual_button: 4      # L1 — human teleop deadman
+    autonomous_button: 5  # R1 — allow RL /drive through the mux
+    publish_rate_hz: 20.0

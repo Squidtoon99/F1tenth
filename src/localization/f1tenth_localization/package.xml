@@ -4,17 +4,19 @@
   <name>f1tenth_localization</name>
   <version>0.0.0</version>
   <description>
-    Particle-filter localization configuration and wrappers. Scaffold placeholder:
-    the stack currently consumes pose from an external particle_filter node on
-    /pf/pose/odom; this package is the future home for its config and wrappers.
+    Launch and wrappers for on-car particle-filter localization (map_server +
+    particle_filter + joystick relocalize).
   </description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
-  <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>nav2_lifecycle_manager</depend>
+  <depend>nav2_map_server</depend>
+  <exec_depend>particle_filter</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

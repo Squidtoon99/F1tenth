@@ -25,7 +25,11 @@ else
   echo "[entrypoint] WARNING: no /config/params.yaml; nodes use package defaults."
 fi
 
-# RL policy (if racing with the RL stack) is mounted read-only at /policies.
+if [ -f /config/maps/map.yaml ]; then
+  echo "[entrypoint] map overlay present: /config/maps/map.yaml"
+else
+  echo "[entrypoint] WARNING: no /config/maps/map.yaml; localization needs a map."
+fi
 if [ -f /policies/policy.pt ]; then
   echo "[entrypoint] policy present: /policies/policy.pt"
 else

@@ -275,3 +275,4 @@ wandb/
 .DS_Store
 .idea/
 
+.scratch_media/

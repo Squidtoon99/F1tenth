@@ -1,13 +1,7 @@
 # racing_algo/
 
-Algorithmic racing stack composition. This group mostly wires together shared
-modules rather than owning heavy logic:
+Composition and bringup for the classical (algorithmic) racing stack.
 
-- localization (`src/localization/`)
-- planning / raceline (`src/planning/`)
-- control / pure pursuit (`src/control/`)
-
-- `f1tenth_racing_algo/launch/algo.launch.py` — brings the classical pipeline up.
-
-Developed by the algorithmic-racing team independently of `racing_rl/`, but sharing
-mapping/localization/perception.
+- `f1tenth_racing_algo/` — `algo.launch.py` starts the selected controller from
+  `f1tenth_control` plus the RL deadman gate. Localization is started by
+  `race.launch.py` (shared with the RL stack).

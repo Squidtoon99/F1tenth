@@ -1,12 +1,15 @@
 # localization/
 
 Localization module group (shared by both racing stacks). Provides pose on a known
-map, typically via a particle filter with GPU-accelerated ray casting.
+map via a particle filter with GPU-accelerated ray casting.
 
-- `f1tenth_localization/` — launch/config/wrappers around the particle-filter
-  localizer (the filter itself is an upstream dependency installed via rosdep or
-  vendored under `src/vehicle/` if a fork is needed).
+- `particle_filter/` — vendored from `f1tenth/particle_filter` with on-car edits
+  (track-centerline initialization, `/pf/relocalize_on_track`). See
+  [`VENDORED.md`](VENDORED.md).
+- `range_libc/` — git submodule (`f1tenth/range_libc`); build dependency for the
+  particle filter.
+- `f1tenth_localization/` — launch files, PF/relocalize configs, and the
+  `pf_relocalize` joystick helper node.
 
-Migration note: the particle-filter configuration used by
-`F1tenth-Genesis/ros2_deploy/f1tenth_rl_vehicle` (PF pose feeding the observation
-builder) is captured here.
+Per-car map and centerline artifacts live in `deploy/cars/<car>/maps/` and are
+mounted at `/config/maps` at runtime.

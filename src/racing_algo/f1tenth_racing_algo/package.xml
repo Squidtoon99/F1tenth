@@ -3,7 +3,7 @@
 <package format="3">
   <name>f1tenth_racing_algo</name>
   <version>0.0.0</version>
-  <description>Composition/bringup of the algorithmic racing stack (perception + localization + planning + control). Scaffold placeholder.</description>
+  <description>Composition/bringup of the algorithmic racing stack (control + deadman gate).</description>
   <maintainer email="dev@example.com">maintainers</maintainer>
   <license>MIT</license>
 

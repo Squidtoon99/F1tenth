@@ -25,7 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-serial-driver \
       ros-${ROS_DISTRO}-asio-cmake-module \
       ros-${ROS_DISTRO}-diagnostic-updater \
+      ros-${ROS_DISTRO}-nav2-map-server \
+      ros-${ROS_DISTRO}-nav2-lifecycle-manager \
       python3-scipy \
+      python3-transforms3d \
     && rm -rf /var/lib/apt/lists/*
 
 # LiDAR driver: install if a prebuilt package exists for the target arch; otherwise
@@ -35,9 +38,9 @@ RUN apt-get update \
         || echo "sick_scan_xd apt package unavailable for this arch; build from source if needed") \
     && rm -rf /var/lib/apt/lists/*
 
-# Python runtime deps for the on-car RL inference node.
+# Python runtime deps for the on-car RL inference node and range_libc (particle filter).
 # TODO: on the Jetson, install a torch wheel matching the JetPack/CUDA version
 #       instead of the default index. Kept out of the base scaffold to stay light.
-RUN pip3 install --no-cache-dir numpy
+RUN pip3 install --no-cache-dir numpy cython
 
 WORKDIR /ws

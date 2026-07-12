@@ -1,10 +1,8 @@
 """Top-level launch for on-car racing.
 
-Composes the vehicle drivers (car.launch.py -> vendored f1tenth_stack), a read-only
-localization preflight, and the selected racing stack. Localization (the particle
-filter publishing /pf/pose/odom) is an external prerequisite and is NOT started
-here; the preflight node reports its health and the RL graph inherently emits no
-drive command until pose + twist are live.
+Composes the vehicle drivers (car.launch.py -> vendored f1tenth_stack), particle-
+filter localization, a read-only localization preflight, and the selected racing
+stack.
 
 Per-car calibration/track come from the overlay mounted at /config; the policy from
 /policies. Select the stack with ``stack:=rl`` (default) or ``stack:=algo``.
@@ -23,6 +21,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     bringup_share = get_package_share_directory("f1tenth_bringup")
+    loc_share = get_package_share_directory("f1tenth_localization")
     vehicle_share = get_package_share_directory("f1tenth_rl_vehicle")
     agent_share = get_package_share_directory("f1tenth_rl_agent")
     algo_share = get_package_share_directory("f1tenth_racing_algo")
@@ -35,8 +34,12 @@ def generate_launch_description() -> LaunchDescription:
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     overlay_params_file = LaunchConfiguration("overlay_params_file")
     track_csv = LaunchConfiguration("track_csv")
+    map_yaml = LaunchConfiguration("map_yaml")
+    centerline_csv = LaunchConfiguration("centerline_csv")
     enable_drivers = LaunchConfiguration("enable_drivers")
+    enable_localization = LaunchConfiguration("enable_localization")
     enable_opponent = LaunchConfiguration("enable_opponent")
+    use_sim_time = LaunchConfiguration("use_sim_time")
 
     declare_stack = DeclareLaunchArgument(
         "stack", default_value="rl",
@@ -54,13 +57,29 @@ def generate_launch_description() -> LaunchDescription:
         "track_csv", default_value=default_track_csv,
         description="Surveyed centerline CSV in the localization map frame.",
     )
+    declare_map = DeclareLaunchArgument(
+        "map_yaml", default_value="/config/maps/map.yaml",
+        description="Occupancy grid YAML from the per-car overlay.",
+    )
+    declare_centerline = DeclareLaunchArgument(
+        "centerline_csv", default_value="/config/maps/centerline.csv",
+        description="Track centerline CSV for PF track-spread relocalize.",
+    )
     declare_drivers = DeclareLaunchArgument(
         "enable_drivers", default_value="true",
         description="Start the vendored vehicle drivers (car.launch.py). Off for bench tests.",
     )
+    declare_localization = DeclareLaunchArgument(
+        "enable_localization", default_value="true",
+        description="Start map_server + particle filter (localization.launch.py).",
+    )
     declare_opponent = DeclareLaunchArgument(
         "enable_opponent", default_value="false",
         description="Start the LiDAR opponent detector (1v1). Solo racing keeps it off.",
+    )
+    declare_sim_time = DeclareLaunchArgument(
+        "use_sim_time", default_value="false",
+        description="Use simulation clock (true in gym).",
     )
 
     is_rl = IfCondition(PythonExpression(["'", stack, "' == 'rl'"]))
@@ -71,9 +90,23 @@ def generate_launch_description() -> LaunchDescription:
             os.path.join(bringup_share, "launch", "car.launch.py")
         ),
         condition=IfCondition(enable_drivers),
+        launch_arguments={
+            "overlay_params_file": overlay_params_file,
+        }.items(),
     )
 
-    # Read-only localization health check (external PF is a prerequisite).
+    localization = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(loc_share, "launch", "localization.launch.py")
+        ),
+        condition=IfCondition(enable_localization),
+        launch_arguments={
+            "map_yaml": map_yaml,
+            "track_centerline_csv": centerline_csv,
+            "use_sim_time": use_sim_time,
+        }.items(),
+    )
+
     preflight = Node(
         package="f1tenth_rl_agent",
         executable="localization_preflight",
@@ -100,6 +133,10 @@ def generate_launch_description() -> LaunchDescription:
             os.path.join(algo_share, "launch", "algo.launch.py")
         ),
         condition=is_algo,
+        launch_arguments={
+            "driver_config": overlay_params_file,
+            "gate_config": overlay_params_file,
+        }.items(),
     )
 
     return LaunchDescription(
@@ -108,9 +145,14 @@ def generate_launch_description() -> LaunchDescription:
             declare_ckpt,
             declare_overlay,
             declare_track,
+            declare_map,
+            declare_centerline,
             declare_drivers,
+            declare_localization,
             declare_opponent,
+            declare_sim_time,
             drivers,
+            localization,
             preflight,
             rl_stack,
             algo_stack,

@@ -26,6 +26,9 @@ setup(
         "console_scripts": [
             "exploration = f1tenth_mapping.exploration_node:main",
             "navigator = f1tenth_mapping.navigator_node:main",
+            "reactive_explorer = f1tenth_mapping.reactive_explorer_node:main",
+            "scan_throttle = f1tenth_mapping.scan_throttle_node:main",
+            "occupancy_mapper = f1tenth_mapping.occupancy_mapper_node:main",
         ],
     },
 )

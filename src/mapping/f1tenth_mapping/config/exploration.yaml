@@ -25,7 +25,7 @@ navigator:
     goal_tolerance_m: 0.5
     stuck_timeout_s: 15.0
     watchdog_timeout_s: 0.5
-    wheelbase_m: 0.33
+    wheelbase_m: 0.325
     max_steer_rad: 0.44
     lookahead_m: 1.5
     min_lookahead_m: 0.8

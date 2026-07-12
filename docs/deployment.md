@@ -67,13 +67,17 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
   zeroed), and the vendored VESC calibration. It is passed directly to the nodes —
   `race.launch.py` forwards it as `overlay_params_file:=/config/params.yaml` and
   `car.launch.py` as `vesc_config:=/config/params.yaml`; there is no custom parser.
-- `maps/` — occupancy grid + centerline/raceline for the current track.
+- `maps/` — occupancy grid + centerline/raceline for the current track (`map.yaml`,
+  `centerline.csv`, `raceline.csv`).
 
 The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
-or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`;
-localization (the particle filter on `/pf/pose/odom`) is an external prerequisite —
-`race.launch.py` runs a read-only `localization_preflight` node that reports its
-health, and the RL graph emits no drive command until pose + twist are live.
+or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
+`race.launch.py` starts vehicle drivers, particle-filter localization
+(`enable_localization:=true`), and a read-only `localization_preflight` health check.
+The RL graph emits no drive command until pose + twist are live.
+
+**Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
+are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
 
 ## Certification gate (f1tenth_gym)
 

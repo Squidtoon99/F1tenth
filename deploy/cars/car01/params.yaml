@@ -1,44 +1,138 @@
 # Per-car overlay: node-scoped ROS 2 parameters layered on top of the package
-# launch defaults at runtime (mounted at /config/params.yaml). This file is passed
-# directly to the nodes as a parameter file -- there is no custom parser, so every
-# section must be keyed by the node name with a `ros__parameters` block.
+# launch defaults at runtime (mounted at /config/params.yaml). Passed directly to
+# nodes as a parameter file -- every section must be keyed by node name with a
+# `ros__parameters` block.
 #
-# Scaffold placeholder values -- replace VESC calibration with measured values
-# before any powered run (zero gains produce zero/undefined actuation).
+# Values below are from the on-car calibration at shereef@f1tenth (Jul 2026).
 
 # --- RL drive output (f1tenth_rl_vehicle drive node) ---
 drive:
   ros__parameters:
     max_speed: 15.0
-    max_steer: 0.33            # real servo hard-clamp; matches training
-    speed_limit_mps: 2.0       # start conservative during shakedown; raise once validated
+    max_steer: 0.33
+    speed_limit_mps: 2.0
+
+# --- RL policy inference (f1tenth_rl_agent policy_inference node) ---
+policy_inference:
+  ros__parameters:
+    device: "cpu"
 
 # --- RL observation builder (f1tenth_rl_vehicle vehicle_obs node) ---
 vehicle_obs:
   ros__parameters:
-    # 390-dim (1v1) layout with the opponent block zeroed for solo racing.
     num_obs: 390
     enable_opponent_obs: true
     zero_opponent_obs: true
-    # Quasi-static tyre-load estimate: enable only for a checkpoint trained with
-    # dynamic load. Geometry defaults track f1tenth_sim VehicleParams; override with
-    # measured values if enabling.
     enable_load_estimation: false
-    # Per-wheel slip estimation from IMU + PF; off by default (emits zeros).
     enable_slip_estimation: false
+    wheel_radius_m: 0.05
+    lf_m: 0.1584
+    lr_m: 0.1666
+    track_width_m: 0.20
+    cg_height_m: 0.05
 
 # --- VESC calibration (vendored vesc_ackermann / vesc_driver nodes) ---
-# Measured per car. Passed to car.launch.py via vesc_config:=/config/params.yaml.
-# NOTE: zero gains are placeholders -- MUST be replaced with measured values.
-ackermann_to_vesc_node:
+/**:
   ros__parameters:
-    speed_to_erpm_gain: 0.0
+    speed_to_erpm_gain: 4300.0
     speed_to_erpm_offset: 0.0
-    steering_angle_to_servo_gain: 0.0
-    steering_angle_to_servo_offset: 0.0
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
+    port: /dev/sensors/vesc
+    duty_cycle_min: 0.0
+    duty_cycle_max: 0.0
+    current_min: 0.0
+    current_max: 100.0
+    brake_min: -80000.0
+    brake_max: 400000.0
+    speed_min: -80000.0
+    speed_max: 80000.0
+    position_min: 0.0
+    position_max: 0.0
+    servo_min: 0.05
+    servo_max: 0.85
 
 vesc_to_odom_node:
   ros__parameters:
-    speed_to_erpm_gain: 0.0
-    speed_to_erpm_offset: 0.0
+    odom_frame: odom
+    base_frame: base_link
+    publish_tf: true
+    use_servo_cmd_to_calc_angular_velocity: true
     wheelbase: 0.33
+
+throttle_interpolator:
+  ros__parameters:
+    rpm_input_topic: commands/motor/unsmoothed_speed
+    rpm_output_topic: commands/motor/speed
+    servo_input_topic: commands/servo/unsmoothed_position
+    servo_output_topic: commands/servo/position
+    max_acceleration: 2.5
+    throttle_smoother_rate: 75.0
+    max_servo_speed: 3.2
+    servo_smoother_rate: 75.0
+
+# --- ackermann_mux (safety topic has highest priority) ---
+ackermann_mux:
+  ros__parameters:
+    topics:
+      safety:
+        topic: /brake
+        timeout: 0.1
+        priority: 9999
+      navigation:
+        topic: drive
+        timeout: 0.2
+        priority: 10
+      joystick:
+        topic: teleop
+        timeout: 0.2
+        priority: 100
+
+# --- joy + joy_teleop (PS4 DualSense) ---
+joy:
+  ros__parameters:
+    device_id: 0
+    deadzone: 0.01
+    autorepeat_rate: 20.0
+    coalesce_interval: 0.01
+
+joy_teleop:
+  ros__parameters:
+    human_control:
+      type: topic
+      interface_type: ackermann_msgs/msg/AckermannDriveStamped
+      topic_name: teleop
+      deadman_buttons: [4]
+      axis_mappings:
+        drive-speed:
+          axis: 1
+          scale: 7.0
+          offset: 0.0
+        drive-steering_angle:
+          axis: 2
+          scale: 0.34
+          offset: 0.0
+
+# --- RL deadman gate (R1/L1) ---
+rl_deadman_gate:
+  ros__parameters:
+    joy_topic: /joy
+    teleop_topic: /teleop
+    manual_button: 4
+    autonomous_button: 5
+    publish_rate_hz: 20.0
+
+# --- PF relocalize (PS4 X / Square) ---
+pf_relocalize:
+  ros__parameters:
+    joy_topic: /joy
+    initialpose_topic: /initialpose
+    track_relocalize_topic: /pf/relocalize_on_track
+    localize_button: 0
+    global_button: 3
+    start_x: 54.177
+    start_y: 12.958
+    start_yaw: -0.116
+    publish_repeats: 5
+    publish_interval_s: 0.1
+    cooldown_s: 1.0

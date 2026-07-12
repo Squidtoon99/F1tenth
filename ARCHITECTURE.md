@@ -52,9 +52,11 @@ independently:
   - `f1tenth_bringup` — top-level launch files (race / sim / car variants).
 - `perception/` — e.g. opponent detection from LiDAR.
 - `mapping/` — SLAM-based track mapping (shared).
-- `localization/` — particle-filter localization (shared).
+- `localization/` — particle-filter localization (shared). Vendored
+  `particle_filter` + `f1tenth_localization` launch/wrappers; `range_libc` submodule.
 - `planning/` — raceline optimization and global planning.
-- `control/` — pure-pursuit and the drive-command layer.
+- `control/` — pure-pursuit, follow-the-gap, PID controllers, safety, deadman gate,
+  and the RL drive-command layer.
 - `racing_rl/` — the on-car RL inference nodes (observation builder, policy
   inference, drive). Loads a trained policy at runtime.
 - `racing_algo/` — composition/bringup of the algorithmic racing stack.

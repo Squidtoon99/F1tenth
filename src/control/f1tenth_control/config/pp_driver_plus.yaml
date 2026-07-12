@@ -1,0 +1,38 @@
+pp_driver_plus:
+  ros__parameters:
+    # --- topics / timing ---
+    odom_topic: /pf/pose/odom
+    scan_topic: /scan
+    drive_topic: /drive
+    control_rate_hz: 20.0
+    scan_timeout_s: 0.3
+
+    # --- pure pursuit (names match pp_driver) ---
+    # Raceline CSV must include vx_mps (e.g. maps/IV_26_2.csv). The centerline-only
+    # ~/maps/f1tenth_map_centerline.csv has no speed column; set
+    # use_raceline_speed: false if you point raceline_path at it.
+    raceline_path: /config/maps/raceline.csv
+    lookahead_distance: 1.2
+    wheelbase: 0.33
+    speed_scale: 0.2
+    min_speed: 0.8
+    max_speed: 5.0
+    use_raceline_speed: true
+    max_steering_angle: 0.4
+    origin_x: 0.0
+    origin_y: 0.0
+
+    # --- obstacle trigger (new) ---
+    forward_cone_half_angle: 0.35   # rad, +/- straight ahead (~20 deg each side)
+    obstacle_enter_dist: 2.5        # m, switch PP -> gap below this
+    obstacle_exit_dist: 3.5         # m, switch gap -> PP above this (hysteresis)
+
+    # --- follow-the-gap (names match gap_driver) ---
+    velocity: 1.0
+    max_velocity: 5.0
+    max_distance_threshold: 5.0
+    min_distance_threshold: 1.1
+    steering_sensitivity: 1.0
+    bubble_radius: 50
+    disparity_radius_m: 0.15
+    disparity_threshold: 1.0
