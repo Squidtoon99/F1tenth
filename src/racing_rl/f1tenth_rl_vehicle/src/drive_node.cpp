@@ -5,6 +5,12 @@
 // ackermann_mux autonomous input. A watchdog commands a safe stop if actions stop
 // arriving. speed_limit_mps caps the commanded speed for staged shakedown runs;
 // teleop on the mux always overrides regardless.
+//
+// motor_mode:
+//   "speed" (default) — longitudinal action maps to drive.speed (ERPM path).
+//   "force" — longitudinal action maps to drive.acceleration in [-1,1]; speed=0.
+//             Requires vesc_actuator (enabled) to convert acceleration to
+//             motor current / brake current (see ADR 0005).
 #include <chrono>
 #include <memory>
 #include <string>
@@ -30,6 +36,7 @@ public:
     speed_limit_mps_ = declare_parameter<double>("speed_limit_mps", 15.0);
     watchdog_timeout_s_ = declare_parameter<double>("watchdog_timeout_s", 0.5);
     brake_behavior_ = declare_parameter<std::string>("brake_behavior", "stop");
+    motor_mode_ = declare_parameter<std::string>("motor_mode", "speed");
     enable_output_filter_ = declare_parameter<bool>("enable_output_filter", true);
     t_delta_ = declare_parameter<double>("t_delta", 0.1);
     control_dt_ = declare_parameter<double>("control_dt", 0.1);
@@ -50,20 +57,21 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "drive ready: max_speed=%.2f max_steer=%.3f speed_limit=%.2f watchdog=%.2fs "
-      "output_filter=%s t_delta=%.3f alpha=%.3f",
-      max_speed_, max_steer_, speed_limit_mps_, watchdog_timeout_s_,
+      "drive ready: motor_mode=%s max_speed=%.2f max_steer=%.3f speed_limit=%.2f "
+      "watchdog=%.2fs output_filter=%s t_delta=%.3f alpha=%.3f",
+      motor_mode_.c_str(), max_speed_, max_steer_, speed_limit_mps_, watchdog_timeout_s_,
       enable_output_filter_ ? "on" : "off", t_delta_, steer_lag_alpha_);
   }
 
 private:
-  void publishDrive(double speed, double steering_angle)
+  void publishDrive(double speed, double steering_angle, double acceleration)
   {
     ackermann_msgs::msg::AckermannDriveStamped msg;
     msg.header.stamp = now();
     msg.header.frame_id = frame_id_;
     msg.drive.speed = static_cast<float>(speed);
     msg.drive.steering_angle = static_cast<float>(steering_angle);
+    msg.drive.acceleration = static_cast<float>(acceleration);
     drive_pub_->publish(msg);
   }
 
@@ -73,17 +81,33 @@ private:
       RCLCPP_WARN(get_logger(), "action message has < 2 elements; ignoring");
       return;
     }
-    auto [speed, steering_angle] = mapActionToDrive(
-      msg.data[0], msg.data[1], max_speed_, max_steer_, clip_actions_, brake_behavior_);
-    // Staging speed cap (does not affect steering).
-    if (speed > speed_limit_mps_) {
-      speed = speed_limit_mps_;
+
+    double speed = 0.0;
+    double acceleration = 0.0;
+    double steering_angle = 0.0;
+
+    if (motor_mode_ == "force") {
+      auto [long_cmd, steer] = mapActionToForce(
+        msg.data[0], msg.data[1], max_steer_, clip_actions_);
+      acceleration = long_cmd;
+      steering_angle = steer;
+      speed = 0.0;
+    } else {
+      auto [spd, steer] = mapActionToDrive(
+        msg.data[0], msg.data[1], max_speed_, max_steer_, clip_actions_, brake_behavior_);
+      speed = spd;
+      steering_angle = steer;
+      // Staging speed cap (does not affect steering).
+      if (speed > speed_limit_mps_) {
+        speed = speed_limit_mps_;
+      }
     }
+
     if (enable_output_filter_) {
       filtered_steer_ = stepFirstOrderLag(filtered_steer_, steering_angle, steer_lag_alpha_);
       steering_angle = filtered_steer_;
     }
-    publishDrive(speed, steering_angle);
+    publishDrive(speed, steering_angle, acceleration);
     last_action_time_ = now();
     have_action_ = true;
   }
@@ -96,7 +120,9 @@ private:
     const double elapsed = (now() - last_action_time_).seconds();
     if (elapsed > watchdog_timeout_s_) {
       filtered_steer_ = 0.0;
-      publishDrive(0.0, 0.0);
+      // Force mode: acceleration=-1 requests full brake via vesc_actuator.
+      const double accel = (motor_mode_ == "force") ? -1.0 : 0.0;
+      publishDrive(0.0, 0.0, accel);
     }
   }
 
@@ -110,6 +136,7 @@ private:
   double speed_limit_mps_ = 15.0;
   double watchdog_timeout_s_ = 0.5;
   std::string brake_behavior_ = "stop";
+  std::string motor_mode_ = "speed";
   std::string frame_id_ = "base_link";
   bool enable_output_filter_ = true;
   double t_delta_ = 0.1;

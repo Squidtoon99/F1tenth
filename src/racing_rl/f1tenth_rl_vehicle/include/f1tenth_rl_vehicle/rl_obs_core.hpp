@@ -144,6 +144,50 @@ std::array<double, 4> computeQuasiStaticLoad(
   double roll_stiffness_front = 0.5,
   double gravity = 9.81);
 
+// On-car tyre-slip block estimator (8-dim [slip_ratio x4, slip_angle x4]).
+struct SlipEstimatorConfig
+{
+  double wheel_radius_m = 0.05;
+  double lf_m = 0.1773;
+  double lr_m = 0.1477;
+  double track_width_m = 0.20;
+  double max_steer_rad = 0.33;
+  double slip_min_lat = 0.2;
+  double slip_min_active_long = 0.1;
+  double slip_min_passive_long = 0.4;
+  double vy_filter_tau_s = 0.5;
+  double vx_ground_lp_alpha = 0.5;
+  double slip_speed_min_mps = 0.3;
+  std::array<double, 8> slip_obs_mean{};
+};
+
+struct SlipEstimatorInput
+{
+  double vesc_vx = 0.0;
+  double dt = 0.1;
+  double wz = 0.0;
+  double last_steer = 0.0;
+  double last_throttle = 0.0;
+  bool have_imu = false;
+  double imu_ay = 0.0;
+  double imu_yaw_rate = 0.0;
+  bool imu_use_for_yaw_rate = true;
+  bool have_pf_vel = false;
+  double pf_vx_body = 0.0;
+  double pf_vy_body = 0.0;
+};
+
+struct SlipEstimatorState
+{
+  double vx_ground = 0.0;
+  double vy_ground = 0.0;
+};
+
+std::array<double, 8> estimateSlipBlock(
+  SlipEstimatorState & state,
+  const SlipEstimatorConfig & cfg,
+  const SlipEstimatorInput & in);
+
 // First-order lag helpers (match F1tenthEnv steer_state / t_delta).
 double lagAlpha(double control_dt, double t_delta);
 double stepFirstOrderLag(double state, double target, double alpha);
@@ -157,6 +201,14 @@ std::pair<double, double> mapActionToDrive(
   double max_steer,
   double clip_actions = 1.0,
   const std::string & brake_behavior = "stop");
+
+// Map a policy action to (longitudinal_cmd, steering_angle_rad). Port of
+// drive_math.map_action_to_force. longitudinal_cmd in [-1,1]: +drive, -brake.
+std::pair<double, double> mapActionToForce(
+  double throttle,
+  double steering,
+  double max_steer,
+  double clip_actions = 1.0);
 
 // Owns the track geometry and builds the 384-dim observation each control step.
 class TrackObservationBuilder

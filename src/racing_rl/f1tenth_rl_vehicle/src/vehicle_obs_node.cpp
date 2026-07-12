@@ -87,6 +87,7 @@ public:
     // through unscaled, so convert here. Signs/axes are calibrated on-car.
     imu_accel_to_ms2_ = declare_parameter<double>("imu_accel_to_ms2", 9.80665);
     imu_gyro_to_rads_ = declare_parameter<double>("imu_gyro_to_rads", M_PI / 180.0);
+    imu_ax_sign_ = declare_parameter<double>("imu_ax_sign", 1.0);
     imu_ay_sign_ = declare_parameter<double>("imu_ay_sign", 1.0);
     imu_yaw_rate_sign_ = declare_parameter<double>("imu_yaw_rate_sign", 1.0);
     imu_use_for_yaw_rate_ = declare_parameter<bool>("imu_use_for_yaw_rate", true);
@@ -95,7 +96,6 @@ public:
     lf_ = declare_parameter<double>("lf_m", 0.1773);
     lr_ = declare_parameter<double>("lr_m", 0.1477);
     track_width_ = declare_parameter<double>("track_width_m", 0.20);
-    half_track_ = 0.5 * track_width_;
     max_steer_ = declare_parameter<double>("max_steer_rad", 0.33);
     // --- quasi-static tyre-load estimation (off by default -> static ratio 1.0,
     // matching the deploy default and the C++ parity fixture; ADR 0002 follow-up).
@@ -116,7 +116,22 @@ public:
     slip_obs_mean_ = declare_parameter<std::vector<double>>(
       "slip_obs_mean",
       std::vector<double>{-0.033, -0.034, 0.969, 0.970, -0.011, -0.006, -0.113, -0.030});
-    if (slip_obs_mean_.size() != 8) {
+    slip_cfg_.wheel_radius_m = wheel_radius_;
+    slip_cfg_.lf_m = lf_;
+    slip_cfg_.lr_m = lr_;
+    slip_cfg_.track_width_m = track_width_;
+    slip_cfg_.max_steer_rad = max_steer_;
+    slip_cfg_.slip_min_lat = slip_min_lat_;
+    slip_cfg_.slip_min_active_long = slip_min_active_long_;
+    slip_cfg_.slip_min_passive_long = slip_min_passive_long_;
+    slip_cfg_.vy_filter_tau_s = vy_filter_tau_s_;
+    slip_cfg_.vx_ground_lp_alpha = vx_ground_lp_alpha_;
+    slip_cfg_.slip_speed_min_mps = slip_speed_min_;
+    if (slip_obs_mean_.size() == 8) {
+      for (int i = 0; i < 8; ++i) {
+        slip_cfg_.slip_obs_mean[i] = slip_obs_mean_[i];
+      }
+    } else {
       slip_obs_mean_.assign(8, 0.0);
     }
 
@@ -170,15 +185,20 @@ public:
         opp_odom_topic, 10,
         [this](nav_msgs::msg::Odometry::SharedPtr msg) {this->onOpponent(*msg);});
     }
-    if (enable_slip_estimation_) {
+    if (enable_slip_estimation_ || enable_load_estimation_) {
       imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
         imu_topic, rclcpp::SensorDataQoS(),
         [this](sensor_msgs::msg::Imu::SharedPtr msg) {this->onImu(*msg);});
+    }
+    if (enable_slip_estimation_) {
       RCLCPP_INFO(
         get_logger(),
         "slip estimation ON (imu='%s', accel x%.3f, gyro x%.5f, use_imu_yaw=%d)",
         imu_topic.c_str(), imu_accel_to_ms2_, imu_gyro_to_rads_,
         static_cast<int>(imu_use_for_yaw_rate_));
+    }
+    if (enable_load_estimation_) {
+      RCLCPP_INFO(get_logger(), "load estimation ON (imu ax/ay when available)");
     }
 
     const double period = (control_hz_ > 0.0) ? 1.0 / control_hz_ : 0.1;
@@ -222,6 +242,7 @@ private:
 
   void onImu(const sensor_msgs::msg::Imu & msg)
   {
+    imu_ax_ = imu_ax_sign_ * imu_accel_to_ms2_ * msg.linear_acceleration.x;
     imu_ay_ = imu_ay_sign_ * imu_accel_to_ms2_ * msg.linear_acceleration.y;
     imu_yaw_rate_ = imu_yaw_rate_sign_ * imu_gyro_to_rads_ * msg.angular_velocity.z;
     have_imu_ = true;
@@ -253,63 +274,23 @@ private:
     have_opp_ = true;
   }
 
-  // Estimate the 8-dim slip block [slip_ratio x4, slip_angle x4], wheel order
-  // [LR, RR, LF, RF], from IMU + PF + VESC wheel speed. 'vesc_vx' is the body
-  // forward velocity from the VESC twist (== driven wheel speed). dt is the
-  // control period. Falls back to slip_obs_mean below slip_speed_min.
+  // Estimate the 8-dim slip block via rl_obs_core (unit-tested).
   std::array<double, 8> estimateSlipBlock(double vesc_vx, double dt)
   {
-    std::array<double, 8> fallback;
-    for (int i = 0; i < 8; ++i) {fallback[i] = slip_obs_mean_[i];}
-
-    // Yaw rate: IMU gyro (preferred) or kinematic VESC odom.
-    const double r = (imu_use_for_yaw_rate_ && have_imu_) ? imu_yaw_rate_ : wz_;
-
-    // Longitudinal ground speed: low-pass the PF estimate; fall back to VESC.
-    const double vx_meas = have_pf_vel_ ? pf_vx_body_ : vesc_vx;
-    vx_ground_ = vx_ground_lp_alpha_ * vx_ground_ + (1.0 - vx_ground_lp_alpha_) * vx_meas;
-
-    // Body lateral velocity via complementary filter: integrate (ay - r*vx) and
-    // pull toward the (drift-free) PF lateral velocity.
-    const double alpha = vy_filter_tau_s_ / (vy_filter_tau_s_ + dt);
-    const double ay = have_imu_ ? imu_ay_ : 0.0;
-    double vy_pred = vy_ground_ + dt * (ay - r * vx_ground_);
-    const double vy_pf = have_pf_vel_ ? pf_vy_body_ : 0.0;
-    vy_ground_ = alpha * vy_pred + (1.0 - alpha) * vy_pf;
-
-    const double speed = std::hypot(vx_ground_, vy_ground_);
-    if (speed < slip_speed_min_) {
-      return fallback;
-    }
-
-    // Per-wheel ground velocity (body frame), then rotate fronts by steer angle.
-    const double delta = std::max(-1.0, std::min(1.0, last_steer_)) * max_steer_;
-    const double xs[4] = {-lr_, -lr_, lf_, lf_};       // LR, RR, LF, RF
-    const double ys[4] = {half_track_, -half_track_, half_track_, -half_track_};
-    std::array<double, 4> v_fwd, v_lat, spin;
-    for (int i = 0; i < 4; ++i) {
-      const double vix = vx_ground_ - r * ys[i];
-      const double viy = vy_ground_ + r * xs[i];
-      const double d = (i >= 2) ? delta : 0.0;  // only front wheels steer
-      v_fwd[i] = std::cos(d) * vix + std::sin(d) * viy;
-      v_lat[i] = -std::sin(d) * vix + std::cos(d) * viy;
-      // Rear wheels are driven: wheel speed == VESC speed. Front wheels are
-      // undriven (free-rolling): wheel speed tracks ground -> slip_ratio ~ 0,
-      // overwritten with the training mean below.
-      spin[i] = ((i < 2) ? vesc_vx : v_fwd[i]) / std::max(wheel_radius_, 1e-6);
-    }
-    // Rear wheels carry drive/brake torque (active) when throttle is applied;
-    // fronts are free-rolling (passive) and their slip ratio is pinned below.
-    const bool drive_active = std::abs(last_throttle_) > 1e-3;
-    const std::array<bool, 4> active = {drive_active, drive_active, false, false};
-    std::array<double, 8> slip = computeTyreSlip(
-      v_fwd, v_lat, spin, wheel_radius_, active,
-      slip_min_lat_, slip_min_active_long_, slip_min_passive_long_);
-    // Front slip-ratio channels are a sim free-wheel artifact; pin to training
-    // mean so they normalize to ~0 rather than a large OOD value.
-    slip[2] = slip_obs_mean_[2];
-    slip[3] = slip_obs_mean_[3];
-    return slip;
+    SlipEstimatorInput in;
+    in.vesc_vx = vesc_vx;
+    in.dt = dt;
+    in.wz = wz_;
+    in.last_steer = last_steer_;
+    in.last_throttle = last_throttle_;
+    in.have_imu = have_imu_;
+    in.imu_ay = imu_ay_;
+    in.imu_yaw_rate = imu_yaw_rate_;
+    in.imu_use_for_yaw_rate = imu_use_for_yaw_rate_;
+    in.have_pf_vel = have_pf_vel_;
+    in.pf_vx_body = pf_vx_body_;
+    in.pf_vy_body = pf_vy_body_;
+    return f1tenth_rl_vehicle::estimateSlipBlock(slip_state_, slip_cfg_, in);
   }
 
   void onTimer()
@@ -356,11 +337,13 @@ private:
     if (enable_slip_estimation_) {
       st.tyre_slip = estimateSlipBlock(vx, dt);
     }
-    // tyre_load defaults to the static ratio (1.0); estimate the quasi-static load
-    // transfer from body accel when enabled (mirrors observation_builder_node).
+    // tyre_load defaults to the static ratio (1.0); estimate quasi-static load
+    // transfer from body accel (IMU when available, else odom finite-diff).
     if (enable_load_estimation_) {
+      const double load_ax = have_imu_ ? imu_ax_ : ax;
+      const double load_ay = have_imu_ ? imu_ay_ : ay;
       st.tyre_load = computeQuasiStaticLoad(
-        ax, ay, cg_height_, lf_, lr_, track_width_, roll_stiffness_front_);
+        load_ax, load_ay, cg_height_, lf_, lr_, track_width_, roll_stiffness_front_);
     }
 
     OpponentState opp;
@@ -424,10 +407,10 @@ private:
   // --- tyre-slip estimation state -------------------------------------------
   bool enable_slip_estimation_ = false;
   double imu_accel_to_ms2_ = 9.80665, imu_gyro_to_rads_ = M_PI / 180.0;
-  double imu_ay_sign_ = 1.0, imu_yaw_rate_sign_ = 1.0;
+  double imu_ax_sign_ = 1.0, imu_ay_sign_ = 1.0, imu_yaw_rate_sign_ = 1.0;
   bool imu_use_for_yaw_rate_ = true;
   double wheel_radius_ = 0.05, lf_ = 0.1773, lr_ = 0.1477;
-  double track_width_ = 0.20, half_track_ = 0.10;
+  double track_width_ = 0.20;
   double max_steer_ = 0.33;
 
   // --- quasi-static tyre-load estimation state ------------------------------
@@ -436,15 +419,16 @@ private:
   double slip_min_lat_ = 0.2, slip_min_active_long_ = 0.1, slip_min_passive_long_ = 0.4;
   double vy_filter_tau_s_ = 0.5, vx_ground_lp_alpha_ = 0.5, slip_speed_min_ = 0.3;
   std::vector<double> slip_obs_mean_;
+  SlipEstimatorConfig slip_cfg_;
+  SlipEstimatorState slip_state_;
 
   bool have_imu_ = false;
-  double imu_ay_ = 0.0, imu_yaw_rate_ = 0.0;
+  double imu_ax_ = 0.0, imu_ay_ = 0.0, imu_yaw_rate_ = 0.0;
 
   bool have_prev_pf_ = false, have_pf_vel_ = false;
   double prev_pf_x_ = 0.0, prev_pf_y_ = 0.0;
   rclcpp::Time prev_pf_stamp_{0, 0, RCL_ROS_TIME};
   double pf_vx_body_ = 0.0, pf_vy_body_ = 0.0;
-  double vx_ground_ = 0.0, vy_ground_ = 0.0;
 };
 
 }  // namespace f1tenth_rl_vehicle

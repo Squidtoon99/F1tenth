@@ -11,6 +11,22 @@ drive:
     max_speed: 15.0
     max_steer: 0.33
     speed_limit_mps: 2.0
+    # Keep speed until Part 2 force-mode validation + force-trained checkpoint.
+    motor_mode: "speed"
+
+# --- Force-mode VESC actuator (disabled until validated) ---
+vesc_actuator:
+  ros__parameters:
+    enabled: false
+    i_drive_max_a: 10.0
+    i_brake_max_a: 10.0
+    i_brake_safe_a: 5.0
+    watchdog_timeout_s: 0.5
+    publish_rate_hz: 50.0
+    publish_servo: true
+    zero_erpm: true
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
 
 # --- RL policy inference (f1tenth_rl_agent policy_inference node) ---
 policy_inference:
@@ -23,8 +39,10 @@ vehicle_obs:
     num_obs: 390
     enable_opponent_obs: true
     zero_opponent_obs: true
-    enable_load_estimation: false
-    enable_slip_estimation: false
+    enable_load_estimation: true
+    enable_slip_estimation: true
+    # From austin_selfplay_dr_2048env_continuous policy_686080000.pt obs_norm mean[372:380]
+    slip_obs_mean: [0.020809955894947052, 0.020119236782193184, 0.023194117471575737, 0.02161898836493492, -0.013843115419149399, -0.010874860920011997, -0.020557932555675507, -0.013057908043265343]
     wheel_radius_m: 0.05
     lf_m: 0.1584
     lr_m: 0.1666
@@ -88,7 +106,9 @@ ackermann_mux:
         timeout: 0.2
         priority: 100
 
-# --- joy + joy_teleop (PS4 DualSense) ---
+# --- joy + joy_teleop (PS4 DualShock) ---
+# Button/axis indices follow the SDL GameController mapping used by the ros-humble
+# joy node: L1=9, R1=10, Cross=0, Square=2; sticks are LeftY=1, RightX=2.
 joy:
   ros__parameters:
     device_id: 0
@@ -102,7 +122,7 @@ joy_teleop:
       type: topic
       interface_type: ackermann_msgs/msg/AckermannDriveStamped
       topic_name: teleop
-      deadman_buttons: [4]
+      deadman_buttons: [9]
       axis_mappings:
         drive-speed:
           axis: 1
@@ -118,8 +138,8 @@ rl_deadman_gate:
   ros__parameters:
     joy_topic: /joy
     teleop_topic: /teleop
-    manual_button: 4
-    autonomous_button: 5
+    manual_button: 9
+    autonomous_button: 10
     publish_rate_hz: 20.0
 
 # --- PF relocalize (PS4 X / Square) ---
@@ -129,7 +149,7 @@ pf_relocalize:
     initialpose_topic: /initialpose
     track_relocalize_topic: /pf/relocalize_on_track
     localize_button: 0
-    global_button: 3
+    global_button: 2
     start_x: 54.177
     start_y: 12.958
     start_yaw: -0.116

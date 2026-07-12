@@ -35,6 +35,23 @@ vehicle_obs:
     zero_opponent_obs: true
     opponent_odom_topic: "/rl/opponent/odom"
     opponent_timeout_s: 0.5
+    # Tyre slip/load estimation (off by default; turn on in the per-car overlay when
+    # the deployed checkpoint was trained with live slip/load channels).
+    enable_slip_estimation: false
+    enable_load_estimation: false
+    # Override with the deployed checkpoint's obs_norm mean[372:380] in the car overlay.
+    slip_obs_mean: [0.018993, 0.018784, 0.021179, 0.020262, -0.014774, -0.011768, -0.020673, -0.013329]
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_yaw_rate_sign: 1.0
+    slip_speed_min_mps: 0.3
+    vy_filter_tau_s: 0.5
+    vx_ground_lp_alpha: 0.5
+    cg_height_m: 0.05
+    roll_stiffness_front: 0.5
+    slip_min_lat: 0.2
+    slip_min_active_long: 0.1
+    slip_min_passive_long: 0.4
 
 # LiDAR opponent detector (only launched when enable_opponent:=true). Publishes the
 # detected opponent as Odometry on opponent_odom_topic for vehicle_obs to consume.
@@ -92,6 +109,8 @@ drive:
     speed_limit_mps: 2.0
     watchdog_timeout_s: 0.5
     brake_behavior: "stop"
+    # "speed" = ERPM path (default). "force" = acceleration[-1,1] via vesc_actuator.
+    motor_mode: "speed"
     # Match Genesis F1tenthEnv steer lag; tune t_delta after vehicle_calibration/fit.
     enable_output_filter: true
     t_delta: 0.1

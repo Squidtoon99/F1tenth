@@ -22,6 +22,9 @@ using f1tenth_rl_vehicle::ObsConfig;
 using f1tenth_rl_vehicle::OpponentDetector;
 using f1tenth_rl_vehicle::OpponentState;
 using f1tenth_rl_vehicle::ScanPoint;
+using f1tenth_rl_vehicle::SlipEstimatorConfig;
+using f1tenth_rl_vehicle::SlipEstimatorInput;
+using f1tenth_rl_vehicle::SlipEstimatorState;
 using f1tenth_rl_vehicle::TrackData;
 using f1tenth_rl_vehicle::TrackObservationBuilder;
 using f1tenth_rl_vehicle::VehicleState;
@@ -189,6 +192,63 @@ TEST(RlObsCore, QuasiStaticLoadTransfer)
   auto extreme = f1tenth_rl_vehicle::computeQuasiStaticLoad(-50.0, 50.0);
   for (int i = 0; i < 4; ++i) {
     EXPECT_GE(extreme[i], 0.0);
+  }
+}
+
+TEST(RlObsCore, EstimateSlipBlockLowSpeedFallback)
+{
+  SlipEstimatorConfig cfg;
+  cfg.slip_speed_min_mps = 0.3;
+  cfg.slip_obs_mean = {0.1, 0.2, 0.97, 0.98, -0.01, -0.02, -0.03, -0.04};
+  SlipEstimatorState state;
+  SlipEstimatorInput in;
+  in.vesc_vx = 0.1;
+  in.dt = 0.1;
+  in.have_pf_vel = true;
+  in.pf_vx_body = 0.1;
+  in.pf_vy_body = 0.0;
+
+  auto slip = f1tenth_rl_vehicle::estimateSlipBlock(state, cfg, in);
+  for (int i = 0; i < 8; ++i) {
+    EXPECT_NEAR(slip[i], cfg.slip_obs_mean[i], 1e-9);
+  }
+}
+
+TEST(RlObsCore, EstimateSlipBlockCruiseNearZeroRearSlip)
+{
+  SlipEstimatorConfig cfg;
+  cfg.wheel_radius_m = 0.05;
+  cfg.slip_speed_min_mps = 0.3;
+  cfg.vx_ground_lp_alpha = 0.0;
+  cfg.vy_filter_tau_s = 0.5;
+  SlipEstimatorState state;
+  SlipEstimatorInput in;
+  in.vesc_vx = 3.0;
+  in.dt = 0.1;
+  in.have_pf_vel = true;
+  in.pf_vx_body = 3.0;
+  in.pf_vy_body = 0.0;
+  in.last_throttle = 0.5;
+
+  auto slip = f1tenth_rl_vehicle::estimateSlipBlock(state, cfg, in);
+  EXPECT_NEAR(slip[0], 0.0, 0.05);
+  EXPECT_NEAR(slip[1], 0.0, 0.05);
+  for (int i = 0; i < 8; ++i) {
+    EXPECT_TRUE(std::isfinite(slip[i]));
+  }
+}
+
+TEST(RlObsCore, EstimateSlipBlockLoadFromImuAccel)
+{
+  // IMU body accel feeds the same quasi-static load helper used by vehicle_obs.
+  // Combined ax/ay: rear-right is the most loaded wheel in a left turn under accel.
+  auto load = f1tenth_rl_vehicle::computeQuasiStaticLoad(4.0, 4.0);
+  EXPECT_GT(load[1], load[0]);  // RR > LR
+  EXPECT_GT(load[3], load[2]);  // RF > LF
+  EXPECT_GT(load[1], load[3]);  // rear outer > front outer under +ax
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_GE(load[i], 0.0);
+    EXPECT_TRUE(std::isfinite(load[i]));
   }
 }
 
@@ -893,4 +953,17 @@ TEST(RlObsCore, MapActionToDrive)
     f1tenth_rl_vehicle::mapActionToDrive(-0.5, 1.0, 15.0, 0.44, 1.0, "reverse");
   EXPECT_NEAR(speed_rev, -7.5, 1e-9);
   EXPECT_NEAR(steer_rev, 0.44, 1e-9);
+}
+
+TEST(RlObsCore, MapActionToForce)
+{
+  auto [long_cmd, steer] =
+    f1tenth_rl_vehicle::mapActionToForce(0.5, -0.5, 0.44, 1.0);
+  EXPECT_NEAR(long_cmd, 0.5, 1e-9);
+  EXPECT_NEAR(steer, -0.22, 1e-9);
+
+  auto [brake_cmd, steer0] =
+    f1tenth_rl_vehicle::mapActionToForce(-0.8, 0.0, 0.44, 1.0);
+  EXPECT_NEAR(brake_cmd, -0.8, 1e-9);
+  EXPECT_NEAR(steer0, 0.0, 1e-9);
 }

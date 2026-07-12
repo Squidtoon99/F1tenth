@@ -1,0 +1,14 @@
+vesc_actuator:
+  ros__parameters:
+    # Keep false until Part 2 bench validation and a force-mode policy exist.
+    enabled: false
+    i_drive_max_a: 10.0
+    i_brake_max_a: 10.0
+    i_brake_safe_a: 5.0
+    watchdog_timeout_s: 0.5
+    publish_rate_hz: 50.0
+    publish_servo: true
+    zero_erpm: true
+    ackermann_topic: /ackermann_cmd
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495

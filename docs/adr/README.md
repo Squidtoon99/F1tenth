@@ -18,3 +18,5 @@ trade-off. Routine work is captured by the PR instead (see
   6-dim opponent block with caller-side range/certainty masking (391 → 390).
 - [0004](0004-on-car-stack-integration.md) — Integrate the on-car localization,
   algorithmic drivers, and deploy image from `shereef@f1tenth`.
+- [0005](0005-force-mode-vesc-actuation.md) — Force-mode VESC actuation via
+  current/brake commands; speed-mode remains the default until validated.

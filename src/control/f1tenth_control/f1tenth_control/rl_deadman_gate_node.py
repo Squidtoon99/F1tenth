@@ -59,6 +59,9 @@ class RlDeadmanGateNode(Node):
         msg.header.frame_id = 'base_link'
         msg.drive.speed = 0.0
         msg.drive.steering_angle = 0.0
+        # Force-mode consumers read acceleration; keep it coast/safe-zero when
+        # blocking. vesc_actuator watchdog still applies if commands go stale.
+        msg.drive.acceleration = 0.0
         self._teleop_pub.publish(msg)
 
 

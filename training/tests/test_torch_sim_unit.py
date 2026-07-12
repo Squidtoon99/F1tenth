@@ -111,6 +111,33 @@ def test_drivetrain_force_mode_sign():
     assert torch.all(tau_brake <= 0.0)
 
 
+def test_drivetrain_force_mode_coast_and_power_cap():
+    p = _params(throttle_mode="force", f_drive_max=20.0, power_max=40.0, c_roll=0.0)
+    omega = torch.zeros(1, 4)
+    mass = torch.full((1,), p.mass)
+    mu = torch.full((1,), 1.5)  # high mu so traction is not the limiter
+    # Coast: zero throttle -> near-zero axle torque.
+    tau0 = wheel_axle_torques(p, torch.zeros(1), torch.zeros(1), omega, mu, mass)
+    assert float(tau0.abs().sum()) < 1e-6
+    # At high speed, power_max / v limits drive force below f_drive_max.
+    v_hi = torch.tensor([8.0])
+    tau_hi = wheel_axle_torques(p, torch.ones(1), v_hi, omega, mu, mass)
+    tau_lo = wheel_axle_torques(p, torch.ones(1), torch.tensor([0.5]), omega, mu, mass)
+    assert float(tau_hi.abs().sum()) < float(tau_lo.abs().sum())
+
+
+def test_drivetrain_force_mode_traction_cap():
+    p = _params(throttle_mode="force", f_drive_max=200.0)
+    omega = torch.zeros(1, 4)
+    mass = torch.full((1,), p.mass)
+    mu_low = torch.full((1,), 0.2)
+    mu_hi = torch.full((1,), 1.2)
+    v = torch.zeros(1)
+    tau_low = wheel_axle_torques(p, torch.ones(1), v, omega, mu_low, mass)
+    tau_hi = wheel_axle_torques(p, torch.ones(1), v, omega, mu_hi, mass)
+    assert float(tau_low.abs().sum()) < float(tau_hi.abs().sum())
+
+
 def test_drivetrain_speed_mode_regulates():
     p = _params(throttle_mode="speed", max_speed=8.0)
     omega = torch.zeros(1, 4)

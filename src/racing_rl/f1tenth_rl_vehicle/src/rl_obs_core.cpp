@@ -150,6 +150,56 @@ std::array<double, 4> computeQuasiStaticLoad(
   return ratio;
 }
 
+std::array<double, 8> estimateSlipBlock(
+  SlipEstimatorState & state,
+  const SlipEstimatorConfig & cfg,
+  const SlipEstimatorInput & in)
+{
+  std::array<double, 8> fallback = cfg.slip_obs_mean;
+
+  const double half_track = 0.5 * cfg.track_width_m;
+  const double r = (in.imu_use_for_yaw_rate && in.have_imu) ? in.imu_yaw_rate : in.wz;
+
+  const double vx_meas = in.have_pf_vel ? in.pf_vx_body : in.vesc_vx;
+  state.vx_ground =
+    cfg.vx_ground_lp_alpha * state.vx_ground +
+    (1.0 - cfg.vx_ground_lp_alpha) * vx_meas;
+
+  const double alpha = cfg.vy_filter_tau_s / (cfg.vy_filter_tau_s + in.dt);
+  const double ay = in.have_imu ? in.imu_ay : 0.0;
+  const double vy_pred = state.vy_ground + in.dt * (ay - r * state.vx_ground);
+  const double vy_pf = in.have_pf_vel ? in.pf_vy_body : 0.0;
+  state.vy_ground = alpha * vy_pred + (1.0 - alpha) * vy_pf;
+
+  const double speed = std::hypot(state.vx_ground, state.vy_ground);
+  if (speed < cfg.slip_speed_min_mps) {
+    return fallback;
+  }
+
+  const double delta =
+    std::max(-1.0, std::min(1.0, in.last_steer)) * cfg.max_steer_rad;
+  const double xs[4] = {-cfg.lr_m, -cfg.lr_m, cfg.lf_m, cfg.lf_m};
+  const double ys[4] = {half_track, -half_track, half_track, -half_track};
+  std::array<double, 4> v_fwd, v_lat, spin;
+  for (int i = 0; i < 4; ++i) {
+    const double vix = state.vx_ground - r * ys[i];
+    const double viy = state.vy_ground + r * xs[i];
+    const double d = (i >= 2) ? delta : 0.0;
+    v_fwd[i] = std::cos(d) * vix + std::sin(d) * viy;
+    v_lat[i] = -std::sin(d) * vix + std::cos(d) * viy;
+    spin[i] = ((i < 2) ? in.vesc_vx : v_fwd[i]) /
+      std::max(cfg.wheel_radius_m, 1e-6);
+  }
+  const bool drive_active = std::abs(in.last_throttle) > 1e-3;
+  const std::array<bool, 4> active = {drive_active, drive_active, false, false};
+  std::array<double, 8> slip = computeTyreSlip(
+    v_fwd, v_lat, spin, cfg.wheel_radius_m, active,
+    cfg.slip_min_lat, cfg.slip_min_active_long, cfg.slip_min_passive_long);
+  slip[2] = cfg.slip_obs_mean[2];
+  slip[3] = cfg.slip_obs_mean[3];
+  return slip;
+}
+
 double lagAlpha(double control_dt, double t_delta)
 {
   t_delta = std::max(t_delta, 1e-9);
@@ -182,6 +232,17 @@ std::pair<double, double> mapActionToDrive(
   }
   double steering_angle = steering * max_steer;
   return {speed, steering_angle};
+}
+
+std::pair<double, double> mapActionToForce(
+  double throttle,
+  double steering,
+  double max_steer,
+  double clip_actions)
+{
+  throttle = clampd(throttle, -clip_actions, clip_actions);
+  steering = clampd(steering, -clip_actions, clip_actions);
+  return {throttle, steering * max_steer};
 }
 
 TrackObservationBuilder::TrackObservationBuilder(

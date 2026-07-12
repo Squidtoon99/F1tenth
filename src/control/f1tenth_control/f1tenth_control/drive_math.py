@@ -4,6 +4,9 @@ Mirrors ``f1tenth_env/env.py`` ``_apply_actions``: throttle scales speed by
 ``max_speed`` and steering scales the center steering angle by ``max_steer``.
 Negative throttle is a brake; ``brake_behavior`` controls whether that means a hard
 stop (speed 0) or reverse (negative speed).
+
+Force mode maps throttle to a normalized longitudinal command in [-1, 1] carried
+on ``AckermannDrive.acceleration`` (see ADR 0005); negative values mean brake.
 """
 
 from __future__ import annotations
@@ -28,6 +31,46 @@ def map_action_to_drive(
 
     steering_angle = steering * max_steer
     return speed, steering_angle
+
+
+def map_action_to_force(
+    throttle: float,
+    steering: float,
+    max_steer: float,
+    clip_actions: float = 1.0,
+) -> tuple[float, float]:
+    """Return ``(longitudinal_cmd, steering_angle_rad)``.
+
+    ``longitudinal_cmd`` is normalized in ``[-clip_actions, clip_actions]``:
+    positive = drive force, negative = brake force, zero = coast.
+    """
+    throttle = max(-clip_actions, min(clip_actions, float(throttle)))
+    steering = max(-clip_actions, min(clip_actions, float(steering)))
+    return throttle, steering * max_steer
+
+
+def force_to_motor_currents(
+    longitudinal_cmd: float,
+    i_drive_max_a: float,
+    i_brake_max_a: float,
+) -> tuple[float, float]:
+    """Map normalized longitudinal command to ``(i_drive, i_brake)`` amps.
+
+    Mutual exclusion: at most one of drive/brake is nonzero.
+    Non-finite input maps to coast (0, 0).
+    """
+    if not math_isfinite(longitudinal_cmd):
+        return 0.0, 0.0
+    cmd = float(longitudinal_cmd)
+    if cmd > 0.0:
+        return min(cmd, 1.0) * float(i_drive_max_a), 0.0
+    if cmd < 0.0:
+        return 0.0, min(-cmd, 1.0) * float(i_brake_max_a)
+    return 0.0, 0.0
+
+
+def math_isfinite(x: float) -> bool:
+    return x == x and abs(x) != float("inf")
 
 
 def lag_alpha(control_dt: float, t_delta: float) -> float:
