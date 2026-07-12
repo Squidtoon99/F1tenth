@@ -1,0 +1,217 @@
+"""Shared rosbag2 reader for offline calibration (macOS-friendly, no rclpy)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+from rosbags.highlevel import AnyReader
+from rosbags.typesys import Stores, get_types_from_msg, get_typestore
+
+ACKERMANN_DRIVE = """
+float32 steering_angle
+float32 steering_angle_velocity
+float32 speed
+float32 acceleration
+float32 jerk
+"""
+ACKERMANN_DRIVE_STAMPED = """
+std_msgs/Header header
+ackermann_msgs/AckermannDrive drive
+"""
+
+# Topics used by the calibration fits.
+DEFAULT_TOPICS = (
+    "/odom",
+    "/sensors/imu/raw",
+    "/pf/pose/odom",
+    "/ackermann_cmd",
+    "/teleop",
+    "/drive",
+    "/commands/motor/speed",
+    "/commands/motor/current",
+    "/commands/motor/brake",
+    "/commands/servo/position",
+    "/sensors/servo_position_command",
+    "/sensors/core",
+)
+
+
+def build_typestore():
+    ts = get_typestore(Stores.ROS2_HUMBLE)
+    types = {}
+    types.update(get_types_from_msg(ACKERMANN_DRIVE, "ackermann_msgs/msg/AckermannDrive"))
+    types.update(
+        get_types_from_msg(
+            ACKERMANN_DRIVE_STAMPED, "ackermann_msgs/msg/AckermannDriveStamped"
+        )
+    )
+    ts.register(types)
+    return ts
+
+
+G = 9.81
+
+
+def detect_accel_scale(az: float) -> tuple[float, str]:
+    """Infer the IMU accel unit from a stationary z-axis reading.
+
+    ``|az| ~ 1`` means g units (scale to m/s^2); ``|az| ~ 9.81`` is already
+    m/s^2. Anything else is treated as unknown and normalized against gravity.
+    """
+    az_abs = abs(float(az))
+    if 0.5 < az_abs < 1.5:
+        return G, "g"
+    if 5.0 < az_abs < 15.0:
+        return 1.0, "m_s2"
+    return G / max(az_abs, 1e-6), "unknown"
+
+
+def yaw_from_quat(z: float, w: float) -> float:
+    return float(np.arctan2(2.0 * w * z, 1.0 - 2.0 * z * z))
+
+
+def _empty(*cols: str) -> np.ndarray:
+    return np.zeros((0, 1 + len(cols)), dtype=float)
+
+
+def load_series(
+    bag_dir: Path | str,
+    topics: Iterable[str] | None = None,
+    typestore=None,
+) -> dict[str, np.ndarray]:
+    """Load selected topics into arrays with columns ``[t_sec, ...]``.
+
+    Column layouts:
+      /odom                         -> t, vx, yaw_rate
+      /sensors/imu/raw              -> t, ax, ay, az, gx, gy, gz
+      /pf/pose/odom                 -> t, x, y, yaw
+      /ackermann_cmd|/teleop|/drive -> t, speed, steering, acceleration
+      /commands/motor/speed|current|brake
+      /commands/servo/position|/sensors/servo_position_command -> t, value
+    """
+    bag_dir = Path(bag_dir)
+    wanted = set(topics if topics is not None else DEFAULT_TOPICS)
+    ts = typestore or build_typestore()
+
+    odom, imu, pf = [], [], []
+    ackermann, teleop, drive = [], [], []
+    motor_speed, motor_current, motor_brake = [], [], []
+    servo, servo_cmd = [], []
+
+    with AnyReader([bag_dir], default_typestore=ts) as reader:
+        for conn, t_ns, raw in reader.messages():
+            if conn.topic not in wanted:
+                continue
+            t = t_ns * 1e-9
+            m = reader.deserialize(raw, conn.msgtype)
+            if conn.topic == "/odom":
+                odom.append((t, m.twist.twist.linear.x, m.twist.twist.angular.z))
+            elif conn.topic == "/sensors/imu/raw":
+                a = m.linear_acceleration
+                g = m.angular_velocity
+                imu.append((t, a.x, a.y, a.z, g.x, g.y, g.z))
+            elif conn.topic == "/pf/pose/odom":
+                p = m.pose.pose
+                pf.append(
+                    (
+                        t,
+                        p.position.x,
+                        p.position.y,
+                        yaw_from_quat(p.orientation.z, p.orientation.w),
+                    )
+                )
+            elif conn.topic in ("/ackermann_cmd", "/teleop", "/drive"):
+                row = (t, m.drive.speed, m.drive.steering_angle, m.drive.acceleration)
+                if conn.topic == "/ackermann_cmd":
+                    ackermann.append(row)
+                elif conn.topic == "/teleop":
+                    teleop.append(row)
+                else:
+                    drive.append(row)
+            elif conn.topic == "/commands/motor/speed":
+                motor_speed.append((t, float(m.data)))
+            elif conn.topic == "/commands/motor/current":
+                motor_current.append((t, float(m.data)))
+            elif conn.topic == "/commands/motor/brake":
+                motor_brake.append((t, float(m.data)))
+            elif conn.topic == "/commands/servo/position":
+                servo.append((t, float(m.data)))
+            elif conn.topic == "/sensors/servo_position_command":
+                servo_cmd.append((t, float(m.data)))
+
+    def arr(rows, ncols):
+        if not rows:
+            return np.zeros((0, ncols), dtype=float)
+        return np.asarray(rows, dtype=float)
+
+    return {
+        "/odom": arr(odom, 3),
+        "/sensors/imu/raw": arr(imu, 7),
+        "/pf/pose/odom": arr(pf, 4),
+        "/ackermann_cmd": arr(ackermann, 4),
+        "/teleop": arr(teleop, 4),
+        "/drive": arr(drive, 4),
+        "/commands/motor/speed": arr(motor_speed, 2),
+        "/commands/motor/current": arr(motor_current, 2),
+        "/commands/motor/brake": arr(motor_brake, 2),
+        "/commands/servo/position": arr(servo, 2),
+        "/sensors/servo_position_command": arr(servo_cmd, 2),
+    }
+
+
+def inventory(bag_dir: Path | str, series: dict[str, np.ndarray] | None = None) -> dict:
+    """Return duration, counts, and approximate rates for a bag."""
+    bag_dir = Path(bag_dir)
+    series = series if series is not None else load_series(bag_dir)
+    times = []
+    topics = {}
+    for name, data in series.items():
+        n = int(data.shape[0])
+        if n == 0:
+            topics[name] = {"count": 0, "rate_hz": 0.0, "t0": None, "t1": None}
+            continue
+        t0, t1 = float(data[0, 0]), float(data[-1, 0])
+        dt = max(t1 - t0, 1e-9)
+        topics[name] = {
+            "count": n,
+            "rate_hz": float((n - 1) / dt) if n > 1 else 0.0,
+            "t0": t0,
+            "t1": t1,
+        }
+        times.extend([t0, t1])
+    duration = float(max(times) - min(times)) if times else 0.0
+    return {
+        "bag": bag_dir.name,
+        "path": str(bag_dir),
+        "duration_s": duration,
+        "topics": topics,
+        "has_sensors_core": False,  # not loaded; bags typically lack vesc_msgs
+    }
+
+
+def resample(series: np.ndarray, t_ref: np.ndarray) -> np.ndarray:
+    """Linearly resample columns 1.. of ``series`` onto ``t_ref``."""
+    if series.size == 0 or t_ref.size == 0:
+        return np.zeros((t_ref.size, max(series.shape[1] if series.ndim == 2 else 1, 1)))
+    out = np.zeros((t_ref.size, series.shape[1]), dtype=float)
+    out[:, 0] = t_ref
+    for c in range(1, series.shape[1]):
+        out[:, c] = np.interp(t_ref, series[:, 0], series[:, c])
+    return out
+
+
+def linear_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """Return ``(slope, intercept, r2)`` for y ≈ slope*x + intercept."""
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    if x.size < 2:
+        return 0.0, 0.0, 0.0
+    A = np.vstack([x, np.ones_like(x)]).T
+    slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
+    pred = slope * x + intercept
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+    return float(slope), float(intercept), float(r2)

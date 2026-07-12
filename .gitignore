@@ -249,6 +249,8 @@ wandb/
 *.db3
 *.mcap
 **/bags/
+# Calibration fit outputs (raw bags stay off-repo)
+calibration/results/
 # Simulator + built container/image snapshots
 *.sif
 *.tar
@@ -276,3 +278,7 @@ wandb/
 .idea/
 
 .scratch_media/
+
+# Cursor
+.cursor/mcp.json
+
