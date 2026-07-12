@@ -17,14 +17,13 @@
 # Env:
 #   CHECKPOINT_DIR  host dir holding the trained .pt (mounted read-only at /policies)
 #   CKPT            checkpoint filename inside that dir (default: policy.pt)
-#   STACK           agent graph to run: "vehicle" (on-car C++, default) or "python"
+#   STACK           agent graph: "vehicle" (on-car C++, default)
 #   MODE            "dev" (live source, default) or "release" (built runtime image)
 #   ROS_DOMAIN_ID   DDS domain shared by both containers (default: 42)
 #
 # The vehicle stack (default) is the release gate: it runs the exact on-car C++
 # autonomy graph (vehicle_obs -> policy_inference -> drive) against the gym's
-# ground-truth odom, with the 6-dim opponent block zeroed for solo racing. The
-# python stack is the regression/parity check.
+# ground-truth odom, with the 6-dim opponent block zeroed for solo racing.
 set -eo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
@@ -45,8 +44,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 check_stack() {
   case "${STACK}" in
-    vehicle|python) : ;;
-    *) die "STACK must be 'vehicle' or 'python' (got '${STACK}')" ;;
+    vehicle) : ;;
+    *) die "STACK must be 'vehicle' (got '${STACK}')" ;;
   esac
 }
 
@@ -144,7 +143,7 @@ case "${CMD}" in
   logs)     compose logs -f sim ;;
   *)
     echo "usage: tools/sim.sh [up|validate|logs|down]" >&2
-    echo "  env: STACK=vehicle|python MODE=dev|release CHECKPOINT_DIR=/abs/dir CKPT=policy.pt" >&2
+    echo "  env: STACK=vehicle MODE=dev|release CHECKPOINT_DIR=/abs/dir CKPT=policy.pt" >&2
     exit 1
     ;;
 esac

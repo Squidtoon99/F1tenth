@@ -2,7 +2,7 @@
 """Gym validation: compare deployed obs[384:390] to ground-truth opponent block.
 
 Run inside the f1tenth_gym_ros container with the 1v1 sim bridge and agent stack
-(observation_builder with enable_opponent_obs) already up. Computes the expected
+(vehicle_obs with enable_opponent_obs) already up. Computes the expected
 6-dim opponent block from /ego_racecar/opp_odom (gym ground truth) and compares
 it to /rl/observation[384:390].
 

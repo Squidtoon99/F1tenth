@@ -118,14 +118,13 @@ built C++ node runs in the container, never the venv.
 
 Closed-loop testing of the deployed nodes + ML policy uses the two-container gym
 stack (gym bridge + our agent graph). `tools/sim.sh` orchestrates it; the on-car
-C++ graph (`STACK=vehicle`, default) is the release gate and the Python graph
-(`STACK=python`) is the regression check. See
+C++ graph (`vehicle_obs` → `policy_inference` → `drive`) is the release gate. See
 [`docs/deployment.md`](docs/deployment.md) for the full certification sequence and
 acceptance criteria.
 
 ```bash
-CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh up        # bring up the graph
-CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh validate  # closed-loop acceptance gate
+CHECKPOINT_DIR=/abs/dir CKPT=policy.pt tools/sim.sh up        # bring up the graph
+CHECKPOINT_DIR=/abs/dir CKPT=policy.pt tools/sim.sh validate  # closed-loop acceptance gate
 tools/sim.sh down
 ```
 

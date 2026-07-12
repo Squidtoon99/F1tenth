@@ -4,18 +4,14 @@ The gym bridge (physics + /scan + /ego_racecar/odom + /drive) runs in the separa
 sim container (see sim/ and deploy/docker/docker-compose.sim.yml). This launch runs
 the agent-side ROS graph in the agent container and closes the loop on /drive.
 
-Two graphs are selectable with ``stack``:
+The on-car C++ autonomy graph (vehicle_obs -> policy_inference -> drive) from
+bringup_vehicle.launch.py is pointed at the gym's ground-truth odom in place of the
+particle filter + VESC odom. Solo racing: the opponent detector is off and the
+6-dim opponent block [384:390) is zeroed (the vehicle.yaml sentinel), so the
+390-dim policy runs without a detector.
 
-- ``vehicle`` (default, the release gate): the exact on-car C++ autonomy graph
-  (vehicle_obs -> policy_inference -> drive) from bringup_vehicle.launch.py, pointed
-  at the gym's ground-truth odom in place of the particle filter + VESC odom. Solo
-  racing: the opponent detector is off and the 6-dim opponent block [384:390) is
-  zeroed (the vehicle.yaml sentinel), so the 390-dim policy runs without a detector.
-- ``python``: the pure-Python agent graph (bringup_agent_launch.py), kept as a
-  regression/parity check against the same checkpoint, track, and steering envelope.
-
-The evaluation node (read-only) provides spawn/reset + lap/progress/OOB/stuck metrics
-for both graphs; for the vehicle graph it is composed here alongside track_server.
+The evaluation node (read-only) provides spawn/reset + lap/progress/OOB/stuck metrics;
+it is composed here alongside track_server.
 """
 
 import os
@@ -23,9 +19,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -37,18 +32,21 @@ def generate_launch_description() -> LaunchDescription:
     default_track_csv = os.path.join(
         agent_share, "assets", "IV_2026_SIM_centerline.csv"
     )
+    # Prefer the car01 overlay (slip/load estimation on) when running from the
+    # monorepo workspace mount; fall back to the package empty overlay.
+    default_overlay = os.path.join(
+        vehicle_share, "config", "overlay_defaults.yaml"
+    )
+    car01_overlay = "/ws/deploy/cars/car01/params.yaml"
+    if os.path.isfile(car01_overlay):
+        default_overlay = car01_overlay
 
-    stack = LaunchConfiguration("stack")
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     agent_params_file = LaunchConfiguration("agent_params_file")
+    overlay_params_file = LaunchConfiguration("overlay_params_file")
     track_csv = LaunchConfiguration("track_csv")
     gym_odom_topic = LaunchConfiguration("gym_odom_topic")
 
-    declare_stack = DeclareLaunchArgument(
-        "stack",
-        default_value="vehicle",
-        description="Which agent graph to certify: 'vehicle' (on-car C++) or 'python'.",
-    )
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path",
         default_value="/policies/policy.pt",
@@ -58,6 +56,11 @@ def generate_launch_description() -> LaunchDescription:
         "agent_params_file",
         default_value=default_agent_params,
         description="Agent parameter YAML (track_server / policy_inference / evaluation).",
+    )
+    declare_overlay = DeclareLaunchArgument(
+        "overlay_params_file",
+        default_value=default_overlay,
+        description="Per-car overlay (e.g. car01 params with slip/load estimation).",
     )
     declare_track = DeclareLaunchArgument(
         "track_csv",
@@ -70,18 +73,14 @@ def generate_launch_description() -> LaunchDescription:
         description="Gym ground-truth ego odometry (pose + body twist).",
     )
 
-    is_vehicle = IfCondition(PythonExpression(["'", stack, "' == 'vehicle'"]))
-    is_python = IfCondition(PythonExpression(["'", stack, "' == 'python'"]))
-
-    # --- vehicle graph: the exact on-car C++ stack against gym GT odom -----------
     vehicle_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(vehicle_share, "launch", "bringup_vehicle.launch.py")
         ),
-        condition=is_vehicle,
         launch_arguments={
             "checkpoint_path": checkpoint_path,
             "agent_params_file": agent_params_file,
+            "overlay_params_file": overlay_params_file,
             "track_csv": track_csv,
             "pose_topic": gym_odom_topic,
             "twist_topic": gym_odom_topic,
@@ -89,15 +88,12 @@ def generate_launch_description() -> LaunchDescription:
             "enable_obs_debug": "false",
         }.items(),
     )
-    # track_server + evaluation give the vehicle graph the same reset/metrics sidecar
-    # the python graph gets from bringup_agent_launch.py.
     vehicle_track_server = Node(
         package="f1tenth_rl_agent",
         executable="track_server",
         name="track_server",
         parameters=[agent_params_file],
         output="screen",
-        condition=is_vehicle,
     )
     vehicle_evaluation = Node(
         package="f1tenth_rl_agent",
@@ -105,31 +101,17 @@ def generate_launch_description() -> LaunchDescription:
         name="evaluation",
         parameters=[agent_params_file],
         output="screen",
-        condition=is_vehicle,
-    )
-
-    # --- python graph: regression / parity check --------------------------------
-    python_bringup = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(agent_share, "launch", "bringup_agent_launch.py")
-        ),
-        condition=is_python,
-        launch_arguments={
-            "checkpoint_path": checkpoint_path,
-            "params_file": agent_params_file,
-        }.items(),
     )
 
     return LaunchDescription(
         [
-            declare_stack,
             declare_ckpt,
             declare_agent_params,
+            declare_overlay,
             declare_track,
             declare_gym_odom,
             vehicle_bringup,
             vehicle_track_server,
             vehicle_evaluation,
-            python_bringup,
         ]
     )

@@ -6,24 +6,6 @@ track_server:
     frame_id: "map"
     republish_hz: 1.0
 
-observation_builder:
-  ros__parameters:
-    control_hz: 10.0
-    contact_margin_m: 0.08
-    future_track_num_points: 60
-    future_track_horizon_s: 6.0
-    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
-    # If the simulator publishes odom twist in the world frame instead of body frame,
-    # set this True to rotate linear velocity into the body frame before building obs.
-    twist_in_world_frame: false
-    publish_debug_markers: false
-    # The deployed checkpoint uses the 390-dim (1v1) layout. Solo racing keeps the
-    # 6-dim opponent block at [384:390) but zeroes it (absent-opponent sentinel), so
-    # the assembled observation matches the policy input. Set zero_opponent_obs:
-    # false only when a working opponent source publishes on opponent_odom_topic.
-    enable_opponent_obs: true
-    zero_opponent_obs: true
-
 obs_debug:
   ros__parameters:
     # Read-only diagnostics: decodes /rl/observation into plottable scalars + markers.
@@ -44,9 +26,7 @@ policy_inference:
     state_dict_key: "actor"
     device: "cpu"
     deterministic: true
-    # Must match observation_builder's dim: false -> 384 (solo-only checkpoints),
-    # true -> 390 (1v1 layout). The deployed checkpoint uses the 390-dim layout with
-    # the opponent block zeroed for solo racing, so this is true.
+    # 390-dim 1v1 layout with the opponent block zeroed for solo racing.
     enable_opponent_obs: true
     # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads
     # and only reachable with require_checkpoint:=false).
@@ -55,24 +35,6 @@ policy_inference:
     # the checkpoint's saved obs_norm stats before the actor.
     norm_clip: 10.0
     norm_eps: 1.0e-8
-
-drive_command:
-  ros__parameters:
-    # Cap below training envelope (~3–6 m/s in Genesis) to reduce wall collisions in gym.
-    max_speed: 3.0
-    # Match training/deploy steering envelope (config.py delta_max=0.33); a policy
-    # trained at 0.33 rad must be commanded at 0.33 rad in the gym too.
-    max_steer: 0.33
-    clip_actions: 1.0
-    # Hard cap on commanded speed (m/s). Matches real-car shakedown in vehicle.yaml.
-    speed_limit_mps: 2.0
-    watchdog_timeout_s: 0.5
-    # "stop" -> negative throttle commands zero speed; "reverse" -> allow negative speed.
-    brake_behavior: "stop"
-    # Match Genesis F1tenthEnv steer lag (config.py t_delta at 10 Hz control).
-    enable_output_filter: true
-    t_delta: 0.1
-    control_dt: 0.1
 
 evaluation:
   ros__parameters:

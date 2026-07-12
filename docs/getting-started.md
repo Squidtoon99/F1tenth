@@ -184,7 +184,7 @@ max line length 99); C++: `clang-format`.
 ### 3.5 Wire it into a launch file (optional)
 
 If the node should come up with a stack, add a `Node(...)` to the relevant launch
-file (e.g. `src/racing_rl/f1tenth_rl_agent/launch/bringup_agent_launch.py` or a
+file (e.g. `src/racing_rl/f1tenth_rl_vehicle/launch/bringup_vehicle.launch.py` or a
 group bringup) and pass its parameters via the shared YAML.
 
 ### 3.6 Open a PR into `develop`

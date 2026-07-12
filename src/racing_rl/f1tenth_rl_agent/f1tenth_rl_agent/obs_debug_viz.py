@@ -4,7 +4,7 @@ The pure-numpy functions here decode the raw ``/rl/observation`` vector into the
 quantities that matter for diagnosing wall collisions (corridor margins, lateral
 error, opponent position, ...). They are kept free of ROS dependencies so they can
 be unit-tested directly; the marker builder below is the only function that touches
-ROS message types and is shared with ``observation_builder_node``.
+ROS message types and is shared with ``obs_debug_node``.
 """
 
 from __future__ import annotations

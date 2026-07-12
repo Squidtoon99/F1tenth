@@ -4,19 +4,6 @@ track_server:
     frame_id: "map"
     republish_hz: 1.0
 
-observation_builder:
-  ros__parameters:
-    control_hz: 10.0
-    contact_margin_m: 0.08
-    future_track_num_points: 60
-    future_track_horizon_s: 6.0
-    future_track_width: 2.2
-    twist_in_world_frame: false
-    publish_debug_markers: false
-    enable_opponent_obs: true
-    opponent_odom_topic: "/rl/opponent/odom"
-    zero_opponent_obs: false
-
 policy_inference:
   ros__parameters:
     checkpoint_path: ""
@@ -27,18 +14,6 @@ policy_inference:
     norm_clip: 10.0
     norm_eps: 1.0e-8
     enable_opponent_obs: true
-
-drive_command:
-  ros__parameters:
-    max_speed: 6.0
-    max_steer: 0.33
-    clip_actions: 1.0
-    speed_limit_mps: 2.0
-    watchdog_timeout_s: 0.5
-    brake_behavior: "stop"
-    enable_output_filter: true
-    t_delta: 0.1
-    control_dt: 0.1
 
 evaluation:
   ros__parameters:

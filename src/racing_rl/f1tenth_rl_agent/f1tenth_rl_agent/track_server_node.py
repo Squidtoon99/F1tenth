@@ -1,8 +1,8 @@
 """track_server_node: publish the track centerline + widths + viz markers.
 
-Loads the Oschersleben centerline CSV (the exact asset the policy trained on) and
-publishes it on latched (``transient_local``) topics so the observation_builder and
-evaluation nodes get a single source of truth, plus RViz/Foxglove markers.
+Loads the centerline CSV (the exact asset the policy trained on) and publishes it
+on latched (``transient_local``) topics so evaluation and other consumers get a
+single source of truth, plus RViz/Foxglove markers.
 """
 
 from __future__ import annotations

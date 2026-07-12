@@ -26,7 +26,6 @@ setup(
     entry_points={
         "console_scripts": [
             "track_server = f1tenth_rl_agent.track_server_node:main",
-            "observation_builder = f1tenth_rl_agent.observation_builder_node:main",
             "obs_debug = f1tenth_rl_agent.obs_debug_node:main",
             "policy_inference = f1tenth_rl_agent.policy_inference_node:main",
             "localization_preflight = f1tenth_rl_agent.localization_preflight_node:main",
