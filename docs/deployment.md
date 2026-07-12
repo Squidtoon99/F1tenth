@@ -51,10 +51,16 @@ flowchart LR
 
    ```bash
    docker run --rm -it --net=host --privileged \
+     -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
      f1tenth-racing:develop
    ```
+
+   `-v /dev:/dev` is required: `--privileged` exposes device *nodes* (e.g.
+   `/dev/ttyACM0`) but not the udev *symlinks* the drivers use (`/dev/sensors/vesc`,
+   LiDAR, joystick). Mounting host `/dev` brings those stable symlinks into the
+   container so `vesc_driver` (and the LiDAR/joy nodes) open their configured ports.
 
 ## Per-car config
 
@@ -82,8 +88,8 @@ are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
 ## Certification gate (f1tenth_gym)
 
 Before a release, the stack is certified against the `f1tenth_gym` bridge with a
-real 390-dim checkpoint. The exact on-car C++ autonomy graph is the gate; the Python
-graph is a regression check. All commands run from the repo root.
+real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
+`policy_inference` → `drive`) is the sole gate. All commands run from the repo root.
 
 1. **Contract, parity, unit (host `.venv`)** — the 390-dim contract and the
    training↔deploy observation parity:
@@ -111,10 +117,9 @@ graph is a regression check. All commands run from the repo root.
    gym physics with a real checkpoint, then the automated acceptance validator:
 
    ```bash
-   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle tools/sim.sh up      # (leave running)
-   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt STACK=vehicle \
+   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt tools/sim.sh up      # (leave running)
+   CHECKPOINT_DIR=/abs/dir CKPT=policy.pt \
      VALIDATE_ARGS="--duration-s 600 --min-samples 2000" tools/sim.sh validate
-   STACK=python tools/sim.sh up ...    # regression check: at least one lap
    ```
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
@@ -143,11 +148,39 @@ with the run, and record the release in
 
 ### Remaining prerequisite before a powered on-car run
 
-`deploy/cars/car01/params.yaml` ships **placeholder zero** VESC gains
-(`speed_to_erpm_gain`, `steering_angle_to_servo_*`). These MUST be replaced with
-measured per-car calibration before any powered run — zero gains produce zero or
-undefined actuation. The observation mode (`enable_load_estimation` /
-`enable_slip_estimation`) must also match how the deployed checkpoint was trained.
+Confirm `deploy/cars/car01/params.yaml` has measured VESC gains
+(`speed_to_erpm_gain`, `steering_angle_to_servo_*`) before any powered run — zero
+gains produce zero or undefined actuation. The observation mode
+(`enable_load_estimation` / `enable_slip_estimation`) must also match how the
+deployed checkpoint was trained.
+When the checkpoint was trained with live slip/load channels (`zero_tyre_slip_obs:
+false`), enable both flags in the per-car overlay and set `slip_obs_mean` from the
+checkpoint's saved `obs_norm` running mean:
+
+```bash
+.venv/bin/python -c "
+import torch
+p = torch.load('/path/to/policy.pt', map_location='cpu', weights_only=False)
+print(p['obs_norm']['mean'][372:380].tolist())
+"
+```
+
+Paste the eight values into `vehicle_obs.slip_obs_mean` in
+`deploy/cars/<car_id>/params.yaml`. With estimation off, `vehicle_obs` emits zeros
+`[372:380)` and ones `[380:384)` — out-of-distribution for slip/load-trained
+policies.
+
+### On-car slip/load calibration (first powered test)
+
+IMU sign and filter tuning happens on the ground, not in the gym bridge (which has no
+`/sensors/imu/raw`). During the first powered shakedown at `speed_limit_mps: 2.0`:
+
+1. Constant-speed roll → rear slip ratios near 0.
+2. Throttle step → rear κ responds.
+3. Hard turn → load transfer visible in `[380:384)`.
+4. Tune `imu_ax_sign`, `imu_ay_sign`, `imu_yaw_rate_sign`, `vy_filter_tau_s`,
+   `vx_ground_lp_alpha`, and `slip_speed_min_mps` from a rosbag if channels look
+   wrong post-`obs_norm`.
 
 ## Releases
 
