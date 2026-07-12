@@ -746,6 +746,27 @@ def save_policy_artifact(
     return path
 
 
+def load_init_ckpt(
+    models: Models,
+    normalizer: ObsNormalizer,
+    path: str,
+    device: torch.device,
+) -> int:
+    """Warm-start the actor + obs-normalizer from a saved policy artifact.
+
+    Returns the artifact's env-transition count so self-play can seed its first
+    snapshot at the policy's true maturity. Critics start fresh (not exported).
+    """
+    payload = torch.load(path, map_location=device)
+    models.actor.load_state_dict(payload["actor"])
+    normalizer.load_state_dict(payload["obs_norm"])
+    init_transitions = int(payload.get("env_transitions", 0))
+    logging.getLogger(LOGGER_NAME).info(
+        "Warm-started from %s (env_transitions=%d)", path, init_transitions
+    )
+    return init_transitions
+
+
 def run_eval_video(
     eval_state: dict,
     env_cfg: dict,
@@ -1116,6 +1137,12 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("WANDB_MODE", "online"),
         choices=["online", "offline", "disabled"],
     )
+    parser.add_argument(
+        "--init-ckpt",
+        type=str,
+        default=None,
+        help="Warm-start the actor + obs-normalizer from a saved policy artifact.",
+    )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument(
         "--run-dir",
@@ -1218,6 +1245,10 @@ def main():
         clip=float(obs_cfg.get("norm_clip", 10.0)),
     )
 
+    init_transitions = 0
+    if args.init_ckpt is not None:
+        init_transitions = load_init_ckpt(models, normalizer, args.init_ckpt, device)
+
     selfplay_mgr: SelfPlayManager | None = None
     if args.self_play or args.mixed_opponents:
         sp_cfg = cfg["selfplay"]
@@ -1230,7 +1261,9 @@ def main():
             log=log,
         )
         selfplay_mgr.seed_snapshot(
-            SelfPlayManager.make_snapshot(models, normalizer, transitions=0)
+            SelfPlayManager.make_snapshot(
+                models, normalizer, transitions=init_transitions
+            )
         )
         selfplay_mgr.bootstrap_opponent(env)
 
