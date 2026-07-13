@@ -129,13 +129,24 @@ DEFAULT_CONFIG = {
         "opponent_strategy": None,
         # Per-env sampling weights for the "mixed" opponent strategy. On each reset
         # a row is assigned scripted vs policy with these (normalized) probabilities.
+        # policy_speed_cap_prob: fraction of policy-mode rows given a random speed
+        # cap in policy_speed_cap_range (m/s), so a share of self-play opponents
+        # drive their normal line but coast at a slower cruise -- realistically
+        # driven yet passable cars, so the ego learns to overtake (not just follow).
         "opponent_mix": {
-            "scripted_weight": 0.3,
-            "policy_weight": 0.7,
+            "scripted_weight": 0.25,
+            "policy_weight": 0.75,
+            "policy_speed_cap_prob": 0.5,
+            "policy_speed_cap_range": [2.5, 5.0],
         },
-        # Scripted opponent: centerline follower kept below ego pace so an overtake
-        # is feasible. Closed-loop P-control holds this setpoint in m/s.
+        # Scripted opponent: track follower kept below ego pace so an overtake is
+        # feasible. Closed-loop P-control holds this setpoint in m/s;
+        # opponent_target_speed_range (if set) samples a per-env cruise instead, and
+        # opponent_lateral_offset_m holds a random off-centerline racing line so the
+        # scripted cars are a varied slow field rather than one robotic pattern.
         "opponent_target_speed": 2.5,
+        "opponent_target_speed_range": [2.0, 5.0],
+        "opponent_lateral_offset_m": 0.5,
         "opponent_spawn_gap_min_m": 3.0,
         "opponent_spawn_gap_max_m": 20.0,
         "opponent_spawn_behind_prob": 0.3,
@@ -216,6 +227,12 @@ DEFAULT_CONFIG = {
         # Scales with squared closing speed so high-speed rear-ends are punished
         # hardest. Only active when a "rear_end" entry is added to reward_scales.
         "rear_end_k": 5.0,
+        # Overtake-completed bonus: one-time +overtake_bonus_k when the opponent
+        # goes from ahead to behind within overtake_gap_m on the centerline (a
+        # genuine pass, not a lap wrap). Only active when an "overtake" entry is
+        # added to reward_scales (the trainer does this for 1v1).
+        "overtake_bonus_k": 1.0,
+        "overtake_gap_m": 5.0,
         # Additive combined-slip penalty shaping. slip_angle_weight balances the
         # (radian) slip-angle term against the (unitless) slip-ratio term; the
         # deadzones (ratio unitless, angle radians) carve out a controlled
@@ -262,8 +279,8 @@ DEFAULT_CONFIG = {
     "selfplay": {
         "snapshot_interval_transitions": 10_240_000,
         "refresh_interval_transitions": 2_560_000,
-        "pool_size": 5,
+        "pool_size": 10,
         "sample_mode": "mixed",
-        "mixed_latest_prob": 0.8,
+        "mixed_latest_prob": 0.5,
     },
 }

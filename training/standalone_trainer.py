@@ -680,6 +680,10 @@ def build_config(args: argparse.Namespace) -> dict:
         # leaves it out of the reward breakdown entirely.
         if float(args.rear_end_scale) != 0.0:
             cfg["reward"]["reward_scales"]["rear_end"] = args.rear_end_scale
+        # Activate the overtake-completed bonus (gated by this scale). 0.0 leaves it
+        # out of the reward breakdown entirely.
+        if float(args.overtake_scale) != 0.0:
+            cfg["reward"]["reward_scales"]["overtake"] = args.overtake_scale
         # Closing-speed threshold for collision termination (0.0 = terminate on any
         # overlap). Below it, contacts only apply penalties/physics and the episode
         # continues.
@@ -996,7 +1000,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--passing-scale",
         type=float,
-        default=0.5,
+        default=2.0,
         help="Reward scale for the 1v1 passing term (track position gained on the "
         "opponent). Only used when --opponent is not 'none'.",
     )
@@ -1010,10 +1014,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rear-end-scale",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Reward scale for the GT Sophy rear-end penalty Rr (-rear_end_k * "
         "closing-speed^2 when colliding with an opponent ahead). 0.0 disables it. "
         "Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--overtake-scale",
+        type=float,
+        default=1.0,
+        help="Reward scale for the one-time overtake-completed bonus (opponent goes "
+        "from ahead to behind within overtake_gap_m). 0.0 disables it. Only used "
+        "when --opponent is not 'none'.",
     )
     parser.add_argument(
         "--collision-term-speed",
@@ -1638,6 +1650,9 @@ def main():
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
                             "reward/progress": diag.mean("reward_term/progress"),
+                            "reward/passing": diag.mean("reward_term/passing"),
+                            "reward/overtake": diag.mean("reward_term/overtake"),
+                            "reward/rear_end": diag.mean("reward_term/rear_end"),
                             "reward/collision": diag.mean(
                                 "reward_term/collision"
                             ),

@@ -196,6 +196,47 @@ def reward_passing(
     return passing * in_window.to(passing.dtype)
 
 
+def reward_overtake(
+    step_state: dict[str, Any],
+    reward_cfg: dict[str, Any],
+    reward_state: dict[str, Any],
+    episode_steps_buf: torch.Tensor,
+) -> torch.Tensor:
+    """One-time bonus for completing a pass: the opponent transitions from ahead
+    to behind on the centerline while the two cars are close (``|gap| <
+    overtake_gap_m``), so it fires on a genuine overtake, not a lap-count wrap
+    (large gap) or a reset. Returns zeros when no opponent is present.
+    """
+    if "opp_s" not in step_state:
+        return torch.zeros_like(step_state["progress_ds"])
+
+    ego_s = step_state["frenet"]["s"].reshape(-1)
+    opp_s = step_state["opp_s"].reshape(-1)
+    length = step_state["frenet"]["L"]
+    gap = opp_s - ego_s
+    half = 0.5 * length
+    gap = torch.where(gap > half, gap - length, gap)
+    gap = torch.where(gap < -half, gap + length, gap)
+    opp_ahead = gap > 0.0
+
+    step_now = episode_steps_buf.reshape(-1)
+    prev_ahead = reward_state.get("prev_opp_ahead")
+    prev_step = reward_state.get("prev_overtake_step")
+    if prev_ahead is None or prev_ahead.numel() != opp_ahead.numel():
+        prev_ahead = opp_ahead.clone()
+    if prev_step is None or prev_step.numel() != step_now.numel():
+        prev_step = step_now.clone()
+    reset_mask = step_now < prev_step
+
+    gap_gate = float(reward_cfg.get("overtake_gap_m", 5.0))
+    completed = prev_ahead & (~opp_ahead) & (gap.abs() < gap_gate) & (~reset_mask)
+    k = float(reward_cfg.get("overtake_bonus_k", 1.0))
+
+    reward_state["prev_opp_ahead"] = opp_ahead.detach().clone()
+    reward_state["prev_overtake_step"] = step_now.detach().clone()
+    return k * completed.to(step_state["progress_ds"].dtype)
+
+
 def reward_collision(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -386,6 +427,13 @@ def compute_rewards(
     if rear_end_enabled:
         rear_end = reward_rear_end(step_state, reward_cfg)
 
+    # 1v1 overtake-completed bonus (gated): one-time reward for finishing a pass.
+    overtake_enabled = "overtake" in scales
+    if overtake_enabled:
+        overtake = reward_overtake(
+            step_state, reward_cfg, reward_state, episode_steps_buf
+        )
+
     # GT Sophy masks course progress whenever the agent is off course (anti
     # corner-cutting). Derive the mask directly from the boundary state: the
     # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
@@ -412,6 +460,8 @@ def compute_rewards(
         collision *= scales["collision"]
     if rear_end_enabled:
         rear_end *= scales["rear_end"]
+    if overtake_enabled:
+        overtake *= scales["overtake"]
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
     # balance between terms intact) so returns / critic targets stay O(1).
@@ -427,6 +477,8 @@ def compute_rewards(
         collision *= global_scale
     if rear_end_enabled:
         rear_end *= global_scale
+    if overtake_enabled:
+        overtake *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
@@ -446,6 +498,9 @@ def compute_rewards(
     if rear_end_enabled:
         reward_buf += rear_end
         last_terms["rear_end"] = rear_end.clone()
+    if overtake_enabled:
+        reward_buf += overtake
+        last_terms["overtake"] = overtake.clone()
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

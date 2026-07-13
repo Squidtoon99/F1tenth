@@ -173,3 +173,47 @@ def test_gate_opponent_in_window_passes_through(rewards_mod):
     ss = _step_state(10.1, 0.5)  # gap=5.1, within [-20, +40]
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
     assert r[0].item() == pytest.approx(5.0 * (0.5 - 0.1), abs=1e-5)
+
+
+# --- overtake-completed bonus -------------------------------------------------
+def _ovc(bonus_k=1.0, gap_m=5.0):
+    return {"overtake_bonus_k": bonus_k, "overtake_gap_m": gap_m}
+
+
+def test_overtake_fires_on_close_pass(rewards_mod):
+    rs = {}
+    cfg = _ovc()
+    # step1: opponent 2 m ahead (establishes prev sign)
+    r0 = rewards_mod.reward_overtake(_step_state(7.0, 0.3), cfg, rs, torch.tensor([5]))
+    assert r0[0].item() == 0.0
+    # step2: opponent now 1 m behind, still close -> completed pass -> +bonus_k
+    r1 = rewards_mod.reward_overtake(_step_state(4.0, 0.3), cfg, rs, torch.tensor([6]))
+    assert r1[0].item() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_overtake_no_fire_on_lap_wrap(rewards_mod):
+    rs = {}
+    cfg = _ovc()
+    # step1: opponent just ahead (gap +1)
+    rewards_mod.reward_overtake(_step_state(6.0, 0.3), cfg, rs, torch.tensor([5]))
+    # step2: sign flips to behind but the wrapped gap is 45 m -> not a real pass
+    r = rewards_mod.reward_overtake(_step_state(60.0, 0.3), cfg, rs, torch.tensor([6]))
+    assert r[0].item() == 0.0
+
+
+def test_overtake_no_fire_on_reset(rewards_mod):
+    rs = {}
+    cfg = _ovc()
+    rewards_mod.reward_overtake(_step_state(7.0, 0.3), cfg, rs, torch.tensor([6]))
+    # step counter drops (episode reset): even a sign flip must not fire
+    r = rewards_mod.reward_overtake(_step_state(4.0, 0.3), cfg, rs, torch.tensor([1]))
+    assert r[0].item() == 0.0
+
+
+def test_overtake_no_fire_when_being_passed(rewards_mod):
+    rs = {}
+    cfg = _ovc()
+    # step1: opponent behind; step2: opponent moves ahead (we are being passed)
+    rewards_mod.reward_overtake(_step_state(4.0, 0.3), cfg, rs, torch.tensor([5]))
+    r = rewards_mod.reward_overtake(_step_state(6.0, 0.3), cfg, rs, torch.tensor([6]))
+    assert r[0].item() == 0.0

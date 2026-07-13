@@ -47,6 +47,10 @@ def _build_cfg(*, target_speed: float) -> dict:
     cfg["env"]["opponent_strategy"] = "mixed"
     cfg["env"]["opponent_mix"] = {"scripted_weight": 0.5, "policy_weight": 0.5}
     cfg["env"]["opponent_target_speed"] = target_speed
+    # Pin the scripted field to a fixed centerline cruise so we can assert speed
+    # tracking (the varied-speed/off-line defaults are exercised elsewhere).
+    cfg["env"]["opponent_target_speed_range"] = None
+    cfg["env"]["opponent_lateral_offset_m"] = 0.0
     cfg["env"]["opponent_kp_speed"] = 1.0
     _pin_deterministic_spawn(cfg, gap_m=25.0)
     # Keep episodes from resetting while we observe the opponents.
