@@ -3,6 +3,7 @@
 import os
 import tempfile
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -24,6 +25,17 @@ def _make_actor():
     )
 
 
+def _ckpt_meta(**extra):
+    meta = {
+        "step": 10,
+        "policy_format_version": ifc.POLICY_FORMAT_VERSION,
+        "longitudinal_mode": "force",
+        "control_hz": ifc.CONTROL_HZ,
+    }
+    meta.update(extra)
+    return meta
+
+
 def test_forward_shape_and_range():
     actor = _make_actor()
     actor.eval()
@@ -39,8 +51,7 @@ def test_load_checkpoint_actor_key():
     actor = _make_actor()
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "ckpt.pt")
-        # standalone_trainer.save_checkpoint format
-        torch.save({"step": 10, "actor": actor.state_dict()}, path)
+        torch.save({**_ckpt_meta(), "actor": actor.state_dict()}, path)
         loaded = load_actor(
             checkpoint_path=path,
             obs_dim=ifc.NUM_OBS,
@@ -57,21 +68,46 @@ def test_load_checkpoint_actor_key():
     assert torch.allclose(a0, a1, atol=1e-6)
 
 
-def test_load_raw_state_dict():
+def test_reject_raw_state_dict():
     actor = _make_actor()
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "raw.pt")
         torch.save(actor.state_dict(), path)
-        loaded = load_actor(
-            checkpoint_path=path,
-            obs_dim=ifc.NUM_OBS,
-            act_dim=ifc.NUM_ACTIONS,
-            hidden_sizes=ifc.HIDDEN_LAYERS,
-            act_limit=ifc.ACT_LIMIT,
-            state_dict_key="actor",
-            device=torch.device("cpu"),
+        with pytest.raises(ValueError, match="policy_format_version"):
+            load_actor(
+                checkpoint_path=path,
+                obs_dim=ifc.NUM_OBS,
+                act_dim=ifc.NUM_ACTIONS,
+                hidden_sizes=ifc.HIDDEN_LAYERS,
+                act_limit=ifc.ACT_LIMIT,
+                state_dict_key="actor",
+                device=torch.device("cpu"),
+            )
+
+
+def test_reject_old_policy_format():
+    actor = _make_actor()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "old.pt")
+        torch.save(
+            {
+                "step": 1,
+                "actor": actor.state_dict(),
+                "policy_format_version": 1,
+                "longitudinal_mode": "speed",
+            },
+            path,
         )
-    assert isinstance(loaded, SquashedGaussianMLPActor)
+        with pytest.raises(ValueError, match="policy_format_version"):
+            load_actor(
+                checkpoint_path=path,
+                obs_dim=ifc.NUM_OBS,
+                act_dim=ifc.NUM_ACTIONS,
+                hidden_sizes=ifc.HIDDEN_LAYERS,
+                act_limit=ifc.ACT_LIMIT,
+                state_dict_key="actor",
+                device=torch.device("cpu"),
+            )
 
 
 def test_load_obs_norm_applies_training_standardization():
@@ -81,7 +117,7 @@ def test_load_obs_norm_applies_training_standardization():
         path = os.path.join(d, "ckpt.pt")
         torch.save(
             {
-                "step": 1,
+                **_ckpt_meta(step=1),
                 "actor": _make_actor().state_dict(),
                 "obs_norm": {"mean": mean, "var": var, "count": 1000.0},
             },
@@ -100,14 +136,14 @@ def test_load_obs_norm_applies_training_standardization():
     assert torch.allclose(out, torch.ones_like(out), atol=1e-4)
 
 
-def test_load_obs_norm_absent_returns_none():
+def test_load_obs_norm_rejects_raw():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "raw.pt")
         torch.save(_make_actor().state_dict(), path)
-        norm = load_obs_norm(
-            checkpoint_path=path,
-            device=torch.device("cpu"),
-            eps=ifc.OBS_NORM_EPS,
-            clip=ifc.OBS_NORM_CLIP,
-        )
-    assert norm is None
+        with pytest.raises(ValueError, match="policy_format_version"):
+            load_obs_norm(
+                checkpoint_path=path,
+                device=torch.device("cpu"),
+                eps=ifc.OBS_NORM_EPS,
+                clip=ifc.OBS_NORM_CLIP,
+            )

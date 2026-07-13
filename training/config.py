@@ -6,8 +6,8 @@ bootstrap, S3 parameter server) is intentionally not part of this trainer.
 """
 
 DEFAULT_CONFIG = {
-    "config_version": 1,
-    "policy_format_version": 1,
+    "config_version": 2,
+    "policy_format_version": 2,
     "obs": {
         "num_obs": 384,
         # Observation normalization is now done with empirical running statistics in
@@ -55,12 +55,9 @@ DEFAULT_CONFIG = {
         "expected_lap_speed_mps": 3.5,
         "episode_lap_multiplier": 3.0,
         # IV_2026_SIM centerline loop is ~144 m; at ~3.2 m/s a full lap needs ~43 s.
-        # 45 s gives one lap plus margin at 10 Hz control (450 steps) without changing
-        # control_dt or episode_length semantics.
-        # control_dt = sim_dt * control_interval = 0.005 * 20 = 0.1 s (10 Hz).
-        # Halving sim_dt (0.01 -> 0.005) while doubling decimation keeps episode
-        # length in seconds and max_episode_steps unchanged (~450 for 45 s).
-        "control_interval": 20,
+        # control_dt = sim_dt * control_interval = 0.005 * 10 = 0.05 s (20 Hz),
+        # matching libs/f1tenth_contract CONTROL_HZ / deploy vehicle_obs.
+        "control_interval": 10,
         "sim_dt": 0.005,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
@@ -115,17 +112,14 @@ DEFAULT_CONFIG = {
         # Torch-sim knobs. "model":
         # "dynamic" (Pacejka tires + load transfer + wheel spin) or "kinematic"
         # (Tier 0); "suspension_mode": "quasi_static" or "dynamic";
-        # "internal_substeps" subdivides each sim_dt for extra stability;
-        # "throttle_mode" is set via the top-level env key of the same name.
+        # "internal_substeps" subdivides each sim_dt for extra stability.
+        # Longitudinal action is always force/brake effort (ADR 0006).
         "torch_sim": {
             "model": "dynamic",
             "suspension_mode": "quasi_static",
             "internal_substeps": 1,
         },
-        # Throttle semantics. Default "speed": normalized throttle is a VESC-style
-        # speed command v_cmd = throttle * max_speed, matching the deployed car's
-        # drive_math.py. "force" is an open-loop drive-force envelope alternative.
-        "throttle_mode": "speed",
+        "longitudinal_mode": "force",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
         "track": "IV_2026_SIM",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---

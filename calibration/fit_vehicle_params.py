@@ -198,7 +198,7 @@ def to_sim_yaml(result: dict) -> dict:
         "wheel_radius": priors["wheel_radius"],
         "max_steer": val(fits["max_steer"], "max_steer", 0.33),
         "t_delta": val(fits["steer_lag"], "t_delta", 0.10),
-        "throttle_mode": "speed",  # keep speed until force path is validated
+        "longitudinal_mode": "force",  # sole longitudinal semantic (ADR 0006)
         "f_drive_max": val(fits["f_drive_equivalent"], "f_drive_max", 23.0)
         if fits.get("current_to_force", {}).get("status") == "NOT_IDENTIFIABLE"
         else val(fits["current_to_force"], "f_drive_max_at_iabs", 23.0),

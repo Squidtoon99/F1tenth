@@ -1,16 +1,11 @@
 """Throttle/brake -> per-wheel axle torque (Nm), wheel order [LR, RR, LF, RF].
 
-Two throttle interpretations, selected by ``params.throttle_mode``:
+Longitudinal action is always force/brake effort in [-1, 1]:
 
-- ``"speed"`` (VESC-style, default): throttle is a normalized *speed command*
-  ``v_cmd = throttle * max_speed`` -- the exact mapping the deployed car uses in
-  ``drive_math.py`` -- tracked by an acceleration-limited proportional speed loop,
-  with the drive force capped by a brushless-motor torque limit (``Kt * I_max``)
-  and the traction cap. Being closed-loop and self-regulating, this is the stable,
-  reliable default and matches the deployed action semantics.
-- ``"force"`` (alternative): throttle in [-1, 1] maps to an open-loop drive force
-  capped by ``power_max`` and a friction traction cap, split AWD by
-  ``k_drive_front``; negative throttle brakes.
+* positive throttle maps to an open-loop drive force capped by ``power_max`` and a
+  friction traction cap, split AWD by ``k_drive_front``
+* negative throttle brakes with ``f_brake_max``
+* near-zero coasts (optional rolling resistance)
 
 Returned torque is the net axle torque per wheel (drive minus brake / rolling
 resistance) fed into the wheel-spin ODE alongside the tyre longitudinal reaction.
@@ -45,22 +40,6 @@ def _force_mode_drive(
     return torch.minimum(f, _traction_cap(params, mu, mass))
 
 
-def _speed_mode_drive(
-    params, throttle: torch.Tensor, v_long: torch.Tensor,
-    mu: torch.Tensor, mass: torch.Tensor,
-) -> torch.Tensor:
-    v_cmd = throttle * params.max_speed
-    err = v_cmd - v_long
-    a_des = (params.vesc_kp * err / mass).clamp(
-        -params.vesc_accel_limit, params.vesc_accel_limit
-    )
-    f = mass * a_des
-    motor_cap = params.motor_kt * params.motor_i_max / max(params.wheel_radius, 1e-6)
-    f = f.clamp(-motor_cap, motor_cap)
-    trac = _traction_cap(params, mu, mass)
-    return f.clamp(-trac, trac)
-
-
 def wheel_axle_torques(
     params,
     throttle_cmd: torch.Tensor,
@@ -78,18 +57,6 @@ def wheel_axle_torques(
     r = params.wheel_radius
     v_mag = v_long.abs()
     ds = None if drive_scale is None else drive_scale.unsqueeze(1)
-
-    if params.throttle_mode == "speed":
-        f_drive = _speed_mode_drive(params, throttle_cmd, v_long, mu, mass)
-        if drive_scale is not None:
-            f_drive = f_drive * drive_scale
-        tau = _split_drive(params, f_drive)
-        # Speed mode already produces signed force (drive + regen/brake), so no
-        # separate friction-brake stage; add light coast rolling resistance only.
-        if params.c_roll > 0.0:
-            roll = _coast_roll(params, throttle_cmd.abs() < 1e-3, omega)
-            tau = tau + roll
-        return tau
 
     throttle = throttle_cmd.clamp_min(0.0)
     brake = (-throttle_cmd).clamp_min(0.0)

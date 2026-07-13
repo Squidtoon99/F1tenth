@@ -19,4 +19,6 @@ trade-off. Routine work is captured by the PR instead (see
 - [0004](0004-on-car-stack-integration.md) — Integrate the on-car localization,
   algorithmic drivers, and deploy image from `shereef@f1tenth`.
 - [0005](0005-force-mode-vesc-actuation.md) — Force-mode VESC actuation via
-  current/brake commands; speed-mode remains the default until validated.
+  current/brake commands (superseded).
+- [0006](0006-current-only-vesc-actuation.md) — Current/force is the only
+  longitudinal action semantic; speed-mode removed; policy_format_version 2.

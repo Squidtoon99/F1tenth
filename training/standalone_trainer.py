@@ -603,8 +603,6 @@ def build_config(args: argparse.Namespace) -> dict:
         args.export_interval_transitions
     )
     cfg["schedule"]["eval_interval_transitions"] = args.eval_interval_transitions
-    if getattr(args, "throttle_mode", None) is not None:
-        cfg["env"]["throttle_mode"] = args.throttle_mode
 
     # Episode horizon: explicit override, else derive from the track centerline
     # length so each track gets ~episode_lap_multiplier laps of racing time.
@@ -740,6 +738,16 @@ def save_policy_artifact(
         "action_scale": float(cfg["env"]["clip_actions"]),
         "config_version": int(cfg["config_version"]),
         "policy_format_version": int(cfg["policy_format_version"]),
+        "longitudinal_mode": str(cfg["env"].get("longitudinal_mode", "force")),
+        "f_drive_max": float(cfg["env"].get("f_drive_max", 23.0)),
+        "f_brake_max": float(cfg["env"].get("f_brake_max", 23.0)),
+        "control_hz": float(
+            1.0
+            / (
+                float(cfg["env"].get("sim_dt", 0.005))
+                * float(cfg["env"].get("control_interval", 10))
+            )
+        ),
     }
     torch.save(payload, path)
     logging.getLogger(LOGGER_NAME).info("Saved policy artifact to %s", path)
@@ -913,14 +921,6 @@ def parse_args() -> argparse.Namespace:
         help=f"N-step horizon (default: {cfg['model']['n_step']} from config)",
     )
     parser.add_argument("--track", type=str, default=cfg["env"]["track"])
-    parser.add_argument(
-        "--throttle-mode",
-        type=str,
-        default=None,
-        choices=["force", "speed"],
-        help="Throttle semantics: 'force' (drive-force "
-        "envelope) or 'speed' (VESC-style speed command). Default from config.",
-    )
     parser.add_argument(
         "--episode-length",
         type=float,

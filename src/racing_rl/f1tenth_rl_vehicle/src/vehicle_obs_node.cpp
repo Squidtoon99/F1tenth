@@ -4,7 +4,7 @@
 // Merges the sim stack's track_server + observation_builder (+ odom adapter) into a
 // single lean C++ node. It loads the training centerline CSV directly, samples the
 // latest map-frame pose (particle filter) and body-frame twist (VESC odom) on a
-// fixed 10 Hz timer, reconstructs the exact training observation via rl_obs_core,
+// fixed 20 Hz timer, reconstructs the exact training observation via rl_obs_core,
 // and publishes /rl/observation.
 //
 // Tyre-slip observation dims [372:380] default to zeros (no per-wheel sensing on the
@@ -62,7 +62,7 @@ public:
   : rclcpp::Node("vehicle_obs")
   {
     const std::string track_csv = declare_parameter<std::string>("track_csv", "");
-    control_hz_ = declare_parameter<double>("control_hz", 10.0);
+    control_hz_ = declare_parameter<double>("control_hz", 20.0);
     const std::string pose_topic =
       declare_parameter<std::string>("pose_topic", "/pf/pose/odom");
     const std::string twist_topic =
@@ -91,6 +91,13 @@ public:
     imu_ay_sign_ = declare_parameter<double>("imu_ay_sign", 1.0);
     imu_yaw_rate_sign_ = declare_parameter<double>("imu_yaw_rate_sign", 1.0);
     imu_use_for_yaw_rate_ = declare_parameter<bool>("imu_use_for_yaw_rate", true);
+    // Static bias in raw IMU units (g for accel when imu_accel_to_ms2≈9.81).
+    imu_ax_bias_ = declare_parameter<double>("imu_ax_bias", 0.0);
+    imu_ay_bias_ = declare_parameter<double>("imu_ay_bias", 0.0);
+    // First-order LPF alpha on body accel used for load estimation (0=hold, 1=raw).
+    imu_accel_lp_alpha_ = declare_parameter<double>("imu_accel_lp_alpha", 0.2);
+    // VESC /odom twist.linear.x polarity (bags showed inverted forward motion).
+    twist_vx_sign_ = declare_parameter<double>("twist_vx_sign", -1.0);
     // Vehicle geometry (f1tenth_sim VehicleParams / URDF defaults).
     wheel_radius_ = declare_parameter<double>("wheel_radius_m", 0.05);
     lf_ = declare_parameter<double>("lf_m", 0.1773);
@@ -242,15 +249,25 @@ private:
 
   void onImu(const sensor_msgs::msg::Imu & msg)
   {
-    imu_ax_ = imu_ax_sign_ * imu_accel_to_ms2_ * msg.linear_acceleration.x;
-    imu_ay_ = imu_ay_sign_ * imu_accel_to_ms2_ * msg.linear_acceleration.y;
+    const double ax_raw =
+      imu_ax_sign_ * imu_accel_to_ms2_ * (msg.linear_acceleration.x - imu_ax_bias_);
+    const double ay_raw =
+      imu_ay_sign_ * imu_accel_to_ms2_ * (msg.linear_acceleration.y - imu_ay_bias_);
+    if (!have_imu_) {
+      imu_ax_ = ax_raw;
+      imu_ay_ = ay_raw;
+    } else {
+      const double a = std::clamp(imu_accel_lp_alpha_, 0.0, 1.0);
+      imu_ax_ = imu_ax_ + a * (ax_raw - imu_ax_);
+      imu_ay_ = imu_ay_ + a * (ay_raw - imu_ay_);
+    }
     imu_yaw_rate_ = imu_yaw_rate_sign_ * imu_gyro_to_rads_ * msg.angular_velocity.z;
     have_imu_ = true;
   }
 
   void onTwist(const nav_msgs::msg::Odometry & msg)
   {
-    twist_vx_ = msg.twist.twist.linear.x;
+    twist_vx_ = twist_vx_sign_ * msg.twist.twist.linear.x;
     twist_vy_ = msg.twist.twist.linear.y;
     wz_ = msg.twist.twist.angular.z;
     have_twist_ = true;
@@ -384,8 +401,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  double control_hz_ = 10.0;
+  double control_hz_ = 20.0;
   bool twist_in_world_frame_ = false;
+  double twist_vx_sign_ = -1.0;
 
   bool enable_opponent_obs_ = false;
   bool zero_opponent_obs_ = false;
@@ -408,6 +426,8 @@ private:
   bool enable_slip_estimation_ = false;
   double imu_accel_to_ms2_ = 9.80665, imu_gyro_to_rads_ = M_PI / 180.0;
   double imu_ax_sign_ = 1.0, imu_ay_sign_ = 1.0, imu_yaw_rate_sign_ = 1.0;
+  double imu_ax_bias_ = 0.0, imu_ay_bias_ = 0.0;
+  double imu_accel_lp_alpha_ = 0.2;
   bool imu_use_for_yaw_rate_ = true;
   double wheel_radius_ = 0.05, lf_ = 0.1773, lr_ = 0.1477;
   double track_width_ = 0.20;

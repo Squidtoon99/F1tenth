@@ -41,18 +41,19 @@ def _collect_drive(node, pub, action, timeout_s=3.0):
     return received
 
 
-def test_drive_command_maps_action():
+def test_drive_command_maps_action_to_force():
     rclpy.init()
     node = None
     try:
-        node = DriveCommandNode()
-        node.set_parameters([
-            Parameter("enable_output_filter", Parameter.Type.BOOL, False),
-            Parameter("speed_limit_mps", Parameter.Type.DOUBLE, 15.0),
-        ])
+        node = DriveCommandNode(
+            parameter_overrides=[
+                Parameter("enable_output_filter", Parameter.Type.BOOL, False),
+            ]
+        )
         received = _collect_drive(node, None, [1.0, 0.0])
         assert received
-        assert math.isclose(received[-1].drive.speed, ifc.MAX_SPEED, rel_tol=1e-4)
+        assert math.isclose(received[-1].drive.speed, 0.0, abs_tol=1e-6)
+        assert math.isclose(received[-1].drive.acceleration, 1.0, rel_tol=1e-4)
         assert math.isclose(received[-1].drive.steering_angle, 0.0, abs_tol=1e-5)
     finally:
         if node is not None:
@@ -60,19 +61,20 @@ def test_drive_command_maps_action():
         rclpy.shutdown()
 
 
-def test_drive_command_non_finite_action_is_safe_stop():
-    """A NaN/inf action must never reach the actuator: command speed/steer 0."""
+def test_drive_command_non_finite_action_is_safe_brake():
+    """A NaN/inf action must never reach the actuator: full brake + zero steer."""
     rclpy.init()
     node = None
     try:
-        node = DriveCommandNode()
-        node.set_parameters([
-            Parameter("enable_output_filter", Parameter.Type.BOOL, False),
-            Parameter("speed_limit_mps", Parameter.Type.DOUBLE, 15.0),
-        ])
+        node = DriveCommandNode(
+            parameter_overrides=[
+                Parameter("enable_output_filter", Parameter.Type.BOOL, False),
+            ]
+        )
         received = _collect_drive(node, None, [float("nan"), float("inf")])
         assert received
         assert math.isclose(received[-1].drive.speed, 0.0, abs_tol=1e-6)
+        assert math.isclose(received[-1].drive.acceleration, -1.0, abs_tol=1e-6)
         assert math.isclose(received[-1].drive.steering_angle, 0.0, abs_tol=1e-6)
     finally:
         if node is not None:
@@ -80,37 +82,37 @@ def test_drive_command_non_finite_action_is_safe_stop():
         rclpy.shutdown()
 
 
-def test_drive_command_watchdog_stops_on_action_loss():
-    """After actions stop for > watchdog_timeout_s, /drive is held at a safe stop."""
+def test_drive_command_watchdog_brakes_on_action_loss():
+    """After actions stop for > watchdog_timeout_s, /drive requests safe brake."""
     rclpy.init()
     node = None
     pub_node = None
     try:
-        node = DriveCommandNode()
-        node.set_parameters([
-            Parameter("enable_output_filter", Parameter.Type.BOOL, False),
-            Parameter("speed_limit_mps", Parameter.Type.DOUBLE, 15.0),
-            Parameter("watchdog_timeout_s", Parameter.Type.DOUBLE, 0.2),
-        ])
+        node = DriveCommandNode(
+            parameter_overrides=[
+                Parameter("enable_output_filter", Parameter.Type.BOOL, False),
+                Parameter("watchdog_timeout_s", Parameter.Type.DOUBLE, 0.2),
+            ]
+        )
         pub_node = rclpy.create_node("act_pub_wd")
         act_pub = pub_node.create_publisher(Float32MultiArray, ifc.TOPIC_ACTION, 10)
         received = []
         pub_node.create_subscription(
             AckermannDriveStamped, ifc.TOPIC_DRIVE, lambda m: received.append(m), 10)
 
-        # Phase 1: drive the car with a steady throttle so speed goes non-zero.
+        # Phase 1: command positive drive effort.
         msg = Float32MultiArray()
         msg.data = [1.0, 0.0]
         end = node.get_clock().now().nanoseconds + int(1.0 * 1e9)
-        moving = False
-        while node.get_clock().now().nanoseconds < end and not moving:
+        driving = False
+        while node.get_clock().now().nanoseconds < end and not driving:
             act_pub.publish(msg)
             rclpy.spin_once(node, timeout_sec=0.02)
             rclpy.spin_once(pub_node, timeout_sec=0.02)
-            moving = any(m.drive.speed > 0.1 for m in received)
-        assert moving, "car never started moving under throttle"
+            driving = any(m.drive.acceleration > 0.5 for m in received)
+        assert driving, "never received positive drive acceleration"
 
-        # Phase 2: stop publishing actions; the watchdog must force a safe stop.
+        # Phase 2: stop publishing actions; the watchdog must force a safe brake.
         received.clear()
         end = node.get_clock().now().nanoseconds + int(2.0 * 1e9)
         stopped = False
@@ -118,10 +120,10 @@ def test_drive_command_watchdog_stops_on_action_loss():
             rclpy.spin_once(node, timeout_sec=0.05)
             rclpy.spin_once(pub_node, timeout_sec=0.02)
             stopped = any(
-                m.drive.speed == 0.0 and m.drive.steering_angle == 0.0
+                m.drive.acceleration <= -0.99 and m.drive.steering_angle == 0.0
                 for m in received
             )
-        assert stopped, "watchdog did not command a safe stop after action loss"
+        assert stopped, "watchdog did not command a safe brake after action loss"
     finally:
         if pub_node is not None:
             pub_node.destroy_node()

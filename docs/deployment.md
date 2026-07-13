@@ -133,14 +133,17 @@ real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
 
 ### Acceptance criteria (validator PASS)
 
-- observations are all finite and exactly 390-dim; actions in `[-1, 1]`; drive speed
-  in `[0, speed_limit]` and `|steer|` within `max_steer`;
+- observations are all finite and exactly 390-dim; actions in `[-1, 1]`; drive
+  `acceleration` in `[-1, 1]`, `speed == 0`, and `|steer|` within `max_steer`;
 - the car moves (odom speed above the floor for enough samples);
 - the opponent block `[384:390)` stays zero in solo mode;
 - ≥ 3 consecutive IV_2026 laps and a 10-minute soak with no process exits and no
   watchdog trips during normal operation;
-- policy-loss and non-finite-input fault tests command a safe stop within the 0.5 s
-  drive watchdog (covered by the `f1tenth_control` node tests).
+- policy-loss and non-finite-input fault tests command a safe brake within the
+  ~0.15 s (3-cycle @ 20 Hz) drive watchdog (covered by the `f1tenth_control` node
+  tests).
+- checkpoints must be `policy_format_version >= 2` with `longitudinal_mode: force`
+  (speed-trained artifacts are rejected at load).
 
 Retain the validator stdout and the sim/agent container logs (`tools/sim.sh logs`)
 with the run, and record the release in
@@ -148,9 +151,17 @@ with the run, and record the release in
 
 ### Remaining prerequisite before a powered on-car run
 
-Confirm `deploy/cars/car01/params.yaml` has measured VESC gains
-(`speed_to_erpm_gain`, `steering_angle_to_servo_*`) before any powered run — zero
-gains produce zero or undefined actuation. The observation mode
+Current/force rollout (ADR 0006) requires a fresh force-trained checkpoint with a
+new `obs_norm` (`policy_format_version >= 2`). Do not deploy a speed-trained
+policy. Stage on-car certification only after Part 2 current/brake calibration
+and these gates: boxed wheels at conservative `i_*_max_a` → low-speed floor with
+manual estop/deadman checks → braking-distance and acceleration characterization
+→ raise limits only within the calibrated/simulated envelope. Promote the
+single-mode build and calibrated `deploy/cars/car01/params.yaml` together.
+
+Confirm `deploy/cars/car01/params.yaml` has measured VESC servo gains
+(`steering_angle_to_servo_*`) and bench-safe current limits before any powered
+run. The observation mode
 (`enable_load_estimation` / `enable_slip_estimation`) must also match how the
 deployed checkpoint was trained.
 When the checkpoint was trained with live slip/load channels (`zero_tyre_slip_obs:
@@ -173,7 +184,8 @@ policies.
 ### On-car slip/load calibration (first powered test)
 
 IMU sign and filter tuning happens on the ground, not in the gym bridge (which has no
-`/sensors/imu/raw`). During the first powered shakedown at `speed_limit_mps: 2.0`:
+`/sensors/imu/raw`). During the first powered shakedown at conservative
+`vesc_actuator.i_drive_max_a` / `i_brake_max_a` (boxed wheels, then low-speed floor):
 
 1. Constant-speed roll → rear slip ratios near 0.
 2. Throttle step → rear κ responds.

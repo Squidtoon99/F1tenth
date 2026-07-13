@@ -935,26 +935,6 @@ TEST(RlObsCore, LagFilter)
   EXPECT_NEAR(f1tenth_rl_vehicle::stepFirstOrderLag(0.5, 1.0, 0.5), 0.75, 1e-9);
 }
 
-TEST(RlObsCore, MapActionToDrive)
-{
-  auto [speed, steer] =
-    f1tenth_rl_vehicle::mapActionToDrive(0.5, -0.5, 15.0, 0.44, 1.0, "stop");
-  EXPECT_NEAR(speed, 7.5, 1e-9);
-  EXPECT_NEAR(steer, -0.22, 1e-9);
-
-  // brake_behavior "stop": negative throttle -> zero speed.
-  auto [speed_stop, steer_stop] =
-    f1tenth_rl_vehicle::mapActionToDrive(-0.5, 0.0, 15.0, 0.44, 1.0, "stop");
-  EXPECT_NEAR(speed_stop, 0.0, 1e-9);
-  EXPECT_NEAR(steer_stop, 0.0, 1e-9);
-
-  // brake_behavior "reverse": negative throttle -> negative speed.
-  auto [speed_rev, steer_rev] =
-    f1tenth_rl_vehicle::mapActionToDrive(-0.5, 1.0, 15.0, 0.44, 1.0, "reverse");
-  EXPECT_NEAR(speed_rev, -7.5, 1e-9);
-  EXPECT_NEAR(steer_rev, 0.44, 1e-9);
-}
-
 TEST(RlObsCore, MapActionToForce)
 {
   auto [long_cmd, steer] =
@@ -966,4 +946,9 @@ TEST(RlObsCore, MapActionToForce)
     f1tenth_rl_vehicle::mapActionToForce(-0.8, 0.0, 0.44, 1.0);
   EXPECT_NEAR(brake_cmd, -0.8, 1e-9);
   EXPECT_NEAR(steer0, 0.0, 1e-9);
+
+  auto [clipped, steer_clip] =
+    f1tenth_rl_vehicle::mapActionToForce(5.0, -5.0, 0.44, 1.0);
+  EXPECT_NEAR(clipped, 1.0, 1e-9);
+  EXPECT_NEAR(steer_clip, -0.44, 1e-9);
 }

@@ -51,12 +51,9 @@ python standalone_trainer.py --num-envs 512 --total-transitions 256000000
 ### TorchSim physics
 
 ```bash
-# TorchSim runs headless on CPU/CUDA/MPS and defaults to the deployed VESC-style
-# speed-command throttle.
+# TorchSim runs headless on CPU/CUDA/MPS. Longitudinal action is force/brake
+# effort mapped to f_drive_max / f_brake_max (ADR 0006).
 python standalone_trainer.py --num-envs 4096
-
-# Open-loop drive-force throttle envelope instead of the speed loop:
-python standalone_trainer.py --throttle-mode force
 ```
 
 Training domain randomization is always enabled. Evaluation and deterministic

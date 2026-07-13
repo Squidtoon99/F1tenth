@@ -7,7 +7,7 @@ criteria the release gate requires:
 
   * /rl/observation: correct length, all finite, published at ~control rate
   * /rl/action:      2 values, within [-clip, clip], published at ~control rate
-  * /drive:          speed within [0, speed_limit], |steer| within max_steer, at rate
+  * /drive:          acceleration in [-1, 1], |steer| within max_steer, speed==0
   * /ego_racecar/odom: the car actually moves (speed above a floor for long enough)
   * /rl/metrics:     track progress advances and/or a lap completes
   * no observation dimension surprises (matches --expect-obs-dim)
@@ -38,13 +38,11 @@ class ClosedLoopValidator(Node):
         self,
         *,
         expect_obs_dim: int,
-        speed_limit_mps: float,
         max_steer: float,
         move_speed_floor: float,
     ):
         super().__init__("closed_loop_validator")
         self.expect_obs_dim = expect_obs_dim
-        self.speed_limit_mps = speed_limit_mps
         self.max_steer = max_steer
         self.move_speed_floor = move_speed_floor
 
@@ -92,10 +90,16 @@ class ClosedLoopValidator(Node):
     def _on_drive(self, msg: AckermannDriveStamped):
         self.drive_count += 1
         speed = msg.drive.speed
+        accel = msg.drive.acceleration
         steer = msg.drive.steering_angle
-        if not (math.isfinite(speed) and math.isfinite(steer)):
+        if not (
+            math.isfinite(speed) and math.isfinite(accel) and math.isfinite(steer)
+        ):
             self.drive_oob += 1
-        elif speed < -1e-6 or speed > self.speed_limit_mps + 1e-3:
+        elif abs(speed) > 1e-3:
+            # Force mode keeps speed unused (ERPM path remapped away).
+            self.drive_oob += 1
+        elif accel < -1.0 - 1e-3 or accel > 1.0 + 1e-3:
             self.drive_oob += 1
         elif abs(steer) > self.max_steer + 1e-3:
             self.drive_oob += 1
@@ -160,7 +164,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Closed-loop gym acceptance gate")
     parser.add_argument("--duration-s", type=float, default=120.0)
     parser.add_argument("--expect-obs-dim", type=int, default=ifc.NUM_OBS_1V1)
-    parser.add_argument("--speed-limit-mps", type=float, default=2.0)
     parser.add_argument("--max-steer", type=float, default=ifc.MAX_STEER)
     parser.add_argument("--move-speed-floor", type=float, default=0.5)
     parser.add_argument("--min-samples", type=int, default=200)
@@ -170,7 +173,6 @@ def main() -> int:
     rclpy.init()
     node = ClosedLoopValidator(
         expect_obs_dim=args.expect_obs_dim,
-        speed_limit_mps=args.speed_limit_mps,
         max_steer=args.max_steer,
         move_speed_floor=args.move_speed_floor,
     )

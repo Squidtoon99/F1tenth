@@ -6,9 +6,9 @@ Per-car calibration is supplied by overriding the vendored config arguments with
 files from the mounted /config overlay. The RL deadman gate runs here so /drive is
 blocked unless R1 or L1 is held.
 
-When motor_mode:=force, remaps the vendored ackermann_to_vesc motor/servo
-outputs away and enables f1tenth_control/vesc_actuator as the exclusive owner of
-current, brake, and servo commands (see ADR 0005). Default remains speed/ERPM.
+Always remaps the vendored ackermann_to_vesc motor/servo outputs away and enables
+f1tenth_control/vesc_actuator as the exclusive owner of current, brake, and servo
+commands (ADR 0006).
 """
 
 import os
@@ -35,11 +35,7 @@ def _launch_setup(context, *args, **kwargs):
     mux_config = LaunchConfiguration("mux_config")
     joy_config = LaunchConfiguration("joy_config")
     gate_config = LaunchConfiguration("gate_config")
-    motor_mode = LaunchConfiguration("motor_mode")
     actuator_config = LaunchConfiguration("actuator_config")
-
-    mode = motor_mode.perform(context)
-    force = mode == "force"
 
     vendored_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -53,20 +49,17 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    if force:
-        # Divert ERPM/servo from ackermann_to_vesc so vesc_actuator owns them.
-        vendored = GroupAction(
-            [
-                SetRemap(src="commands/motor/speed", dst="commands/motor/speed_erpm_unused"),
-                SetRemap(
-                    src="commands/servo/position",
-                    dst="commands/servo/position_erpm_unused",
-                ),
-                vendored_bringup,
-            ]
-        )
-    else:
-        vendored = vendored_bringup
+    # Divert ERPM/servo from ackermann_to_vesc so vesc_actuator owns them.
+    vendored = GroupAction(
+        [
+            SetRemap(src="commands/motor/speed", dst="commands/motor/speed_erpm_unused"),
+            SetRemap(
+                src="commands/servo/position",
+                dst="commands/servo/position_erpm_unused",
+            ),
+            vendored_bringup,
+        ]
+    )
 
     deadman_gate = Node(
         package="f1tenth_control",
@@ -76,10 +69,6 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[gate_config],
     )
 
-    actions = [vendored, deadman_gate]
-
-    # Always declare the node; enabled defaults false. Force mode remaps + overlay
-    # can flip enabled:true without rebuilding.
     default_actuator = os.path.join(control_share, "config", "vesc_actuator.yaml")
     actuator = Node(
         package="f1tenth_control",
@@ -89,11 +78,9 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[
             default_actuator,
             actuator_config,
-            {"enabled": force},
         ],
     )
-    actions.append(actuator)
-    return actions
+    return [vendored, deadman_gate, actuator]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -136,14 +123,9 @@ def generate_launch_description() -> LaunchDescription:
                 description="RL deadman gate parameters.",
             ),
             DeclareLaunchArgument(
-                "motor_mode",
-                default_value="speed",
-                description="Motor command mode: speed (ERPM) or force (current/brake).",
-            ),
-            DeclareLaunchArgument(
                 "actuator_config",
-                default_value=default_actuator,
-                description="vesc_actuator YAML (force mode).",
+                default_value=LaunchConfiguration("overlay_params_file"),
+                description="vesc_actuator YAML (force/current mode).",
             ),
             OpaqueFunction(function=_launch_setup),
         ]

@@ -36,7 +36,6 @@ MODE="${MODE:-dev}"
 # Observation dim the running graph must emit: solo racing uses the 390-dim 1v1
 # layout with the opponent block zeroed, so the validator expects 390.
 EXPECT_OBS_DIM="${EXPECT_OBS_DIM:-390}"
-SPEED_LIMIT_MPS="${SPEED_LIMIT_MPS:-2.0}"
 
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
@@ -131,7 +130,6 @@ validate() {
     source install/setup.bash &&
     python3 src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_gym.py \
       --expect-obs-dim ${EXPECT_OBS_DIM} \
-      --speed-limit-mps ${SPEED_LIMIT_MPS} \
       ${VALIDATE_ARGS:-}"
 }
 

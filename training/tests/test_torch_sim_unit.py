@@ -98,7 +98,7 @@ def test_lateral_transfer_direction():
 
 # --- drivetrain ---------------------------------------------------------------
 def test_drivetrain_force_mode_sign():
-    p = _params(throttle_mode="force")
+    p = _params()
     omega = torch.zeros(2, 4)
     mass = torch.full((2,), p.mass)
     mu = torch.full((2,), 0.9)
@@ -112,7 +112,7 @@ def test_drivetrain_force_mode_sign():
 
 
 def test_drivetrain_force_mode_coast_and_power_cap():
-    p = _params(throttle_mode="force", f_drive_max=20.0, power_max=40.0, c_roll=0.0)
+    p = _params(f_drive_max=20.0, power_max=40.0, c_roll=0.0)
     omega = torch.zeros(1, 4)
     mass = torch.full((1,), p.mass)
     mu = torch.full((1,), 1.5)  # high mu so traction is not the limiter
@@ -127,7 +127,7 @@ def test_drivetrain_force_mode_coast_and_power_cap():
 
 
 def test_drivetrain_force_mode_traction_cap():
-    p = _params(throttle_mode="force", f_drive_max=200.0)
+    p = _params(f_drive_max=200.0)
     omega = torch.zeros(1, 4)
     mass = torch.full((1,), p.mass)
     mu_low = torch.full((1,), 0.2)
@@ -138,27 +138,24 @@ def test_drivetrain_force_mode_traction_cap():
     assert float(tau_low.abs().sum()) < float(tau_hi.abs().sum())
 
 
-def test_drivetrain_speed_mode_regulates():
-    p = _params(throttle_mode="speed", max_speed=8.0)
-    omega = torch.zeros(1, 4)
+def test_drivetrain_asymmetric_brake_stronger():
+    p = _params(f_drive_max=20.0, f_brake_max=40.0, c_roll=0.0)
+    omega = torch.ones(1, 4)
     mass = torch.full((1,), p.mass)
-    mu = torch.full((1,), 0.9)
-    # below setpoint -> positive drive; above setpoint -> negative (brake)
-    tau_lo = wheel_axle_torques(p, torch.tensor([0.5]), torch.tensor([1.0]),
-                                omega, mu, mass)
-    tau_hi = wheel_axle_torques(p, torch.tensor([0.5]), torch.tensor([7.9]),
-                                omega, mu, mass)
-    assert tau_lo.sum() > 0.0
-    assert tau_hi.sum() < tau_lo.sum()
+    mu = torch.full((1,), 2.0)
+    v = torch.tensor([2.0])
+    tau_drive = wheel_axle_torques(p, torch.ones(1), v, omega, mu, mass)
+    tau_brake = wheel_axle_torques(p, -torch.ones(1), v, omega, mu, mass)
+    assert float(tau_brake.abs().sum()) > float(tau_drive.abs().sum())
 
 
 # --- integrator / dynamics ----------------------------------------------------
 def test_straight_line_no_lateral():
-    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)
     a = torch.tensor([[0.4, 0.0]])
     for _ in range(60):
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
     st = sim.read_state()
     assert abs(st["base_lin_vel"][0, 1].item()) < 1e-3
     assert abs(st["base_ang_vel"][0, 2].item()) < 1e-3
@@ -166,22 +163,22 @@ def test_straight_line_no_lateral():
 
 
 def test_left_steer_positive_yaw():
-    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)
     a = torch.tensor([[0.15, 0.4]])
     for _ in range(40):
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
     st = sim.read_state()
     assert st["base_ang_vel"][0, 2].item() > 0.0
 
 
 def test_no_nans_under_aggressive_input():
-    sim = TorchVehicleSim(_params(), 8, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 8, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 8)
     torch.manual_seed(0)
     for _ in range(50):
         a = torch.rand(8, 2) * 2 - 1
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
         st = sim.read_state()
         assert torch.isfinite(st["base_pos"]).all()
         assert torch.isfinite(st["base_lin_vel"]).all()
@@ -189,11 +186,11 @@ def test_no_nans_under_aggressive_input():
 
 # --- batching / determinism / device -----------------------------------------
 def test_batch_independence():
-    sim = TorchVehicleSim(_params(), 3, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 3, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 3)
     a = torch.tensor([[0.5, 0.0], [0.5, 0.3], [0.5, -0.3]])
     for _ in range(30):
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
     st = sim.read_state()
     r = st["base_ang_vel"][:, 2]
     assert abs(r[0].item()) < 1e-3          # straight
@@ -203,13 +200,13 @@ def test_batch_independence():
 
 def test_determinism_same_seed():
     def run():
-        sim = TorchVehicleSim(_params(), 4, sim_dt=0.005, control_dt=0.1)
+        sim = TorchVehicleSim(_params(), 4, sim_dt=0.005, control_dt=0.05)
         _reset(sim, 4)
         torch.manual_seed(123)
         out = []
         for _ in range(20):
             a = torch.rand(4, 2) * 2 - 1
-            sim.step(a, n_steps=20)
+            sim.step(a, n_steps=10)
             out.append(sim.read_state()["base_pos"].clone())
         return torch.stack(out)
 
@@ -217,9 +214,9 @@ def test_determinism_same_seed():
 
 
 def test_dtype_and_shape_contract():
-    sim = TorchVehicleSim(_params(), 5, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 5, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 5)
-    sim.step(torch.zeros(5, 2), n_steps=20)
+    sim.step(torch.zeros(5, 2), n_steps=10)
     st = sim.read_state()
     assert st["base_pos"].shape == (5, 3)
     assert st["base_quat"].shape == (5, 4)
@@ -231,38 +228,37 @@ def test_dtype_and_shape_contract():
 
 def test_domain_randomization_consumed():
     # drive_scale should scale forward drive effort; steer_bias should induce yaw
-    # even with zero steering command. Measure early acceleration (before the speed
-    # loop settles) so the check is valid for both throttle modes.
+    # even with zero steering command.
     def early_speed(scale):
-        sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.1)
+        sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.05)
         _reset(sim, 1)
         sim.set_domain(torch.ones(1, dtype=torch.bool),
                        drive_scale=torch.tensor([scale]))
         a = torch.tensor([[0.5, 0.0]])
         for _ in range(6):
-            sim.step(a, n_steps=20)
+            sim.step(a, n_steps=10)
         return sim.read_state()["base_lin_vel"][0, 0].item()
 
     assert early_speed(1.5) > early_speed(0.5)
 
-    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)
     sim.set_domain(torch.ones(1, dtype=torch.bool),
                    steer_bias=torch.tensor([0.15]))
     a = torch.tensor([[0.3, 0.0]])
     for _ in range(40):
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
     assert sim.read_state()["base_ang_vel"][0, 2].item() > 0.0
 
 
 def test_kinematic_model_runs():
     p = _params()
     p.model = "kinematic"
-    sim = TorchVehicleSim(p, 2, sim_dt=0.005, control_dt=0.1)
+    sim = TorchVehicleSim(p, 2, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 2)
     a = torch.tensor([[0.6, 0.2], [0.6, -0.2]])
     for _ in range(30):
-        sim.step(a, n_steps=20)
+        sim.step(a, n_steps=10)
     st = sim.read_state()
     assert torch.isfinite(st["base_pos"]).all()
     assert st["base_ang_vel"][0, 2].item() > 0.0

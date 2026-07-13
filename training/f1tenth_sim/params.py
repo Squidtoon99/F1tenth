@@ -54,11 +54,7 @@ class VehicleParams:
     # Longitudinal relaxation length (m); 0 disables tire lag (Tier 1 default).
     tire_relax_len: float = 0.0
 
-    # --- drivetrain ---
-    # Default is the self-regulating VESC speed loop (matches the deployed car's
-    # drive_math.py and gives stable, predictable closed-loop behaviour). "force"
-    # is an open-loop drive-force envelope, available as an alternative.
-    throttle_mode: str = "speed"  # "speed" (VESC-style, default) | "force" (envelope)
+    # --- drivetrain (force/brake effort; ADR 0006) ---
     f_drive_max: float = 23.0
     f_brake_max: float = 23.0
     power_max: float = 255.0
@@ -68,13 +64,8 @@ class VehicleParams:
     c_roll: float = 0.0
     drive_torque_sign: float = 1.0
     max_speed: float = 15.0
-
-    # --- VESC-style speed loop (throttle_mode == "speed") ---
-    vesc_accel_limit: float = 2.5
-    vesc_kp: float = 40.0
-    vesc_ki: float = 0.0
-    motor_kt: float = 0.05
-    motor_i_max: float = 60.0
+    # Soft accel clamp for the Tier-0 kinematic fallback only.
+    kinematic_accel_limit: float = 12.0
 
     # --- steering ---
     max_steer: float = 0.33
@@ -150,7 +141,6 @@ class VehicleParams:
         self.tire_mu = float(g("tire_friction", self.tire_mu))
         self.enable_aero_drag = bool(g("enable_aero_drag", self.enable_aero_drag))
         self.dragcoeff = float(g("dragcoeff", self.dragcoeff))
-        self.throttle_mode = str(g("throttle_mode", self.throttle_mode))
         sim = g("torch_sim") or {}
         self.model = str(sim.get("model", self.model))
         self.suspension_mode = str(sim.get("suspension_mode", self.suspension_mode))
@@ -158,8 +148,7 @@ class VehicleParams:
             "izz", "h_cg", "wheel_inertia", "tire_B_long", "tire_C_long",
             "tire_E_long", "tire_B_lat", "tire_C_lat", "tire_E_lat",
             "tire_load_sens", "tire_relax_len", "roll_stiffness_front",
-            "susp_stiffness", "susp_damping", "anti_roll", "vesc_accel_limit",
-            "vesc_kp", "vesc_ki", "motor_kt", "motor_i_max",
+            "susp_stiffness", "susp_damping", "anti_roll", "kinematic_accel_limit",
         ):
             if key in sim:
                 setattr(self, key, float(sim[key]))

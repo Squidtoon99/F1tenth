@@ -213,27 +213,6 @@ double stepFirstOrderLag(double state, double target, double alpha)
   return state + alpha * (target - state);
 }
 
-std::pair<double, double> mapActionToDrive(
-  double throttle,
-  double steering,
-  double max_speed,
-  double max_steer,
-  double clip_actions,
-  const std::string & brake_behavior)
-{
-  throttle = clampd(throttle, -clip_actions, clip_actions);
-  steering = clampd(steering, -clip_actions, clip_actions);
-
-  double speed;
-  if (brake_behavior == "reverse") {
-    speed = throttle * max_speed;
-  } else {  // "stop": negative throttle commands a stop, not reverse
-    speed = std::max(throttle, 0.0) * max_speed;
-  }
-  double steering_angle = steering * max_steer;
-  return {speed, steering_angle};
-}
-
 std::pair<double, double> mapActionToForce(
   double throttle,
   double steering,

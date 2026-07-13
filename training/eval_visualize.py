@@ -50,8 +50,6 @@ def build_eval_config(args: argparse.Namespace) -> dict:
         **cfg["env"]["domain_randomization"],
         "enabled": False,
     }
-    if args.throttle_mode is not None:
-        cfg["env"]["throttle_mode"] = args.throttle_mode
     if args.opponent_ckpt is not None:
         cfg["env"]["opponent_strategy"] = args.opponent_strategy
     cfg["env"]["episode_length"] = episode_length_for_track(
@@ -73,8 +71,6 @@ def parse_args() -> argparse.Namespace:
                    choices=["policy", "mixed"],
                    help="Opponent controller when --opponent-ckpt is set.")
     p.add_argument("--track", type=str, default=cfg["env"]["track"])
-    p.add_argument("--throttle-mode", type=str, default=None,
-                   choices=["force", "speed"])
     p.add_argument("--steps", type=int, default=1500,
                    help="Number of control steps to roll out.")
     p.add_argument("--num-envs", type=int, default=1)

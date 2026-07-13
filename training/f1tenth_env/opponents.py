@@ -99,6 +99,8 @@ class ScriptedCenterlineOpponent(OpponentController):
         steer = -(self.kp_ey * ey + self.kh_heading * heading_err) / delta_max
         steer = torch.clamp(steer, -1.0, 1.0)
 
+        # Speed-tracking P-controller maps into force/brake effort: positive
+        # error → drive current, negative → brake current (ADR 0006).
         throttle = torch.clamp(
             self.kp_speed * (self.target_speed - speed), -1.0, 1.0
         )

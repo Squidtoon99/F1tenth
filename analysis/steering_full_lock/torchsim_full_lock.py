@@ -101,7 +101,7 @@ def main() -> int:
     p = res["params"]
     kin = res["kin_radius"]
 
-    print(f"torch backend  model={p.model}  throttle_mode={p.throttle_mode}")
+    print(f"torch backend  model={p.model}  longitudinal=force")
     print(f"max_steer = {p.max_steer:.3f} rad ({math.degrees(p.max_steer):.1f} deg)  "
           f"wheelbase = {p.wheelbase:.3f} m  tire_mu = {p.tire_mu:.2f}")
     print(f"kinematic min radius @ full lock = {kin:.3f} m\n")

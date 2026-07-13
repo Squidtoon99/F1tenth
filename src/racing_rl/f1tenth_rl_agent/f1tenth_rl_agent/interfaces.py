@@ -118,7 +118,9 @@ FUTURE_TRACK_MIN_LOOKAHEAD_M = 5.0
 FUTURE_TRACK_WIDTH = 2.2  # deprecated: corridor edges use CSV w_tr_*_m
 HIDDEN_LAYERS = [512, 512, 512]
 ACT_LIMIT = 1.0
-CONTROL_HZ = 10.0
+CONTROL_HZ = 20.0
+POLICY_FORMAT_VERSION = 2
+LONGITUDINAL_MODE = "force"
 
 
 def expected_num_obs(enable_opponent_obs: bool) -> int:

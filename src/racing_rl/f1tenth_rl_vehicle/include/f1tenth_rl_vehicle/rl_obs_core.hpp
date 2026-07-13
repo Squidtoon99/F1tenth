@@ -192,16 +192,6 @@ std::array<double, 8> estimateSlipBlock(
 double lagAlpha(double control_dt, double t_delta);
 double stepFirstOrderLag(double state, double target, double alpha);
 
-// Map a policy action to (speed_mps, steering_angle_rad). Port of
-// drive_math.map_action_to_drive. brake_behavior is "stop" or "reverse".
-std::pair<double, double> mapActionToDrive(
-  double throttle,
-  double steering,
-  double max_speed,
-  double max_steer,
-  double clip_actions = 1.0,
-  const std::string & brake_behavior = "stop");
-
 // Map a policy action to (longitudinal_cmd, steering_angle_rad). Port of
 // drive_math.map_action_to_force. longitudinal_cmd in [-1,1]: +drive, -brake.
 std::pair<double, double> mapActionToForce(

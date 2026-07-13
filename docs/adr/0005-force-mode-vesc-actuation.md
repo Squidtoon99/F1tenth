@@ -1,6 +1,6 @@
 # 0005 — Force-mode VESC actuation (current/brake)
 
-- Status: Accepted
+- Status: Superseded by [0006](0006-current-only-vesc-actuation.md)
 - Date: 2026-07-12
 
 ## Context

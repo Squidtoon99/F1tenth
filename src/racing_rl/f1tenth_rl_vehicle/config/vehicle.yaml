@@ -6,7 +6,7 @@ vehicle_obs:
     # Resolved to the f1tenth_rl_agent share asset by the launch file; override
     # with an absolute path for a different (surveyed) track.
     track_csv: ""
-    control_hz: 10.0
+    control_hz: 20.0
     # Map-frame pose from the particle filter, body twist from the VESC odom.
     pose_topic: "/pf/pose/odom"
     twist_topic: "/odom"
@@ -100,21 +100,16 @@ opponent_detector:
 
 drive:
   ros__parameters:
-    # Match training DEFAULT_CONFIG (config.py): max_speed=15.0, delta_max=0.33
+    # Match training DEFAULT_CONFIG (config.py): delta_max=0.33
     # (real servo hard-clamp; a policy trained at 0.33 must be commanded at 0.33).
-    max_speed: 15.0
     max_steer: 0.33
     clip_actions: 1.0
-    # Hard cap on commanded speed for staged shakedown. Raise once validated.
-    speed_limit_mps: 2.0
-    watchdog_timeout_s: 0.5
-    brake_behavior: "stop"
-    # "speed" = ERPM path (default). "force" = acceleration[-1,1] via vesc_actuator.
-    motor_mode: "speed"
+    # ~3 control cycles at 20 Hz.
+    watchdog_timeout_s: 0.15
     # Match Genesis F1tenthEnv steer lag; tune t_delta after vehicle_calibration/fit.
     enable_output_filter: true
     t_delta: 0.1
-    control_dt: 0.1
+    control_dt: 0.05
     action_topic: "/rl/action"
     # Publishes straight to the f1tenth_stack ackermann_mux autonomous input.
     drive_topic: "/drive"

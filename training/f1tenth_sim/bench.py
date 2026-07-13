@@ -1,8 +1,7 @@
 """Throughput benchmark for the pure-Torch vehicle simulator.
 
 Run as ``python -m f1tenth_sim.bench`` (from ``training/``). Reports batched
-substep/control-step throughput across env counts and available devices for both
-throttle modes, so the stable-physics / reliable-performance target is measurable.
+substep/control-step throughput across env counts and available devices.
 """
 
 from __future__ import annotations
@@ -27,12 +26,11 @@ def _devices(requested: str | None) -> list[str]:
     return devs
 
 
-def _bench(device: str, n_envs: int, mode: str, control_steps: int,
+def _bench(device: str, n_envs: int, control_steps: int,
            substeps: int, warmup: int) -> dict:
     dev = torch.device(device)
-    params = VehicleParams.from_config({"tire_friction": 0.9, "max_speed": 8.0,
-                                        "throttle_mode": mode})
-    sim = TorchVehicleSim(params, n_envs, device=dev, sim_dt=0.005, control_dt=0.1)
+    params = VehicleParams.from_config({"tire_friction": 0.9, "max_speed": 8.0})
+    sim = TorchVehicleSim(params, n_envs, device=dev, sim_dt=0.005, control_dt=0.05)
     quat = torch.zeros(n_envs, 4, device=dev)
     quat[:, 0] = 1.0
     sim.reset(None, torch.zeros(n_envs, 3, device=dev), quat,
@@ -71,26 +69,23 @@ def main() -> None:
     ap.add_argument("--device", default=None)
     ap.add_argument("--envs", type=int, nargs="+",
                     default=[256, 1024, 4096, 16384])
-    ap.add_argument("--modes", nargs="+", default=["speed", "force"])
     ap.add_argument("--control-steps", type=int, default=100)
-    ap.add_argument("--substeps", type=int, default=20)
+    ap.add_argument("--substeps", type=int, default=10)
     ap.add_argument("--warmup", type=int, default=5)
     args = ap.parse_args()
 
     print(f"torch {torch.__version__}  control_steps={args.control_steps} "
           f"substeps={args.substeps}")
-    header = f"{'device':>6} {'mode':>6} {'n_envs':>8} " \
+    header = f"{'device':>6} {'n_envs':>8} " \
              f"{'ctrl/s':>14} {'substep/s':>16} {'finite':>7}"
     print(header)
     print("-" * len(header))
     for device in _devices(args.device):
-        for mode in args.modes:
-            for n in args.envs:
-                r = _bench(device, n, mode, args.control_steps, args.substeps,
-                           args.warmup)
-                print(f"{device:>6} {mode:>6} {n:>8} "
-                      f"{r['control_per_s']:>14,.0f} {r['substep_per_s']:>16,.0f} "
-                      f"{str(r['finite']):>7}")
+        for n in args.envs:
+            r = _bench(device, n, args.control_steps, args.substeps, args.warmup)
+            print(f"{device:>6} {n:>8} "
+                  f"{r['control_per_s']:>14,.0f} {r['substep_per_s']:>16,.0f} "
+                  f"{str(r['finite']):>7}")
 
 
 if __name__ == "__main__":

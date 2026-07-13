@@ -491,9 +491,6 @@ class F1tenthEnv:
             if self.opponent_ctrl is not None:
                 self.opponent_ctrl.reset(mask)
 
-        v_min, v_max = self._reset_speed_range()
-        launch = not (abs(v_min) < 1e-8 and abs(v_max) < 1e-8)
-
         # Per-env buffers (masked writes, no sync).
         self.reset_buf = self.reset_buf & ~mask
         reset_termination_state(self.term_state, mask)
@@ -508,19 +505,8 @@ class F1tenthEnv:
             zero_act = torch.zeros_like(self.actions)
             self.actions = torch.where(m, zero_act, self.actions)
             self.last_actions = torch.where(m, zero_act, self.last_actions)
-
-            if launch:
-                max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
-                clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
-                reset_throttle = torch.clamp(
-                    speed / max_speed, min=-clip_actions, max=clip_actions
-                )
-                self.actions[:, 0] = torch.where(
-                    mask, reset_throttle, self.actions[:, 0]
-                )
-                self.last_actions[:, 0] = torch.where(
-                    mask, reset_throttle, self.last_actions[:, 0]
-                )
+            # Force/brake last_actions stay at coast (0) on reset. Seeding from
+            # speed/max_speed would imply a speed-setpoint semantic (ADR 0006).
 
             for value in self.reward_state["episode_sums"].values():
                 value.masked_fill_(mask, 0.0)

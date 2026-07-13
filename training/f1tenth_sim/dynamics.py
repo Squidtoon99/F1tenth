@@ -186,9 +186,15 @@ def step_dynamic(state, params, tire, dt, susp_filter=None):
 
 def step_kinematic(state, params, dt):
     """Advance the Tier-0 kinematic single-track model one ``dt``."""
-    v_cmd = state["throttle"] * params.max_speed
-    accel = ((v_cmd - state["vx"]) / dt).clamp(
-        -params.vesc_accel_limit * 4.0, params.vesc_accel_limit * 4.0
+    # Force/brake effort → accel with a soft clamp (mass from state when present).
+    mass = state.get("mass")
+    if mass is None:
+        mass = torch.full_like(state["vx"], params.mass)
+    throttle = state["throttle"].clamp_min(0.0)
+    brake = (-state["throttle"]).clamp_min(0.0)
+    f = throttle * params.f_drive_max - brake * params.f_brake_max
+    accel = (f / mass.clamp_min(1e-3)).clamp(
+        -params.kinematic_accel_limit, params.kinematic_accel_limit
     )
     vx = state["vx"] + dt * accel
     delta = state["steer"]

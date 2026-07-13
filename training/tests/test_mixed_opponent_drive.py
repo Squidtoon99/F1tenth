@@ -52,6 +52,9 @@ def _build_cfg(*, target_speed: float) -> dict:
     # Keep episodes from resetting while we observe the opponents.
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
+    cfg["env"]["term_oob_max_consecutive"] = 10_000
+    cfg["env"]["term_heading_error_rad"] = 10.0
+    cfg["env"]["episode_length"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
     cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
