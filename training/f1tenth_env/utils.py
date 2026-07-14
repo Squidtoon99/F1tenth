@@ -376,68 +376,6 @@ def _boundary_tensors(
     return ey, w_l_s, w_r_s, boundary_dist
 
 
-def _frenet_boundary_fused(
-    pos: torch.Tensor,
-    c_all: torch.Tensor,
-    seg_all: torch.Tensor,
-    seg_len_all: torch.Tensor,
-    cumlen_all: torch.Tensor,
-    length: torch.Tensor,
-    coarse_pts: torch.Tensor,
-    coarse_idx: torch.Tensor,
-    m: int,
-    window_offsets: torch.Tensor,
-    w_tr_left_torch: torch.Tensor,
-    w_tr_right_torch: torch.Tensor,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
-    pos, best_idx, best_t, best_proj, seg_dir, s, length = _frenet_projection_tensors(
-        pos,
-        c_all,
-        seg_all,
-        seg_len_all,
-        cumlen_all,
-        length,
-        coarse_pts,
-        coarse_idx,
-        m,
-        window_offsets,
-    )
-    ey, w_l_s, w_r_s, boundary_dist = _boundary_tensors(
-        pos,
-        best_idx,
-        best_t,
-        best_proj,
-        seg_dir,
-        w_tr_left_torch,
-        w_tr_right_torch,
-    )
-    return (
-        pos,
-        best_idx,
-        best_t,
-        best_proj,
-        seg_dir,
-        s,
-        length,
-        ey,
-        w_l_s,
-        w_r_s,
-        boundary_dist,
-    )
-
-
 def _geom_window_offsets(
     geom: dict[str, Any], window: int, device: torch.device
 ) -> torch.Tensor:
@@ -599,7 +537,6 @@ def build_step_state(
     device: torch.device,
     cache_id: str,
     *,
-    frenet_fused: bool = False,
     frenet_compile_fns: dict[str, Any] | None = None,
     window: int = 40,
     coarse_stride: int = 10,
@@ -631,40 +568,30 @@ def build_step_state(
         window_offsets,
     )
 
-    if frenet_fused:
-        fused_fn = (
-            frenet_compile_fns.get("fused", _frenet_boundary_fused)
-            if frenet_compile_fns is not None
-            else _frenet_boundary_fused
-        )
-        out = fused_fn(*geom_args, w_tr_left, w_tr_right)
-        frenet_state = _pack_frenet_state(*out[:7])
-        boundary_state = _pack_boundary_state(*out[7:])
-    else:
-        proj_fn = (
-            frenet_compile_fns.get("proj", _frenet_projection_tensors)
-            if frenet_compile_fns is not None
-            else _frenet_projection_tensors
-        )
-        bnd_fn = (
-            frenet_compile_fns.get("boundary", _boundary_tensors)
-            if frenet_compile_fns is not None
-            else _boundary_tensors
-        )
-        pos, best_idx, best_t, best_proj, seg_dir, s, length = proj_fn(*geom_args)
-        frenet_state = _pack_frenet_state(
-            pos, best_idx, best_t, best_proj, seg_dir, s, length
-        )
-        ey, w_l_s, w_r_s, boundary_dist = bnd_fn(
-            pos,
-            best_idx,
-            best_t,
-            best_proj,
-            seg_dir,
-            w_tr_left,
-            w_tr_right,
-        )
-        boundary_state = _pack_boundary_state(ey, w_l_s, w_r_s, boundary_dist)
+    proj_fn = (
+        frenet_compile_fns.get("proj", _frenet_projection_tensors)
+        if frenet_compile_fns is not None
+        else _frenet_projection_tensors
+    )
+    bnd_fn = (
+        frenet_compile_fns.get("boundary", _boundary_tensors)
+        if frenet_compile_fns is not None
+        else _boundary_tensors
+    )
+    pos, best_idx, best_t, best_proj, seg_dir, s, length = proj_fn(*geom_args)
+    frenet_state = _pack_frenet_state(
+        pos, best_idx, best_t, best_proj, seg_dir, s, length
+    )
+    ey, w_l_s, w_r_s, boundary_dist = bnd_fn(
+        pos,
+        best_idx,
+        best_t,
+        best_proj,
+        seg_dir,
+        w_tr_left,
+        w_tr_right,
+    )
+    boundary_state = _pack_boundary_state(ey, w_l_s, w_r_s, boundary_dist)
 
     obs_track = build_obs_track_cache(track_state, device)
     return {
