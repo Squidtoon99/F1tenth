@@ -226,7 +226,11 @@ class F1tenthEnv:
         self._collision_state: dict[str, torch.Tensor] = {}
         self._collision_state_valid = False
         self._eval_launch_initialized = False
-        self._build_observation = build_observation
+        self._build_observation = (
+            torch.compile(build_observation, mode="default")
+            if self.device.type == "cuda"
+            else build_observation
+        )
 
         self.reset()
 
@@ -948,7 +952,7 @@ class F1tenthEnv:
             ego_ss["frenet"]["s"],
             opp_ss["frenet"]["L"],
         )
-        return build_observation(
+        return self._build_observation(
             num_obs=self.num_obs,
             num_envs=self.num_envs,
             base_lin_vel=opp_body_vel,
