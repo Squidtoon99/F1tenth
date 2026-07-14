@@ -244,19 +244,11 @@ class F1tenthEnv:
             else compute_rewards
         )
         self._frenet_compile_fns = None
-        compile_boundary_only = bool(
-            self.env_cfg.get("frenet_compile_boundary_only", False)
-        )
         if self.device.type == "cuda" and self.env_cfg.get("frenet_compile", True):
-            if compile_boundary_only:
-                self._frenet_compile_fns = {
-                    "boundary": torch.compile(_boundary_tensors, mode="default"),
-                }
-            else:
-                self._frenet_compile_fns = {
-                    "proj": torch.compile(_frenet_projection_tensors, mode="default"),
-                    "boundary": torch.compile(_boundary_tensors, mode="default"),
-                }
+            self._frenet_compile_fns = {
+                "proj": torch.compile(_frenet_projection_tensors, mode="default"),
+                "boundary": torch.compile(_boundary_tensors, mode="default"),
+            }
 
         self.reset()
 
