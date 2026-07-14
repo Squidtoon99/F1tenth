@@ -39,6 +39,9 @@ from .terminations import (
     reset_termination_state,
 )
 from .utils import (
+    _boundary_tensors,
+    _frenet_boundary_fused,
+    _frenet_projection_tensors,
     build_step_state,
     compute_oob_from_boundary_state,
     load_track_state,
@@ -241,6 +244,25 @@ class F1tenthEnv:
             if self.device.type == "cuda"
             else compute_rewards
         )
+        self._frenet_fused = bool(self.env_cfg.get("frenet_fused", False))
+        self._frenet_compile_fns = None
+        compile_boundary_only = bool(
+            self.env_cfg.get("frenet_compile_boundary_only", False)
+        )
+        if self.device.type == "cuda" and self.env_cfg.get("frenet_compile", True):
+            if self._frenet_fused:
+                self._frenet_compile_fns = {
+                    "fused": torch.compile(_frenet_boundary_fused, mode="default"),
+                }
+            elif compile_boundary_only:
+                self._frenet_compile_fns = {
+                    "boundary": torch.compile(_boundary_tensors, mode="default"),
+                }
+            else:
+                self._frenet_compile_fns = {
+                    "proj": torch.compile(_frenet_projection_tensors, mode="default"),
+                    "boundary": torch.compile(_boundary_tensors, mode="default"),
+                }
 
         self.reset()
 
@@ -528,6 +550,8 @@ class F1tenthEnv:
                 track_state=self.track_state,
                 device=self.device,
                 cache_id=self.track_cache_id,
+                frenet_fused=self._frenet_fused,
+                frenet_compile_fns=self._frenet_compile_fns,
             )
 
             ws = self.backend.read_wheel_state("ego")
@@ -833,6 +857,8 @@ class F1tenthEnv:
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
+                frenet_fused=self._frenet_fused,
+                frenet_compile_fns=self._frenet_compile_fns,
             )
         if not self._opp_step_state_valid:
             self._opp_step_state = build_step_state(
@@ -841,6 +867,8 @@ class F1tenthEnv:
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
+                frenet_fused=self._frenet_fused,
+                frenet_compile_fns=self._frenet_compile_fns,
             )
             self._opp_step_state_valid = True
         return self._opp_step_state

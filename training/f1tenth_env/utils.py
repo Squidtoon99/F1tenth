@@ -305,6 +305,183 @@ def build_obs_track_cache(
     return cache
 
 
+def _frenet_projection_tensors(
+    pos: torch.Tensor,
+    c_all: torch.Tensor,
+    seg_all: torch.Tensor,
+    seg_len_all: torch.Tensor,
+    cumlen_all: torch.Tensor,
+    length: torch.Tensor,
+    coarse_pts: torch.Tensor,
+    coarse_idx: torch.Tensor,
+    m: int,
+    window_offsets: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    batch = pos.shape[0]
+    diffc = coarse_pts.unsqueeze(0) - pos.unsqueeze(1)
+    dist2c = (diffc * diffc).sum(dim=-1)
+    j = dist2c.argmin(dim=-1)
+    i0 = coarse_idx[j]
+    cand = (i0.unsqueeze(1) + window_offsets.unsqueeze(0)) % m
+    c = c_all[cand]
+    seg = seg_all[cand]
+    seg_len2 = (seg * seg).sum(dim=-1).clamp_min(1e-10)
+    p = pos.unsqueeze(1)
+    t = ((p - c) * seg).sum(dim=-1) / seg_len2
+    t = t.clamp(0.0, 1.0)
+    proj = c + t.unsqueeze(-1) * seg
+    dist2 = ((proj - p) ** 2).sum(dim=-1)
+    k = dist2.argmin(dim=-1)
+    ar = torch.arange(batch, device=pos.device)
+    best_idx = cand[ar, k]
+    best_t = t[ar, k]
+    best_proj = proj[ar, k]
+    best_seg = seg_all[best_idx]
+    seg_dir = best_seg / torch.linalg.norm(best_seg, dim=-1, keepdim=True).clamp_min(
+        1e-8
+    )
+    s = cumlen_all[best_idx] + best_t * seg_len_all[best_idx]
+    return pos, best_idx, best_t, best_proj, seg_dir, s, length
+
+
+def _boundary_tensors(
+    pos: torch.Tensor,
+    best_idx: torch.Tensor,
+    best_t: torch.Tensor,
+    best_proj: torch.Tensor,
+    seg_dir: torch.Tensor,
+    w_tr_left_torch: torch.Tensor,
+    w_tr_right_torch: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    t_hat = seg_dir
+    n_hat = torch.stack([-t_hat[:, 1], t_hat[:, 0]], dim=-1)
+    ey = ((pos - best_proj) * n_hat).sum(-1)
+    w0_l = w_tr_left_torch[best_idx]
+    w1_l = w_tr_left_torch[(best_idx + 1) % w_tr_left_torch.shape[0]]
+    w_l_s = w0_l + best_t * (w1_l - w0_l)
+    w0_r = w_tr_right_torch[best_idx]
+    w1_r = w_tr_right_torch[(best_idx + 1) % w_tr_right_torch.shape[0]]
+    w_r_s = w0_r + best_t * (w1_r - w0_r)
+    d_left = w_l_s - ey
+    d_right = w_r_s + ey
+    boundary_dist = torch.minimum(d_left, d_right)
+    return ey, w_l_s, w_r_s, boundary_dist
+
+
+def _frenet_boundary_fused(
+    pos: torch.Tensor,
+    c_all: torch.Tensor,
+    seg_all: torch.Tensor,
+    seg_len_all: torch.Tensor,
+    cumlen_all: torch.Tensor,
+    length: torch.Tensor,
+    coarse_pts: torch.Tensor,
+    coarse_idx: torch.Tensor,
+    m: int,
+    window_offsets: torch.Tensor,
+    w_tr_left_torch: torch.Tensor,
+    w_tr_right_torch: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    pos, best_idx, best_t, best_proj, seg_dir, s, length = _frenet_projection_tensors(
+        pos,
+        c_all,
+        seg_all,
+        seg_len_all,
+        cumlen_all,
+        length,
+        coarse_pts,
+        coarse_idx,
+        m,
+        window_offsets,
+    )
+    ey, w_l_s, w_r_s, boundary_dist = _boundary_tensors(
+        pos,
+        best_idx,
+        best_t,
+        best_proj,
+        seg_dir,
+        w_tr_left_torch,
+        w_tr_right_torch,
+    )
+    return (
+        pos,
+        best_idx,
+        best_t,
+        best_proj,
+        seg_dir,
+        s,
+        length,
+        ey,
+        w_l_s,
+        w_r_s,
+        boundary_dist,
+    )
+
+
+def _geom_window_offsets(
+    geom: dict[str, Any], window: int, device: torch.device
+) -> torch.Tensor:
+    offsets = geom.get("window_offsets")
+    if offsets is None or int(offsets.shape[0]) != 2 * window + 1:
+        offsets = torch.arange(-window, window + 1, device=device)
+        geom["window_offsets"] = offsets
+    return offsets
+
+
+def _pack_frenet_state(
+    pos: torch.Tensor,
+    best_idx: torch.Tensor,
+    best_t: torch.Tensor,
+    best_proj: torch.Tensor,
+    seg_dir: torch.Tensor,
+    s: torch.Tensor,
+    length: torch.Tensor,
+) -> dict[str, Any]:
+    return {
+        "pos": pos,
+        "best_idx": best_idx,
+        "best_t": best_t,
+        "proj": best_proj,
+        "seg_dir": seg_dir,
+        "s": s,
+        "L": length,
+    }
+
+
+def _pack_boundary_state(
+    ey: torch.Tensor,
+    w_l_s: torch.Tensor,
+    w_r_s: torch.Tensor,
+    boundary_dist: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    return {
+        "ey": ey,
+        "w_l_s": w_l_s,
+        "w_r_s": w_r_s,
+        "boundary_dist": boundary_dist,
+    }
+
+
 def frenet_projection_cached(
     base_pos: torch.Tensor,
     episode_steps_buf: torch.Tensor,
@@ -327,7 +504,6 @@ def frenet_projection_cached(
     # and clears it once per step, so an extra GPU-syncing equality check here
     # would never hit; the projection is computed exactly once per step.
     pos = base_pos[:, :2].to(device=device, dtype=rt.tc_float)
-    batch = pos.shape[0]
 
     c_all = geom["C"]
     seg_all = geom["seg"]
@@ -337,49 +513,20 @@ def frenet_projection_cached(
     m = geom["M"]
     coarse_pts = geom["coarse_pts"]
     coarse_idx = geom["coarse_idx"]
-
-    diffc = coarse_pts.unsqueeze(0) - pos.unsqueeze(1)
-    dist2c = (diffc * diffc).sum(dim=-1)
-    j = dist2c.argmin(dim=-1)
-    i0 = coarse_idx[j]
-
-    offsets = torch.arange(-window, window + 1, device=device)
-    cand = (i0.unsqueeze(1) + offsets.unsqueeze(0)) % m
-
-    c = c_all[cand]
-    seg = seg_all[cand]
-    seg_len2 = (seg * seg).sum(dim=-1).clamp_min(1e-10)
-
-    p = pos.unsqueeze(1)
-    t = ((p - c) * seg).sum(dim=-1) / seg_len2
-    t = t.clamp(0.0, 1.0)
-
-    proj = c + t.unsqueeze(-1) * seg
-    dist2 = ((proj - p) ** 2).sum(dim=-1)
-
-    k = dist2.argmin(dim=-1)
-    ar = torch.arange(batch, device=device)
-    best_idx = cand[ar, k]
-    best_t = t[ar, k]
-    best_proj = proj[ar, k]
-
-    best_seg = seg_all[best_idx]
-    seg_dir = best_seg / torch.linalg.norm(best_seg, dim=-1, keepdim=True).clamp_min(
-        1e-8
+    window_offsets = _geom_window_offsets(geom, window, device)
+    pos, best_idx, best_t, best_proj, seg_dir, s, length = _frenet_projection_tensors(
+        pos,
+        c_all,
+        seg_all,
+        seg_len_all,
+        cumlen_all,
+        length,
+        coarse_pts,
+        coarse_idx,
+        m,
+        window_offsets,
     )
-    s = cumlen_all[best_idx] + best_t * seg_len_all[best_idx]
-
-    data = {
-        "pos": pos,
-        "best_idx": best_idx,
-        "best_t": best_t,
-        "proj": best_proj,
-        "seg_dir": seg_dir,
-        "s": s,
-        "L": length,
-    }
-
-    return data
+    return _pack_frenet_state(pos, best_idx, best_t, best_proj, seg_dir, s, length)
 
 
 def interp_width_at_s(
@@ -453,19 +600,74 @@ def build_step_state(
     track_state: dict[str, Any],
     device: torch.device,
     cache_id: str,
+    *,
+    frenet_fused: bool = False,
+    frenet_compile_fns: dict[str, Any] | None = None,
+    window: int = 40,
+    coarse_stride: int = 10,
 ) -> dict[str, Any]:
-    frenet_state = frenet_projection_cached(
-        base_pos=base_pos,
-        episode_steps_buf=episode_steps_buf,
-        track_state=track_state,
-        device=device,
-        cache_id=cache_id,
+    geom = track_state["track_geom_cache"].get(cache_id)
+    if geom is None or geom["coarse_stride"] != coarse_stride:
+        geom = build_track_cache(
+            centerline=track_state["centerline"],
+            device=device,
+            coarse_stride=coarse_stride,
+        )
+        track_state["track_geom_cache"][cache_id] = geom
+
+    pos = base_pos[:, :2].to(device=device, dtype=rt.tc_float)
+    w_tr_left = track_state["w_tr_left_torch"]
+    w_tr_right = track_state["w_tr_right_torch"]
+    m = geom["M"]
+    window_offsets = _geom_window_offsets(geom, window, device)
+    geom_args = (
+        pos,
+        geom["C"],
+        geom["seg"],
+        geom["seg_len"],
+        geom["cumlen"],
+        geom["L"],
+        geom["coarse_pts"],
+        geom["coarse_idx"],
+        m,
+        window_offsets,
     )
-    boundary_state = build_boundary_state(
-        frenet_state,
-        track_state["w_tr_left_torch"],
-        track_state["w_tr_right_torch"],
-    )
+
+    if frenet_fused:
+        fused_fn = (
+            frenet_compile_fns["fused"]
+            if frenet_compile_fns is not None
+            else _frenet_boundary_fused
+        )
+        out = fused_fn(*geom_args, w_tr_left, w_tr_right)
+        frenet_state = _pack_frenet_state(*out[:7])
+        boundary_state = _pack_boundary_state(*out[7:])
+    else:
+        proj_fn = (
+            frenet_compile_fns.get("proj", _frenet_projection_tensors)
+            if frenet_compile_fns is not None
+            else _frenet_projection_tensors
+        )
+        bnd_fn = (
+            frenet_compile_fns.get("boundary", _boundary_tensors)
+            if frenet_compile_fns is not None
+            else _boundary_tensors
+        )
+        pos, best_idx, best_t, best_proj, seg_dir, s, length = proj_fn(*geom_args)
+        frenet_state = _pack_frenet_state(
+            pos, best_idx, best_t, best_proj, seg_dir, s, length
+        )
+        ey, w_l_s, w_r_s, boundary_dist = bnd_fn(
+            pos,
+            best_idx,
+            best_t,
+            best_proj,
+            seg_dir,
+            w_tr_left,
+            w_tr_right,
+        )
+        boundary_state = _pack_boundary_state(ey, w_l_s, w_r_s, boundary_dist)
+
     obs_track = build_obs_track_cache(track_state, device)
     return {
         "frenet": frenet_state,
