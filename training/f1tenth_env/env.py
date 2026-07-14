@@ -244,7 +244,7 @@ class F1tenthEnv:
             else compute_rewards
         )
         self._frenet_compile_fns = None
-        if self.device.type == "cuda" and self.env_cfg.get("frenet_compile", True):
+        if self.device.type == "cuda":
             self._frenet_compile_fns = {
                 "proj": torch.compile(_frenet_projection_tensors, mode="default"),
                 "boundary": torch.compile(_boundary_tensors, mode="default"),
