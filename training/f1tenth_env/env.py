@@ -231,6 +231,16 @@ class F1tenthEnv:
             if self.device.type == "cuda"
             else build_observation
         )
+        self._termination_function = (
+            torch.compile(compute_terminations, mode="default")
+            if self.device.type == "cuda"
+            else compute_terminations
+        )
+        self._reward_function = (
+            torch.compile(compute_rewards, mode="default")
+            if self.device.type == "cuda"
+            else compute_rewards
+        )
 
         self.reset()
 
@@ -661,7 +671,7 @@ class F1tenthEnv:
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
             step_state["car_collision"] = self._get_collision_state()["overlap"]
-        self.reward_buf, self._step_state = compute_rewards(
+        self.reward_buf, self._step_state = self._reward_function(
             step_state=step_state,
             reward_cfg=self.reward_cfg,
             reward_state=self.reward_state,
@@ -674,7 +684,7 @@ class F1tenthEnv:
     def _compute_terminations(self):
         step_state = self._get_step_state()
         self.reset_buf, self.extras["termination"], self.extras["time_outs"] = (
-            compute_terminations(
+            self._termination_function(
                 step_state=step_state,
                 episode_steps_buf=self.episode_steps_buf,
                 max_episode_steps=self.max_episode_steps,
