@@ -484,7 +484,6 @@ def _pack_boundary_state(
 
 def frenet_projection_cached(
     base_pos: torch.Tensor,
-    episode_steps_buf: torch.Tensor,
     track_state: dict[str, Any],
     device: torch.device,
     cache_id: str,
@@ -596,7 +595,6 @@ def compute_oob_from_boundary_state(
 
 def build_step_state(
     base_pos: torch.Tensor,
-    episode_steps_buf: torch.Tensor,
     track_state: dict[str, Any],
     device: torch.device,
     cache_id: str,

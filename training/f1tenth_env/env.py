@@ -546,7 +546,6 @@ class F1tenthEnv:
         if not self._step_state_valid:
             self._step_state = build_step_state(
                 base_pos=self.base_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id=self.track_cache_id,
@@ -853,7 +852,6 @@ class F1tenthEnv:
         if not use_cache:
             return build_step_state(
                 base_pos=target_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
@@ -863,7 +861,6 @@ class F1tenthEnv:
         if not self._opp_step_state_valid:
             self._opp_step_state = build_step_state(
                 base_pos=target_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
