@@ -633,7 +633,7 @@ def build_step_state(
 
     if frenet_fused:
         fused_fn = (
-            frenet_compile_fns["fused"]
+            frenet_compile_fns.get("fused", _frenet_boundary_fused)
             if frenet_compile_fns is not None
             else _frenet_boundary_fused
         )
