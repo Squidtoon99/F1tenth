@@ -6,6 +6,13 @@ ARG ROS_DISTRO=humble
 FROM ros:${ROS_DISTRO}-ros-base
 ARG ROS_DISTRO
 
+# Intel RealSense user-space stack. Pinned and built from source (never apt) so the
+# SDK and ROS wrapper cannot drift against the camera firmware. librealsense v2.58.2
+# is the minimum SDK for D435if/D455 firmware 5.17.3.10; realsense-ros 4.58.2 pairs
+# with it. See docs and the RealSense release matrix.
+ARG LIBREALSENSE_VERSION=v2.58.2
+ARG REALSENSE_ROS_VERSION=4.58.2
+
 SHELL ["/bin/bash", "-lc"]
 
 # Build tooling + workspace system/rosdep dependencies. Generic upstream driver
@@ -28,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-nav2-map-server \
       ros-${ROS_DISTRO}-nav2-lifecycle-manager \
       ros-${ROS_DISTRO}-tf-transformations \
+      ros-${ROS_DISTRO}-robot-localization \
       python3-scipy \
       python3-transforms3d \
     && rm -rf /var/lib/apt/lists/*
@@ -43,5 +51,45 @@ RUN apt-get update \
 # TODO: on the Jetson, install a torch wheel matching the JetPack/CUDA version
 #       instead of the default index. Kept out of the base scaffold to stay light.
 RUN pip3 install --no-cache-dir numpy cython
+
+# librealsense built with the RSUSB (libuvc) backend. JetPack 6 (L4T 36) dropped the
+# hidraw path the IMU-equipped D4xx cameras rely on, so the kernel backend exposes
+# depth but no motion module; the RSUSB backend bypasses the kernel and restores the
+# IMU. Installed under /opt/realsense and put on the loader path via ldconfig.
+# CUDA stays off for a portable cross-arch build; rebuild with -DBUILD_WITH_CUDA=ON
+# on the Jetson if the aligned-depth/pointcloud CPU cost matters.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake pkg-config ca-certificates \
+      libssl-dev libusb-1.0-0-dev libudev-dev \
+    && git clone --depth 1 --branch "${LIBREALSENSE_VERSION}" \
+         https://github.com/IntelRealSense/librealsense.git /tmp/librealsense \
+    && cmake -S /tmp/librealsense -B /tmp/librealsense/build \
+         -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_INSTALL_PREFIX=/opt/realsense \
+         -DFORCE_RSUSB_BACKEND=ON \
+         -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF \
+         -DBUILD_PYTHON_BINDINGS=OFF -DBUILD_UNIT_TESTS=OFF \
+    && cmake --build /tmp/librealsense/build --target install -j"$(nproc)" \
+    && install -m 0644 /tmp/librealsense/config/99-realsense-libusb.rules \
+         /etc/udev/rules.d/99-realsense-libusb.rules \
+    && echo /opt/realsense/lib > /etc/ld.so.conf.d/realsense.conf && ldconfig \
+    && rm -rf /tmp/librealsense /var/lib/apt/lists/*
+
+# realsense-ros wrapper, built against the source librealsense above (not the apt
+# SDK, which would pull a second conflicting librealsense). Lands in a standalone
+# merge-install overlay at /opt/realsense_ros that dev and runtime source.
+RUN git clone --depth 1 --branch "${REALSENSE_ROS_VERSION}" \
+         https://github.com/IntelRealSense/realsense-ros.git \
+         /tmp/realsense_ros/src/realsense-ros \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && apt-get update \
+    && (rosdep update || true) \
+    && rosdep install --from-paths /tmp/realsense_ros/src --ignore-src -y -r \
+         --skip-keys "librealsense2" \
+    && cd /tmp/realsense_ros \
+    && colcon build --merge-install --install-base /opt/realsense_ros \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release \
+         -Drealsense2_DIR=/opt/realsense/lib/cmake/realsense2 \
+    && rm -rf /tmp/realsense_ros /var/lib/apt/lists/*
 
 WORKDIR /ws

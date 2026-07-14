@@ -20,11 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # box; the ROS image never needs CUDA). The runtime (car) image installs the same
 # wheel (see Dockerfile.runtime); a Jetson needs a JetPack/CUDA-matched wheel.
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
-      "torch==2.4.1" \
-    && pip3 install --no-cache-dir cython
+      "torch==2.4.1"
 
-# Auto-source ROS + the workspace overlay (if built) for interactive shells.
+# Auto-source ROS + the RealSense overlay + the workspace overlay (if built) for
+# interactive shells.
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc \
+    && echo "[ -f /opt/realsense_ros/setup.bash ] && source /opt/realsense_ros/setup.bash" >> /etc/bash.bashrc \
     && echo "[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash" >> /etc/bash.bashrc
 
 WORKDIR /ws

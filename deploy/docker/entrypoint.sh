@@ -8,6 +8,7 @@
 set -eo pipefail
 
 source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+[ -f /opt/realsense_ros/setup.bash ] && source /opt/realsense_ros/setup.bash
 source "/ws/install/setup.bash"
 
 if [ -f /config/car.yaml ]; then

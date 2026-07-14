@@ -5,6 +5,12 @@
 #
 # Build from the repo root, e.g. via deploy/scripts/build_image.sh.
 ARG ROS_DISTRO=humble
+# Pinned RealSense SDK version and the Tegra CUDA toolkit base used to build it (see
+# the realsense-cuda stage). Global so the stage FROM can reference L4T_CUDA_IMAGE.
+# l4t-jetpack r36.4.0 = JetPack 6.2 (CUDA 12.6 + nvcc), matching the car's L4T r36.4;
+# NVIDIA ships no l4t-cuda:12.6-devel, and this heavy image is build-only (discarded).
+ARG LIBREALSENSE_VERSION=v2.58.2
+ARG L4T_CUDA_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
 
 # ---- build stage: compile the colcon workspace ----
 FROM f1tenth-base:latest AS build
@@ -23,12 +29,44 @@ RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && rosdep install --from-paths src libs --ignore-src -y -r || true \
     && colcon build --merge-install --packages-ignore range_lib
 
+# ---- realsense SDK with CUDA (Jetson/Tegra) ----
+# librealsense built against the Tegra CUDA toolkit so the SDK's colorizer, pointcloud
+# and align run on the Orin iGPU. nvcc needs no GPU at build time, but with no GPU
+# present CMake cannot auto-detect the arch, so Orin (sm_87) is targeted explicitly.
+# RSUSB is still required on JetPack 6 (no hidraw). Same version/SONAME as the base
+# CPU build, so the base realsense-ros overlay loads this .so unchanged. The image is
+# arm64-only (Tegra); build on an arm64 host and `docker login nvcr.io` first.
+FROM ${L4T_CUDA_IMAGE} AS realsense-cuda
+ARG LIBREALSENSE_VERSION
+SHELL ["/bin/bash", "-lc"]
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git pkg-config ca-certificates \
+      libssl-dev libusb-1.0-0-dev libudev-dev \
+    && git clone --depth 1 --branch "${LIBREALSENSE_VERSION}" \
+         https://github.com/IntelRealSense/librealsense.git /tmp/librealsense \
+    && cmake -S /tmp/librealsense -B /tmp/librealsense/build \
+         -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_INSTALL_PREFIX=/opt/realsense \
+         -DFORCE_RSUSB_BACKEND=ON \
+         -DBUILD_WITH_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=87 \
+         -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF \
+         -DBUILD_PYTHON_BINDINGS=OFF -DBUILD_UNIT_TESTS=OFF \
+    && cmake --build /tmp/librealsense/build --target install -j"$(nproc)" \
+    && rm -rf /tmp/librealsense /var/lib/apt/lists/*
+
 # ---- runtime stage: only the built install + entrypoint ----
 FROM f1tenth-base:latest AS runtime
 ARG ROS_DISTRO
 ENV ROS_DISTRO=${ROS_DISTRO}
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
+
+# Swap the base CPU librealsense for the CUDA build (identical version/SONAME, so the
+# base realsense-ros overlay uses it as-is). The CUDA runtime libs (libcudart, ...)
+# are not baked in; run the container on the car with `--runtime nvidia` so the
+# Jetson injects them. On a non-Jetson host the camera node will not load.
+COPY --from=realsense-cuda /opt/realsense /opt/realsense
+RUN echo /opt/realsense/lib > /etc/ld.so.conf.d/realsense.conf && ldconfig
 
 # range_libc is a pip extension consumed by the particle filter at runtime. The
 # build stage installs it into that stage's site-packages, which is not carried
