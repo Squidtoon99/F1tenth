@@ -40,7 +40,6 @@ class VescActuatorNode(Node):
         self.publish_servo = bool(
             self.declare_parameter("publish_servo", True).value
         )
-        self.zero_erpm = bool(self.declare_parameter("zero_erpm", True).value)
         self.i_slew_a_per_s = float(
             self.declare_parameter("i_slew_a_per_s", 200.0).value
         )
@@ -70,7 +69,6 @@ class VescActuatorNode(Node):
 
         self._current_pub = self.create_publisher(Float64, "commands/motor/current", 10)
         self._brake_pub = self.create_publisher(Float64, "commands/motor/brake", 10)
-        self._speed_pub = self.create_publisher(Float64, "commands/motor/speed", 10)
         self._servo_pub = self.create_publisher(Float64, "commands/servo/position", 10)
 
         self.create_subscription(
@@ -140,17 +138,12 @@ class VescActuatorNode(Node):
         self._last_i_drive = i_drive
         self._last_i_brake = i_brake
 
-        cur = Float64()
-        brk = Float64()
-        cur.data = float(i_drive)
-        brk.data = float(i_brake)
-        self._current_pub.publish(cur)
-        self._brake_pub.publish(brk)
-
-        if self.zero_erpm:
-            spd = Float64()
-            spd.data = 0.0
-            self._speed_pub.publish(spd)
+        if i_drive > 0.0:
+            self._current_pub.publish(Float64(data=float(i_drive)))
+        elif i_brake > 0.0:
+            self._brake_pub.publish(Float64(data=float(i_brake)))
+        else:
+            self._current_pub.publish(Float64(data=0.0))
 
         if self.publish_servo:
             servo = Float64()

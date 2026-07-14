@@ -20,6 +20,42 @@ ACKERMANN_DRIVE_STAMPED = """
 std_msgs/Header header
 ackermann_msgs/AckermannDrive drive
 """
+VESC_STATE = """
+int32 FAULT_CODE_NONE=0
+int32 FAULT_CODE_OVER_VOLTAGE=1
+int32 FAULT_CODE_UNDER_VOLTAGE=2
+int32 FAULT_CODE_DRV8302=3
+int32 FAULT_CODE_ABS_OVER_CURRENT=4
+int32 FAULT_CODE_OVER_TEMP_FET=5
+int32 FAULT_CODE_OVER_TEMP_MOTOR=6
+float64 temp_fet
+float64 temp_motor
+float64 current_motor
+float64 current_input
+float64 avg_id
+float64 avg_iq
+float64 duty_cycle
+float64 speed
+float64 voltage_input
+float64 charge_drawn
+float64 charge_regen
+float64 energy_drawn
+float64 energy_regen
+int32 displacement
+int32 distance_traveled
+int32 fault_code
+float64 pid_pos_now
+int32 controller_id
+float64 ntc_temp_mos1
+float64 ntc_temp_mos2
+float64 ntc_temp_mos3
+float64 avg_vd
+float64 avg_vq
+"""
+VESC_STATE_STAMPED = """
+std_msgs/Header header
+vesc_msgs/VescState state
+"""
 
 # Topics used by the calibration fits.
 DEFAULT_TOPICS = (
@@ -47,6 +83,10 @@ def build_typestore():
             ACKERMANN_DRIVE_STAMPED, "ackermann_msgs/msg/AckermannDriveStamped"
         )
     )
+    types.update(get_types_from_msg(VESC_STATE, "vesc_msgs/msg/VescState"))
+    types.update(
+        get_types_from_msg(VESC_STATE_STAMPED, "vesc_msgs/msg/VescStateStamped")
+    )
     ts.register(types)
     return ts
 
@@ -72,10 +112,6 @@ def yaw_from_quat(z: float, w: float) -> float:
     return float(np.arctan2(2.0 * w * z, 1.0 - 2.0 * z * z))
 
 
-def _empty(*cols: str) -> np.ndarray:
-    return np.zeros((0, 1 + len(cols)), dtype=float)
-
-
 def load_series(
     bag_dir: Path | str,
     topics: Iterable[str] | None = None,
@@ -90,6 +126,9 @@ def load_series(
       /ackermann_cmd|/teleop|/drive -> t, speed, steering, acceleration
       /commands/motor/speed|current|brake
       /commands/servo/position|/sensors/servo_position_command -> t, value
+      /sensors/core -> t, temp_fet, temp_motor, current_motor, current_input,
+                       avg_id, avg_iq, duty, erpm, voltage, charge_drawn,
+                       charge_regen, energy_drawn, energy_regen, fault, avg_vd, avg_vq
     """
     bag_dir = Path(bag_dir)
     wanted = set(topics if topics is not None else DEFAULT_TOPICS)
@@ -99,6 +138,7 @@ def load_series(
     ackermann, teleop, drive = [], [], []
     motor_speed, motor_current, motor_brake = [], [], []
     servo, servo_cmd = [], []
+    core = []
 
     with AnyReader([bag_dir], default_typestore=ts) as reader:
         for conn, t_ns, raw in reader.messages():
@@ -140,6 +180,29 @@ def load_series(
                 servo.append((t, float(m.data)))
             elif conn.topic == "/sensors/servo_position_command":
                 servo_cmd.append((t, float(m.data)))
+            elif conn.topic == "/sensors/core":
+                s = m.state
+                core.append(
+                    (
+                        t,
+                        s.temp_fet,
+                        s.temp_motor,
+                        s.current_motor,
+                        s.current_input,
+                        s.avg_id,
+                        s.avg_iq,
+                        s.duty_cycle,
+                        s.speed,
+                        s.voltage_input,
+                        s.charge_drawn,
+                        s.charge_regen,
+                        s.energy_drawn,
+                        s.energy_regen,
+                        s.fault_code,
+                        s.avg_vd,
+                        s.avg_vq,
+                    )
+                )
 
     def arr(rows, ncols):
         if not rows:
@@ -158,6 +221,7 @@ def load_series(
         "/commands/motor/brake": arr(motor_brake, 2),
         "/commands/servo/position": arr(servo, 2),
         "/sensors/servo_position_command": arr(servo_cmd, 2),
+        "/sensors/core": arr(core, 17),
     }
 
 
@@ -187,7 +251,7 @@ def inventory(bag_dir: Path | str, series: dict[str, np.ndarray] | None = None) 
         "path": str(bag_dir),
         "duration_s": duration,
         "topics": topics,
-        "has_sensors_core": False,  # not loaded; bags typically lack vesc_msgs
+        "has_sensors_core": series["/sensors/core"].shape[0] > 0,
     }
 
 

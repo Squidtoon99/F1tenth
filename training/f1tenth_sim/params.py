@@ -1,4 +1,4 @@
-"""Vehicle parameters for the Torch simulator, seeded from the URDF + config.
+"""Vehicle parameters for the Torch simulator, seeded from calibrated config + URDF.
 
 ``VehicleParams`` is a plain dataclass of scalar physical constants. Per-env
 randomized quantities (mass, friction) live on the simulator state, not here, so
@@ -32,13 +32,13 @@ class VehicleParams:
     mass: float = 3.74
     izz: float = 0.13
     wheelbase: float = 0.325
-    lf: float = 0.1773
-    lr: float = 0.1477
-    track_width: float = 0.20
+    lf: float = 0.1584
+    lr: float = 0.1666
+    track_width: float = 0.253
     h_cg: float = 0.05
 
     # --- wheels ---
-    wheel_radius: float = 0.05
+    wheel_radius: float = 0.053
     wheel_inertia: float = 4.12e-4
 
     # --- tire (Pacejka Magic Formula) ---
@@ -56,14 +56,15 @@ class VehicleParams:
 
     # --- drivetrain (force/brake effort; ADR 0006) ---
     f_drive_max: float = 23.0
-    f_brake_max: float = 23.0
-    power_max: float = 255.0
+    f_brake_max: float = 5.2
+    power_max: float = 320.0
     k_drive_front: float = 0.5
     v_eps: float = 0.1
     low_speed_blend: float = 1.0
     c_roll: float = 0.0
     drive_torque_sign: float = 1.0
-    max_speed: float = 15.0
+    # Normalized effort slew matches 45 A at the deployed 200 A/s current limit.
+    longitudinal_slew_rate_per_s: float = 4.444444444444445
     # Soft accel clamp for the Tier-0 kinematic fallback only.
     kinematic_accel_limit: float = 12.0
 
@@ -77,10 +78,8 @@ class VehicleParams:
     slip_min_passive_long: float = 0.4
 
     # --- suspension (Tier 2 spring-damper; Tier 1 uses roll_stiffness_front only) ---
-    roll_stiffness_front: float = 0.5
+    roll_stiffness_front: float = 0.47
     susp_stiffness: float = 4000.0
-    susp_damping: float = 400.0
-    anti_roll: float = 0.0
 
     # --- aero / environment ---
     enable_aero_drag: bool = True
@@ -90,17 +89,12 @@ class VehicleParams:
     # Per-wheel signed body-frame (x, y) offsets from the CoM, order [LR, RR, LF, RF].
     wheel_xy: tuple[tuple[float, float], ...] = field(
         default_factory=lambda: (
-            (-0.1477, 0.10),
-            (-0.1477, -0.10),
-            (0.1773, 0.10),
-            (0.1773, -0.10),
+            (-0.1666, 0.1265),
+            (-0.1666, -0.1265),
+            (0.1584, 0.1265),
+            (0.1584, -0.1265),
         )
     )
-
-    def static_axle_loads(self) -> tuple[float, float]:
-        """(front, rear) static axle normal loads in Newtons."""
-        w = self.mass * self.gravity
-        return w * self.lr / self.wheelbase, w * self.lf / self.wheelbase
 
     def static_wheel_load(self) -> float:
         """Mean per-wheel static normal load (reference Fz0 for load sensitivity)."""
@@ -109,7 +103,7 @@ class VehicleParams:
     @classmethod
     def from_config(cls, env_cfg: dict[str, Any] | None = None,
                     urdf_path: str | None = None) -> "VehicleParams":
-        """Build params from ``F110.export.urdf`` inertials, overridden by env_cfg."""
+        """Build URDF inertial priors, overridden by calibrated ``env_cfg`` values."""
         params = cls.from_urdf(urdf_path or _DEFAULT_URDF)
         if env_cfg:
             params.apply_env_cfg(env_cfg)
@@ -137,7 +131,6 @@ class VehicleParams:
         self.v_eps = float(g("v_eps", self.v_eps))
         self.c_roll = float(g("c_roll", self.c_roll))
         self.drive_torque_sign = float(g("drive_torque_sign", self.drive_torque_sign))
-        self.max_speed = float(g("max_speed", self.max_speed))
         self.tire_mu = float(g("tire_friction", self.tire_mu))
         self.enable_aero_drag = bool(g("enable_aero_drag", self.enable_aero_drag))
         self.dragcoeff = float(g("dragcoeff", self.dragcoeff))
@@ -148,7 +141,8 @@ class VehicleParams:
             "izz", "h_cg", "wheel_inertia", "tire_B_long", "tire_C_long",
             "tire_E_long", "tire_B_lat", "tire_C_lat", "tire_E_lat",
             "tire_load_sens", "tire_relax_len", "roll_stiffness_front",
-            "susp_stiffness", "susp_damping", "anti_roll", "kinematic_accel_limit",
+            "susp_stiffness", "kinematic_accel_limit",
+            "longitudinal_slew_rate_per_s",
         ):
             if key in sim:
                 setattr(self, key, float(sim[key]))
@@ -159,6 +153,13 @@ class VehicleParams:
             frac = self.lr / max(self.lf + self.lr, 1e-9)
             self.lr = frac * self.wheelbase
             self.lf = self.wheelbase - self.lr
+        half_track = 0.5 * self.track_width
+        self.wheel_xy = (
+            (-self.lr, half_track),
+            (-self.lr, -half_track),
+            (self.lf, half_track),
+            (self.lf, -half_track),
+        )
 
     @classmethod
     def from_urdf(cls, path: str) -> "VehicleParams":
@@ -256,7 +257,7 @@ class VehicleParams:
         rear_axle_x = sum(rear_x) / len(rear_x) if rear_x else 0.0
         front_axle_x = sum(front_x) / len(front_x) if front_x else 0.325
         wheelbase = abs(front_axle_x - rear_axle_x)
-        track_width = 2.0 * (sum(track_ys) / len(track_ys)) if track_ys else 0.20
+        track_width = 2.0 * (sum(track_ys) / len(track_ys)) if track_ys else 0.253
         lr = abs(com_x - rear_axle_x)
         lf = abs(front_axle_x - com_x)
 

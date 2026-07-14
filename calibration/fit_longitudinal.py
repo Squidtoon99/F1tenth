@@ -67,7 +67,7 @@ def fit_odom_sign_and_scale(odom: np.ndarray, ackermann: np.ndarray) -> dict:
 
 
 def fit_accel_limit(odom: np.ndarray, ackermann: np.ndarray) -> dict:
-    """Estimate peak longitudinal acceleration magnitude from odom."""
+    """Summarize the observed longitudinal acceleration envelope from odom."""
     if odom.shape[0] < 50:
         return {"status": "NOT_IDENTIFIABLE", "reason": "insufficient_samples"}
 
@@ -84,7 +84,7 @@ def fit_accel_limit(odom: np.ndarray, ackermann: np.ndarray) -> dict:
     ax_sel = ax[mask]
     return {
         "status": "weakly_identified",
-        "vesc_accel_limit": float(np.percentile(np.abs(ax_sel), 95)),
+        "ax_p95": float(np.percentile(np.abs(ax_sel), 95)),
         "ax_p99": float(np.percentile(np.abs(ax_sel), 99)),
         "ax_max": float(np.max(np.abs(ax_sel))),
         "ax_min": float(np.min(ax_sel)),
@@ -138,34 +138,67 @@ def fit_c_roll(odom: np.ndarray, ackermann: np.ndarray, mass: float = 3.74) -> d
     return {
         "status": "weakly_identified",
         "c_roll": float(np.median(f)),
-        "c_roll_p50": float(np.median(f)),
         "c_roll_p90": float(np.percentile(f, 90)),
         "n_samples": int(coast.sum()),
     }
 
 
-def fit_tire_mu_lower_bound(imu: np.ndarray, odom: np.ndarray, v_gate: float = 1.0) -> dict:
-    """Peak horizontal accel / g while moving — lower bound on mu."""
+def fit_tire_mu_lower_bound(
+    imu: np.ndarray,
+    odom: np.ndarray,
+    static_imu: np.ndarray | None = None,
+    v_gate: float = 1.0,
+    smooth_s: float = 0.5,
+) -> dict:
+    """Sustained horizontal acceleration / g while moving — lower bound on mu."""
     if imu.shape[0] < 20 or odom.shape[0] < 20:
         return {"status": "NOT_IDENTIFIABLE", "reason": "insufficient_samples"}
 
     v = np.abs(odom[:, 1])
     v_at_imu = np.interp(imu[:, 0], odom[:, 0], v)
-    az = float(np.median(imu[:, 3]))
+    calibration_imu = (
+        static_imu if static_imu is not None and static_imu.shape[0] >= 10 else imu
+    )
+    az = float(np.median(calibration_imu[:, 3]))
     scale, _ = detect_accel_scale(az)
-    ax = imu[:, 1] * scale
-    ay = imu[:, 2] * scale
-    a_horiz = np.hypot(ax, ay)
+    bias_xy = np.median(calibration_imu[:, 1:3], axis=0)
+    accel_xy = (imu[:, 1:3] - bias_xy) * scale
+
+    dt = float(np.median(np.diff(imu[:, 0])))
+    window = max(1, int(round(smooth_s / max(dt, 1e-6))))
+    if window % 2 == 0:
+        window += 1
+    half = window // 2
+    sustained_xy = np.column_stack(
+        [
+            np.median(
+                np.lib.stride_tricks.sliding_window_view(
+                    np.pad(accel_xy[:, axis], half, mode="edge"),
+                    window,
+                ),
+                axis=1,
+            )
+            for axis in range(2)
+        ]
+    )
+    a_horiz = np.linalg.norm(sustained_xy, axis=1)
     fast = v_at_imu > v_gate
+    if half:
+        fast[:half] = False
+        fast[-half:] = False
     if fast.sum() < 10:
         return {"status": "NOT_IDENTIFIABLE", "reason": "no_moving_imu"}
 
     peak = float(np.percentile(a_horiz[fast], 99))
+    raw_peak = float(np.percentile(np.linalg.norm(accel_xy[fast], axis=1), 99))
     return {
         "status": "weakly_identified",
         "tire_friction_lower_bound": peak / G,
         "a_horiz_p99": peak,
+        "a_horiz_raw_p99": raw_peak,
         "accel_scale_used": scale,
+        "accel_bias_raw_xy": bias_xy.tolist(),
+        "smooth_window_s": float(window * dt),
     }
 
 

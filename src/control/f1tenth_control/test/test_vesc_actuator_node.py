@@ -27,7 +27,13 @@ def _make_actuator(overrides):
     return VescActuatorNode(parameter_overrides=overrides)
 
 
-def test_vesc_actuator_positive_current_mutex():
+@pytest.mark.parametrize(
+    ("acceleration", "expected_topic", "expected_value"),
+    [(0.5, "current", 10.0), (-0.5, "brake", 15.0)],
+)
+def test_vesc_actuator_motor_command_mutex(
+    acceleration, expected_topic, expected_value
+):
     rclpy.init()
     node = helper = None
     try:
@@ -36,75 +42,49 @@ def test_vesc_actuator_positive_current_mutex():
             Parameter("i_brake_max_a", Parameter.Type.DOUBLE, 30.0),
             Parameter("i_slew_a_per_s", Parameter.Type.DOUBLE, 1e6),
             Parameter("watchdog_timeout_s", Parameter.Type.DOUBLE, 1.0),
-            Parameter("zero_erpm", Parameter.Type.BOOL, False),
             Parameter("publish_servo", Parameter.Type.BOOL, False),
         ])
-        helper = rclpy.create_node("vesc_act_helper")
+        helper = rclpy.create_node(f"vesc_act_helper_{expected_topic}")
         currents = []
         brakes = []
+        motor_events = []
+        speeds = []
         helper.create_subscription(
-            Float64, "commands/motor/current", lambda m: currents.append(m.data), 10
+            Float64,
+            "commands/motor/current",
+            lambda m: (currents.append(m.data), motor_events.append(("current", m.data))),
+            10,
         )
         helper.create_subscription(
-            Float64, "commands/motor/brake", lambda m: brakes.append(m.data), 10
+            Float64,
+            "commands/motor/brake",
+            lambda m: (brakes.append(m.data), motor_events.append(("brake", m.data))),
+            10,
+        )
+        helper.create_subscription(
+            Float64, "commands/motor/speed", lambda m: speeds.append(m.data), 10
         )
         pub = helper.create_publisher(AckermannDriveStamped, "/ackermann_cmd", 10)
 
         msg = AckermannDriveStamped()
-        msg.drive.acceleration = 0.5
-        msg.drive.steering_angle = 0.0
+        msg.drive.acceleration = acceleration
 
         def saw():
             pub.publish(msg)
-            return any(c > 9.0 for c in currents) and any(
-                math.isclose(b, 0.0, abs_tol=1e-6) for b in brakes
+            return any(
+                topic == expected_topic and value > expected_value - 1.0
+                for topic, value in motor_events
             )
 
-        assert _spin_until([node, helper], saw), "no positive current command"
-        assert currents[-1] == pytest.approx(10.0, abs=0.05)
-        assert brakes[-1] == pytest.approx(0.0, abs=1e-6)
-    finally:
-        if helper is not None:
-            helper.destroy_node()
-        if node is not None:
-            node.destroy_node()
-        rclpy.shutdown()
-
-
-def test_vesc_actuator_negative_brake_mutex():
-    rclpy.init()
-    node = helper = None
-    try:
-        node = _make_actuator([
-            Parameter("i_drive_max_a", Parameter.Type.DOUBLE, 20.0),
-            Parameter("i_brake_max_a", Parameter.Type.DOUBLE, 30.0),
-            Parameter("i_slew_a_per_s", Parameter.Type.DOUBLE, 1e6),
-            Parameter("watchdog_timeout_s", Parameter.Type.DOUBLE, 1.0),
-            Parameter("zero_erpm", Parameter.Type.BOOL, False),
-            Parameter("publish_servo", Parameter.Type.BOOL, False),
-        ])
-        helper = rclpy.create_node("vesc_act_helper_br")
-        currents = []
-        brakes = []
-        helper.create_subscription(
-            Float64, "commands/motor/current", lambda m: currents.append(m.data), 10
-        )
-        helper.create_subscription(
-            Float64, "commands/motor/brake", lambda m: brakes.append(m.data), 10
-        )
-        pub = helper.create_publisher(AckermannDriveStamped, "/ackermann_cmd", 10)
-
-        msg = AckermannDriveStamped()
-        msg.drive.acceleration = -0.5
-        msg.drive.steering_angle = 0.1
-
-        def saw():
-            pub.publish(msg)
-            return any(b > 14.0 for b in brakes)
-
-        assert _spin_until([node, helper], saw), "no brake current command"
-        assert currents[-1] == pytest.approx(0.0, abs=1e-6)
-        assert brakes[-1] == pytest.approx(15.0, abs=0.05)
+        assert _spin_until([node, helper], saw), f"no {expected_topic} command"
+        assert motor_events[-1][0] == expected_topic
+        assert motor_events[-1][1] == pytest.approx(expected_value, abs=0.05)
+        assert not speeds
+        if expected_topic == "current":
+            assert currents[-1] == pytest.approx(expected_value, abs=0.05)
+        else:
+            assert not currents
+            assert brakes[-1] == pytest.approx(expected_value, abs=0.05)
     finally:
         if helper is not None:
             helper.destroy_node()
@@ -124,7 +104,6 @@ def test_vesc_actuator_watchdog_safe_brake():
             Parameter("i_slew_a_per_s", Parameter.Type.DOUBLE, 1e6),
             Parameter("watchdog_timeout_s", Parameter.Type.DOUBLE, 0.15),
             Parameter("publish_rate_hz", Parameter.Type.DOUBLE, 50.0),
-            Parameter("zero_erpm", Parameter.Type.BOOL, False),
             Parameter("publish_servo", Parameter.Type.BOOL, False),
         ])
         helper = rclpy.create_node("vesc_act_helper_wd")

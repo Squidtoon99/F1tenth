@@ -14,6 +14,7 @@ if _REPO_ROOT not in sys.path:
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
+from f1tenth_sim import VehicleParams  # noqa: E402
 
 
 def _make_env(*, enable_dr: bool, num_envs: int = 4) -> F1tenthEnv:
@@ -69,7 +70,7 @@ def _collect_dr_samples(env: F1tenthEnv, resets: int) -> dict[str, list[float]]:
 def test_dr_disabled_matches_baseline(torch_backend):
     num_envs = 4
     base_tf = float(DEFAULT_CONFIG["env"]["tire_friction"])
-    base_mass = 3.74
+    base_mass = VehicleParams.from_config(DEFAULT_CONFIG["env"]).mass
     env = _make_env(enable_dr=False, num_envs=num_envs)
     try:
         env.reset()
@@ -86,13 +87,11 @@ def test_dr_disabled_matches_baseline(torch_backend):
             metrics["dr/action_latency_steps"] == 1.0
         ), "baseline keeps simulate_action_latency=1 step"
         assert torch.allclose(metrics["dr/obs_noise_std"], torch.zeros(num_envs))
-
-        control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
-        for _ in range(40):
-            actions = torch.rand(num_envs, 2, device=env.device) * 0.2
-            obs, reward, _, _ = env.step(actions, n_steps=control_interval)
-            assert torch.isfinite(obs).all()
-            assert torch.isfinite(reward).all()
+        masses = torch.linspace(3.0, 5.0, num_envs, device=env.device)
+        loads = env._compute_tyre_load(
+            torch.zeros((num_envs, 3), device=env.device), masses
+        )
+        assert torch.allclose(loads, torch.ones_like(loads))
     finally:
         env.close()
 

@@ -47,8 +47,12 @@ vehicle_obs:
     slip_speed_min_mps: 0.3
     vy_filter_tau_s: 0.5
     vx_ground_lp_alpha: 0.5
+    wheel_radius_m: 0.053
+    lf_m: 0.1584
+    lr_m: 0.1666
+    track_width_m: 0.253
     cg_height_m: 0.05
-    roll_stiffness_front: 0.5
+    roll_stiffness_front: 0.47
     slip_min_lat: 0.2
     slip_min_active_long: 0.1
     slip_min_passive_long: 0.4

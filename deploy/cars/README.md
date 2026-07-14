@@ -27,19 +27,19 @@ contract before deploying RL from this repository.
 ## Vehicle geometry provenance
 
 `params.yaml` carries the chassis geometry the observation and odometry nodes use.
-Until the physical car is measured these track the training source of truth
-(`training/F110.export.urdf` / `f1tenth_sim` `VehicleParams`). Replace each with a
-measurement of the assembled car when calibrating.
+Measured values and exact 68277-4 specifications override the generic URDF; mass
+distribution and CG height remain model priors until the assembled car is measured.
 
 | Parameter (node) | Value | Source |
 | --- | --- | --- |
-| `wheelbase` (`vesc_to_odom_node`) | 0.33 m | On-car calibration (shereef@f1tenth) |
-| `track_width_m` (`vehicle_obs`) | 0.20 m | URDF wheel-center track (assumed) |
+| `wheelbase` (`vesc_to_odom_node`) | 0.325 m | On-car calibration |
+| `track_width_m` (`vehicle_obs`) | 0.253 m | 296 mm outer track minus 43 mm tyre width |
 | `lf_m` / `lr_m` (`vehicle_obs`) | 0.1584 / 0.1666 m | URDF CoG split (assumed) |
-| `wheel_radius_m` (`vehicle_obs`) | 0.05 m | URDF collision cylinder (assumed) |
+| `wheel_radius_m` (`vehicle_obs`) | 0.053 m | Measured wheel radius |
 | `cg_height_m` (`vehicle_obs`) | 0.05 m | URDF base_link offset (assumed) |
 | `max_steer` (`drive`) | 0.33 rad | Measured servo full-lock (rosbag circle fit) |
-| body length x width (training `config.py`) | 0.568 x 0.296 m | Standard Traxxas Slash 4x4 spec (provisional) |
+| `roll_stiffness_front` (`vehicle_obs`) | 0.47 | Stock GTR front/rear spring-rate split |
+| body length x width (training `config.py`) | 0.568 x 0.296 m | Official 68277-4 dimensions |
 
 The RL policy checkpoint itself is delivered separately (mounted at `/policies`),
 not stored here, since it is a large binary artifact.

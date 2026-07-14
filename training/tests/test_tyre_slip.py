@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-WHEEL_RADIUS = 0.05
+WHEEL_RADIUS = 0.053
 # Modern-PhysX slip denominators (match car.compute_tyre_slip defaults).
 MIN_LAT = 0.2
 MIN_ACTIVE_LONG = 0.1

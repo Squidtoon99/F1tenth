@@ -13,7 +13,7 @@ sys.path.insert(0, str(_HERE))
 
 from bag_io import linear_fit, resample  # noqa: E402
 from fit_imu import G, fit_imu_static  # noqa: E402
-from fit_longitudinal import fit_speed_to_erpm  # noqa: E402
+from fit_longitudinal import fit_speed_to_erpm, fit_tire_mu_lower_bound  # noqa: E402
 from fit_steering import fit_steer_lag  # noqa: E402
 
 
@@ -86,6 +86,30 @@ def test_speed_to_erpm_recovery():
     assert fit["status"] == "identified"
     assert abs(fit["speed_to_erpm_gain"] - 4300.0) < 1.0
     assert abs(fit["speed_to_erpm_offset"] - 5.0) < 1.0
+
+
+def test_tire_mu_fit_rejects_short_imu_spike():
+    t = np.arange(0.0, 10.0, 0.02)
+    n = t.size
+    static = np.column_stack(
+        [
+            t,
+            np.full(n, -0.02),
+            np.full(n, 0.07),
+            np.ones(n),
+            np.zeros((n, 3)),
+        ]
+    )
+    imu = static.copy()
+    imu[:, 1] += 0.6
+    imu[20::40, 1] += 4.0
+    odom = np.column_stack([t, np.full(n, 2.0), np.zeros(n)])
+
+    fit = fit_tire_mu_lower_bound(imu, odom, static)
+
+    assert fit["status"] == "weakly_identified"
+    assert 0.55 < fit["tire_friction_lower_bound"] < 0.7
+    assert fit["a_horiz_raw_p99"] > fit["a_horiz_p99"]
 
 
 def test_steer_lag_recovery():

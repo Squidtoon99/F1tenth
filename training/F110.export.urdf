@@ -58,14 +58,14 @@
     <collision>
   <origin xyz="0 0 -0.0225" rpy="0 0 0"/>
   <geometry>
-    <cylinder length="0.045" radius="0.05"/>
+    <cylinder length="0.045" radius="0.053"/>
   </geometry>
 
     </collision>
   </link>
 
   <joint name="left_rear_wheel_joint" type="continuous">
-    <origin xyz="0 0.1 0" rpy="1.5708 0 0"/>
+    <origin xyz="0 0.1265 0" rpy="1.5708 0 0"/>
     <parent link="chassis"/>
     <child link="left_rear_wheel"/>
     <axis xyz="0 0 -1"/>
@@ -103,14 +103,14 @@
     <collision>
   <origin xyz="0 0 0.0225" rpy="0 0 0"/>
   <geometry>
-    <cylinder length="0.045" radius="0.05"/>
+    <cylinder length="0.045" radius="0.053"/>
   </geometry>
 
     </collision>
   </link>
 
   <joint name="right_rear_wheel_joint" type="continuous">
-    <origin xyz="0 -0.1 0" rpy="1.5708 0 0"/>
+    <origin xyz="0 -0.1265 0" rpy="1.5708 0 0"/>
     <parent link="chassis"/>
     <child link="right_rear_wheel"/>
     <axis xyz="0 0 -1"/>
@@ -148,7 +148,7 @@
   </link>
 
   <joint name="left_steering_hinge_joint" type="revolute">
-    <origin xyz="0.325 0.1 0" rpy="0 1.5708 0"/>
+    <origin xyz="0.325 0.1265 0" rpy="0 1.5708 0"/>
     <parent link="chassis"/>
     <child link="left_steering_hinge"/>
     <axis xyz="-1 0 0"/>
@@ -186,7 +186,7 @@
   </link>
 
   <joint name="right_steering_hinge_joint" type="continuous">
-    <origin xyz="0.325 -0.1 0" rpy="0 1.5708 0"/>
+    <origin xyz="0.325 -0.1265 0" rpy="0 1.5708 0"/>
     <parent link="chassis"/>
     <child link="right_steering_hinge"/>
     <axis xyz="-1 0 0"/>
@@ -224,7 +224,7 @@
     <collision>
   <origin xyz="0 0 -0.0225" rpy="0 0 0"/>
   <geometry>
-    <cylinder length="0.045" radius="0.05"/>
+    <cylinder length="0.045" radius="0.053"/>
   </geometry>
 
     </collision>
@@ -269,7 +269,7 @@
     <collision>
   <origin xyz="0 0 0.0225" rpy="0 0 0"/>
   <geometry>
-    <cylinder length="0.045" radius="0.05"/>
+    <cylinder length="0.045" radius="0.053"/>
   </geometry>
 
     </collision>

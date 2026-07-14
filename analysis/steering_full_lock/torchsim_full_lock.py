@@ -39,10 +39,6 @@ REAL_V_MS = 2.0
 REAL_STEER_RAD = 0.336
 
 
-def kinematic_radius(delta: float, wheelbase: float) -> float:
-    return wheelbase / math.tan(abs(delta)) if abs(delta) > 1e-6 else float("inf")
-
-
 def run(num_envs: int = 16, warmup_steps: int = 150, record_steps: int = 50):
     env_cfg = DEFAULT_CONFIG["env"]
     params = VehicleParams.from_config(env_cfg)
@@ -57,7 +53,7 @@ def run(num_envs: int = 16, warmup_steps: int = 150, record_steps: int = 50):
         internal_substeps=internal,
     )
 
-    # Full lock left (+1.0 -> +max_steer); throttle sweep (speed-mode v_cmd = thr*max_speed).
+    # Full lock left (+1.0 -> +max_steer); normalized drive-effort sweep.
     throttle = torch.linspace(0.08, 0.45, num_envs)
     steer = torch.ones(num_envs)
     actions = torch.stack([throttle, steer], dim=-1)
@@ -92,7 +88,7 @@ def run(num_envs: int = 16, warmup_steps: int = 150, record_steps: int = 50):
         "radius": radius,
         "alat_g": alat_g,
         "eff_steer": eff_steer,
-        "kin_radius": kinematic_radius(params.max_steer, params.wheelbase),
+        "kin_radius": params.wheelbase / math.tan(abs(params.max_steer)),
     }
 
 

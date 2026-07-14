@@ -14,12 +14,7 @@ class TorchSimBackend:
         *,
         num_envs,
         env_cfg,
-        obs_cfg,
-        reward_cfg,
-        track_state,
         device,
-        show_viewer=False,
-        enable_recording=False,
     ):
         from f1tenth_sim import TorchVehicleSim, VehicleParams
 
@@ -88,10 +83,10 @@ class TorchSimBackend:
             if domain is not None:
                 self.opp_sim.set_domain(mask, **domain)
 
-    def apply_ego_actions(self, exec_actions, base_lin_vel, dr) -> None:
+    def apply_ego_actions(self, exec_actions) -> None:
         self.sim.apply_actions(exec_actions)
 
-    def apply_opp_actions(self, opp_actions, opp_body_vel, dr) -> None:
+    def apply_opp_actions(self, opp_actions) -> None:
         if self.opp_sim is not None:
             self.opp_sim.apply_actions(opp_actions)
 

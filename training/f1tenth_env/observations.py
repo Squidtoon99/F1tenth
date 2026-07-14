@@ -139,15 +139,6 @@ def obs_future_track_points(
     return all_ego.reshape(batch, -1)
 
 
-def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
-    return step_state["tyre_slip"]
-
-
-def obs_tyre_load(step_state: dict[str, Any]) -> torch.Tensor:
-    """Per-wheel normal-load ratio Fz / Fz_static (N,4), order [LR, RR, LF, RF]."""
-    return step_state["tyre_load"]
-
-
 def obs_opponent(
     self_agent: dict[str, torch.Tensor],
     other_agent: dict[str, torch.Tensor],
@@ -239,8 +230,8 @@ def build_observation(
             device,
             step_state,
         ),
-        obs_tyre_slip(step_state),
-        obs_tyre_load(step_state),
+        step_state["tyre_slip"],
+        step_state["tyre_load"],
     )
 
     # 1v1: append the opponent-relative block as the final component. When

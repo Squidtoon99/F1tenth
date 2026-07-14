@@ -13,12 +13,16 @@ import torch
 
 from f1tenth_sim import TorchVehicleSim, VehicleParams
 from f1tenth_sim.drivetrain import wheel_axle_torques
-from f1tenth_sim.suspension import quasi_static_loads, static_wheel_loads
+from f1tenth_sim.suspension import (
+    SuspensionFilter,
+    quasi_static_loads,
+    static_wheel_loads,
+)
 from f1tenth_sim.tire import make_tire_from_params
 
 
 def _params(**over):
-    cfg = {"tire_friction": 0.9, "max_speed": 8.0}
+    cfg = {"tire_friction": 0.9}
     cfg.update(over)
     return VehicleParams.from_config(cfg)
 
@@ -94,6 +98,22 @@ def test_lateral_transfer_direction():
     fz = quasi_static_loads(p, torch.zeros(1), torch.tensor([5.0]))
     assert fz[0, 1] > fz[0, 0]
     assert fz[0, 3] > fz[0, 2]
+    rear_transfer = fz[0, 1] - fz[0, 0]
+    front_transfer = fz[0, 3] - fz[0, 2]
+    front_share = front_transfer / (front_transfer + rear_transfer)
+    assert torch.isclose(front_share, torch.tensor(0.47), atol=1e-6)
+
+
+def test_dynamic_suspension_filter_is_retained():
+    p = _params(torch_sim={"suspension_mode": "dynamic", "susp_stiffness": 4000.0})
+    filt = SuspensionFilter(p, 1, torch.device("cpu"), torch.float32)
+    target = quasi_static_loads(p, torch.tensor([4.0]), torch.tensor([3.0]))
+    first = filt.step(torch.tensor([4.0]), torch.tensor([3.0]), dt=0.005)
+
+    assert not torch.allclose(first, target)
+    assert torch.linalg.norm(first - target) < torch.linalg.norm(
+        static_wheel_loads(p, 1, torch.device("cpu"), torch.float32) - target
+    )
 
 
 # --- drivetrain ---------------------------------------------------------------
@@ -150,6 +170,29 @@ def test_drivetrain_asymmetric_brake_stronger():
 
 
 # --- integrator / dynamics ----------------------------------------------------
+def test_longitudinal_effort_slew_matches_deployed_current_ramp():
+    p = _params()
+    p.longitudinal_slew_rate_per_s = 20.0
+    sim = TorchVehicleSim(p, 1, sim_dt=0.005, control_dt=0.05)
+    _reset(sim, 1)
+
+    full_drive = torch.tensor([[1.0, 0.0]])
+    full_brake = torch.tensor([[-1.0, 0.0]])
+
+    sim.apply_actions(full_drive)
+    assert torch.allclose(sim.s["longitudinal_effort"], torch.tensor([1.0]))
+    assert torch.allclose(sim.s["throttle"], torch.tensor([0.5]))
+    sim.apply_actions(full_drive)
+    assert torch.allclose(sim.s["throttle"], torch.tensor([1.0]))
+
+    sim.apply_actions(full_brake)
+    assert torch.allclose(sim.s["longitudinal_effort"], torch.tensor([0.0]))
+    assert torch.allclose(sim.s["throttle"], torch.tensor([0.5]))
+    sim.apply_actions(full_brake)
+    assert torch.allclose(sim.s["longitudinal_effort"], torch.tensor([-1.0]))
+    assert torch.allclose(sim.s["throttle"], torch.tensor([-0.5]))
+
+
 def test_straight_line_no_lateral():
     sim = TorchVehicleSim(_params(), 1, sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)
@@ -224,6 +267,18 @@ def test_dtype_and_shape_contract():
     ws = sim.read_wheel_state()
     assert ws["motion_link_vel"].shape == (5, 4, 3)
     assert ws["dof_vel"].shape == (5, 4)
+
+
+def test_tyre_load_ratio_is_mass_invariant():
+    sim = TorchVehicleSim(_params(), 2, sim_dt=0.005, control_dt=0.05)
+    _reset(sim, 2)
+    sim.set_domain(
+        torch.ones(2, dtype=torch.bool),
+        mass=torch.tensor([3.0, 5.0]),
+    )
+    sim.step(torch.zeros(2, 2), n_steps=1)
+
+    assert torch.allclose(sim.read_wheel_state()["tyre_load"], torch.ones(2, 4))
 
 
 def test_domain_randomization_consumed():

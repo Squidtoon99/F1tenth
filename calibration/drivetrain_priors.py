@@ -28,7 +28,7 @@ def seed_force_per_amp(
     kt_nm_per_a: float = VELINEON_KT_NM_PER_A,
     gear_ratio: float = STOCK_GEAR_RATIO,
     efficiency: float = 0.85,
-    wheel_radius_m: float = 0.05,
+    wheel_radius_m: float = 0.053,
 ) -> float:
     """Wheel longitudinal force per ampere of motor phase current.
 

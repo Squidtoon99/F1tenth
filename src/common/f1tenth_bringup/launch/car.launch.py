@@ -85,10 +85,8 @@ def _launch_setup(context, *args, **kwargs):
 
 def generate_launch_description() -> LaunchDescription:
     stack_share = get_package_share_directory("f1tenth_stack")
-    control_share = get_package_share_directory("f1tenth_control")
     default_overlay = "/config/params.yaml"
     default_sensors = os.path.join(stack_share, "config", "sensors.yaml")
-    default_actuator = os.path.join(control_share, "config", "vesc_actuator.yaml")
 
     return LaunchDescription(
         [

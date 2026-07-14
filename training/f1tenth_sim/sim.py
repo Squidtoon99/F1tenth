@@ -12,7 +12,7 @@ import torch
 
 from . import dynamics
 from .params import VehicleParams
-from .suspension import SuspensionFilter
+from .suspension import SuspensionFilter, static_wheel_loads
 from .tire import make_tire_from_params
 
 
@@ -49,6 +49,7 @@ class TorchVehicleSim:
             "X": z.clone(), "Y": z.clone(), "z": z.clone(), "yaw": z.clone(),
             "vx": z.clone(), "vy": z.clone(), "r": z.clone(),
             "omega": z4.clone(), "steer": z.clone(), "throttle": z.clone(),
+            "longitudinal_effort": z.clone(),
             "ax": z.clone(), "ay": z.clone(),
             "mass": torch.full((self.num_envs,), params.mass, device=self.device,
                                dtype=dtype),
@@ -70,7 +71,6 @@ class TorchVehicleSim:
                                       dtype=dtype)
         self._tyre_load = torch.ones((self.num_envs, 4), device=self.device,
                                      dtype=dtype)
-        self._static_wheel_load = max(params.static_wheel_load(), 1e-6)
 
     # --- lifecycle ---------------------------------------------------------
     def reset(self, mask, pos, quat, speed):
@@ -90,6 +90,9 @@ class TorchVehicleSim:
         self.s["ay"] = torch.where(m, torch.zeros_like(v), self.s["ay"])
         self.s["steer"] = torch.where(m, torch.zeros_like(v), self.s["steer"])
         self.s["throttle"] = torch.where(m, torch.zeros_like(v), self.s["throttle"])
+        self.s["longitudinal_effort"] = torch.where(
+            m, torch.zeros_like(v), self.s["longitudinal_effort"]
+        )
         omega0 = (v / max(self.params.wheel_radius, 1e-6)).unsqueeze(1).expand(-1, 4)
         self.s["omega"] = torch.where(m1, omega0, self.s["omega"])
         for key in ("fx_lag", "fy_lag"):
@@ -120,7 +123,25 @@ class TorchVehicleSim:
 
     # --- actuation / integration ------------------------------------------
     def apply_actions(self, exec_actions):
-        throttle = exec_actions[:, 0].to(self.dtype)
+        target = exec_actions[:, 0].to(self.dtype)
+        rate = self.params.longitudinal_slew_rate_per_s
+        if rate <= 0.0:
+            effort = target
+            throttle = target
+        else:
+            start = self.s["longitudinal_effort"]
+            delta = target - start
+            max_step = rate * self.control_dt
+            effort = start + delta.clamp(-max_step, max_step)
+            # Use the exact interval-average of a linear ramp that holds the target
+            # after reaching it. This models current slew without per-substep kernels.
+            reaches_target = delta.abs() <= max_step
+            ramp_then_hold = target - delta * delta.abs() / (2.0 * max_step)
+            full_interval_ramp = 0.5 * (start + effort)
+            throttle = torch.where(
+                reaches_target, ramp_then_hold, full_interval_ramp
+            )
+        self.s["longitudinal_effort"] = effort
         steer_norm = exec_actions[:, 1].to(self.dtype)
         delta_cmd = (steer_norm * self.params.max_steer + self.s["steer_bias"]).clamp(
             -self.params.max_steer, self.params.max_steer
@@ -153,7 +174,14 @@ class TorchVehicleSim:
             self._tyre_slip = torch.cat([kappa, slip_angle], dim=-1)
         Fz = diag.get("Fz")
         if Fz is not None:
-            self._tyre_load = Fz / self._static_wheel_load
+            static_load = static_wheel_loads(
+                self.params,
+                self.num_envs,
+                self.device,
+                self.dtype,
+                self.s["mass"],
+            ).clamp_min(1e-6)
+            self._tyre_load = Fz / static_load
 
     def step(self, actions, n_steps: int = 1):
         self.apply_actions(actions)
@@ -213,9 +241,6 @@ class TorchVehicleSim:
             out[mask.long()] = True
             return out
         return mask
-
-    def state_snapshot(self) -> dict:
-        return {k: v.clone() for k, v in self.s.items()}
 
 
 def _quat_to_yaw(quat: torch.Tensor) -> torch.Tensor:

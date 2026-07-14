@@ -98,17 +98,17 @@ public:
     imu_accel_lp_alpha_ = declare_parameter<double>("imu_accel_lp_alpha", 0.2);
     // VESC /odom twist.linear.x polarity (bags showed inverted forward motion).
     twist_vx_sign_ = declare_parameter<double>("twist_vx_sign", -1.0);
-    // Vehicle geometry (f1tenth_sim VehicleParams / URDF defaults).
-    wheel_radius_ = declare_parameter<double>("wheel_radius_m", 0.05);
-    lf_ = declare_parameter<double>("lf_m", 0.1773);
-    lr_ = declare_parameter<double>("lr_m", 0.1477);
-    track_width_ = declare_parameter<double>("track_width_m", 0.20);
+    // Vehicle geometry (calibrated f1tenth_sim VehicleParams defaults).
+    wheel_radius_ = declare_parameter<double>("wheel_radius_m", 0.053);
+    lf_ = declare_parameter<double>("lf_m", 0.1584);
+    lr_ = declare_parameter<double>("lr_m", 0.1666);
+    track_width_ = declare_parameter<double>("track_width_m", 0.253);
     max_steer_ = declare_parameter<double>("max_steer_rad", 0.33);
     // --- quasi-static tyre-load estimation (off by default -> static ratio 1.0,
     // matching the deploy default and the C++ parity fixture; ADR 0002 follow-up).
     enable_load_estimation_ = declare_parameter<bool>("enable_load_estimation", false);
     cg_height_ = declare_parameter<double>("cg_height_m", 0.05);
-    roll_stiffness_front_ = declare_parameter<double>("roll_stiffness_front", 0.5);
+    roll_stiffness_front_ = declare_parameter<double>("roll_stiffness_front", 0.47);
     slip_min_lat_ = declare_parameter<double>("slip_min_lat", 0.2);
     slip_min_active_long_ = declare_parameter<double>("slip_min_active_long", 0.1);
     slip_min_passive_long_ = declare_parameter<double>("slip_min_passive_long", 0.4);
@@ -429,13 +429,13 @@ private:
   double imu_ax_bias_ = 0.0, imu_ay_bias_ = 0.0;
   double imu_accel_lp_alpha_ = 0.2;
   bool imu_use_for_yaw_rate_ = true;
-  double wheel_radius_ = 0.05, lf_ = 0.1773, lr_ = 0.1477;
-  double track_width_ = 0.20;
+  double wheel_radius_ = 0.053, lf_ = 0.1584, lr_ = 0.1666;
+  double track_width_ = 0.253;
   double max_steer_ = 0.33;
 
   // --- quasi-static tyre-load estimation state ------------------------------
   bool enable_load_estimation_ = false;
-  double cg_height_ = 0.05, roll_stiffness_front_ = 0.5;
+  double cg_height_ = 0.05, roll_stiffness_front_ = 0.47;
   double slip_min_lat_ = 0.2, slip_min_active_long_ = 0.1, slip_min_passive_long_ = 0.4;
   double vy_filter_tau_s_ = 0.5, vx_ground_lp_alpha_ = 0.5, slip_speed_min_ = 0.3;
   std::vector<double> slip_obs_mean_;

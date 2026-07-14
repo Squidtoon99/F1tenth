@@ -29,7 +29,7 @@ def _devices(requested: str | None) -> list[str]:
 def _bench(device: str, n_envs: int, control_steps: int,
            substeps: int, warmup: int) -> dict:
     dev = torch.device(device)
-    params = VehicleParams.from_config({"tire_friction": 0.9, "max_speed": 8.0})
+    params = VehicleParams.from_config({"tire_friction": 0.9})
     sim = TorchVehicleSim(params, n_envs, device=dev, sim_dt=0.005, control_dt=0.05)
     quat = torch.zeros(n_envs, 4, device=dev)
     quat[:, 0] = 1.0

@@ -138,19 +138,19 @@ std::array<double, 4> computeQuasiStaticLoad(
   double ax,
   double ay,
   double h_cg = 0.05,
-  double lf = 0.1773,
-  double lr = 0.1477,
-  double track_width = 0.20,
-  double roll_stiffness_front = 0.5,
+  double lf = 0.1584,
+  double lr = 0.1666,
+  double track_width = 0.253,
+  double roll_stiffness_front = 0.47,
   double gravity = 9.81);
 
 // On-car tyre-slip block estimator (8-dim [slip_ratio x4, slip_angle x4]).
 struct SlipEstimatorConfig
 {
-  double wheel_radius_m = 0.05;
-  double lf_m = 0.1773;
-  double lr_m = 0.1477;
-  double track_width_m = 0.20;
+  double wheel_radius_m = 0.053;
+  double lf_m = 0.1584;
+  double lr_m = 0.1666;
+  double track_width_m = 0.253;
   double max_steer_rad = 0.33;
   double slip_min_lat = 0.2;
   double slip_min_active_long = 0.1;

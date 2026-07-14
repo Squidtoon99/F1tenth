@@ -3,7 +3,7 @@
 # nodes as a parameter file -- every section must be keyed by node name with a
 # `ros__parameters` block.
 #
-# Values below are from the on-car calibration at shereef@f1tenth (Jul 2026).
+# Values below are from the on-car calibration (Jul 2026).
 
 # --- RL drive output (f1tenth_rl_vehicle drive node) ---
 drive:
@@ -12,17 +12,16 @@ drive:
     watchdog_timeout_s: 0.15
     control_dt: 0.05
 
-# --- Current/brake VESC actuator (ADR 0006; keep bench-safe amps until calibrated) ---
+# --- Current/brake VESC actuator (ADR 0006) ---
 vesc_actuator:
   ros__parameters:
-    i_drive_max_a: 10.0
+    i_drive_max_a: 45.0
     i_brake_max_a: 10.0
     i_brake_safe_a: 5.0
     watchdog_timeout_s: 0.15
     publish_rate_hz: 50.0
     i_slew_a_per_s: 200.0
     publish_servo: true
-    zero_erpm: true
     steering_angle_to_servo_gain: -1.2135
     steering_angle_to_servo_offset: 0.4495
 
@@ -47,11 +46,12 @@ vehicle_obs:
     imu_accel_lp_alpha: 0.2
     # From austin_selfplay_dr_2048env_continuous policy_686080000.pt obs_norm mean[372:380]
     slip_obs_mean: [0.020809955894947052, 0.020119236782193184, 0.023194117471575737, 0.02161898836493492, -0.013843115419149399, -0.010874860920011997, -0.020557932555675507, -0.013057908043265343]
-    wheel_radius_m: 0.05
+    wheel_radius_m: 0.053
     lf_m: 0.1584
     lr_m: 0.1666
-    track_width_m: 0.20
+    track_width_m: 0.253
     cg_height_m: 0.05
+    roll_stiffness_front: 0.47
 
 # --- VESC calibration (vendored vesc_ackermann / vesc_driver nodes) ---
 /**:
@@ -81,17 +81,6 @@ vesc_to_odom_node:
     publish_tf: true
     use_servo_cmd_to_calc_angular_velocity: true
     wheelbase: 0.325
-
-throttle_interpolator:
-  ros__parameters:
-    rpm_input_topic: commands/motor/unsmoothed_speed
-    rpm_output_topic: commands/motor/speed
-    servo_input_topic: commands/servo/unsmoothed_position
-    servo_output_topic: commands/servo/position
-    max_acceleration: 2.5
-    throttle_smoother_rate: 75.0
-    max_servo_speed: 3.2
-    servo_smoother_rate: 75.0
 
 # --- ackermann_mux (safety topic has highest priority) ---
 ackermann_mux:
@@ -140,7 +129,7 @@ joy_teleop:
           offset: 0.0
         drive-steering_angle:
           axis: 2
-          scale: 0.34
+          scale: 0.33
           offset: 0.0
 
 # --- RL deadman gate (R1/L1) ---

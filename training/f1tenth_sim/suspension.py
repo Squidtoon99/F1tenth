@@ -16,14 +16,24 @@ from __future__ import annotations
 import torch
 
 
-def static_wheel_loads(params, n_envs: int, device, dtype) -> torch.Tensor:
-    front, rear = params.static_axle_loads()
-    fz = torch.empty((n_envs, 4), device=device, dtype=dtype)
-    fz[:, 0] = rear / 2.0
-    fz[:, 1] = rear / 2.0
-    fz[:, 2] = front / 2.0
-    fz[:, 3] = front / 2.0
-    return fz
+def static_wheel_loads(
+    params,
+    n_envs: int,
+    device,
+    dtype,
+    mass: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if mass is None:
+        mass = torch.full((n_envs,), params.mass, device=device, dtype=dtype)
+    else:
+        mass = mass.to(device=device, dtype=dtype).reshape(-1)
+    weight = mass * params.gravity
+    front = weight * params.lr / params.wheelbase
+    rear = weight * params.lf / params.wheelbase
+    return torch.stack(
+        [rear / 2.0, rear / 2.0, front / 2.0, front / 2.0],
+        dim=-1,
+    )
 
 
 def quasi_static_loads(

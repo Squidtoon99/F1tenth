@@ -16,7 +16,7 @@ from .domain_randomization import (
     sample_dr_on_reset,
 )
 from f1tenth_sim.params import VehicleParams
-from f1tenth_sim.suspension import quasi_static_loads
+from f1tenth_sim.suspension import quasi_static_loads, static_wheel_loads
 from .backends import TorchSimBackend
 from .car import compute_tyre_slip
 from .observations import build_observation, obs_opponent
@@ -104,12 +104,7 @@ class F1tenthEnv:
         self.backend = TorchSimBackend(
             num_envs=num_envs,
             env_cfg=self.env_cfg,
-            obs_cfg=self.obs_cfg,
-            reward_cfg=self.reward_cfg,
-            track_state=self.track_state,
             device=self.device,
-            show_viewer=show_viewer,
-            enable_recording=enable_recording,
         )
         self.backend.build()
         self.has_opponent = self.backend.has_opponent
@@ -127,10 +122,10 @@ class F1tenthEnv:
             torch.linalg.norm(seg, dim=-1).mean().clamp_min(1e-6).item()
         )
 
-        self.vehicle_mass = 3.74
         # Backend-agnostic vehicle geometry/mass, used to turn body-frame
         # accelerations into per-wheel normal-load ratios for the observation.
         self._susp_params = VehicleParams.from_config(self.env_cfg)
+        self.vehicle_mass = self._susp_params.mass
         base_action_latency = 1 if self.simulate_action_latency else 0
         self._dr = init_dr_state(
             num_envs=self.num_envs,
@@ -562,7 +557,7 @@ class F1tenthEnv:
         native = wheel_state.get("tyre_slip")
         if native is not None:
             return native
-        wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
+        wheel_radius = float(self.env_cfg.get("wheel_radius", self._susp_params.wheel_radius))
         return compute_tyre_slip(
             wheel_state,
             wheel_radius=wheel_radius,
@@ -598,7 +593,14 @@ class F1tenthEnv:
         fz = quasi_static_loads(
             self._susp_params, base_lin_acc[:, 0], base_lin_acc[:, 1], mass
         )
-        return fz / max(self._susp_params.static_wheel_load(), 1e-6)
+        static_load = static_wheel_loads(
+            self._susp_params,
+            base_lin_acc.shape[0],
+            base_lin_acc.device,
+            base_lin_acc.dtype,
+            mass,
+        ).clamp_min(1e-6)
+        return fz / static_load
 
     def _update_state_buffers(self):
         st = self.backend.read_state()
@@ -801,11 +803,9 @@ class F1tenthEnv:
         self.extras.setdefault("metrics", {}).update(dr_metrics(self._dr))
         return self.obs_buf, self.extras
 
-    def _apply_actions(
-        self, exec_actions: torch.Tensor, env_ids: torch.Tensor | None = None
-    ):
+    def _apply_actions(self, exec_actions: torch.Tensor):
         """Apply throttle/brake and lagged steering to the ego car via the backend."""
-        self.backend.apply_ego_actions(exec_actions, self.base_lin_vel, self._dr)
+        self.backend.apply_ego_actions(exec_actions)
 
     def _opponent_step_state(
         self, pos: torch.Tensor | None = None
@@ -990,10 +990,7 @@ class F1tenthEnv:
             -self.env_cfg["clip_actions"],
             self.env_cfg["clip_actions"],
         )
-        opp_body_vel = gu.inv_transform_by_quat(
-            self.opp_vel_world, self.opp_base_quat
-        )
-        self.backend.apply_opp_actions(opp_actions, opp_body_vel, self._dr)
+        self.backend.apply_opp_actions(opp_actions)
         self.opp_last_actions = opp_actions
 
     def refresh_opponent_policy(

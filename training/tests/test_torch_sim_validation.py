@@ -125,7 +125,7 @@ def test_golden_trajectory_regression():
     # Golden values captured from the force-mode drivetrain; guards against silent
     # dynamics regressions. Tolerance is loose enough for float ordering, tight
     # enough to catch real changes.
-    gx, gy, gyaw = 0.5772, 10.7032, 2.9430
+    gx, gy, gyaw = 0.6304, 10.6901, 2.9336
     assert abs(pos[0].item() - gx) < 0.25
     assert abs(pos[1].item() - gy) < 0.25
     assert abs(yaw - gyaw) < 0.1

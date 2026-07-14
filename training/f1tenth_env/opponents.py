@@ -84,7 +84,7 @@ class ScriptedCenterlineOpponent(OpponentController):
         self.speed_range = tuple(speed_range) if speed_range else None
         self.lateral_offset_m = float(env_cfg.get("opponent_lateral_offset_m", 0.0))
         self.delta_max = float(
-            env_cfg.get("delta_max", env_cfg.get("max_steer", 0.44))
+            env_cfg.get("delta_max", env_cfg.get("max_steer", 0.33))
         )
         self._speed_buf: torch.Tensor | None = None
         self._offset_buf: torch.Tensor | None = None

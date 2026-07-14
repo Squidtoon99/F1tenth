@@ -43,14 +43,6 @@ def _pick(bags: dict[str, dict], *keys: str) -> dict | None:
     return None
 
 
-def _pick_name(bags: dict[str, dict], *keys: str) -> str | None:
-    for k in keys:
-        for name in bags:
-            if k in name:
-                return name
-    return None
-
-
 def fit_all(
     bag_dirs: list[Path],
     mass: float = 3.74,
@@ -114,7 +106,11 @@ def fit_all(
     )
     mu_src = accel or steering
     mu_fit = (
-        fit_tire_mu_lower_bound(mu_src["/sensors/imu/raw"], mu_src["/odom"])
+        fit_tire_mu_lower_bound(
+            mu_src["/sensors/imu/raw"],
+            mu_src["/odom"],
+            static["/sensors/imu/raw"] if static else None,
+        )
         if mu_src
         else not_identifiable("no_motion_bag")
     )
@@ -143,8 +139,6 @@ def fit_all(
         "power_max": "NOT_IDENTIFIABLE",
         "k_drive_front": "NOT_IDENTIFIABLE",
         "susp_stiffness": "NOT_IDENTIFIABLE",
-        "susp_damping": "NOT_IDENTIFIABLE",
-        "anti_roll": "NOT_IDENTIFIABLE",
         "reason": (
             "bags lack /sensors/core, explicit current/brake commands, "
             "and suspension excitation"
@@ -171,9 +165,13 @@ def fit_all(
         "priors": {
             "mass": mass,
             "wheelbase": wheelbase,
-            "wheel_radius": 0.05,
-            "k_drive_front": 0.0,
-            "roll_stiffness_front": 0.5,
+            "track_width": 0.253,
+            "wheel_radius": 0.053,
+            "lf": 0.1584,
+            "lr": 0.1666,
+            "h_cg": 0.05,
+            "k_drive_front": 0.5,
+            "roll_stiffness_front": 0.47,
         },
     }
     return result
@@ -195,6 +193,7 @@ def to_sim_yaml(result: dict) -> dict:
     yaml_out = {
         "mass": priors["mass"],
         "wheelbase": priors["wheelbase"],
+        "track_width": priors["track_width"],
         "wheel_radius": priors["wheel_radius"],
         "max_steer": val(fits["max_steer"], "max_steer", 0.33),
         "t_delta": val(fits["steer_lag"], "t_delta", 0.10),
@@ -211,9 +210,14 @@ def to_sim_yaml(result: dict) -> dict:
             "model": "dynamic",
             "suspension_mode": "quasi_static",
             "roll_stiffness_front": priors["roll_stiffness_front"],
-            "vesc_accel_limit": val(fits["accel_limit"], "vesc_accel_limit", 2.5),
         },
         "deploy_overlay": {
+            "wheel_radius_m": priors["wheel_radius"],
+            "lf_m": priors["lf"],
+            "lr_m": priors["lr"],
+            "track_width_m": priors["track_width"],
+            "cg_height_m": priors["h_cg"],
+            "roll_stiffness_front": priors["roll_stiffness_front"],
             "speed_to_erpm_gain": val(fits["speed_to_erpm"], "speed_to_erpm_gain"),
             "speed_to_erpm_offset": val(fits["speed_to_erpm"], "speed_to_erpm_offset", 0.0),
             "steering_angle_to_servo_gain": val(

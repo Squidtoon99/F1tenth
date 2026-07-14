@@ -27,10 +27,10 @@ from drivetrain_priors import (
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--i-drive-max", type=float, default=10.0)
+    p.add_argument("--i-drive-max", type=float, default=45.0)
     p.add_argument("--i-brake-max", type=float, default=10.0)
     p.add_argument("--efficiency", type=float, default=0.85)
-    p.add_argument("--wheel-radius", type=float, default=0.05)
+    p.add_argument("--wheel-radius", type=float, default=0.053)
     p.add_argument("--gear-ratio", type=float, default=STOCK_GEAR_RATIO)
     p.add_argument("--json-out", type=str, default="")
     args = p.parse_args()

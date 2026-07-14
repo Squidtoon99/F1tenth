@@ -35,13 +35,6 @@ def quat_wxyz_to_yaw(quat_wxyz: torch.Tensor) -> torch.Tensor:
     return torch.atan2(siny_cosp, cosy_cosp)
 
 
-def quat_xyzw_to_wxyz(quat_xyzw: torch.Tensor) -> torch.Tensor:
-    """Convert a ROS (x, y, z, w) quaternion to genesis (w, x, y, z) order."""
-    return torch.stack(
-        [quat_xyzw[:, 3], quat_xyzw[:, 0], quat_xyzw[:, 1], quat_xyzw[:, 2]], dim=-1
-    )
-
-
 # --- track cache + Frenet projection (port of utils.py) -----------------------
 def build_track_cache(
     centerline: np.ndarray,
@@ -304,10 +297,10 @@ def quasi_static_load_ratio(
     ay: float,
     *,
     h_cg: float = 0.05,
-    lf: float = 0.1773,
-    lr: float = 0.1477,
-    track_width: float = 0.20,
-    roll_stiffness_front: float = 0.5,
+    lf: float = 0.1584,
+    lr: float = 0.1666,
+    track_width: float = 0.253,
+    roll_stiffness_front: float = 0.47,
     gravity: float = 9.81,
 ) -> np.ndarray:
     """Per-wheel normal-load ratio Fz / Fz_static from body specific forces.
@@ -403,7 +396,7 @@ class ObservationBuilder:
         self.device = device or torch.device("cpu")
         self.centerline = np.asarray(centerline, dtype=np.float32)
         self.obs_cfg = obs_cfg or {}
-        self.num_obs = int(self.obs_cfg.get("num_obs", 372))
+        self.num_obs = int(self.obs_cfg.get("num_obs", 384))
         self.base_num_obs = int(self.obs_cfg.get("base_num_obs", self.num_obs))
         self.w_tr_left = torch.as_tensor(w_tr_left, device=self.device, dtype=TC_FLOAT)
         self.w_tr_right = torch.as_tensor(w_tr_right, device=self.device, dtype=TC_FLOAT)

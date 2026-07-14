@@ -472,19 +472,3 @@ def build_step_state(
         "boundary": boundary_state,
         "obs_track": obs_track,
     }
-
-
-# def build_wheel_state(
-#     motion_link_vel: torch.Tensor,
-#     frame_quat: torch.Tensor,
-#     wheel_vel_world: torch.Tensor,
-# ):
-
-#     # Assume in the local frame due to the reference
-#     v_forward = motion_link_vel[:, 0]
-#     v_lateral = motion_link_vel[:, 1]
-
-#     slip_angle = torch.atan2(v_lateral, v_forward.clamp_min(1e-8))
-
-#     wheel_radius = 0.05
-#     wheel_surface_speed = wheel_radius * wheel_spin_rate

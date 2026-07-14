@@ -84,14 +84,14 @@ DEFAULT_CONFIG = {
         # Training at 0.44 rad let the policy assume an unreachable 0.70 m radius and
         # understeer into walls on tight corners; 0.33 rad makes the sim match reality
         # (0.325 / tan(0.33) = 0.95 m min radius).
-        "max_steer": 0.33,  # radians (alias for delta_max)
         "delta_max": 0.33,  # radians
         "wheelbase": 0.325,
-        "track_width": 0.20,
-        "wheel_radius": 0.05,
+        # Wheel-center track from the official 296 mm outer track and 43 mm tyres.
+        "track_width": 0.253,
+        "wheel_radius": 0.053,
         "f_drive_max": 23.0,
-        "f_brake_max": 23.0,
-        "power_max": 255.0,
+        "f_brake_max": 5.2,
+        "power_max": 320.0,
         "k_drive_front": 0.5,
         "t_delta": 0.1,
         "c_roll": 0.0,
@@ -118,6 +118,10 @@ DEFAULT_CONFIG = {
             "model": "dynamic",
             "suspension_mode": "quasi_static",
             "internal_substeps": 1,
+            # Stock 68277-4 GTR spring rates: 109 / (109 + 125) = 0.47.
+            "roll_stiffness_front": 0.47,
+            # 45 A / (200 A/s) = 225 ms from zero to full deployed drive current.
+            "longitudinal_slew_rate_per_s": 4.444444444444445,
         },
         "longitudinal_mode": "force",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
@@ -170,18 +174,15 @@ DEFAULT_CONFIG = {
         # instead of resetting on every minor rub. Set to 0.0 to terminate on any
         # overlap (legacy behavior).
         "collision_term_speed_mps": 2.0,
-        # Body envelope (full length x width, metres) used for the oriented-box
-        # collision predicate, car-car contact, and eval rendering. Provisional
-        # standard 1/10 Traxxas Slash 4x4 spec (0.568 x 0.296 m); replace with a
-        # tape measurement of the assembled car when available.
+        # Official 68277-4 body envelope (full length x width, metres), used for
+        # oriented-box collision, car-car contact, and evaluation rendering.
         "car_length": 0.568,
         "car_width": 0.296,
         "collision_margin_m": 0.0,
         # Per-episode domain randomization. Enabled with narrow bands around the
         # nominal car so the policy does not overfit a razor-edge grip line, without
-        # forcing it to hedge against extreme physics. Widen these for a dedicated
-        # sim2real robustness phase; the remaining knobs (drive_scale, steer_bias)
-        # stay neutral for now.
+        # forcing it to hedge against extreme physics. Drive scale covers the
+        # unresolved loaded force-per-amp range; steering bias stays neutral.
         "domain_randomization": {
             "enabled": True,
             "tire_friction_range": [0.60, 0.70],
@@ -191,9 +192,8 @@ DEFAULT_CONFIG = {
             "obs_latency_steps_range": [0, 1],
             "obs_noise_std_range": [0.0, 0.01],
             "action_latency_steps_max": 3,
-            # drive_scale multiplies drive force (motor/gearing spread), steer_bias
-            # (rad) is a steering-alignment offset. Widen for sim2real.
-            "drive_scale_range": [1.0, 1.0],
+            # 35--65 A phase-current uncertainty around the nominal 45 A envelope.
+            "drive_scale_range": [0.7777777777777778, 1.4444444444444444],
             "steer_bias_range": [0.0, 0.0],
         },
     },
@@ -267,7 +267,7 @@ DEFAULT_CONFIG = {
         "alpha": 0.01,
         "replay_buffer_limit": 10**7,
         "batch_size": 1024,
-        "minimum_train_transitions": 5_000,
+        "minimum_train_transitions": 200_000,
         # With the canonical 512 envs and batch size 1024, the former one update
         # per vector tick sampled two replay rows per collected transition.
         "sampled_replay_rows_per_transition": 2.0,

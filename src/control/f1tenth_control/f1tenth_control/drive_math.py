@@ -12,6 +12,8 @@ to ``/commands/motor/current`` and ``/commands/motor/brake``.
 
 from __future__ import annotations
 
+import math
+
 
 def map_action_to_force(
     throttle: float,
@@ -39,7 +41,7 @@ def force_to_motor_currents(
     Mutual exclusion: at most one of drive/brake is nonzero.
     Non-finite input maps to coast (0, 0).
     """
-    if not math_isfinite(longitudinal_cmd):
+    if not math.isfinite(longitudinal_cmd):
         return 0.0, 0.0
     cmd = float(longitudinal_cmd)
     if cmd > 0.0:
@@ -47,10 +49,6 @@ def force_to_motor_currents(
     if cmd < 0.0:
         return 0.0, min(-cmd, 1.0) * float(i_brake_max_a)
     return 0.0, 0.0
-
-
-def math_isfinite(x: float) -> bool:
-    return x == x and abs(x) != float("inf")
 
 
 def lag_alpha(control_dt: float, t_delta: float) -> float:
