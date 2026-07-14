@@ -1022,10 +1022,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overtake-scale",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Reward scale for the one-time overtake-completed bonus (opponent goes "
-        "from ahead to behind within overtake_gap_m). 0.0 disables it. Only used "
-        "when --opponent is not 'none'.",
+        "from ahead to behind within overtake_gap_m). 0.0 (default) disables it -- the "
+        "continuous passing reward already drives overtaking, so the discrete bonus "
+        "fired at noise level and is off. Only used when --opponent is not 'none'.",
     )
     parser.add_argument(
         "--collision-term-speed",
