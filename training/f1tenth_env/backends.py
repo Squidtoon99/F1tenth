@@ -48,6 +48,11 @@ class TorchSimBackend:
             control_dt=self.control_dt,
             internal_substeps=self._internal,
         )
+        self._resolve_contact_step = (
+            torch.compile(self._resolve_contact, mode="default")
+            if self.device.type == "cuda"
+            else self._resolve_contact
+        )
         self.opp_sim = (
             self._TorchVehicleSim(
                 self.params,
@@ -94,7 +99,7 @@ class TorchSimBackend:
         self.sim.substep(n_steps)
         if self.opp_sim is not None:
             self.opp_sim.substep(n_steps)
-            self._resolve_contact()
+            self._resolve_contact_step()
 
     def _resolve_contact(self) -> None:
         a = self.sim.s

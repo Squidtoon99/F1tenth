@@ -39,6 +39,8 @@ from .terminations import (
     reset_termination_state,
 )
 from .utils import (
+    _boundary_tensors,
+    _frenet_projection_tensors,
     build_step_state,
     compute_oob_from_boundary_state,
     load_track_state,
@@ -226,7 +228,27 @@ class F1tenthEnv:
         self._collision_state: dict[str, torch.Tensor] = {}
         self._collision_state_valid = False
         self._eval_launch_initialized = False
-        self._build_observation = build_observation
+        self._build_observation = (
+            torch.compile(build_observation, mode="default")
+            if self.device.type == "cuda"
+            else build_observation
+        )
+        self._termination_function = (
+            torch.compile(compute_terminations, mode="default")
+            if self.device.type == "cuda"
+            else compute_terminations
+        )
+        self._reward_function = (
+            torch.compile(compute_rewards, mode="default")
+            if self.device.type == "cuda"
+            else compute_rewards
+        )
+        self._frenet_compile_fns = None
+        if self.device.type == "cuda":
+            self._frenet_compile_fns = {
+                "proj": torch.compile(_frenet_projection_tensors, mode="default"),
+                "boundary": torch.compile(_boundary_tensors, mode="default"),
+            }
 
         self.reset()
 
@@ -510,10 +532,10 @@ class F1tenthEnv:
         if not self._step_state_valid:
             self._step_state = build_step_state(
                 base_pos=self.base_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id=self.track_cache_id,
+                frenet_compile_fns=self._frenet_compile_fns,
             )
 
             ws = self.backend.read_wheel_state("ego")
@@ -657,7 +679,7 @@ class F1tenthEnv:
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
             step_state["car_collision"] = self._get_collision_state()["overlap"]
-        self.reward_buf, self._step_state = compute_rewards(
+        self.reward_buf, self._step_state = self._reward_function(
             step_state=step_state,
             reward_cfg=self.reward_cfg,
             reward_state=self.reward_state,
@@ -670,7 +692,7 @@ class F1tenthEnv:
     def _compute_terminations(self):
         step_state = self._get_step_state()
         self.reset_buf, self.extras["termination"], self.extras["time_outs"] = (
-            compute_terminations(
+            self._termination_function(
                 step_state=step_state,
                 episode_steps_buf=self.episode_steps_buf,
                 max_episode_steps=self.max_episode_steps,
@@ -815,18 +837,18 @@ class F1tenthEnv:
         if not use_cache:
             return build_step_state(
                 base_pos=target_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
+                frenet_compile_fns=self._frenet_compile_fns,
             )
         if not self._opp_step_state_valid:
             self._opp_step_state = build_step_state(
                 base_pos=target_pos,
-                episode_steps_buf=self.episode_steps_buf,
                 track_state=self.track_state,
                 device=self.device,
                 cache_id="opponent",
+                frenet_compile_fns=self._frenet_compile_fns,
             )
             self._opp_step_state_valid = True
         return self._opp_step_state
@@ -948,7 +970,7 @@ class F1tenthEnv:
             ego_ss["frenet"]["s"],
             opp_ss["frenet"]["L"],
         )
-        return build_observation(
+        return self._build_observation(
             num_obs=self.num_obs,
             num_envs=self.num_envs,
             base_lin_vel=opp_body_vel,

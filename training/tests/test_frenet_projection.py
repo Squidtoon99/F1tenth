@@ -31,10 +31,8 @@ def _cached_frenet(real_modules, track_state, pos_xy):
         ),
         dtype=torch.float32,
     )
-    episode_steps = torch.zeros(base_pos.shape[0], dtype=torch.int32)
     ss = real_modules.utils.build_step_state(
         base_pos=base_pos,
-        episode_steps_buf=episode_steps,
         track_state=track_state,
         device=DEVICE,
         cache_id="frenet_xcheck",

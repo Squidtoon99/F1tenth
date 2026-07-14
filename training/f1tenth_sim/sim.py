@@ -37,6 +37,11 @@ class TorchVehicleSim:
         self.steer_lag_alpha = self.control_dt / (params.t_delta + self.control_dt)
 
         self.tire = make_tire_from_params(params)
+        self._step_dynamic = (
+            torch.compile(dynamics.step_dynamic, mode="default")
+            if self.device.type == "cuda"
+            else dynamics.step_dynamic
+        )
         self.susp = (
             SuspensionFilter(params, self.num_envs, self.device, dtype)
             if params.suspension_mode == "dynamic"
@@ -160,7 +165,7 @@ class TorchVehicleSim:
                 diag = dynamics.step_kinematic(self.s, self.params, dt)
         else:
             for _ in range(total):
-                diag = dynamics.step_dynamic(
+                diag = self._step_dynamic(
                     self.s, self.params, self.tire, dt, self.susp
                 )
         self._update_tyre_readback(diag)

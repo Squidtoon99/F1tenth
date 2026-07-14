@@ -32,10 +32,8 @@ def _step_state(real_modules, track_state, pos_xy):
         np.concatenate([pos, np.zeros((pos.shape[0], 1), np.float32)], axis=-1),
         dtype=torch.float32,
     )
-    episode_steps = torch.zeros(base_pos.shape[0], dtype=torch.int32)
     return base_pos, utils.build_step_state(
         base_pos=base_pos,
-        episode_steps_buf=episode_steps,
         track_state=track_state,
         device=DEVICE,
         cache_id="geom",
