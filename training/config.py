@@ -130,14 +130,16 @@ DEFAULT_CONFIG = {
         # Per-env sampling weights for the "mixed" opponent strategy. On each reset
         # a row is assigned scripted vs policy with these (normalized) probabilities.
         # policy_speed_cap_prob: fraction of policy-mode rows given a random speed
-        # cap in policy_speed_cap_range (m/s), so a share of self-play opponents
-        # drive their normal line but coast at a slower cruise -- realistically
-        # driven yet passable cars, so the ego learns to overtake (not just follow).
+        # cap (m/s), so a share of self-play opponents drive their normal line but
+        # coast at a slower cruise -- realistically driven yet passable cars, so the
+        # ego learns to overtake (not just follow). The cap is sampled skewed toward
+        # the high end of policy_speed_cap_range, so most capped opponents are
+        # fast-but-passable (near ego pace) with a thin slow tail.
         "opponent_mix": {
             "scripted_weight": 0.25,
             "policy_weight": 0.75,
             "policy_speed_cap_prob": 0.5,
-            "policy_speed_cap_range": [2.5, 5.0],
+            "policy_speed_cap_range": [3.5, 8.0],
         },
         # Scripted opponent: track follower kept below ego pace so an overtake is
         # feasible. Closed-loop P-control holds this setpoint in m/s;
@@ -145,7 +147,7 @@ DEFAULT_CONFIG = {
         # opponent_lateral_offset_m holds a random off-centerline racing line so the
         # scripted cars are a varied slow field rather than one robotic pattern.
         "opponent_target_speed": 2.5,
-        "opponent_target_speed_range": [2.0, 5.0],
+        "opponent_target_speed_range": [2.0, 4.0],
         "opponent_lateral_offset_m": 0.5,
         "opponent_spawn_gap_min_m": 3.0,
         "opponent_spawn_gap_max_m": 20.0,

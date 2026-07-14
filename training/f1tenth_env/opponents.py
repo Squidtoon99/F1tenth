@@ -268,11 +268,11 @@ class MixedOpponentController(OpponentController):
                 lo, hi = self.cap_range
                 cap_draw = torch.rand(mask.shape[0], device=mask.device) < self.cap_prob
                 capped = mask & self.mode_buf & cap_draw
-                caps = (
-                    torch.rand(mask.shape[0], dtype=rt.tc_float, device=mask.device)
-                    * (hi - lo)
-                    + lo
-                )
+                # Skew caps toward the high end (u**2 concentrates near 0 -> caps
+                # near hi), so most capped opponents are fast-but-passable rather
+                # than trivially slow, with a thinner tail down to lo.
+                u = torch.rand(mask.shape[0], dtype=rt.tc_float, device=mask.device)
+                caps = hi - (hi - lo) * u * u
                 self.cap_buf = torch.where(capped, caps, self.cap_buf)
         self.scripted.reset(mask)
         self.policy.reset(mask)
