@@ -146,10 +146,10 @@ DEFAULT_CONFIG = {
         # the high end of policy_speed_cap_range, so most capped opponents are
         # fast-but-passable (near ego pace) with a thin slow tail.
         "opponent_mix": {
-            "scripted_weight": 0.25,
-            "policy_weight": 0.75,
+            "scripted_weight": 0.10,
+            "policy_weight": 0.90,
             "policy_speed_cap_prob": 0.5,
-            "policy_speed_cap_range": [3.5, 8.0],
+            "policy_speed_cap_range": [5.0, 8.0],
         },
         # Scripted opponent: track follower kept below ego pace so an overtake is
         # feasible. Closed-loop P-control holds this setpoint in m/s;
