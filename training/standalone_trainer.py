@@ -33,7 +33,6 @@ from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, ru
 from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
 LOGGER_NAME = "standalone_trainer"
-RECENT_EPISODES_MAX = 50
 # Opponent-relative block starts right after the base observation (tyre_load ends
 # the base vector); index 4 within it is the signed along-track gap s_other-s_self.
 OPP_OBS_BASE_IDX = 384
@@ -268,18 +267,29 @@ class NStepReplayBuffer:
         self.gamma = gamma
         self.num_envs = num_envs
         self.device = device
-        self.size = 0
-        self.ptr = 0
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        # ``ptr``/``size`` live on device so the write cursor advances without a
+        # host synchronization every step.
+        self.size = torch.zeros((), device=device, dtype=torch.long)
+        self.ptr = torch.zeros((), device=device, dtype=torch.long)
+        self._ready = False
 
-        self.obs = torch.zeros(capacity, obs_dim, device=device, dtype=torch.float32)
-        self.action = torch.zeros(
-            capacity, act_dim, device=device, dtype=torch.float32
+        # Each step emits at most ``num_envs * (n_step + 1)`` candidate rows.
+        # Masked-out candidates are scattered into a private, per-candidate
+        # scratch region past ``capacity`` so every write index is unique (no
+        # duplicate-index scatter, which is nondeterministic / disallowed under
+        # ``use_deterministic_algorithms``) and no valid row is clobbered.
+        self._max_emit = num_envs * (n_step + 1)
+        rows = capacity + self._max_emit
+        self.obs = torch.zeros(rows, obs_dim, device=device, dtype=torch.float32)
+        self.action = torch.zeros(rows, act_dim, device=device, dtype=torch.float32)
+        self.reward = torch.zeros(rows, device=device, dtype=torch.float32)
+        self.next_obs = torch.zeros(rows, obs_dim, device=device, dtype=torch.float32)
+        self.done = torch.zeros(rows, device=device, dtype=torch.float32)
+        self._scratch = torch.arange(
+            capacity, rows, device=device, dtype=torch.long
         )
-        self.reward = torch.zeros(capacity, device=device, dtype=torch.float32)
-        self.next_obs = torch.zeros(
-            capacity, obs_dim, device=device, dtype=torch.float32
-        )
-        self.done = torch.zeros(capacity, device=device, dtype=torch.float32)
 
         self._gamma_powers = torch.tensor(
             [gamma**k for k in range(n_step)], device=device, dtype=torch.float32
@@ -295,29 +305,6 @@ class NStepReplayBuffer:
         self.w_pos = 0
         self._arange_n = torch.arange(n_step, device=device)
 
-    def _store(
-        self,
-        obs: torch.Tensor,
-        action: torch.Tensor,
-        reward: torch.Tensor,
-        next_obs: torch.Tensor,
-        done: torch.Tensor,
-    ) -> int:
-        count = int(obs.shape[0])
-        if count == 0:
-            return 0
-        positions = (
-            self.ptr + torch.arange(count, device=self.device)
-        ) % self.capacity
-        self.obs[positions] = obs
-        self.action[positions] = action
-        self.reward[positions] = reward
-        self.next_obs[positions] = next_obs
-        self.done[positions] = done
-        self.ptr = int((self.ptr + count) % self.capacity)
-        self.size = min(self.size + count, self.capacity)
-        return count
-
     def add(
         self,
         obs: torch.Tensor,
@@ -325,76 +312,98 @@ class NStepReplayBuffer:
         rewards: torch.Tensor,
         next_obs: torch.Tensor,
         dones: torch.Tensor,
-    ) -> int:
-        """Vectorized n-step accumulation. Writes the current transition into each
-        env's circular window, emits completed n-step samples for all full windows
-        in a single batched scatter, then clears windows for done envs. The only
-        host sync is one ``nonzero`` per step (independent of ``num_envs``)."""
+    ) -> torch.Tensor:
+        """Vectorized n-step accumulation with **no host synchronization**.
+
+        Writes the current transition into each env's circular window, then builds
+        one fixed-shape candidate block containing every completed n-step sample
+        (full, non-terminal windows) and every truncated tail sample (flushed when
+        an episode ends). A device-side prefix sum assigns each *valid* candidate a
+        unique ring slot; masked-out candidates go to a private scratch region.
+        Write positions, the insert count, and the cursor all advance on-device, so
+        nothing is read back to the host. Returns the number of inserted rows as a
+        0-dim device tensor."""
+        num_envs, n = self.num_envs, self.n_step
         col = self.w_pos
         self.w_obs[:, col] = obs.detach()
         self.w_act[:, col] = actions.detach()
         self.w_rew[:, col] = rewards.detach()
-        self.w_len = torch.clamp(self.w_len + 1, max=self.n_step)
-        self.w_pos = (col + 1) % self.n_step
+        self.w_len = torch.clamp(self.w_len + 1, max=n)
+        self.w_pos = (col + 1) % n
+        dones_b = dones.bool()
 
-        # After advancing, column ``w_pos`` is the oldest entry of a full window;
-        # ``order`` lists columns oldest -> newest for the discounted sum.
+        # Block A: completed n-step samples from full, non-terminal windows.
+        # ``w_pos`` now points at the oldest entry of a full window.
         oldest = self.w_pos
-        order = (oldest + self._arange_n) % self.n_step
-        n_step_reward = (self.w_rew[:, order] * self._gamma_powers).sum(dim=1)
-        obs0 = self.w_obs[:, oldest]
-        act0 = self.w_act[:, oldest]
-        done_f = dones.detach().to(torch.float32)
+        order = (oldest + self._arange_n) % n
+        rew_a = (self.w_rew[:, order] * self._gamma_powers).sum(dim=1)
+        obs_a = self.w_obs[:, oldest]
+        act_a = self.w_act[:, oldest]
+        valid_a = (self.w_len == n) & ~dones_b
 
-        emit_mask = (self.w_len == self.n_step) & ~dones.bool()
-        idx = torch.nonzero(emit_mask, as_tuple=False).squeeze(-1)
-        n_emit = self._store(
-            obs0[idx],
-            act0[idx],
-            n_step_reward[idx],
-            next_obs[idx].detach(),
-            done_f[idx],
+        # Block B: truncated tails flushed for done envs, vectorized over offset.
+        start = (
+            self.w_pos - self.w_len.unsqueeze(1) + self._arange_n.unsqueeze(0)
+        ) % n
+        horizon = self.w_len.unsqueeze(1) - self._arange_n.unsqueeze(0)
+        cols = (start.unsqueeze(2) + self._arange_n.view(1, 1, n)) % n
+        rew_win = torch.gather(self.w_rew.unsqueeze(1).expand(num_envs, n, n), 2, cols)
+        valid_k = self._arange_n.view(1, 1, n) < horizon.unsqueeze(2)
+        rew_b = (rew_win * self._gamma_powers.view(1, 1, n) * valid_k).sum(dim=2)
+        obs_b = torch.gather(
+            self.w_obs, 1, start.unsqueeze(-1).expand(num_envs, n, self.obs_dim)
         )
-
-        done_mask = dones.bool()
-        env_arange = torch.arange(self.num_envs, device=self.device)
-        for offset in range(self.n_step):
-            terminal_mask = done_mask & (self.w_len > offset)
-            terminal_idx = torch.nonzero(
-                terminal_mask, as_tuple=False
-            ).squeeze(-1)
-            if terminal_idx.numel() == 0:
-                continue
-            start = (self.w_pos - self.w_len + offset) % self.n_step
-            horizon = self.w_len - offset
-            columns = (
-                start.unsqueeze(1) + self._arange_n.unsqueeze(0)
-            ) % self.n_step
-            rewards = self.w_rew[env_arange.unsqueeze(1), columns]
-            valid = self._arange_n.unsqueeze(0) < horizon.unsqueeze(1)
-            returns = (
-                rewards * self._gamma_powers.unsqueeze(0) * valid
-            ).sum(dim=1)
-            n_emit += self._store(
-                self.w_obs[terminal_idx, start[terminal_idx]],
-                self.w_act[terminal_idx, start[terminal_idx]],
-                returns[terminal_idx],
-                next_obs[terminal_idx].detach(),
-                torch.ones_like(done_f[terminal_idx]),
-            )
-
-        # Clear windows for done envs (sync-free masked write).
-        self.w_len = torch.where(
-            dones.bool(), torch.zeros_like(self.w_len), self.w_len
+        act_b = torch.gather(
+            self.w_act, 1, start.unsqueeze(-1).expand(num_envs, n, self.act_dim)
         )
+        valid_b = dones_b.unsqueeze(1) & (horizon > 0)
+
+        nxt = next_obs.detach()
+        cand_obs = torch.cat([obs_a, obs_b.reshape(num_envs * n, self.obs_dim)], dim=0)
+        cand_act = torch.cat([act_a, act_b.reshape(num_envs * n, self.act_dim)], dim=0)
+        cand_rew = torch.cat([rew_a, rew_b.reshape(num_envs * n)], dim=0)
+        cand_next = torch.cat(
+            [nxt, nxt.unsqueeze(1).expand(num_envs, n, self.obs_dim).reshape(
+                num_envs * n, self.obs_dim)],
+            dim=0,
+        )
+        cand_done = torch.cat(
+            [torch.zeros(num_envs, device=self.device),
+             torch.ones(num_envs * n, device=self.device)],
+            dim=0,
+        )
+        valid = torch.cat([valid_a, valid_b.reshape(num_envs * n)], dim=0)
+
+        # Prefix sum -> each valid candidate gets a distinct, contiguous ring slot;
+        # invalid candidates fall through to their own unique scratch row.
+        slot = torch.cumsum(valid.long(), dim=0) - 1
+        pos = torch.where(
+            valid, torch.remainder(self.ptr + slot, self.capacity), self._scratch
+        )
+        self.obs[pos] = cand_obs
+        self.action[pos] = cand_act
+        self.reward[pos] = cand_rew
+        self.next_obs[pos] = cand_next
+        self.done[pos] = cand_done
+
+        n_emit = valid.long().sum()
+        self.ptr = torch.remainder(self.ptr + n_emit, self.capacity)
+        self.size = torch.clamp(self.size + n_emit, max=self.capacity)
+        self.w_len = torch.where(dones_b, torch.zeros_like(self.w_len), self.w_len)
         return n_emit
 
+    def is_ready(self, batch_size: int) -> bool:
+        """Whether the buffer can serve a ``batch_size`` draw. Reads the device
+        size once per step only until it first fills, then never again."""
+        if not self._ready and int(self.size) >= batch_size:
+            self._ready = True
+        return self._ready
+
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
-        if self.size < batch_size:
-            raise ValueError(
-                f"Buffer has {self.size} samples, need at least {batch_size} to sample."
-            )
-        idx = torch.randint(0, self.size, (batch_size,), device=self.device)
+        # Caller gates on ``is_ready``; keep this path sync-free (no ``randint``
+        # high-bound read) by sampling floats scaled to the current size.
+        idx = (torch.rand(batch_size, device=self.device) * self.size).long()
+        idx = torch.minimum(idx, self.size - 1)
         return {
             "obs": self.obs[idx],
             "action": self.action[idx],
@@ -695,7 +704,11 @@ def select_device(device_arg: str) -> torch.device:
 
 
 def build_models(
-    cfg: dict, device: torch.device, alpha: float = 0.01
+    cfg: dict,
+    device: torch.device,
+    alpha: float = 0.01,
+    compile: bool = False,
+    compile_mode: str = "default",
 ) -> tuple[Models, QRSACTrainer]:
     # Networks/optimizers stay float32 even when the simulator uses float64.
     net_dtype = torch.float32
@@ -716,6 +729,8 @@ def build_models(
         n_step=cfg["model"]["n_step"],
         alpha=alpha,
         smooth_factor=0.005,
+        compile=compile,
+        compile_mode=compile_mode,
     )
     return models, trainer
 
@@ -1105,6 +1120,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "torch.compile the QR-SAC networks + quantile loss, plus fused Adam "
+            "and foreach polyak (default: on). Use --no-compile for the strict "
+            "deterministic reference path (tests, debugging, reproducibility)."
+        ),
+    )
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        default="default",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help=(
+            "torch.compile mode when --compile is set. 'reduce-overhead' captures "
+            "CUDA graphs to collapse per-kernel launch overhead."
+        ),
+    )
+    parser.add_argument(
         "--buffer-capacity",
         type=int,
         default=cfg["model"]["replay_buffer_limit"],
@@ -1189,7 +1224,9 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    torch.use_deterministic_algorithms(True)
+    # torch.compile / Inductor may emit kernels without a deterministic impl; warn
+    # instead of erroring on the opt-in fast path (numerics caveat is documented).
+    torch.use_deterministic_algorithms(True, warn_only=args.compile)
 
     cfg = build_config(args)
     obs_cfg = cfg["obs"]
@@ -1246,7 +1283,13 @@ def main():
         args.track,
     )
 
-    models, trainer = build_models(cfg, device, alpha=args.alpha)
+    models, trainer = build_models(
+        cfg,
+        device,
+        alpha=args.alpha,
+        compile=args.compile,
+        compile_mode=args.compile_mode,
+    )
     buffer = NStepReplayBuffer(
         capacity=args.buffer_capacity,
         obs_dim=obs_cfg["num_obs"],
@@ -1316,12 +1359,13 @@ def main():
     act_dim = cfg["env"]["num_actions"]
     vector_ticks = 0
     env_transitions = 0
-    replay_inserts = 0
+    replay_inserts = torch.zeros((), device=device, dtype=torch.long)
     sampled_replay_rows = 0
     gradient_updates = 0
     learner_row_budget = 0.0
     episode_rewards = torch.zeros(args.num_envs, device=device, dtype=torch.float32)
-    recent_episode_rewards: deque[float] = deque(maxlen=RECENT_EPISODES_MAX)
+    ep_return_sum = torch.zeros((), device=device, dtype=torch.float32)
+    ep_return_count = torch.zeros((), device=device, dtype=torch.float32)
     policy_loss_accum = torch.zeros((), device=device)
     critic_loss_accum = torch.zeros((), device=device)
     loss_count = 0
@@ -1337,14 +1381,6 @@ def main():
     try:
         while env_transitions < args.total_transitions:
             previous_transitions = env_transitions
-            bad_obs_mask = (~torch.isfinite(obs)).any(dim=1)
-            if bad_obs_mask.any():
-                diag.add_total(
-                    "nonfinite/pre_step_obs_resets", bad_obs_mask.to(torch.float32)
-                )
-                reset_obs, _ = env.reset(envs_idx=bad_obs_mask)
-                obs = obs.clone()
-                obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
 
             if env_transitions < args.min_train_transitions:
                 actions = (
@@ -1371,23 +1407,18 @@ def main():
             env_transitions += args.num_envs
             next_obs = next_obs.to(torch.float32)
             reward = reward.to(torch.float32)
-            episode_rewards += reward
 
-            done_bool = done.bool()
-            completed_returns = episode_rewards[done_bool]
-            if completed_returns.numel() > 0:
-                recent_episode_rewards.extend(completed_returns.tolist())
-            if (
-                selfplay_mgr is not None
-                and done_bool.any()
-                and obs.shape[-1] > OPP_TRACK_GAP_IDX
-            ):
-                # Opponent block index 4 is ``s_other - s_self``; negate for ego lead.
-                ego_minus_opp = -obs[done_bool, OPP_TRACK_GAP_IDX]
-                selfplay_mgr.record_episode_outcomes(ego_minus_opp)
-            episode_rewards = torch.where(
-                done_bool, torch.zeros_like(episode_rewards), episode_rewards
-            )
+            episode_rewards += reward
+            done_f = done.to(episode_rewards.dtype)
+            ep_return_sum += (episode_rewards * done_f).sum()
+            ep_return_count += done_f.sum()
+            if selfplay_mgr is not None and obs.shape[-1] > OPP_TRACK_GAP_IDX:
+                done_bool = done.bool()
+                if done_bool.any():
+                    # Opponent block index 4 is ``s_other - s_self``; negate.
+                    ego_minus_opp = -obs[done_bool, OPP_TRACK_GAP_IDX]
+                    selfplay_mgr.record_episode_outcomes(ego_minus_opp)
+            episode_rewards = episode_rewards * (1.0 - done_f)
 
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
             diag.add_mean(
@@ -1395,44 +1426,13 @@ def main():
                 normalizer.normalize(obs).abs(),
                 track_range=True,
             )
-
             if use_1v1 and obs.shape[-1] > OPP_OBS_BASE_IDX:
                 opp_block = obs[:, OPP_OBS_BASE_IDX:]
                 in_range = (opp_block != 0).any(dim=-1).to(obs.dtype)
                 diag.add_mean("metric/opponent_presence", in_range)
 
-            bad_obs_mask = (~torch.isfinite(next_obs)).any(dim=1)
-            finite_ok = bool(
-                torch.isfinite(reward).all() and not bad_obs_mask.any()
-            )
-            if finite_ok:
-                replay_inserts += buffer.add(obs, actions, reward, next_obs, done)
-                # Update running stats only from finite observations so a NaN/Inf
-                # spin transient can never corrupt the normalizer.
-                normalizer.update(next_obs)
-            else:
-                n_bad_reward = int((~torch.isfinite(reward)).sum().item())
-                n_bad_obs_envs = int(bad_obs_mask.sum().item())
-                diag.add_total(
-                    "nonfinite/post_step_obs_bad",
-                    bad_obs_mask.to(torch.float32),
-                )
-                diag.add_total(
-                    "nonfinite/post_step_reward_bad",
-                    (~torch.isfinite(reward)).to(torch.float32),
-                )
-                log.warning(
-                    "Non-finite transition batch at %d transitions "
-                    "(reward_bad=%d obs_bad_envs=%d); "
-                    "skipping buffer add.",
-                    env_transitions,
-                    n_bad_reward,
-                    n_bad_obs_envs,
-                )
-                if n_bad_obs_envs > 0:
-                    reset_obs, _ = env.reset(envs_idx=bad_obs_mask)
-                    next_obs = next_obs.clone()
-                    next_obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
+            replay_inserts += buffer.add(obs, actions, reward, next_obs, done)
+            normalizer.update(next_obs)
             obs = next_obs
 
             if env_transitions >= args.min_train_transitions:
@@ -1442,12 +1442,12 @@ def main():
                     args.sampled_rows_per_transition,
                     learner_row_budget,
                 )
-                if buffer.size < args.batch_size:
+                if not buffer.is_ready(args.batch_size):
                     learner_row_budget += updates_due * args.batch_size
                     updates_due = 0
                 for _ in range(updates_due):
                     batch = buffer.sample(args.batch_size)
-                    # Buffer stores RAW obs; normalize with current stats at input.
+                    # Buffer stores RAW obs; normalize with current stats.
                     batch["obs"] = normalizer.normalize(batch["obs"])
                     batch["next_obs"] = normalizer.normalize(batch["next_obs"])
                     losses = trainer.update(batch)
@@ -1468,13 +1468,15 @@ def main():
             ):
                 now = time.perf_counter()
                 elapsed = now - last_log_time
+                ri = int(replay_inserts)
+                bsize = int(buffer.size)
                 window_transitions = env_transitions - last_log_transitions
                 vector_ticks_per_sec = (
                     window_transitions / args.num_envs / max(elapsed, 1e-6)
                 )
                 transitions_per_sec = window_transitions / max(elapsed, 1e-6)
                 inserts_per_sec = (
-                    replay_inserts - last_log_replay_inserts
+                    ri - last_log_replay_inserts
                 ) / max(elapsed, 1e-6)
                 sampled_rows_per_sec = (
                     sampled_replay_rows - last_log_sampled_rows
@@ -1482,9 +1484,10 @@ def main():
                 updates_per_sec = (
                     gradient_updates - last_log_gradient_updates
                 ) / max(elapsed, 1e-6)
+                ep_count = int(ep_return_count.item())
                 mean_ep_reward = (
-                    sum(recent_episode_rewards) / len(recent_episode_rewards)
-                    if recent_episode_rewards
+                    float(ep_return_sum / ep_return_count)
+                    if ep_count > 0
                     else float("nan")
                 )
                 mean_policy_loss = (
@@ -1497,7 +1500,7 @@ def main():
                     if loss_count
                     else float("nan")
                 )
-                buffer_fill_pct = 100.0 * buffer.size / buffer.capacity
+                buffer_fill_pct = 100.0 * bsize / buffer.capacity
                 log.info(
                     "ticks=%d transitions=%d replay_inserts=%d buffer=%d/%d (%.1f%%) "
                     "gradient_updates=%d ticks/s=%.1f transitions/s=%.1f "
@@ -1505,8 +1508,8 @@ def main():
                     "policy_loss=%.4f critic_loss=%.4f mean_ep_reward=%.4f (n=%d)",
                     vector_ticks,
                     env_transitions,
-                    replay_inserts,
-                    buffer.size,
+                    ri,
+                    bsize,
                     buffer.capacity,
                     buffer_fill_pct,
                     gradient_updates,
@@ -1518,7 +1521,7 @@ def main():
                     mean_policy_loss,
                     mean_critic_loss,
                     mean_ep_reward,
-                    len(recent_episode_rewards),
+                    ep_count,
                 )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
@@ -1590,14 +1593,10 @@ def main():
                     diag.vmax("metric/dr/obs_noise_std"),
                 )
                 log.info(
-                    "  nonfinite: obs_rate=%.2e reward_rate=%.2e state_rate=%.2e "
-                    "pre_obs_reset=%d post_obs_bad=%d post_reward_bad=%d",
+                    "  nonfinite: obs_rate=%.2e reward_rate=%.2e state_rate=%.2e",
                     nf_obs_rate,
                     nf_reward_rate,
                     nf_state_rate,
-                    int(diag.total("nonfinite/pre_step_obs_resets")),
-                    int(diag.total("nonfinite/post_step_obs_bad")),
-                    int(diag.total("nonfinite/post_step_reward_bad")),
                 )
                 if use_1v1:
                     log.info(
@@ -1640,10 +1639,10 @@ def main():
                         {
                             "env_transitions": env_transitions,
                             "vector_ticks": vector_ticks,
-                            "replay_inserts": replay_inserts,
+                            "replay_inserts": ri,
                             "sampled_replay_rows": sampled_replay_rows,
                             "gradient_updates": gradient_updates,
-                            "buffer/size": buffer.size,
+                            "buffer/size": bsize,
                             "train/policy_loss": mean_policy_loss,
                             "train/critic_loss": mean_critic_loss,
                             "train/mean_ep_reward": mean_ep_reward,
@@ -1699,25 +1698,18 @@ def main():
                             "nonfinite/obs_rate": nf_obs_rate,
                             "nonfinite/reward_rate": nf_reward_rate,
                             "nonfinite/state_rate": nf_state_rate,
-                            "nonfinite/pre_step_obs_resets": diag.total(
-                                "nonfinite/pre_step_obs_resets"
-                            ),
-                            "nonfinite/post_step_obs_bad": diag.total(
-                                "nonfinite/post_step_obs_bad"
-                            ),
-                            "nonfinite/post_step_reward_bad": diag.total(
-                                "nonfinite/post_step_reward_bad"
-                            ),
                         },
                         step=vector_ticks,
                     )
                 policy_loss_accum.zero_()
                 critic_loss_accum.zero_()
+                ep_return_sum.zero_()
+                ep_return_count.zero_()
                 loss_count = 0
                 diag.reset()
                 last_log_time = now
                 last_log_transitions = env_transitions
-                last_log_replay_inserts = replay_inserts
+                last_log_replay_inserts = ri
                 last_log_sampled_rows = sampled_replay_rows
                 last_log_gradient_updates = gradient_updates
 
