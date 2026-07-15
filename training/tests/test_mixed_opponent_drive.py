@@ -1,4 +1,4 @@
-"""TorchSim test: the mixed opponent population drives correctly per row.
+"""Warp test: the mixed opponent population drives correctly per row.
 
 Instantiates ``F1tenthEnv`` with ``opponent_strategy="mixed"`` (50/50 scripted vs
 policy), steps the simulator, and asserts:
@@ -60,7 +60,6 @@ def _build_cfg(*, target_speed: float) -> dict:
     cfg["env"]["term_heading_error_rad"] = 10.0
     cfg["env"]["episode_length"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     return cfg
 
@@ -81,7 +80,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-def test_mixed_opponents_drive_per_mode(torch_backend):
+def test_mixed_opponents_drive_per_mode(warp_runtime):
     target_speed = 2.5
     num_envs = 16
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
@@ -93,14 +92,14 @@ def test_mixed_opponents_drive_per_mode(torch_backend):
         obs, _ = env.reset()
         assert obs.shape == (num_envs, cfg["obs"]["num_obs"])
 
-        mode_buf = env.opponent_ctrl.mode_buf.clone()  # True -> policy
-        scripted_rows = ~mode_buf
-        policy_rows = mode_buf
+        mode_buf = env.opponent_mode_buf.clone()
+        scripted_rows = mode_buf == 0
+        policy_rows = mode_buf == 1
         assert int(scripted_rows.sum()) > 0, "no scripted-mode rows were assigned"
         assert int(policy_rows.sum()) > 0, "no policy-mode rows were assigned"
 
-        track_len = float(env._opponent_step_state(env.opp_base_pos)["frenet"]["L"])
-        prev_s = env._opponent_step_state(env.opp_base_pos)["frenet"]["s"].clone()
+        track_len = env.track_length
+        prev_s = env.extras["metrics"]["opponent_s"].clone()
         forward_progress = torch.zeros((num_envs,), dtype=torch.float32)
         scripted_speeds: list[float] = []
 
@@ -115,13 +114,13 @@ def test_mixed_opponents_drive_per_mode(torch_backend):
             if scripted_rows.any():
                 scripted_speeds.append(float(opp_speed[scripted_rows].mean().item()))
 
-            s_now = env._opponent_step_state(env.opp_base_pos)["frenet"]["s"]
+            s_now = extras["metrics"]["opponent_s"]
             ds = _wrap_ds(s_now - prev_s, track_len)
             forward_progress += torch.clamp(ds, min=0.0)
             prev_s = s_now.clone()
 
         # mode assignment is stable across the rollout (no resets configured to fire).
-        assert torch.equal(env.opponent_ctrl.mode_buf, mode_buf)
+        assert torch.equal(env.opponent_mode_buf, mode_buf)
 
         # Scripted-mode opponents hold near the commanded cruise speed and advance.
         fast = [s for s in scripted_speeds if s > 1.0]

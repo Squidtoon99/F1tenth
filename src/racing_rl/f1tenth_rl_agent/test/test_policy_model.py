@@ -31,6 +31,13 @@ def _ckpt_meta(**extra):
         "policy_format_version": ifc.POLICY_FORMAT_VERSION,
         "longitudinal_mode": "force",
         "control_hz": ifc.CONTROL_HZ,
+        "obs_dim": ifc.NUM_OBS,
+        "action_dim": ifc.NUM_ACTIONS,
+        "obs_norm": {
+            "mean": torch.zeros(ifc.NUM_OBS),
+            "var": torch.ones(ifc.NUM_OBS),
+            "count": 1.0,
+        },
     }
     meta.update(extra)
     return meta
@@ -125,6 +132,7 @@ def test_load_obs_norm_applies_training_standardization():
         )
         norm = load_obs_norm(
             checkpoint_path=path,
+            obs_dim=ifc.NUM_OBS,
             device=torch.device("cpu"),
             eps=ifc.OBS_NORM_EPS,
             clip=ifc.OBS_NORM_CLIP,
@@ -143,6 +151,7 @@ def test_load_obs_norm_rejects_raw():
         with pytest.raises(ValueError, match="policy_format_version"):
             load_obs_norm(
                 checkpoint_path=path,
+                obs_dim=ifc.NUM_OBS,
                 device=torch.device("cpu"),
                 eps=ifc.OBS_NORM_EPS,
                 clip=ifc.OBS_NORM_CLIP,

@@ -90,7 +90,7 @@ class OpponentObsValidator(Node):
 
     def _on_obs(self, msg: Float32MultiArray):
         obs = np.asarray(msg.data, dtype=np.float32)
-        if obs.shape[0] < ifc.expected_num_obs(True):
+        if obs.shape[0] < ifc.expected_num_obs():
             return
         if self._ego is None or self._ref_opp is None:
             return

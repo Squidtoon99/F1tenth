@@ -206,7 +206,7 @@ def to_sim_yaml(result: dict) -> dict:
         "tire_friction": val(fits["tire_mu"], "tire_friction_lower_bound", 0.9),
         "v_eps": 0.1,
         "k_drive_front": priors["k_drive_front"],
-        "torch_sim": {
+        "warp_sim": {
             "model": "dynamic",
             "suspension_mode": "quasi_static",
             "roll_stiffness_front": priors["roll_stiffness_front"],

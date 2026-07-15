@@ -15,6 +15,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
+import warp as wp
+
 GRAVITY = 9.81
 
 _DEFAULT_URDF = os.path.normpath(
@@ -22,12 +24,50 @@ _DEFAULT_URDF = os.path.normpath(
 )
 
 
+@wp.struct
+class SimParams:
+    sim_dt: wp.float32
+    control_dt: wp.float32
+    gravity: wp.float32
+    izz: wp.float32
+    wheelbase: wp.float32
+    lf: wp.float32
+    lr: wp.float32
+    track_width: wp.float32
+    h_cg: wp.float32
+    wheel_radius: wp.float32
+    wheel_inertia: wp.float32
+    tire_b_long: wp.float32
+    tire_c_long: wp.float32
+    tire_e_long: wp.float32
+    tire_b_lat: wp.float32
+    tire_c_lat: wp.float32
+    tire_e_lat: wp.float32
+    tire_load_sens: wp.float32
+    fz0_ref: wp.float32
+    tire_relax_len: wp.float32
+    low_speed_blend: wp.float32
+    f_drive_max: wp.float32
+    f_brake_max: wp.float32
+    power_max: wp.float32
+    k_drive_front: wp.float32
+    v_eps: wp.float32
+    drive_torque_sign: wp.float32
+    effort_slew_rate: wp.float32
+    max_steer: wp.float32
+    steer_time_constant: wp.float32
+    slip_min_lat: wp.float32
+    slip_min_active_long: wp.float32
+    slip_min_passive_long: wp.float32
+    roll_stiffness_front: wp.float32
+    drag_coeff: wp.float32
+    enable_aero_drag: wp.int32
+    wheel_x: wp.vec4f
+    wheel_y: wp.vec4f
+
+
 @dataclass
 class VehicleParams:
-    # --- model selection ---
-    model: str = "dynamic"  # "kinematic" (Tier 0) | "dynamic" (Tier 1+)
-    suspension_mode: str = "quasi_static"  # "quasi_static" (Tier 1) | "dynamic" (Tier 2)
-
     # --- chassis / geometry ---
     mass: float = 3.74
     izz: float = 0.13
@@ -100,6 +140,48 @@ class VehicleParams:
         """Mean per-wheel static normal load (reference Fz0 for load sensitivity)."""
         return self.mass * self.gravity / 4.0
 
+    def to_warp(self, *, sim_dt: float, control_dt: float) -> SimParams:
+        params = SimParams()
+        params.sim_dt = sim_dt
+        params.control_dt = control_dt
+        params.gravity = self.gravity
+        params.izz = self.izz
+        params.wheelbase = self.wheelbase
+        params.lf = self.lf
+        params.lr = self.lr
+        params.track_width = self.track_width
+        params.h_cg = self.h_cg
+        params.wheel_radius = self.wheel_radius
+        params.wheel_inertia = self.wheel_inertia
+        params.tire_b_long = self.tire_B_long
+        params.tire_c_long = self.tire_C_long
+        params.tire_e_long = self.tire_E_long
+        params.tire_b_lat = self.tire_B_lat
+        params.tire_c_lat = self.tire_C_lat
+        params.tire_e_lat = self.tire_E_lat
+        params.tire_load_sens = self.tire_load_sens
+        params.fz0_ref = self.static_wheel_load()
+        params.tire_relax_len = self.tire_relax_len
+        params.low_speed_blend = self.low_speed_blend
+        params.f_drive_max = self.f_drive_max
+        params.f_brake_max = self.f_brake_max
+        params.power_max = self.power_max
+        params.k_drive_front = self.k_drive_front
+        params.v_eps = self.v_eps
+        params.drive_torque_sign = self.drive_torque_sign
+        params.effort_slew_rate = self.longitudinal_slew_rate_per_s
+        params.max_steer = self.max_steer
+        params.steer_time_constant = self.t_delta
+        params.slip_min_lat = self.slip_min_lat
+        params.slip_min_active_long = self.slip_min_active_long
+        params.slip_min_passive_long = self.slip_min_passive_long
+        params.roll_stiffness_front = self.roll_stiffness_front
+        params.drag_coeff = self.dragcoeff
+        params.enable_aero_drag = int(self.enable_aero_drag)
+        params.wheel_x = wp.vec4f(*(xy[0] for xy in self.wheel_xy))
+        params.wheel_y = wp.vec4f(*(xy[1] for xy in self.wheel_xy))
+        return params
+
     @classmethod
     def from_config(cls, env_cfg: dict[str, Any] | None = None,
                     urdf_path: str | None = None) -> "VehicleParams":
@@ -134,9 +216,7 @@ class VehicleParams:
         self.tire_mu = float(g("tire_friction", self.tire_mu))
         self.enable_aero_drag = bool(g("enable_aero_drag", self.enable_aero_drag))
         self.dragcoeff = float(g("dragcoeff", self.dragcoeff))
-        sim = g("torch_sim") or {}
-        self.model = str(sim.get("model", self.model))
-        self.suspension_mode = str(sim.get("suspension_mode", self.suspension_mode))
+        sim = g("warp_sim") or {}
         for key in (
             "izz", "h_cg", "wheel_inertia", "tire_B_long", "tire_C_long",
             "tire_E_long", "tire_B_lat", "tire_C_lat", "tire_E_lat",

@@ -13,35 +13,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
+from f1tenth_contract import validate_policy_artifact
+
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
-
-# Must match libs/f1tenth_contract POLICY_FORMAT_VERSION / interfaces.py.
-_MIN_POLICY_FORMAT_VERSION = 2
-_REQUIRED_LONGITUDINAL_MODE = "force"
-
-
-def require_current_policy_format(payload) -> None:
-    """Reject speed-era checkpoints (policy_format_version < 2)."""
-    if not isinstance(payload, dict):
-        raise ValueError(
-            "Checkpoint must be a training artifact dict with actor + "
-            f"policy_format_version>={_MIN_POLICY_FORMAT_VERSION}; raw state_dicts "
-            "are not deployable under the current/force action contract (ADR 0006)."
-        )
-    version = payload.get("policy_format_version")
-    if version is None or int(version) < _MIN_POLICY_FORMAT_VERSION:
-        raise ValueError(
-            f"Checkpoint policy_format_version={version!r} is unsupported; "
-            f"need >={_MIN_POLICY_FORMAT_VERSION} (current/force longitudinal mode). "
-            "Retrain; speed-trained checkpoints are intentionally invalid."
-        )
-    mode = payload.get("longitudinal_mode", payload.get("throttle_mode"))
-    if mode is not None and str(mode) != _REQUIRED_LONGITUDINAL_MODE:
-        raise ValueError(
-            f"Checkpoint longitudinal_mode={mode!r} is unsupported; "
-            f"need {_REQUIRED_LONGITUDINAL_MODE!r}."
-        )
 
 
 def mlp(sizes, activation, output_activation=nn.Identity):
@@ -109,7 +84,9 @@ def load_actor(
         act_limit=act_limit,
     )
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    require_current_policy_format(payload)
+    validate_policy_artifact(
+        payload, expected_obs_dim=obs_dim, expected_action_dim=act_dim
+    )
     if isinstance(payload, dict) and state_dict_key in payload:
         state_dict = payload[state_dict_key]
     else:
@@ -154,18 +131,18 @@ class ObsNormalizer:
 
 def load_obs_norm(
     checkpoint_path: str,
+    obs_dim: int,
     device: torch.device,
     eps: float,
     clip: float,
 ) -> ObsNormalizer | None:
     """Load ObsNormalizer stats from a training checkpoint, or None if absent.
 
-    ``standalone_trainer.save_checkpoint`` stores the running statistics under the
-    ``obs_norm`` key (``{"mean", "var", "count"}``). Raw actor state_dicts and older
-    checkpoints without that key return None (no normalization).
+    ``standalone_trainer.save_policy_artifact`` stores the running statistics under
+    the ``obs_norm`` key (``{"mean", "var", "count"}``).
     """
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    require_current_policy_format(payload)
+    validate_policy_artifact(payload, expected_obs_dim=obs_dim)
     stats = payload.get("obs_norm")
     if not isinstance(stats, dict) or "mean" not in stats or "var" not in stats:
         return None

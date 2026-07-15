@@ -20,7 +20,7 @@ namespace f1tenth_rl_vehicle
 // after the training/deploy parity alignment (scales 1.0, loose clip 50).
 struct ObsConfig
 {
-  int num_obs = 384;
+  int num_obs = 390;
   int future_track_num_points = 60;
   double future_track_horizon_s = 6.0;
   // Lower bound on the future-point lookahead distance (matches training
@@ -215,7 +215,7 @@ public:
 
   // Assemble the observation. Returns a vector of length cfg.num_obs (float to
   // match the Float32MultiArray wire format). Throws if the assembled size differs.
-  // When cfg.enable_opponent_obs is set, the 7-dim opponent block is appended from
+  // When cfg.enable_opponent_obs is set, the 6-dim opponent block is appended from
   // `opp`; an absent opponent yields the exact zero sentinel.
   std::vector<float> build(
     const VehicleState & state, const OpponentState & opp = OpponentState{}) const;

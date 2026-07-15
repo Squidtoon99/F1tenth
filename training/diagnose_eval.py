@@ -20,8 +20,8 @@ import numpy as np
 import torch
 
 from evaluation import deterministic_rollout
+from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
-from f1tenth_env.env import F1tenthEnv
 from standalone_trainer import (
     DEFAULT_CONFIG,
     ObsNormalizer,
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-envs", type=int, default=200)
     p.add_argument("--steps", type=int, default=4000)
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--precision", type=str, default=None, choices=["32", "64"])
+    p.add_argument("--precision", type=str, default="32", choices=["32"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=str, default="/tmp/diag.png")
     p.add_argument("--npz", type=str, default="/tmp/diag.npz")
@@ -65,11 +65,9 @@ def main() -> None:
     if Path(cfg_path).exists():
         saved = json.loads(Path(cfg_path).read_text())
         cfg = saved["config"]
-        precision = args.precision or str(saved.get("args", {}).get("precision", "32"))
-        print(f"loaded run config: {cfg_path} (precision={precision})")
+        print(f"loaded run config: {cfg_path} (precision=32)")
     else:
         cfg = DEFAULT_CONFIG
-        precision = args.precision or "32"
         print(f"WARNING: no config.json at {cfg_path}; using DEFAULT_CONFIG")
 
     cfg["env"]["domain_randomization"] = {
@@ -84,7 +82,7 @@ def main() -> None:
 
     device = select_device(args.device)
     rt.configure(
-        float_dtype=torch.float64 if precision == "64" else torch.float32,
+        float_dtype=torch.float32,
         int_dtype=torch.int32,
         dev=device,
         eps=1e-12,
@@ -204,13 +202,13 @@ def main() -> None:
     laps_arr = np.array(completed_laps) if completed_laps else np.zeros(1)
     print(f"\n=== {n_episodes} episodes ended ===")
     for k, v in sorted(reason_counts.items(), key=lambda x: -x[1]):
-        print(f"  {k:16s} {v:5d}  ({100*v/max(n_episodes,1):5.1f}%)")
+        print(f"  {k:16s} {v:5d}  ({100 * v / max(n_episodes, 1):5.1f}%)")
     print(f"\nlaps completed per episode: mean={laps_arr.mean():.3f} "
           f"median={np.median(laps_arr):.3f} max={laps_arr.max():.3f} "
-          f"p90={np.percentile(laps_arr,90):.3f}")
+          f"p90={np.percentile(laps_arr, 90):.3f}")
     for thr in (0.25, 0.5, 0.9, 1.0):
         print(f"  frac episodes reaching >= {thr:.2f} lap: "
-              f"{100*np.mean(laps_arr>=thr):.1f}%")
+              f"{100 * np.mean(laps_arr >= thr):.1f}%")
 
     # oob hotspots by track fraction
     oob = [e for e in events if e[0] == "out_of_bounds"]

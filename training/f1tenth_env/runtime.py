@@ -1,7 +1,7 @@
 """Runtime dtype/device configuration for the training environment.
 
 Entry points call :func:`configure` once at startup so the environment and
-TorchSim use the same dtype and device.
+Warp simulation and PyTorch training use the same dtype and device.
 """
 
 from __future__ import annotations

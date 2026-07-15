@@ -1,228 +1,301 @@
-"""Planar vehicle dynamics: tyre forces at 4 patches -> body + wheel-spin ODEs.
+import warp as wp
 
-Everything is vectorized over the env batch ``N`` and the 4 wheels ``[LR, RR, LF, RF]``.
-The integrator is semi-implicit Euler (update velocities from forces at the current
-state, then advance positions with the new velocities) which is stable for the
-stiff tyre/wheel-spin coupling at ``sim_dt`` without the ringing of explicit Euler.
-"""
-
-from __future__ import annotations
-
-import torch
-
-from .drivetrain import wheel_axle_torques
-from .suspension import quasi_static_loads
+from .drivetrain import direct_drive_torque
+from .params import SimParams
+from .suspension import static_wheel_load, warp_quasi_static_loads
+from .tire import combined_pacejka
 
 
-def ackermann_wheel_angles(params, delta_center: torch.Tensor) -> torch.Tensor:
-    """Left/right front wheel angles (N,2) from a centre steer angle (N,)."""
-    small = delta_center.abs() < 1e-6
-    tan = torch.tan(delta_center)
-    tan = torch.where(small, torch.ones_like(tan), tan)
-    r = params.wheelbase / tan
-    half = params.track_width / 2.0
-    delta_left = torch.atan(params.wheelbase / (r - half))
-    delta_right = torch.atan(params.wheelbase / (r + half))
-    zero = torch.zeros_like(delta_center)
-    delta_left = torch.where(small, zero, delta_left)
-    delta_right = torch.where(small, zero, delta_right)
-    return torch.stack([delta_left, delta_right], dim=-1)
+@wp.struct
+class VehicleLocal:
+    x: wp.float32
+    y: wp.float32
+    yaw: wp.float32
+    vx: wp.float32
+    vy: wp.float32
+    yaw_rate: wp.float32
+    steer: wp.float32
+    effort_state: wp.float32
+    applied_effort: wp.float32
+    ax: wp.float32
+    ay: wp.float32
+    omega: wp.vec4f
+    slip_ratio: wp.vec4f
+    slip_angle: wp.vec4f
+    load_ratio: wp.vec4f
+    fx_lag: wp.vec4f
+    fy_lag: wp.vec4f
 
 
-def wheel_offsets(params, device, dtype) -> torch.Tensor:
-    return torch.tensor(params.wheel_xy, device=device, dtype=dtype)
+@wp.struct
+class VehicleBuffers:
+    x: wp.array(dtype=wp.float32)
+    y: wp.array(dtype=wp.float32)
+    yaw: wp.array(dtype=wp.float32)
+    vx: wp.array(dtype=wp.float32)
+    vy: wp.array(dtype=wp.float32)
+    yaw_rate: wp.array(dtype=wp.float32)
+    steer: wp.array(dtype=wp.float32)
+    effort_state: wp.array(dtype=wp.float32)
+    applied_effort: wp.array(dtype=wp.float32)
+    ax: wp.array(dtype=wp.float32)
+    ay: wp.array(dtype=wp.float32)
+    omega: wp.array(dtype=wp.vec4f)
+    slip_ratio: wp.array(dtype=wp.vec4f)
+    slip_angle: wp.array(dtype=wp.vec4f)
+    load_ratio: wp.array(dtype=wp.vec4f)
+    fx_lag: wp.array(dtype=wp.vec4f)
+    fy_lag: wp.array(dtype=wp.vec4f)
+    mass: wp.array(dtype=wp.float32)
+    mu: wp.array(dtype=wp.float32)
+    drive_scale: wp.array(dtype=wp.float32)
+    steer_bias: wp.array(dtype=wp.float32)
 
 
-def wheel_frame_velocities(
-    params,
-    vx: torch.Tensor,
-    vy: torch.Tensor,
-    r: torch.Tensor,
-    delta_wheel: torch.Tensor,
-    offsets: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-wheel longitudinal/lateral contact velocity (N,4) in each wheel frame."""
-    x_i = offsets[:, 0]
-    y_i = offsets[:, 1]
-    vx_i = vx.unsqueeze(1) - r.unsqueeze(1) * y_i
-    vy_i = vy.unsqueeze(1) + r.unsqueeze(1) * x_i
-    cd = torch.cos(delta_wheel)
-    sd = torch.sin(delta_wheel)
-    v_long = cd * vx_i + sd * vy_i
-    v_lat = -sd * vx_i + cd * vy_i
-    return v_long, v_lat
+@wp.func
+def load_vehicle(buffers: VehicleBuffers, index: wp.int32) -> VehicleLocal:
+    vehicle = VehicleLocal()
+    vehicle.x = buffers.x[index]
+    vehicle.y = buffers.y[index]
+    vehicle.yaw = buffers.yaw[index]
+    vehicle.vx = buffers.vx[index]
+    vehicle.vy = buffers.vy[index]
+    vehicle.yaw_rate = buffers.yaw_rate[index]
+    vehicle.steer = buffers.steer[index]
+    vehicle.effort_state = buffers.effort_state[index]
+    vehicle.applied_effort = buffers.applied_effort[index]
+    vehicle.ax = buffers.ax[index]
+    vehicle.ay = buffers.ay[index]
+    vehicle.omega = buffers.omega[index]
+    vehicle.slip_ratio = buffers.slip_ratio[index]
+    vehicle.slip_angle = buffers.slip_angle[index]
+    vehicle.load_ratio = buffers.load_ratio[index]
+    vehicle.fx_lag = buffers.fx_lag[index]
+    vehicle.fy_lag = buffers.fy_lag[index]
+    return vehicle
 
 
-def step_dynamic(state, params, tire, dt, susp_filter=None):
-    """Advance the dynamic model one ``dt``. Mutates and returns ``state``.
+@wp.func
+def store_vehicle(
+    buffers: VehicleBuffers,
+    index: wp.int32,
+    vehicle: VehicleLocal,
+):
+    buffers.x[index] = vehicle.x
+    buffers.y[index] = vehicle.y
+    buffers.yaw[index] = vehicle.yaw
+    buffers.vx[index] = vehicle.vx
+    buffers.vy[index] = vehicle.vy
+    buffers.yaw_rate[index] = vehicle.yaw_rate
+    buffers.steer[index] = vehicle.steer
+    buffers.effort_state[index] = vehicle.effort_state
+    buffers.applied_effort[index] = vehicle.applied_effort
+    buffers.ax[index] = vehicle.ax
+    buffers.ay[index] = vehicle.ay
+    buffers.omega[index] = vehicle.omega
+    buffers.slip_ratio[index] = vehicle.slip_ratio
+    buffers.slip_angle[index] = vehicle.slip_angle
+    buffers.load_ratio[index] = vehicle.load_ratio
+    buffers.fx_lag[index] = vehicle.fx_lag
+    buffers.fy_lag[index] = vehicle.fy_lag
 
-    ``state`` is a dict of (N,)/(N,4) tensors: X, Y, yaw, vx, vy, r, omega, steer,
-    throttle, mass, mu. Returns diagnostics used for slip readback and obs accel.
-    """
-    device, dtype = state["vx"].device, state["vx"].dtype
-    offsets = wheel_offsets(params, device, dtype)
-    r_wheel = params.wheel_radius
-    mass = state["mass"]
-    mu = state["mu"]
 
-    delta_lr = ackermann_wheel_angles(params, state["steer"])
-    delta_wheel = torch.zeros_like(state["omega"])
-    delta_wheel[:, 2] = delta_lr[:, 0]
-    delta_wheel[:, 3] = delta_lr[:, 1]
-
-    v_long, v_lat = wheel_frame_velocities(
-        params, state["vx"], state["vy"], state["r"], delta_wheel, offsets
-    )
-
-    eps = params.v_eps
-    v_blend = max(params.low_speed_blend, eps)
-    # Modern-PhysX slip (VhTireFunctions.cpp): normalize by |v_long| + a fixed
-    # offset rather than the legacy max(|wheel_speed|, |v_long|). The longitudinal
-    # offset switches between an active value (drive or brake torque applied) and a
-    # larger passive value (coasting). Keep the -v_lat sign for the lateral force
-    # (the tyre force opposes the contact-patch lateral velocity); the observation
-    # slip angle uses the opposite (geometric) sign, see slip_angle_obs below.
-    v_long_abs = v_long.abs()
-    active = (state["throttle"].abs() > eps).unsqueeze(1)
-    min_long = torch.where(
-        active,
-        v_long.new_full((), params.slip_min_active_long),
-        v_long.new_full((), params.slip_min_passive_long),
-    )
-    denom = v_long_abs + min_long
-    alpha = torch.atan2(-v_lat, v_long_abs + params.slip_min_lat)
-    wheel_speed = r_wheel * state["omega"]
-    kappa = (wheel_speed - v_long) / denom
-
-    # Body accelerations from the previous substep drive the (quasi-static) load
-    # transfer; on the first call ax/ay default to 0 (static split).
-    ax_prev = state.get("ax")
-    ay_prev = state.get("ay")
-    if ax_prev is None:
-        ax_prev = torch.zeros_like(state["vx"])
-        ay_prev = torch.zeros_like(state["vx"])
-    if susp_filter is not None:
-        Fz = susp_filter.step(ax_prev, ay_prev, dt, mass)
+@wp.func
+def apply_command(
+    vehicle: VehicleLocal,
+    action: wp.vec2f,
+    steer_bias: wp.float32,
+    params: SimParams,
+) -> VehicleLocal:
+    target = wp.clamp(action[0], -1.0, 1.0)
+    max_step = params.effort_slew_rate * params.control_dt
+    if max_step > 0.0:
+        delta = target - vehicle.effort_state
+        next_effort = vehicle.effort_state + wp.clamp(
+            delta, -max_step, max_step
+        )
+        if wp.abs(delta) <= max_step:
+            vehicle.applied_effort = (
+                target - delta * wp.abs(delta) / (2.0 * max_step)
+            )
+        else:
+            vehicle.applied_effort = 0.5 * (
+                vehicle.effort_state + next_effort
+            )
+        vehicle.effort_state = next_effort
     else:
-        Fz = quasi_static_loads(params, ax_prev, ay_prev, mass)
+        vehicle.effort_state = target
+        vehicle.applied_effort = target
 
-    mu_w = mu.unsqueeze(1).expand_as(Fz)
-    peak = tire.load_scaled_mu(Fz, mu_w).clamp_min(1e-4) * Fz
-    fx_w, fy_w = tire.forces(kappa, alpha, Fz, mu_w)
-
-    # Optional tyre relaxation: first-order lag of the contact forces with a
-    # speed-dependent time constant tau = relax_len / |v|, modelling the finite
-    # distance a tyre must roll to build up force.
-    if params.tire_relax_len > 0.0 and "fx_lag" in state:
-        tau = params.tire_relax_len / v_long.abs().clamp_min(v_blend)
-        beta = dt / (tau + dt)
-        fx_w = state["fx_lag"] + beta * (fx_w - state["fx_lag"])
-        fy_w = state["fy_lag"] + beta * (fy_w - state["fy_lag"])
-        state["fx_lag"] = fx_w
-        state["fy_lag"] = fy_w
-
-    cd = torch.cos(delta_wheel)
-    sd = torch.sin(delta_wheel)
-    fx_b = cd * fx_w - sd * fy_w
-    fy_b = sd * fx_w + cd * fy_w
-
-    fx_total = fx_b.sum(dim=1)
-    fy_total = fy_b.sum(dim=1)
-    mz = (offsets[:, 0] * fy_b - offsets[:, 1] * fx_b).sum(dim=1)
-
-    if params.enable_aero_drag and params.dragcoeff > 0.0:
-        speed = torch.sqrt(state["vx"] ** 2 + state["vy"] ** 2).clamp_min(1e-6)
-        fx_total = fx_total - params.dragcoeff * speed * state["vx"]
-        fy_total = fy_total - params.dragcoeff * speed * state["vy"]
-
-    ax = fx_total / mass
-    ay = fy_total / mass
-    dr = mz / params.izz
-
-    tau_axle = wheel_axle_torques(
-        params, state["throttle"], state["vx"], state["omega"], mu, mass,
-        drive_scale=state.get("drive_scale"),
+    steer_target = wp.clamp(
+        action[1] * params.max_steer + steer_bias,
+        -params.max_steer,
+        params.max_steer,
     )
-    # Wheel-spin ODE is stiff (tiny wheel inertia + steep tyre-slip slope). Use a
-    # linearized-implicit (backward-Euler) update so it is unconditionally stable
-    # at sim_dt instead of requiring a tiny explicit step. The tyre longitudinal
-    # slope d(Fx)/d(omega) ~ peak * B * C * R / denom damps the update.
-    iw = params.wheel_inertia
-    g_tau = tau_axle - r_wheel * fx_w
-    k_tau = peak * params.tire_B_long * params.tire_C_long * (r_wheel ** 2) / denom
-    omega = state["omega"] + (dt * g_tau / iw) / (1.0 + dt * k_tau / iw)
-
-    vx = state["vx"] + dt * (ax + state["r"] * state["vy"])
-    vy = state["vy"] + dt * (ay - state["r"] * state["vx"])
-    r = state["r"] + dt * dr
-
-    yaw = state["yaw"] + dt * r
-    cos_y = torch.cos(yaw)
-    sin_y = torch.sin(yaw)
-    state["X"] = state["X"] + dt * (vx * cos_y - vy * sin_y)
-    state["Y"] = state["Y"] + dt * (vx * sin_y + vy * cos_y)
-    state["yaw"] = yaw
-    state["vx"] = vx
-    state["vy"] = vy
-    state["r"] = r
-    state["omega"] = omega
-    state["ax"] = ax
-    state["ay"] = ay
-
-    return {
-        "v_long": v_long,
-        "v_lat": v_lat,
-        "kappa": kappa,
-        "alpha": alpha,
-        # Geometric slip angle for the observation (positive when the contact patch
-        # slides toward +y), i.e. the sign convention of car.compute_tyre_slip. This
-        # is -alpha since alpha carries the force-opposing sign.
-        "slip_angle_obs": torch.atan2(v_lat, v_long_abs + params.slip_min_lat),
-        "Fz": Fz,
-        "fx_w": fx_w,
-        "fy_w": fy_w,
-    }
-
-
-def step_kinematic(state, params, dt):
-    """Advance the Tier-0 kinematic single-track model one ``dt``."""
-    # Force/brake effort → accel with a soft clamp (mass from state when present).
-    mass = state.get("mass")
-    if mass is None:
-        mass = torch.full_like(state["vx"], params.mass)
-    throttle = state["throttle"].clamp_min(0.0)
-    brake = (-state["throttle"]).clamp_min(0.0)
-    f = throttle * params.f_drive_max - brake * params.f_brake_max
-    accel = (f / mass.clamp_min(1e-3)).clamp(
-        -params.kinematic_accel_limit, params.kinematic_accel_limit
+    steer_alpha = params.control_dt / (
+        params.steer_time_constant + params.control_dt
     )
-    vx = state["vx"] + dt * accel
-    delta = state["steer"]
-    r = vx * torch.tan(delta) / params.wheelbase
-    yaw = state["yaw"] + dt * r
-    state["X"] = state["X"] + dt * vx * torch.cos(yaw)
-    state["Y"] = state["Y"] + dt * vx * torch.sin(yaw)
-    state["yaw"] = yaw
-    state["vx"] = vx
-    state["vy"] = torch.zeros_like(vx)
-    state["r"] = r
-    state["omega"] = (vx / params.wheel_radius).unsqueeze(1).expand_as(state["omega"])
-    state["ax"] = accel
-    state["ay"] = vx * r
-
-    delta_lr = ackermann_wheel_angles(params, delta)
-    delta_wheel = torch.zeros_like(state["omega"])
-    delta_wheel[:, 2] = delta_lr[:, 0]
-    delta_wheel[:, 3] = delta_lr[:, 1]
-    offsets = wheel_offsets(params, vx.device, vx.dtype)
-    v_long, v_lat = wheel_frame_velocities(
-        params, state["vx"], state["vy"], state["r"], delta_wheel, offsets
+    vehicle.steer = vehicle.steer + steer_alpha * (
+        steer_target - vehicle.steer
     )
-    # Rigid rolling (omega = vx / r): longitudinal slip is ~0. Report the geometric
-    # slip angle so the observation slip block is consistent with the dynamic model.
-    return {
-        "v_long": v_long,
-        "v_lat": v_lat,
-        "kappa": torch.zeros_like(v_long),
-        "slip_angle_obs": torch.atan2(v_lat, v_long.abs() + params.slip_min_lat),
-    }
+    return vehicle
+
+
+@wp.func
+def ackermann_angles(steer: wp.float32, params: SimParams) -> wp.vec2f:
+    if wp.abs(steer) < 1.0e-6:
+        return wp.vec2f(0.0)
+    radius = params.wheelbase / wp.tan(steer)
+    half_track = 0.5 * params.track_width
+    return wp.vec2f(
+        wp.atan(params.wheelbase / (radius - half_track)),
+        wp.atan(params.wheelbase / (radius + half_track)),
+    )
+
+
+@wp.func
+def integrate_vehicle_substep(
+    vehicle: VehicleLocal,
+    mass: wp.float32,
+    mu: wp.float32,
+    drive_scale: wp.float32,
+    params: SimParams,
+) -> VehicleLocal:
+    front_angles = ackermann_angles(vehicle.steer, params)
+    wheel_angle = wp.vec4f(0.0, 0.0, front_angles[0], front_angles[1])
+    wheel_long = wp.vec4f(0.0)
+    wheel_lat = wp.vec4f(0.0)
+    for wheel in range(4):
+        patch_vx = vehicle.vx - vehicle.yaw_rate * params.wheel_y[wheel]
+        patch_vy = vehicle.vy + vehicle.yaw_rate * params.wheel_x[wheel]
+        cosine = wp.cos(wheel_angle[wheel])
+        sine = wp.sin(wheel_angle[wheel])
+        wheel_long[wheel] = cosine * patch_vx + sine * patch_vy
+        wheel_lat[wheel] = -sine * patch_vx + cosine * patch_vy
+
+    loads = warp_quasi_static_loads(mass, vehicle.ax, vehicle.ay, params)
+    axle_torque = direct_drive_torque(
+        vehicle.applied_effort,
+        vehicle.vx,
+        vehicle.omega,
+        mass,
+        mu,
+        drive_scale,
+        params,
+    )
+    force_x = wp.float32(0.0)
+    force_y = wp.float32(0.0)
+    yaw_moment = wp.float32(0.0)
+    active_min = params.slip_min_passive_long
+    if wp.abs(vehicle.applied_effort) > params.v_eps:
+        active_min = params.slip_min_active_long
+
+    for wheel in range(4):
+        long_abs = wp.abs(wheel_long[wheel])
+        denominator = long_abs + active_min
+        kappa = (
+            params.wheel_radius * vehicle.omega[wheel] - wheel_long[wheel]
+        ) / denominator
+        alpha_force = wp.atan2(
+            -wheel_lat[wheel], long_abs + params.slip_min_lat
+        )
+        static_load = static_wheel_load(mass, wheel, params)
+        tire = combined_pacejka(
+            kappa,
+            alpha_force,
+            loads[wheel],
+            mu,
+            params.fz0_ref,
+            params,
+        )
+
+        if params.tire_relax_len > 0.0:
+            v_blend = wp.max(params.low_speed_blend, params.v_eps)
+            tau = params.tire_relax_len / wp.max(long_abs, v_blend)
+            beta = params.sim_dt / (tau + params.sim_dt)
+            fx_relaxed = vehicle.fx_lag[wheel] + beta * (
+                tire.fx - vehicle.fx_lag[wheel]
+            )
+            fy_relaxed = vehicle.fy_lag[wheel] + beta * (
+                tire.fy - vehicle.fy_lag[wheel]
+            )
+            vehicle.fx_lag[wheel] = fx_relaxed
+            vehicle.fy_lag[wheel] = fy_relaxed
+            tire.fx = fx_relaxed
+            tire.fy = fy_relaxed
+
+        reaction = axle_torque[wheel] - params.wheel_radius * tire.fx
+        slope = (
+            tire.peak
+            * params.tire_b_long
+            * params.tire_c_long
+            * params.wheel_radius
+            * params.wheel_radius
+            / denominator
+        )
+        vehicle.omega[wheel] = vehicle.omega[wheel] + (
+            params.sim_dt * reaction / params.wheel_inertia
+        ) / (1.0 + params.sim_dt * slope / params.wheel_inertia)
+
+        cosine = wp.cos(wheel_angle[wheel])
+        sine = wp.sin(wheel_angle[wheel])
+        body_fx = cosine * tire.fx - sine * tire.fy
+        body_fy = sine * tire.fx + cosine * tire.fy
+        force_x = force_x + body_fx
+        force_y = force_y + body_fy
+        yaw_moment = (
+            yaw_moment
+            + params.wheel_x[wheel] * body_fy
+            - params.wheel_y[wheel] * body_fx
+        )
+        vehicle.slip_ratio[wheel] = kappa
+        vehicle.slip_angle[wheel] = wp.atan2(
+            wheel_lat[wheel], long_abs + params.slip_min_lat
+        )
+        vehicle.load_ratio[wheel] = loads[wheel] / wp.max(
+            static_load, 1.0e-6
+        )
+
+    speed = wp.sqrt(vehicle.vx * vehicle.vx + vehicle.vy * vehicle.vy)
+    if params.enable_aero_drag != 0:
+        force_x = force_x - params.drag_coeff * speed * vehicle.vx
+        force_y = force_y - params.drag_coeff * speed * vehicle.vy
+
+    ax = force_x / mass
+    ay = force_y / mass
+    yaw_acceleration = yaw_moment / params.izz
+    vx_next = vehicle.vx + params.sim_dt * (
+        ax + vehicle.yaw_rate * vehicle.vy
+    )
+    vy_next = vehicle.vy + params.sim_dt * (
+        ay - vehicle.yaw_rate * vehicle.vx
+    )
+    yaw_rate_next = vehicle.yaw_rate + params.sim_dt * yaw_acceleration
+    yaw_next = vehicle.yaw + params.sim_dt * yaw_rate_next
+    vehicle.x = vehicle.x + params.sim_dt * (
+        vx_next * wp.cos(yaw_next) - vy_next * wp.sin(yaw_next)
+    )
+    vehicle.y = vehicle.y + params.sim_dt * (
+        vx_next * wp.sin(yaw_next) + vy_next * wp.cos(yaw_next)
+    )
+    vehicle.yaw = yaw_next
+    vehicle.vx = vx_next
+    vehicle.vy = vy_next
+    vehicle.yaw_rate = yaw_rate_next
+    vehicle.ax = ax
+    vehicle.ay = ay
+    return vehicle
+
+
+@wp.func
+def vehicle_is_finite(vehicle: VehicleLocal) -> wp.bool:
+    return (
+        wp.isfinite(vehicle.x)
+        and wp.isfinite(vehicle.y)
+        and wp.isfinite(vehicle.yaw)
+        and wp.isfinite(vehicle.vx)
+        and wp.isfinite(vehicle.vy)
+        and wp.isfinite(vehicle.yaw_rate)
+        and wp.isfinite(vehicle.ax)
+        and wp.isfinite(vehicle.ay)
+    )

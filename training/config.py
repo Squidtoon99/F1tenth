@@ -8,8 +8,12 @@ bootstrap, S3 parameter server) is intentionally not part of this trainer.
 DEFAULT_CONFIG = {
     "config_version": 2,
     "policy_format_version": 2,
+    "simulator": {
+        "id": "f1tenth-torch",
+        "version": 1,
+    },
     "obs": {
-        "num_obs": 384,
+        "num_obs": 390,
         # Observation normalization is now done with empirical running statistics in
         # the trainer (ObsNormalizer), driven by values actually experienced. Keep
         # the env-side fixed scales at 1.0 so near-raw obs reach the normalizer.
@@ -29,10 +33,9 @@ DEFAULT_CONFIG = {
         # trained without tyre-slip sensing matches gym/car (which publish zeros).
         # Default off.
         "zero_tyre_slip_obs": False,
-        # 1v1: when enabled, an opponent-relative block of size opponent_obs_dim is
-        # appended to the observation (num_obs becomes 384 + opponent_obs_dim). Off
-        # by default so the solo (1v0) observation stays 384-dim and unchanged.
-        "enable_opponent_obs": False,
+        # The policy input is always 390-d. Solo and out-of-range rows carry an
+        # exact zero sentinel in the final opponent-relative block.
+        "enable_opponent_obs": True,
         "opponent_obs_dim": 6,
         # Range gate for opponent-relative obs masking (matches passing_gate_*).
         "opp_obs_ahead_m": 40.0,
@@ -76,6 +79,12 @@ DEFAULT_CONFIG = {
         # Lateral inset (m) from each track edge when sampling a spawn offset, so a
         # car never starts with a wheel on the boundary.
         "reset_spawn_margin_m": 0.2,
+        # Seeded heading jitter (rad) added to the track tangent at spawn, so the
+        # policy sees non-tangent starting attitudes (ego + opponent). 0 disables it.
+        "reset_spawn_yaw_jitter_rad": 0.1,
+        # When true the opponent samples its own off-centerline lateral spawn
+        # (bounded by local track width) instead of starting on the centerline.
+        "opponent_spawn_lateral_independent": True,
         # Observation/reset throttle scaling only — longitudinal cap comes from power+drag.
         "max_speed": 15.0,
         # Real F1TENTH servo hard-clamps the steering at ~0.33 rad (19 deg): see
@@ -102,26 +111,23 @@ DEFAULT_CONFIG = {
         "drive_torque_sign": 1.0,
         # Tyre-slip denominators (modern PhysX form, m/s), scaled down from the
         # full-car PhysX defaults 1.0 / 0.1 / 4.0 for the 1/10 car. Single source
-        # for the slip definition: the TorchSim tire model (f1tenth_sim.dynamics)
+        # for the slip definition: the Warp tire model (f1tenth_sim.dynamics)
         # and the on-car C++ builder both normalize by |v_fwd| + one of these
         # offsets (active = drive/brake applied, passive = coasting). The deprecated
         # compute_tyre_slip uses the same offsets.
         "slip_min_lat": 0.2,
         "slip_min_active_long": 0.1,
         "slip_min_passive_long": 0.4,
-        # Torch-sim knobs. "model":
-        # "dynamic" (Pacejka tires + load transfer + wheel spin) or "kinematic"
-        # (Tier 0); "suspension_mode": "quasi_static" or "dynamic";
-        # "internal_substeps" subdivides each sim_dt for extra stability.
-        # Longitudinal action is always force/brake effort (ADR 0006).
-        "torch_sim": {
-            "model": "dynamic",
-            "suspension_mode": "quasi_static",
-            "internal_substeps": 1,
+        # Warp vehicle model parameters.
+        "warp_sim": {
             # Stock 68277-4 GTR spring rates: 109 / (109 + 125) = 0.47.
             "roll_stiffness_front": 0.47,
             # 45 A / (200 A/s) = 225 ms from zero to full deployed drive current.
             "longitudinal_slew_rate_per_s": 4.444444444444445,
+            # Longitudinal tyre relaxation length (m); 0 disables the force lag
+            # (exact pass-through, default). >0 lags contact-force buildup with a
+            # speed-dependent time constant tau = tire_relax_len / max(|v|, blend).
+            "tire_relax_len": 0.0,
         },
         "longitudinal_mode": "force",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
@@ -187,7 +193,6 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "tire_friction_range": [0.60, 0.70],
             "vehicle_mass_range": [3.6, 3.9],
-            "mass_scale_range": [0.97, 1.03],
             "action_latency_steps_range": [0, 1],
             "obs_latency_steps_range": [0, 1],
             "obs_noise_std_range": [0.0, 0.01],

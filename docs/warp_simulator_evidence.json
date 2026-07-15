@@ -1,0 +1,116 @@
+{
+  "date": "2026-07-14",
+  "baseline_commit": "305a052626d44b468c14ee26782d849fa6027837",
+  "source_state": "uncommitted worktree based on baseline_commit",
+  "platform": {
+    "os": "Linux WSL2",
+    "python": "3.12.7",
+    "pytorch": "2.10.0+cu130",
+    "warp": "1.15.0",
+    "cuda_toolkit": "12.9",
+    "pytorch_cuda": "13.0",
+    "gpu": "NVIDIA GeForce RTX 4050 Laptop GPU",
+    "gpu_memory_mib": 6141,
+    "driver": "596.21",
+    "container_image_digest": null
+  },
+  "source_sha256": {
+    "training/config.py": "5759bcc327341a5b586fde491c6f9d554e1c9971f7fd93d581fb1c5e092ecfb5",
+    "training/f1tenth_env/kernel.py": "95fabc0bbb996fae4f1f495dfba7430edb8d4097df8153c2f436f606355e46d5",
+    "training/f1tenth_env/warp_env.py": "2a8bf33dd87e1e4cbf118b480b740f6061ea566891881ad9b7ec5033375cf7ee"
+  },
+  "commands": {
+    "tests": "PYTHONPATH=training:libs/f1tenth_contract .venv/bin/python -m pytest -q training/tests",
+    "parity_reference_regen": "PYTHONPATH=training:libs/f1tenth_contract .venv/bin/python analysis/warp_parity/generate_torch_reference.py",
+    "parity_test": "PYTHONPATH=training:libs/f1tenth_contract .venv/bin/python -m pytest -q training/tests/test_warp_torch_parity.py",
+    "contract_tests": "PYTHONPATH=libs/f1tenth_contract .venv/bin/python -m pytest libs/f1tenth_contract/test",
+    "agent_tests": "PYTHONPATH=libs/f1tenth_contract:src/racing_rl/f1tenth_rl_agent .venv/bin/python -m pytest src/racing_rl/f1tenth_rl_agent/test",
+    "lint": "PYTHONPATH=training:libs/f1tenth_contract .venv/bin/python -m flake8 training libs/f1tenth_contract calibration analysis/steering_full_lock",
+    "scaling": "PYTHONPATH=training:libs/f1tenth_contract .venv/bin/python training/bench_env.py --device cuda --envs 256 1024 4096 12288 32768 65536 --steps 100 --warmup 10 --repeats 5",
+    "profile": "nsys profile --trace=cuda --stats=true -o /home/squid/perf-lab/warp/nsys-env-4096-final .venv/bin/python training/bench_env.py --device cuda --envs 4096 --steps 20 --warmup 5 --repeats 1"
+  },
+  "results": {
+    "training_tests": "202 passed",
+    "contract_tests": "6 passed",
+    "agent_tests": "39 passed, 5 skipped",
+    "changed_python_lint": "passed",
+    "launches_per_tick": 3,
+    "deterministic_hashes_at_all_scaling_points": true,
+    "median_transitions_per_second": {
+      "256": 355635.97,
+      "1024": 1622929.17,
+      "4096": 4687356.74,
+      "12288": 3836231.15,
+      "32768": 4703176.22,
+      "65536": 4854681.19
+    },
+    "peak_torch_bytes_at_65536": 547297280,
+    "nsys_average_kernel_us_at_4096": {
+      "physics_solo": 54.95,
+      "transaction": 223.75,
+      "observation": 793.22
+    },
+    "hot_path_device_to_device_memcpy_count": 0,
+    "deterministic_trainer_artifact_sha256": "184487f59da9dfbcba894f97752888f8a6044c567bf26712bd0a5d2c115d1b76",
+    "mixed_opponent_smoke": {
+      "vector_ticks": 10000,
+      "transitions": 3000000,
+      "gradient_updates": 2900,
+      "replay_inserts": 2998338,
+      "nonfinite_observation_rate": 0.0,
+      "nonfinite_reward_rate": 0.0,
+      "nonfinite_state_rate": 0.0,
+      "final_policy_loss": -24.6131,
+      "final_critic_loss": 188.3544,
+      "final_mean_episode_reward": 30.9498,
+      "policy_artifact": "/tmp/warp-3m-mixed/checkpoints/policy_3000000.pt"
+    }
+  },
+  "fidelity_restoration": {
+    "date": "2026-07-15",
+    "torch_parity": {
+      "reference_fixture": "training/tests/data/torch_reference_trajectory.npz",
+      "reference_source": "external TorchVehicleSim at $F1TENTH_TORCH_ROOT (develop), quasi-static suspension, internal_substeps=1",
+      "schedule": "200 steps x 4 envs (varied mass/mu/drive_scale/steer_bias), seeded straight/steer/brake/aggressive-random",
+      "max_abs_tolerances": {
+        "base_pos": 0.30,
+        "yaw": 0.05,
+        "base_lin_vel": 0.15,
+        "base_ang_vel": 0.10,
+        "base_lin_acc": 0.50,
+        "tyre_slip": 0.05,
+        "tyre_load": 0.03,
+        "dof_vel": 3.0
+      },
+      "observed_max_abs_error": {
+        "base_pos": 0.187,
+        "yaw": 0.024,
+        "base_lin_vel": 0.092,
+        "base_ang_vel": 0.043,
+        "base_lin_acc": 0.211,
+        "tyre_slip": 0.018,
+        "tyre_load": 0.0096,
+        "dof_vel": 1.28
+      }
+    },
+    "decisions": {
+      "fz0_ref": "fixed nominal mass*g/4 for tyre load sensitivity (was per-env randomized mass)",
+      "suspension": "single quasi-static model; dynamic filter and suspension_mode knob not restored",
+      "internal_substeps": "not added; sim_dt=0.005 already meets parity + stability",
+      "tire_relaxation": "optional, default off (tire_relax_len=0 exact pass-through)",
+      "force_diagnostics": "not added (not model inputs; covered by warp_probe + parity harness)"
+    }
+  },
+  "external_evidence": {
+    "scaling_json": "/home/squid/perf-lab/warp/env-rtx4050-final.json",
+    "scaling_json_sha256": "e16a67bdf52deb990c9c0583074adaef5b6de8eba059b012820733914b77c949",
+    "nsight_systems": "/home/squid/perf-lab/warp/nsys-env-4096-final.nsys-rep"
+  },
+  "unavailable_gates": {
+    "nsight_compute": "ncu is not installed, so register, spill, occupancy, and roofline metrics were not collected",
+    "container_digest": "Docker CLI is unavailable in this WSL distribution",
+    "ros_build_and_test": "The dev container could not be run because Docker is unavailable; the host build stops at the missing ackermann_msgs dependency",
+    "apptainer": "Apptainer is not installed, so the training image definition could not be built locally",
+    "target_architectures": "H200 and RTX 6000 Pro hardware were not available on this host"
+  }
+}

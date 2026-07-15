@@ -53,9 +53,7 @@ class PolicyInferenceNode(Node):
         )
         self.norm_clip = gp("norm_clip").get_parameter_value().double_value
         self.norm_eps = gp("norm_eps").get_parameter_value().double_value
-        self.num_obs = ifc.expected_num_obs(
-            gp("enable_opponent_obs").get_parameter_value().bool_value
-        )
+        self.num_obs = ifc.expected_num_obs()
 
         self.device = torch.device(device_str)
         self.actor, self._checkpoint_loaded = self._load_actor(
@@ -121,6 +119,7 @@ class PolicyInferenceNode(Node):
         try:
             normalizer = load_obs_norm(
                 checkpoint_path=checkpoint_path,
+                obs_dim=self.num_obs,
                 device=self.device,
                 eps=self.norm_eps,
                 clip=self.norm_clip,

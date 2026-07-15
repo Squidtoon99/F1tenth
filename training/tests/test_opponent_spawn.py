@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 
-import numpy as np
 import torch
 
+from conftest import brute_force_frenet
+from f1tenth_env import F1tenthEnv
 from f1tenth_env import geom as gu
 from f1tenth_env import runtime as rt
 
@@ -20,32 +21,9 @@ def _configure_runtime():
     )
 
 
-def _fake_track_state(track, workspace_dir, device):
-    n = 400
-    th = np.linspace(0.0, 2 * np.pi, n, endpoint=False).astype(np.float32)
-    radius = 8.0
-    cl = np.stack(
-        [radius * np.cos(th), radius * np.sin(th)], axis=-1
-    ).astype(np.float32)
-    w = np.full(n, 1.5, np.float32)
-    return {
-        "centerline": cl,
-        "w_tr_left": w,
-        "w_tr_right": w,
-        "w_tr_left_torch": torch.tensor(w, device=device),
-        "w_tr_right_torch": torch.tensor(w, device=device),
-        "track_geom_cache": {},
-    }
-
-
-def _make_1v1_env(monkeypatch, *, num_envs: int, env_overrides: dict | None = None):
+def _make_1v1_env(*, num_envs: int, env_overrides: dict | None = None):
     _configure_runtime()
-    import f1tenth_env.utils as U
-    import f1tenth_env.env as E
     from config import DEFAULT_CONFIG
-
-    monkeypatch.setattr(U, "load_track_state", _fake_track_state, raising=True)
-    monkeypatch.setattr(E, "load_track_state", _fake_track_state, raising=True)
 
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     env_cfg = dict(cfg["env"])
@@ -54,7 +32,7 @@ def _make_1v1_env(monkeypatch, *, num_envs: int, env_overrides: dict | None = No
     env_cfg.setdefault("launch_strategy_data", {"num_cars": num_envs})
     if env_overrides:
         env_cfg.update(env_overrides)
-    return E.F1tenthEnv(
+    return F1tenthEnv(
         num_envs=num_envs,
         env_cfg=env_cfg,
         obs_cfg=cfg["obs"],
@@ -70,14 +48,13 @@ def _wrapped_gap_m(s_self, s_other, track_len):
     return gap
 
 
-def test_distributed_spawn_batch(monkeypatch):
+def test_distributed_spawn_batch():
     torch.manual_seed(0)
     gap_min = 3.0
     gap_max = 20.0
     behind_prob = 0.3
     num_envs = 1024
     env = _make_1v1_env(
-        monkeypatch,
         num_envs=num_envs,
         env_overrides={
             "opponent_spawn_gap_min_m": gap_min,
@@ -93,11 +70,11 @@ def test_distributed_spawn_batch(monkeypatch):
     )
     env.reset()
 
-    ego_ss = env._get_step_state()
-    opp_ss = env._opponent_step_state(env.opp_base_pos)
-    track_len = ego_ss["frenet"]["L"]
+    state = env.read_state()
+    metrics = env.extras["metrics"]
+    track_len = env.track_length
     gap_m = _wrapped_gap_m(
-        ego_ss["frenet"]["s"], opp_ss["frenet"]["s"], track_len
+        metrics["s"], metrics["opponent_s"], track_len
     )
     behind_frac = float((gap_m < 0.0).float().mean().item())
     assert 0.15 < behind_frac < 0.45
@@ -106,16 +83,21 @@ def test_distributed_spawn_batch(monkeypatch):
     assert bool((gap_mag >= gap_min - 0.5).all())
     assert bool((gap_mag <= gap_max + 0.5).all())
 
-    opp_ey = opp_ss["boundary"]["ey"].abs()
-    opp_w = torch.minimum(
-        env.w_tr_left_torch[
-            env._closest_centerline_indices(env.opp_base_pos[:, :2])
-        ],
-        env.w_tr_right_torch[
-            env._closest_centerline_indices(env.opp_base_pos[:, :2])
-        ],
+    opponent_projection = brute_force_frenet(
+        state["opp_base_pos"][:, :2].cpu().numpy(), env.centerline
     )
-    assert bool((opp_ey <= opp_w + 0.05).all())
+    width = torch.as_tensor(
+        torch.minimum(
+            torch.as_tensor(env.w_tr_left),
+            torch.as_tensor(env.w_tr_right),
+        ).numpy()[opponent_projection["best_idx"]]
+    )
+    assert bool(
+        (
+            torch.as_tensor(opponent_projection["ey"]).abs()
+            <= width + 0.05
+        ).all()
+    )
 
     # Spawns must not already overlap under the same oriented-box predicate the
     # contact resolver / collision termination use (both cars as full-size boxes).
@@ -123,11 +105,13 @@ def test_distributed_spawn_batch(monkeypatch):
 
     car_len = float(env.env_cfg.get("car_length", 0.568))
     car_wid = float(env.env_cfg.get("car_width", 0.296))
-    ego_yaw = gu.quat_to_xyz(env.base_quat, rpy=True, degrees=False)[:, 2]
-    opp_yaw = gu.quat_to_xyz(env.opp_base_quat, rpy=True, degrees=False)[:, 2]
+    ego_yaw = gu.quat_to_xyz(state["base_quat"], rpy=True, degrees=False)[:, 2]
+    opp_yaw = gu.quat_to_xyz(
+        state["opp_base_quat"], rpy=True, degrees=False
+    )[:, 2]
     overlap = collision_mask(
-        env.base_pos[:, :2],
-        env.opp_base_pos[:, :2],
+        state["base_pos"][:, :2],
+        state["opp_base_pos"][:, :2],
         ego_yaw,
         opp_yaw,
         car_len,
@@ -144,11 +128,10 @@ def _heading_speed(vel_xy, yaw):
     return speed, align
 
 
-def test_reset_launch_speeds_ego_and_opponent(monkeypatch):
+def test_reset_launch_speeds_ego_and_opponent():
     ego_speed = 3.0
     opp_speed = 2.5
     env = _make_1v1_env(
-        monkeypatch,
         num_envs=8,
         env_overrides={
             "opponent_spawn_gap_min_m": 7.0,
@@ -164,18 +147,20 @@ def test_reset_launch_speeds_ego_and_opponent(monkeypatch):
     )
     env.reset()
 
-    ego_yaw = gu.quat_to_xyz(env.base_quat, rpy=True, degrees=False)[:, 2]
-    opp_yaw = gu.quat_to_xyz(env.opp_base_quat, rpy=True, degrees=False)[:, 2]
+    state = env.read_state()
+    ego_yaw = gu.quat_to_xyz(state["base_quat"], rpy=True, degrees=False)[:, 2]
+    opp_yaw = gu.quat_to_xyz(
+        state["opp_base_quat"], rpy=True, degrees=False
+    )[:, 2]
 
-    ego_spd, ego_align = _heading_speed(env.base_vel_world[:, :2], ego_yaw)
-    opp_spd, opp_align = _heading_speed(env.opp_vel_world[:, :2], opp_yaw)
+    ego_spd, ego_align = _heading_speed(
+        state["base_vel_world"][:, :2], ego_yaw
+    )
+    opp_spd, opp_align = _heading_speed(
+        state["opp_vel_world"][:, :2], opp_yaw
+    )
 
     assert torch.allclose(ego_spd, torch.full_like(ego_spd, ego_speed), atol=0.05)
     assert torch.allclose(opp_spd, torch.full_like(opp_spd, opp_speed), atol=0.05)
     assert bool((ego_align > 0.99).all())
     assert bool((opp_align > 0.99).all())
-
-    ego_vx = env.backend.sim.s["vx"]
-    opp_vx = env.backend.opp_sim.s["vx"]
-    assert torch.allclose(ego_vx.abs(), torch.full_like(ego_vx, ego_speed), atol=0.05)
-    assert torch.allclose(opp_vx.abs(), torch.full_like(opp_vx, opp_speed), atol=0.05)

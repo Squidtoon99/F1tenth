@@ -42,14 +42,14 @@ acceptance gate; see [`../docs/deployment.md`](../docs/deployment.md) for the fu
 certification sequence and acceptance criteria.
 
 - **Training simulator** ([`../training/f1tenth_sim/`](../training/f1tenth_sim/)) —
-  the batched TorchSim vehicle model used for RL rollouts. It is pure Python/Torch,
+  the batched NVIDIA Warp vehicle model used for RL rollouts. It is pure Python,
   not a ROS package.
 
 ## Which sim, when?
 
 | Task | Simulator |
 | --- | --- |
-| RL training / synthetic data | `training/f1tenth_sim/` (TorchSim) |
+| RL training / synthetic data | `training/f1tenth_sim/` (Warp) |
 | Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
 
 See [`docs/development.md`](../docs/development.md) for launch instructions.

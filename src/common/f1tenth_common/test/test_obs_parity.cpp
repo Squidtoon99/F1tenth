@@ -10,10 +10,11 @@ using L = f1tenth_common::ObservationLayout;
 
 TEST(ObservationParity, Dimensions)
 {
-  EXPECT_EQ(L::kObservationDim, 384u);
+  EXPECT_EQ(L::kObservationBaseDim, 384u);
   EXPECT_EQ(L::kOpponentObsDim, 6u);
+  EXPECT_EQ(L::kObservationDim, 390u);
   EXPECT_EQ(L::kObservationDim1v1, 390u);
-  EXPECT_EQ(L::kObservationDim + L::kOpponentObsDim, L::kObservationDim1v1);
+  EXPECT_EQ(L::kObservationBaseDim + L::kOpponentObsDim, L::kObservationDim);
   EXPECT_EQ(L::kActionDim, 2u);
   EXPECT_EQ(L::kTyreSlipDim, 8u);
   EXPECT_EQ(L::kTyreLoadDim, 4u);
@@ -33,9 +34,9 @@ TEST(ObservationParity, BaseFieldsContiguous)
   EXPECT_EQ(L::kContactFlagStop, L::kFuturePointsStart);
   EXPECT_EQ(L::kFuturePointsStop, L::kTyreSlipStart);
   EXPECT_EQ(L::kTyreSlipStop, L::kTyreLoadStart);
-  EXPECT_EQ(L::kTyreLoadStop, L::kObservationDim);
-  EXPECT_EQ(L::kOpponentStart, L::kObservationDim);
-  EXPECT_EQ(L::kOpponentStop, L::kObservationDim1v1);
+  EXPECT_EQ(L::kTyreLoadStop, L::kObservationBaseDim);
+  EXPECT_EQ(L::kOpponentStart, L::kObservationBaseDim);
+  EXPECT_EQ(L::kOpponentStop, L::kObservationDim);
 }
 
 int main(int argc, char ** argv)

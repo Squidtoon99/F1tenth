@@ -1,4 +1,4 @@
-"""TorchSim test: collision termination is gated by closing speed.
+"""Warp test: collision termination is gated by closing speed.
 
 Drives the ego full-throttle into a (near-)stationary scripted opponent and checks:
 - with a high ``collision_term_speed_mps`` threshold, overlaps still occur (the
@@ -43,7 +43,6 @@ def _build_cfg(*, term_speed: float) -> dict:
     cfg["env"]["collision_term_speed_mps"] = term_speed
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     # Enable the any-collision penalty so we can detect raw overlaps independently
     # of whether they terminate the episode.
     cfg["reward"]["reward_scales"]["collision"] = 1.0
@@ -90,7 +89,7 @@ def _rollout(cfg: dict, num_envs: int, steps: int) -> tuple[bool, float]:
         env.close()
 
 
-def test_high_threshold_does_not_terminate_on_contact(torch_backend):
+def test_high_threshold_does_not_terminate_on_contact(warp_runtime):
     torch.manual_seed(0)
     cfg = _build_cfg(term_speed=100.0)
     overlap_seen, term_collisions = _rollout(cfg, num_envs=8, steps=200)
@@ -100,7 +99,7 @@ def test_high_threshold_does_not_terminate_on_contact(torch_backend):
     )
 
 
-def test_zero_threshold_terminates_on_contact(torch_backend):
+def test_zero_threshold_terminates_on_contact(warp_runtime):
     torch.manual_seed(0)
     cfg = _build_cfg(term_speed=0.0)
     overlap_seen, term_collisions = _rollout(cfg, num_envs=8, steps=200)

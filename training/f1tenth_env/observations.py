@@ -234,14 +234,10 @@ def build_observation(
         step_state["tyre_load"],
     )
 
-    # 1v1: append the opponent-relative block as the final component. When
-    # enabled but no block is provided (e.g. opponent absent for this batch), use
-    # the exact zero sentinel so num_obs stays consistent.
-    if bool(obs_cfg.get("enable_opponent_obs", False)):
-        opp_dim = int(obs_cfg.get("opponent_obs_dim", 6))
-        if opponent_block is None:
-            opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
-        components = components + (opponent_block,)
+    opp_dim = int(obs_cfg.get("opponent_obs_dim", 6))
+    if opponent_block is None or not bool(obs_cfg.get("enable_opponent_obs", True)):
+        opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
+    components = components + (opponent_block,)
 
     # Write components into a single freshly-allocated buffer via slice copies
     # instead of torch.concatenate. This drops the concatenate output allocation

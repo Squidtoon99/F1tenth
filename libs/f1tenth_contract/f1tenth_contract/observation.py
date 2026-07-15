@@ -21,7 +21,8 @@ from dataclasses import dataclass
 # --- Dimensions ---------------------------------------------------------------
 NUM_OBS_BASE = 384
 OPPONENT_OBS_DIM = 6
-NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 390
+NUM_OBS = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 390
+NUM_OBS_1V1 = NUM_OBS
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4]
 NUM_TYRE_LOAD = 4  # per-wheel normal-load ratio Fz / Fz_static
@@ -63,9 +64,9 @@ OBS_FIELDS_OPPONENT: tuple[tuple[str, int, int], ...] = (
 )
 
 
-def expected_num_obs(enable_opponent_obs: bool) -> int:
-    """Policy observation dimension (384 solo, 390 with the opponent block)."""
-    return NUM_OBS_1V1 if enable_opponent_obs else NUM_OBS_BASE
+def expected_num_obs() -> int:
+    """Return the fixed policy observation dimension."""
+    return NUM_OBS
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ class ObservationSpec:
         raise KeyError(name)
 
 
-# Canonical instances imported elsewhere.
-OBSERVATION = ObservationSpec(fields=OBS_FIELDS_BASE)
-OBSERVATION_1V1 = ObservationSpec(fields=OBS_FIELDS_BASE + OBS_FIELDS_OPPONENT)
+# Canonical instance imported elsewhere. The opponent field is always present and
+# carries an exact zero sentinel when no relevant opponent exists.
+OBSERVATION = ObservationSpec(fields=OBS_FIELDS_BASE + OBS_FIELDS_OPPONENT)
+OBSERVATION_1V1 = OBSERVATION

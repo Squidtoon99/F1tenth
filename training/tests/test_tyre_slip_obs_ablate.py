@@ -1,4 +1,4 @@
-"""TorchSim tests for config-gated tyre-slip observation ablation."""
+"""Warp tests for config-gated tyre-slip observation ablation."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _make_env(*, zero_slip: bool, num_envs: int = 2) -> F1tenthEnv:
     )
 
 
-def test_zero_tyre_slip_obs_zeros_channels(torch_backend):
+def test_zero_tyre_slip_obs_zeros_channels(warp_runtime):
     num_envs = 2
     expected_dim = int(DEFAULT_CONFIG["obs"]["num_obs"])
     env = _make_env(zero_slip=True, num_envs=num_envs)
@@ -60,7 +60,7 @@ def test_zero_tyre_slip_obs_zeros_channels(torch_backend):
         env.close()
 
 
-def test_tyre_slip_obs_populated_when_not_zeroed(torch_backend):
+def test_tyre_slip_obs_populated_when_not_zeroed(warp_runtime):
     num_envs = 2
     env = _make_env(zero_slip=False, num_envs=num_envs)
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])

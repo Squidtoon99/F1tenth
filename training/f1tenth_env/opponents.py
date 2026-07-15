@@ -18,6 +18,8 @@ from typing import Any
 
 import torch
 
+from f1tenth_contract import validate_policy_artifact
+
 from . import runtime as rt
 from .geom import quat_to_xyz
 
@@ -199,10 +201,17 @@ class PolicyOpponent(OpponentController):
                 "PolicyOpponent.requires_observation is True but ctx.opp_obs is None; "
                 "the env must build the opponent's egocentric observation."
             )
+        return self.act_observation(ctx.opp_obs)
+
+    def act_observation(self, observation: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            model_obs = self._normalize(ctx.opp_obs.to(self.device, dtype=torch.float32))
+            model_obs = self._normalize(
+                observation.to(self.device, dtype=torch.float32)
+            )
             action, _ = self.actor(model_obs, deterministic=True, with_logprob=False)
-        return torch.clamp(action, -self.act_clip, self.act_clip).to(ctx.opp_obs.device)
+        return torch.clamp(action, -self.act_clip, self.act_clip).to(
+            observation.device
+        )
 
 
 class MixedOpponentController(OpponentController):
@@ -369,6 +378,9 @@ def _make_policy_opponent(
     ckpt_path = env_cfg.get("opponent_ckpt")
     if ckpt_path:
         payload = torch.load(ckpt_path, map_location=device, weights_only=False)
+        validate_policy_artifact(
+            payload, expected_obs_dim=obs_dim, expected_action_dim=act_dim
+        )
         actor.load_state_dict(payload["actor"])
         if "obs_norm" in payload:
             obs_mean = payload["obs_norm"]["mean"].to(dtype=torch.float32)
