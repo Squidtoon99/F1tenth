@@ -80,6 +80,16 @@ CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md) for
 details.
 
+Train policies with the separate batched Warp simulator:
+
+```bash
+.venv/bin/python training/standalone_trainer.py \
+  --device cuda --precision 32 --num-envs 4096
+```
+
+macOS supports small Warp CPU tests, not MPS training. See
+[`../training/README.md`](../training/README.md).
+
 ## 3. Contribute a ROS node
 
 Walkthrough: add a node that republishes odometry speed as a scalar. It shows the

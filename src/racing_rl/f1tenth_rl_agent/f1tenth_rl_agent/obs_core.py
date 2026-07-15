@@ -396,7 +396,7 @@ class ObservationBuilder:
         self.device = device or torch.device("cpu")
         self.centerline = np.asarray(centerline, dtype=np.float32)
         self.obs_cfg = obs_cfg or {}
-        self.num_obs = int(self.obs_cfg.get("num_obs", 384))
+        self.num_obs = int(self.obs_cfg.get("num_obs", 390))
         self.base_num_obs = int(self.obs_cfg.get("base_num_obs", self.num_obs))
         self.w_tr_left = torch.as_tensor(w_tr_left, device=self.device, dtype=TC_FLOAT)
         self.w_tr_right = torch.as_tensor(w_tr_right, device=self.device, dtype=TC_FLOAT)
@@ -460,11 +460,12 @@ class ObservationBuilder:
             dim=-1,
         )
 
-        if bool(self.obs_cfg.get("enable_opponent_obs", False)):
-            opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 6))
-            if opponent_block is None:
-                opponent_block = base_lin_vel.new_zeros((batch, opp_dim))
-            obs = torch.cat((obs, opponent_block), dim=-1)
+        opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 6))
+        if opponent_block is None or not bool(
+            self.obs_cfg.get("enable_opponent_obs", True)
+        ):
+            opponent_block = base_lin_vel.new_zeros((batch, opp_dim))
+        obs = torch.cat((obs, opponent_block), dim=-1)
 
         clip_obs = float(self.obs_cfg.get("clip_obs", 0.0))
         if clip_obs > 0.0:

@@ -33,9 +33,9 @@ FRAME_BASE_LINK = "ego_racecar/base_link"
 
 # --- Dimensions ---------------------------------------------------------------
 NUM_OBS_BASE = 384
-NUM_OBS = NUM_OBS_BASE
 OPPONENT_OBS_DIM = 6
-NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM
+NUM_OBS = NUM_OBS_BASE + OPPONENT_OBS_DIM
+NUM_OBS_1V1 = NUM_OBS
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4] per training env
 NUM_TYRE_LOAD = 4  # per-wheel normal-load ratio Fz / Fz_static
@@ -123,18 +123,15 @@ POLICY_FORMAT_VERSION = 2
 LONGITUDINAL_MODE = "force"
 
 
-def expected_num_obs(enable_opponent_obs: bool) -> int:
-    """Policy observation dimension (384 solo, 390 with opponent block)."""
-    if enable_opponent_obs:
-        return NUM_OBS_1V1
-    return NUM_OBS_BASE
+def expected_num_obs() -> int:
+    """Return the fixed policy observation dimension."""
+    return NUM_OBS
 
 
 def default_obs_cfg(enable_opponent_obs: bool = False) -> dict:
     """Return the obs_cfg dict expected by obs_core.build_observation."""
-    num_obs = expected_num_obs(enable_opponent_obs)
     return {
-        "num_obs": num_obs,
+        "num_obs": expected_num_obs(),
         "base_num_obs": NUM_OBS_BASE,
         "enable_opponent_obs": enable_opponent_obs,
         "opponent_obs_dim": OPPONENT_OBS_DIM,

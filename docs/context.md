@@ -39,8 +39,9 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Reward shaping** — progress along the track, staying within the boundaries,
   and penalties that encourage clean, rule-abiding overtakes rather than
   collisions.
-- **Sim-to-real via domain randomization** — the policy trains against randomized
-  physics so it transfers to the real car. The training environment is in
+- **Sim-to-real via domain randomization** — the policy trains in a batched
+  NVIDIA Warp environment against randomized physics so it transfers to the real
+  car. The environment is in
   [`../training/f1tenth_env/`](../training/f1tenth_env/).
 
 The point of the reference is orientation: when you touch the observation, the

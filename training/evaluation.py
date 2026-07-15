@@ -36,12 +36,12 @@ def deterministic_rollout(
         with torch.random.fork_rng(devices=devices):
             random.seed(seed)
             torch.manual_seed(seed)
-            obs, _ = env.reset()
+            obs, _ = env.reset(seed=seed)
             obs = obs.to(torch.float32)
             with torch.no_grad():
                 for step in range(num_steps):
                     state_before = (
-                        env.backend.read_state() if capture_state_before else None
+                        env.read_state() if capture_state_before else None
                     )
                     actions, _ = actor(
                         normalize(obs), deterministic=True, with_logprob=False

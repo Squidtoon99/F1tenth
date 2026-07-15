@@ -1,4 +1,4 @@
-"""TorchSim tests for config-gated domain randomization."""
+"""Warp tests for config-gated domain randomization."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _collect_dr_samples(env: F1tenthEnv, resets: int) -> dict[str, list[float]]:
     return samples
 
 
-def test_dr_disabled_matches_baseline(torch_backend):
+def test_dr_disabled_matches_baseline(warp_runtime):
     num_envs = 4
     base_tf = float(DEFAULT_CONFIG["env"]["tire_friction"])
     base_mass = VehicleParams.from_config(DEFAULT_CONFIG["env"]).mass
@@ -87,16 +87,13 @@ def test_dr_disabled_matches_baseline(torch_backend):
             metrics["dr/action_latency_steps"] == 1.0
         ), "baseline keeps simulate_action_latency=1 step"
         assert torch.allclose(metrics["dr/obs_noise_std"], torch.zeros(num_envs))
-        masses = torch.linspace(3.0, 5.0, num_envs, device=env.device)
-        loads = env._compute_tyre_load(
-            torch.zeros((num_envs, 3), device=env.device), masses
-        )
+        loads = env.read_wheel_state()["tyre_load"]
         assert torch.allclose(loads, torch.ones_like(loads))
     finally:
         env.close()
 
 
-def test_dr_enabled_samples_vary_and_respect_bounds(torch_backend):
+def test_dr_enabled_samples_vary_and_respect_bounds(warp_runtime):
     num_envs = 4
     env = _make_env(enable_dr=True, num_envs=num_envs)
     try:
@@ -109,11 +106,13 @@ def test_dr_enabled_samples_vary_and_respect_bounds(torch_backend):
         assert all(0.01 <= v <= 0.05 for v in samples["obs_noise_std"])
 
         control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
-        env.reset()
+        obs, _ = env.reset()
+        assert torch.equal(obs[:, 384:390], torch.zeros_like(obs[:, 384:390]))
         for _ in range(120):
             actions = torch.rand(num_envs, 2, device=env.device) * 0.4
             obs, reward, _, _ = env.step(actions, n_steps=control_interval)
             assert torch.isfinite(obs).all()
             assert torch.isfinite(reward).all()
+            assert torch.equal(obs[:, 384:390], torch.zeros_like(obs[:, 384:390]))
     finally:
         env.close()

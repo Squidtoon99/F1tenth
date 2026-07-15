@@ -1,4 +1,4 @@
-"""TorchSim test: scripted opponent closed-loop speed control.
+"""Warp test: scripted opponent closed-loop speed control.
 
 Instantiates ``F1tenthEnv`` with a scripted opponent, steps the simulator, and
 asserts the opponent converges near ``opponent_target_speed`` and advances along
@@ -49,7 +49,6 @@ def _build_cfg(*, num_envs: int, target_speed: float) -> dict:
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     return cfg
 
@@ -70,7 +69,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-def test_scripted_opponent_holds_target_speed(torch_backend):
+def test_scripted_opponent_holds_target_speed(warp_runtime):
     target_speed = 2.5
     num_envs = 4
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
@@ -81,8 +80,8 @@ def test_scripted_opponent_holds_target_speed(torch_backend):
         obs, _ = env.reset()
         assert obs.shape == (num_envs, cfg["obs"]["num_obs"])
 
-        track_len = float(env._opponent_step_state(env.opp_base_pos)["frenet"]["L"])
-        prev_s = env._opponent_step_state(env.opp_base_pos)["frenet"]["s"].clone()
+        track_len = env.track_length
+        prev_s = env.extras["metrics"]["opponent_s"].clone()
         opp_speeds: list[float] = []
         forward_progress = torch.zeros((num_envs,), dtype=torch.float32)
 
@@ -96,7 +95,7 @@ def test_scripted_opponent_holds_target_speed(torch_backend):
             assert opp_speed is not None
             opp_speeds.append(float(opp_speed.mean().item()))
 
-            s_now = env._opponent_step_state(env.opp_base_pos)["frenet"]["s"]
+            s_now = extras["metrics"]["opponent_s"]
             ds = _wrap_ds(s_now - prev_s, track_len)
             forward_progress += torch.clamp(ds, min=0.0)
             prev_s = s_now.clone()

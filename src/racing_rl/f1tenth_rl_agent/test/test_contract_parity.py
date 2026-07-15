@@ -14,6 +14,7 @@ from f1tenth_rl_agent import interfaces as ifc  # noqa: E402
 
 
 def test_dimensions_match():
+    assert contract.NUM_OBS == ifc.NUM_OBS
     assert contract.NUM_OBS_BASE == ifc.NUM_OBS_BASE
     assert contract.NUM_OBS_1V1 == ifc.NUM_OBS_1V1
     assert contract.OPPONENT_OBS_DIM == ifc.OPPONENT_OBS_DIM
@@ -63,14 +64,13 @@ def test_action_mapping_constants_match():
 
 
 def test_expected_num_obs_matches():
-    assert contract.expected_num_obs(False) == ifc.expected_num_obs(False)
-    assert contract.expected_num_obs(True) == ifc.expected_num_obs(True)
+    assert contract.expected_num_obs() == ifc.expected_num_obs() == 390
 
 
-def test_contract_base_fields_contiguous():
-    """The contract's base fields must tile [0, NUM_OBS_BASE) with no gaps."""
+def test_contract_fields_contiguous():
+    """The canonical fields must tile [0, NUM_OBS) with no gaps."""
     cursor = 0
     for _name, start, stop in contract.OBSERVATION.fields:
         assert start == cursor, f"gap/overlap before {_name}: {start} != {cursor}"
         cursor = stop
-    assert cursor == contract.NUM_OBS_BASE
+    assert cursor == contract.NUM_OBS

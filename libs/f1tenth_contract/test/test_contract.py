@@ -7,6 +7,7 @@ f1tenth_common) so those consumers cannot silently drift from this contract.
 """
 
 from f1tenth_contract import (
+    NUM_OBS,
     NUM_OBS_1V1,
     NUM_OBS_BASE,
     OPPONENT_OBS_DIM,
@@ -16,7 +17,7 @@ from f1tenth_contract import (
     ObservationSpec,
     expected_num_obs,
 )
-from f1tenth_contract.observation import OBS_FIELDS_BASE
+from f1tenth_contract.observation import OBS_FIELDS_BASE, OBS_FIELDS_OPPONENT
 
 
 def test_action_dim_is_two():
@@ -24,8 +25,9 @@ def test_action_dim_is_two():
     assert ActionSpec().index_of("steer") == 1
 
 
-def test_base_observation_dim():
-    assert OBSERVATION.dim == NUM_OBS_BASE == 384
+def test_observation_dim():
+    assert NUM_OBS_BASE == 384
+    assert OBSERVATION.dim == NUM_OBS == 390
 
 
 def test_opponent_observation_dim():
@@ -34,17 +36,16 @@ def test_opponent_observation_dim():
 
 
 def test_expected_num_obs():
-    assert expected_num_obs(False) == 384
-    assert expected_num_obs(True) == 390
+    assert expected_num_obs() == 390
 
 
 def test_base_fields_are_contiguous():
     offset = 0
-    for _name, start, stop in OBS_FIELDS_BASE:
+    for _name, start, stop in OBS_FIELDS_BASE + OBS_FIELDS_OPPONENT:
         assert start == offset, f"gap/overlap at {start} (expected {offset})"
         assert stop > start
         offset = stop
-    assert offset == NUM_OBS_BASE
+    assert offset == NUM_OBS
 
 
 def test_index_and_slice_lookup():

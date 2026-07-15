@@ -12,6 +12,7 @@
 
 # Core ML stack (arm64 wheels; torch selects the MPS/Metal or CPU backend).
 torch
+warp-lang==1.15.0
 numpy
 
 # Environment + trainer runtime deps.

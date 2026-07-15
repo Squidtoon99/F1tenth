@@ -16,10 +16,13 @@ import uuid
 from collections import deque
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 
 import torch
 import torch.nn as nn
+
+from f1tenth_contract import OBS_PREPROCESSING_VERSION, validate_policy_artifact
 
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
@@ -559,7 +562,6 @@ def accumulate_step_diagnostics(
         "nonfinite_state_envs",
         "dr/tire_friction",
         "dr/vehicle_mass",
-        "dr/mass_scale",
         "dr/drive_scale",
         "dr/steer_bias",
         "dr/action_latency_steps",
@@ -642,10 +644,8 @@ def build_config(args: argparse.Namespace) -> dict:
         "mixed_latest_prob": sp_defaults["mixed_latest_prob"],
     }
 
-    # 1v1: enable the opponent + opponent observation block + passing reward.
-    # Trained from scratch, so we just size the networks/normalizer at the larger
-    # num_obs - no checkpoint surgery. 1v0 (opponent "none") leaves everything as
-    # the unchanged solo config.
+    # 1v1: enable the opponent and passing reward. The policy input remains the
+    # fixed 390-d layout in both solo and opponent modes.
     # --mixed-opponents implies self-play (the policy half of the mix is refreshed
     # from the learner snapshot pool just like pure self-play).
     self_play = args.self_play or args.mixed_opponents
@@ -668,10 +668,6 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["env"]["opponent_reset_speed_max_mps"] = args.opponent_reset_speed_max
         if args.opponent_ckpt is not None:
             cfg["env"]["opponent_ckpt"] = args.opponent_ckpt
-        cfg["obs"]["enable_opponent_obs"] = True
-        cfg["obs"]["num_obs"] = int(cfg["obs"]["num_obs"]) + int(
-            cfg["obs"]["opponent_obs_dim"]
-        )
         # Activate the passing reward term (gated by presence of this scale).
         cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
         # Activate the GT Sophy any-collision penalty (gated by this scale).
@@ -752,6 +748,9 @@ def save_policy_artifact(
                 * float(cfg["env"].get("control_interval", 10))
             )
         ),
+        "simulator_id": str(cfg["simulator"]["id"]),
+        "simulator_version": int(cfg["simulator"]["version"]),
+        "observation_preprocessing_version": OBS_PREPROCESSING_VERSION,
     }
     torch.save(payload, path)
     logging.getLogger(LOGGER_NAME).info("Saved policy artifact to %s", path)
@@ -769,7 +768,12 @@ def load_init_ckpt(
     Returns the artifact's env-transition count so self-play can seed its first
     snapshot at the policy's true maturity. Critics start fresh (not exported).
     """
-    payload = torch.load(path, map_location=device)
+    payload = torch.load(path, map_location=device, weights_only=False)
+    validate_policy_artifact(
+        payload,
+        expected_obs_dim=normalizer.mean.numel(),
+        expected_action_dim=models.actor.mu_layer.out_features,
+    )
     models.actor.load_state_dict(payload["actor"])
     normalizer.load_state_dict(payload["obs_norm"])
     init_transitions = int(payload.get("env_transitions", 0))
@@ -803,8 +807,6 @@ def run_eval_video(
     so the training env, replay buffer and RNG state are never touched. Best-effort:
     any failure is logged and swallowed so a long run is never taken down by viz.
     """
-    import numpy as np
-
     from f1tenth_env.eval_viz import RolloutVisualizer, yaw_from_quat_wxyz
 
     num_show = max(1, int(num_show))
@@ -851,7 +853,7 @@ def run_eval_video(
         selfplay_mgr.refresh_eval_opponent(env)
 
     def render_step(_step, rollout_env, _state_before, _reward, done, _extras):
-        st = rollout_env.backend.read_state()
+        st = rollout_env.read_state()
         ego_xy = st["base_pos"][:, :2].cpu().numpy()
         ego_yaw = np.array(
             [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"]]
@@ -1092,9 +1094,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--precision",
         type=str,
-        default="64",
-        choices=["32", "64"],
-        help="Torch simulator precision.",
+        default="32",
+        choices=["32"],
+        help="Warp simulator precision (float32 only).",
     )
     parser.add_argument(
         "--export-interval-transitions",
@@ -1183,8 +1185,11 @@ def main():
     load_dotenv()
     args = parse_args()
 
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    torch.use_deterministic_algorithms(True)
 
     cfg = build_config(args)
     obs_cfg = cfg["obs"]
@@ -1201,7 +1206,7 @@ def main():
 
     device = select_device(args.device)
     rt.configure(
-        float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+        float_dtype=torch.float32,
         int_dtype=torch.int32,
         dev=device,
         eps=1e-12,

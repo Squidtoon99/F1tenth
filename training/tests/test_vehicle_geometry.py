@@ -1,7 +1,7 @@
 """Parity guards tying calibrated training, URDF, and deploy vehicle geometry.
 
 The URDF supplies inertial priors, while explicit calibrated config values define
-known geometry. These tests keep the backend asset, TorchSim, and car overlay from
+known geometry. These tests keep the backend asset, Warp sim, and car overlay from
 silently drifting apart.
 """
 

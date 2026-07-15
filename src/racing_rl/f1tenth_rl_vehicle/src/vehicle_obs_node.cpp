@@ -44,7 +44,7 @@ namespace f1tenth_rl_vehicle
 namespace
 {
 // Base (solo) observation dimension; the opponent block is appended at [384:390).
-// Mirror of f1tenth_common::ObservationLayout::kObservationDim.
+// Mirror of f1tenth_common::ObservationLayout::kObservationBaseDim.
 constexpr int kBaseObsDim = 384;
 
 double quatToYaw(double x, double y, double z, double w)
@@ -143,7 +143,7 @@ public:
     }
 
     ObsConfig cfg;
-    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 384));
+    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 390));
     cfg.future_track_num_points =
       static_cast<int>(declare_parameter<int>("future_track_num_points", 60));
     cfg.future_track_horizon_s = declare_parameter<double>("future_track_horizon_s", 6.0);
@@ -157,13 +157,11 @@ public:
     cfg.lin_acc_scale = declare_parameter<double>("lin_acc_scale", 1.0);
     const int coarse_stride = static_cast<int>(declare_parameter<int>("coarse_stride", 10));
 
-    // 1v1: append the 6-dim opponent block. If num_obs was left at the solo
-    // default, bump it to the 1v1 size so the assembled vector matches the policy.
     cfg.enable_opponent_obs = enable_opponent_obs_;
     cfg.zero_opponent_obs = zero_opponent_obs_;
     opponent_obs_dim_ = cfg.opponent_obs_dim;
-    if (enable_opponent_obs_ && cfg.num_obs < kBaseObsDim + cfg.opponent_obs_dim) {
-      cfg.num_obs = kBaseObsDim + cfg.opponent_obs_dim;
+    if (cfg.num_obs != kBaseObsDim + cfg.opponent_obs_dim) {
+      throw std::runtime_error("vehicle_obs: num_obs must be 390");
     }
 
     if (track_csv.empty()) {

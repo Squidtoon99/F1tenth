@@ -26,8 +26,8 @@ import numpy as np
 import torch
 
 from evaluation import deterministic_rollout
+from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
-from f1tenth_env.env import F1tenthEnv
 from f1tenth_env.eval_viz import RolloutVisualizer, yaw_from_quat_wxyz
 from standalone_trainer import (
     DEFAULT_CONFIG,
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
                    help="How many env instances to draw overlaid on the track "
                         "(swarm view). Bumps --num-envs up to match if needed.")
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--precision", type=str, default="32", choices=["32", "64"])
+    p.add_argument("--precision", type=str, default="32", choices=["32"])
     p.add_argument("--seed", type=int, default=0)
     # Visualization sinks (either/both).
     p.add_argument("--live", action="store_true", help="Stream live to Rerun.")
@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
 def _init_physics_runtime(args, cfg) -> torch.device:
     device = select_device(args.device)
     rt.configure(
-        float_dtype=torch.float64 if args.precision == "64" else torch.float32,
+        float_dtype=torch.float32,
         int_dtype=torch.int32,
         dev=device,
         eps=1e-12,
@@ -190,7 +190,7 @@ def main() -> None:
 
     duel = "1v1" if args.opponent_ckpt is not None else "1v0"
     print(f"Rolling out {args.steps} steps on '{args.track}' ({duel}, "
-          "physics=torch, "
+          "physics=warp, "
           f"live={args.live}, mp4={args.mp4})")
 
     n = args.num_show
@@ -199,7 +199,7 @@ def main() -> None:
         return np.array([yaw_from_quat_wxyz(q.tolist()) for q in quat_batch])
 
     def render_step(_step, rollout_env, _state_before, _reward, done, _extras):
-        st = rollout_env.backend.read_state()
+        st = rollout_env.read_state()
         ego_xy = st["base_pos"][:n, :2].cpu().numpy()
         ego_yaw = _yaws(st["base_quat"][:n])
         speed = torch.linalg.norm(st["base_lin_vel"][:n, :2], dim=-1).cpu().numpy()

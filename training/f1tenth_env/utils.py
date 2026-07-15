@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,95 @@ import logging
 from tqdm import tqdm
 
 TRACKS = {}
+
+
+@dataclass(frozen=True)
+class WarpTrackData:
+    point: np.ndarray
+    tangent: np.ndarray
+    normal: np.ndarray
+    segment_length: np.ndarray
+    cumulative_length: np.ndarray
+    width_left: np.ndarray
+    width_right: np.ndarray
+    length: float
+    nearest_segment_lut: np.ndarray
+    lut_width: int
+    lut_height: int
+    lut_origin: tuple[float, float]
+    lut_resolution: float
+
+
+def build_warp_track_data(
+    track_state: dict[str, Any],
+    *,
+    lut_resolution: float = 0.5,
+) -> WarpTrackData:
+    point = np.asarray(track_state["centerline"], dtype=np.float32)
+    width_left = np.asarray(track_state["w_tr_left"], dtype=np.float32)
+    width_right = np.asarray(track_state["w_tr_right"], dtype=np.float32)
+    if point.shape[0] > 2 and np.linalg.norm(point[0] - point[-1]) <= 1.0e-6:
+        point = point[:-1]
+        width_left = width_left[:-1]
+        width_right = width_right[:-1]
+    if point.ndim != 2 or point.shape[1] != 2 or point.shape[0] < 3:
+        raise ValueError("Track centerline must have shape (N, 2), N >= 3")
+    if width_left.shape != (point.shape[0],) or width_right.shape != (
+        point.shape[0],
+    ):
+        raise ValueError("Track widths must match the centerline")
+    if np.any(width_left <= 0.0) or np.any(width_right <= 0.0):
+        raise ValueError("Track widths must be positive")
+
+    edge = np.roll(point, -1, axis=0) - point
+    segment_length = np.linalg.norm(edge, axis=1).astype(np.float32)
+    if np.any(segment_length <= 1.0e-6):
+        raise ValueError("Track contains a zero-length segment")
+    tangent = edge / segment_length[:, None]
+    normal = np.stack((-tangent[:, 1], tangent[:, 0]), axis=1).astype(np.float32)
+    cumulative = np.concatenate(
+        (np.zeros(1, dtype=np.float32), np.cumsum(segment_length[:-1]))
+    ).astype(np.float32)
+    length = float(segment_length.sum(dtype=np.float64))
+
+    margin = float(max(width_left.max(), width_right.max()) + lut_resolution)
+    minimum = point.min(axis=0) - margin
+    maximum = point.max(axis=0) + margin
+    lut_width = int(np.ceil((maximum[0] - minimum[0]) / lut_resolution)) + 1
+    lut_height = int(np.ceil((maximum[1] - minimum[1]) / lut_resolution)) + 1
+    grid_x = minimum[0] + np.arange(lut_width, dtype=np.float32) * lut_resolution
+    grid_y = minimum[1] + np.arange(lut_height, dtype=np.float32) * lut_resolution
+    gx, gy = np.meshgrid(grid_x, grid_y)
+    query = np.stack((gx.reshape(-1), gy.reshape(-1)), axis=1)
+    lut = np.empty(query.shape[0], dtype=np.int32)
+    edge_sq = np.sum(edge * edge, axis=1)
+    for start in range(0, query.shape[0], 4096):
+        sample = query[start : start + 4096]
+        delta = sample[:, None, :] - point[None, :, :]
+        alpha = np.clip(
+            np.sum(delta * edge[None, :, :], axis=2) / edge_sq[None, :],
+            0.0,
+            1.0,
+        )
+        projection = point[None, :, :] + alpha[:, :, None] * edge[None, :, :]
+        distance_sq = np.sum((sample[:, None, :] - projection) ** 2, axis=2)
+        lut[start : start + sample.shape[0]] = np.argmin(distance_sq, axis=1)
+
+    return WarpTrackData(
+        point=np.ascontiguousarray(point),
+        tangent=np.ascontiguousarray(tangent),
+        normal=np.ascontiguousarray(normal),
+        segment_length=np.ascontiguousarray(segment_length),
+        cumulative_length=np.ascontiguousarray(cumulative),
+        width_left=np.ascontiguousarray(width_left),
+        width_right=np.ascontiguousarray(width_right),
+        length=length,
+        nearest_segment_lut=lut,
+        lut_width=lut_width,
+        lut_height=lut_height,
+        lut_origin=(float(minimum[0]), float(minimum[1])),
+        lut_resolution=float(lut_resolution),
+    )
 
 
 def load_tracks(force=False) -> None:

@@ -146,7 +146,7 @@ def test_compact_policy_artifact_round_trip(tmp_path):
             device=torch.device("cpu"),
         )
         deployed_norm = load_obs_norm(
-            str(path), torch.device("cpu"), eps=1e-8, clip=10.0
+            str(path), obs_dim=4, device=torch.device("cpu"), eps=1e-8, clip=10.0
         )
     finally:
         sys.path.remove(str(deploy_module))

@@ -10,7 +10,6 @@ No Genesis sim is started.
 from __future__ import annotations
 
 import math
-from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,7 +20,6 @@ from conftest import (
     make_straight_track,
     yaw_quat_wxyz,
 )
-from f1tenth_env.env import F1tenthEnv
 
 DEVICE = torch.device("cpu")
 
@@ -30,25 +28,18 @@ _RANGE_MASK_AHEAD_M = 40.0
 _RANGE_MASK_BEHIND_M = 20.0
 
 
-def _range_mask_env():
-    env = SimpleNamespace(
-        obs_cfg={
-            "opp_obs_ahead_m": _RANGE_MASK_AHEAD_M,
-            "opp_obs_behind_m": _RANGE_MASK_BEHIND_M,
-        }
-    )
-    env._wrapped_track_gap = MethodType(F1tenthEnv._wrapped_track_gap, env)
-    return env
-
-
 def _apply_range_mask(block, s_self, s_other, track_len=_RANGE_MASK_L):
-    env = _range_mask_env()
     s_self_t = torch.as_tensor(s_self, dtype=torch.float32).reshape(-1)
     s_other_t = torch.as_tensor(s_other, dtype=torch.float32).reshape(-1)
     track_len_t = torch.as_tensor(track_len, dtype=torch.float32).reshape(-1)
-    return F1tenthEnv._apply_opponent_range_mask(
-        env, block, s_self_t, s_other_t, track_len_t
+    gap = s_other_t - s_self_t
+    half_length = 0.5 * track_len_t
+    gap = torch.where(gap > half_length, gap - track_len_t, gap)
+    gap = torch.where(gap < -half_length, gap + track_len_t, gap)
+    visible = (gap <= _RANGE_MASK_AHEAD_M) & (
+        gap >= -_RANGE_MASK_BEHIND_M
     )
+    return torch.where(visible[:, None], block, torch.zeros_like(block))
 
 
 def _sample_opponent_block():
@@ -260,7 +251,7 @@ def _build_obs_cfg(obs_cfg, *, enabled, k=6):
     cfg = dict(obs_cfg)
     cfg["enable_opponent_obs"] = enabled
     cfg["opponent_obs_dim"] = k
-    cfg["num_obs"] = 384 + k if enabled else 384
+    cfg["num_obs"] = 384 + k
     return cfg
 
 
@@ -317,7 +308,7 @@ def test_build_observation_sentinel_when_block_none(real_modules, obs_cfg):
     assert torch.allclose(out[:, 384:], torch.zeros(n, 6))
 
 
-def test_build_observation_unchanged_when_disabled(real_modules, obs_cfg):
+def test_build_observation_uses_sentinel_when_disabled(real_modules, obs_cfg):
     obs = real_modules.observations
     cl, wl, wr = make_straight_track(length=60.0, n=240)
     ts = build_track_state(real_modules.utils, cl, wl, wr)
@@ -325,7 +316,7 @@ def test_build_observation_unchanged_when_disabled(real_modules, obs_cfg):
     n = base_pos.shape[0]
     cfg = _build_obs_cfg(obs_cfg, enabled=False)
     out = obs.build_observation(
-        num_obs=384,
+        num_obs=cfg["num_obs"],
         num_envs=n,
         base_lin_vel=torch.zeros(n, 3),
         base_ang_vel=torch.zeros(n, 3),
@@ -337,4 +328,5 @@ def test_build_observation_unchanged_when_disabled(real_modules, obs_cfg):
         step_state=ss,
         device=DEVICE,
     )
-    assert out.shape == (n, 384)
+    assert out.shape == (n, 390)
+    assert torch.equal(out[:, 384:390], torch.zeros(n, 6))

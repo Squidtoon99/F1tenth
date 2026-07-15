@@ -1,4 +1,4 @@
-"""TorchSim test: config-gated collision reward penalty."""
+"""Warp test: config-gated collision reward penalty."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ def _build_cfg(*, spawn_gap_m: float, enable_collision_reward: bool) -> dict:
     _pin_deterministic_spawn(cfg, gap_m=spawn_gap_m)
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     if enable_collision_reward:
         cfg["reward"]["reward_scales"]["collision"] = 1.0
@@ -57,7 +56,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-def test_collision_penalty_fires_on_contact(torch_backend):
+def test_collision_penalty_fires_on_contact(warp_runtime):
     num_envs = 2
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
     cfg = _build_cfg(spawn_gap_m=0.25, enable_collision_reward=True)
@@ -85,7 +84,7 @@ def test_collision_penalty_fires_on_contact(torch_backend):
         env.close()
 
 
-def test_collision_penalty_zero_when_separated(torch_backend):
+def test_collision_penalty_zero_when_separated(warp_runtime):
     num_envs = 2
     control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
     cfg = _build_cfg(spawn_gap_m=25.0, enable_collision_reward=True)

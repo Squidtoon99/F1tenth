@@ -1,91 +1,92 @@
-"""Throughput benchmark for the pure-Torch vehicle simulator.
-
-Run as ``python -m f1tenth_sim.bench`` (from ``training/``). Reports batched
-substep/control-step throughput across env counts and available devices.
-"""
+"""JSON benchmark for the Warp vehicle kernel."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import statistics
 import time
+from pathlib import Path
 
+import numpy as np
 import torch
+import warp as wp
 
 from .params import VehicleParams
-from .sim import TorchVehicleSim
+from .sim_warp import WarpVehicleSim
 
 
-def _devices(requested: str | None) -> list[str]:
-    if requested:
-        return [requested]
-    devs = ["cpu"]
-    if torch.cuda.is_available():
-        devs.append("cuda")
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        devs.append("mps")
-    return devs
+def _sync(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
-def _bench(device: str, n_envs: int, control_steps: int,
-           substeps: int, warmup: int) -> dict:
-    dev = torch.device(device)
+def _run(args, num_envs, device):
     params = VehicleParams.from_config({"tire_friction": 0.9})
-    sim = TorchVehicleSim(params, n_envs, device=dev, sim_dt=0.005, control_dt=0.05)
-    quat = torch.zeros(n_envs, 4, device=dev)
-    quat[:, 0] = 1.0
-    sim.reset(None, torch.zeros(n_envs, 3, device=dev), quat,
-              torch.zeros(n_envs, device=dev))
-    a = torch.zeros(n_envs, 2, device=dev)
-    a[:, 0] = 0.5
-    a[:, 1] = 0.1
-
-    def sync():
-        if device == "cuda":
-            torch.cuda.synchronize()
-        elif device == "mps":
-            torch.mps.synchronize()
-
-    for _ in range(warmup):
-        sim.step(a, n_steps=substeps)
-    sync()
-
-    t0 = time.perf_counter()
-    for _ in range(control_steps):
-        sim.step(a, n_steps=substeps)
-    sync()
-    dt = time.perf_counter() - t0
-
-    finite = bool(torch.isfinite(sim.read_state()["base_pos"]).all().item())
-    ctrl_per_s = n_envs * control_steps / dt
+    sim = WarpVehicleSim(params, num_envs, device=device)
+    position = torch.zeros(num_envs, 3, device=device)
+    quaternion = torch.zeros(num_envs, 4, device=device)
+    quaternion[:, 0] = 1.0
+    speed = torch.zeros(num_envs, device=device)
+    actions = torch.tensor([0.5, 0.1], device=device).repeat(num_envs, 1)
+    samples = []
+    hashes = []
+    for _ in range(args.repeats):
+        sim.reset(None, position, quaternion, speed)
+        for _ in range(args.warmup):
+            sim.step(actions)
+        _sync(device)
+        start = time.perf_counter()
+        for _ in range(args.steps):
+            sim.step(actions)
+        _sync(device)
+        elapsed = time.perf_counter() - start
+        samples.append(num_envs * args.steps / elapsed)
+        digest = hashlib.sha256(
+            sim.read_state()["base_pos"].cpu().numpy().tobytes()
+        ).hexdigest()
+        hashes.append(digest)
+    median = statistics.median(samples)
     return {
-        "control_per_s": ctrl_per_s,
-        "substep_per_s": ctrl_per_s * substeps,
-        "finite": finite,
+        "num_envs": num_envs,
+        "median_transitions_per_second": median,
+        "p95_transitions_per_second": float(np.percentile(samples, 5.0)),
+        "median_ns_per_env_step": 1.0e9 / median,
+        "samples_transitions_per_second": samples,
+        "deterministic": len(set(hashes)) == 1,
+        "output_sha256": hashes[0],
     }
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--device", default=None)
-    ap.add_argument("--envs", type=int, nargs="+",
-                    default=[256, 1024, 4096, 16384])
-    ap.add_argument("--control-steps", type=int, default=100)
-    ap.add_argument("--substeps", type=int, default=10)
-    ap.add_argument("--warmup", type=int, default=5)
-    args = ap.parse_args()
-
-    print(f"torch {torch.__version__}  control_steps={args.control_steps} "
-          f"substeps={args.substeps}")
-    header = f"{'device':>6} {'n_envs':>8} " \
-             f"{'ctrl/s':>14} {'substep/s':>16} {'finite':>7}"
-    print(header)
-    print("-" * len(header))
-    for device in _devices(args.device):
-        for n in args.envs:
-            r = _bench(device, n, args.control_steps, args.substeps, args.warmup)
-            print(f"{device:>6} {n:>8} "
-                  f"{r['control_per_s']:>14,.0f} {r['substep_per_s']:>16,.0f} "
-                  f"{str(r['finite']):>7}")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--envs",
+        type=int,
+        nargs="+",
+        default=[256, 1024, 4096, 12288, 32768, 65536],
+    )
+    parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    device = torch.device(args.device)
+    report = {
+        "benchmark": "warp_f1tenth_vehicle",
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+        "torch": torch.__version__,
+        "torch_cuda": torch.version.cuda,
+        "warp": wp.__version__,
+        "results": [_run(args, count, device) for count in args.envs],
+    }
+    text = json.dumps(report, indent=2)
+    if args.output is not None:
+        args.output.write_text(text + "\n")
+    print(text)
 
 
 if __name__ == "__main__":

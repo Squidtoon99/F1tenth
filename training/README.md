@@ -2,8 +2,8 @@
 
 Reinforcement-learning training code. This is **pure Python**: it is never built by
 colcon and never included in the car image. Training runs natively on developer
-machines (macOS Apple Silicon uses the torch MPS/Metal or CPU backend) or on a
-Linux + NVIDIA GPU box / HPC (there is intentionally **no GPU CI**).
+machines (macOS supports small Warp CPU tests) or on a Linux + NVIDIA GPU box /
+HPC (there is intentionally **no GPU CI**).
 
 ## Layout
 
@@ -12,9 +12,8 @@ The modules are top-level (imported as `config`, `run_layout`, `standalone_train
 
 - `f1tenth_env/` — the simulation environment used for training (observations,
   rewards, terminations, opponents, and domain randomization).
-- `f1tenth_sim/` — the Torch vehicle simulator (Pacejka tyres,
-  load transfer, wheel-spin, VESC/force drivetrain) used by the `torch` backend.
-  Fully batched over `num_envs` and runs on CPU / CUDA / MPS.
+- `f1tenth_sim/` — Warp vehicle dynamics (Pacejka tyres, load transfer,
+  wheel-spin, and force drivetrain), batched over environments on CPU or CUDA.
 - `qrsac/` — the RL algorithm: Quantile-Regression Soft Actor-Critic
   (distributional actor-critic) plus the spinning-up MLP building blocks.
 - `standalone_trainer.py` — single-process trainer entry point (F1tenthEnv +
@@ -48,12 +47,11 @@ cd training
 python standalone_trainer.py --num-envs 512 --total-transitions 256000000
 ```
 
-### TorchSim physics
+### Warp physics
 
 ```bash
-# TorchSim runs headless on CPU/CUDA/MPS. Longitudinal action is force/brake
-# effort mapped to f_drive_max / f_brake_max (ADR 0006).
-python standalone_trainer.py --num-envs 4096
+# GPU training uses float32 Warp kernels and zero-copy PyTorch interoperability.
+python standalone_trainer.py --device cuda --precision 32 --num-envs 4096
 ```
 
 Training domain randomization is always enabled. Evaluation and deterministic

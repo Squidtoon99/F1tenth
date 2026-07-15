@@ -1,4 +1,4 @@
-"""TorchSim long 1v1 contact soak: assert zero non-finite obs/reward/state."""
+"""Warp long 1v1 contact soak: assert zero non-finite obs/reward/state."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ def _build_cfg(*, spawn_gap_m: float) -> dict:
     cfg["env"]["opponent_target_speed"] = 1.5
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["obs"]["enable_opponent_obs"] = True
-    cfg["obs"]["num_obs"] = 384 + int(cfg["obs"]["opponent_obs_dim"])
     cfg["reward"]["reward_scales"]["passing"] = 0.5
     return cfg
 
@@ -55,7 +54,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-def test_1v1_contact_soak_zero_nonfinite(torch_backend_f64):
+def test_1v1_contact_soak_zero_nonfinite(warp_runtime):
     """Spawn ego close behind opponent and chase for many steps with repeated contact."""
     num_envs = 4
     steps = 600

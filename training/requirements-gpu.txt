@@ -12,6 +12,7 @@
 # Core ML stack (CUDA build).
 torch==2.10.0
 torchvision==0.25.0
+warp-lang==1.15.0
 numpy
 
 # Environment + trainer runtime deps.

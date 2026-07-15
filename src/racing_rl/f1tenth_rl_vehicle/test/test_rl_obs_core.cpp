@@ -59,7 +59,7 @@ TEST(RlObsCore, MatchesPythonFixture)
   ObsConfig cfg;
   double samples, horizon, width, contact, clip, sv, sa, sc;
   f >> samples >> horizon >> width >> contact >> clip >> sv >> sa >> sc;
-  cfg.num_obs = 384;
+  cfg.num_obs = 390;
   cfg.future_track_num_points = static_cast<int>(samples);
   cfg.future_track_horizon_s = horizon;
   cfg.future_track_width = width;
@@ -99,13 +99,11 @@ TEST(RlObsCore, MatchesPythonFixture)
   }
   EXPECT_LT(max_diff, 1e-4) << "max obs parity diff = " << max_diff;
 
-  // Opponent section (390-dim). Present only in fixtures regenerated after the
-  // opponent block was added; older fixtures simply skip this block.
+  // Opponent section.
   int num_opp_cases = 0;
   if (f >> num_opp_cases) {
     ObsConfig ocfg = cfg;
     ocfg.enable_opponent_obs = true;
-    ocfg.num_obs = 384 + ocfg.opponent_obs_dim;
     TrackObservationBuilder opp_builder(xs, ys, wl, wr, ocfg);
 
     double opp_max_diff = 0.0;

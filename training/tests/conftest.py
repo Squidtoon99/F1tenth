@@ -28,10 +28,7 @@ from f1tenth_env import runtime as rt  # noqa: E402
 
 
 def _configure_runtime(*, float_dtype=torch.float32) -> None:
-    """Configure the pure-Torch env runtime (CPU).
-
-    Every test uses ``f1tenth_sim.TorchVehicleSim``.
-    """
+    """Configure the Warp/PyTorch runtime for CPU tests."""
     rt.configure(
         float_dtype=float_dtype,
         int_dtype=torch.int32,
@@ -41,22 +38,10 @@ def _configure_runtime(*, float_dtype=torch.float32) -> None:
 
 
 @pytest.fixture
-def torch_backend():
-    """Pure-Torch runtime (float32, CPU) for a TorchSim env test."""
+def warp_runtime():
+    """Float32 CPU runtime for Warp environment tests."""
     _configure_runtime(float_dtype=torch.float32)
     return None
-
-
-@pytest.fixture
-def torch_backend_f64():
-    """float64 Torch runtime for numerically sensitive soak checks.
-
-    Restores the float32 default on teardown so the global runtime dtype does not
-    leak into later tests.
-    """
-    _configure_runtime(float_dtype=torch.float64)
-    yield None
-    _configure_runtime(float_dtype=torch.float32)
 
 
 def _stub_requests() -> None:
@@ -87,7 +72,9 @@ def real_modules():
 def obs_cfg() -> dict[str, Any]:
     """Mirror of config.py DEFAULT_CONFIG['obs'] (clip disabled for clean asserts)."""
     return {
-        "num_obs": 384,
+        "num_obs": 390,
+        "enable_opponent_obs": True,
+        "opponent_obs_dim": 6,
         "obs_scales": {"lin_vel": 1.0, "ang_vel": 1.0, "lin_acc": 1.0},
         "clip_obs": 0.0,
         "norm_clip": 10.0,

@@ -1,9 +1,12 @@
-"""Physics-validation tests for f1tenth_sim.
+"""Physics-validation tests for the Warp simulator.
 
-Assert that steady-state behaviour matches closed-form expectations from vehicle
-dynamics: kinematic turn radius at low speed, friction-limited skidpad lateral
-acceleration (~ mu * g), an understeer gradient at higher speed, and sane
-straight-line acceleration / braking. Plus a golden-trajectory regression guard.
+Ported from the deleted TorchSim validation suite (test_torch_sim_validation.py on
+develop), reusing the same closed-form expectations, thresholds, and golden values.
+Steady-state behaviour must match vehicle-dynamics first principles: kinematic turn
+radius at low speed, friction-limited skidpad lateral acceleration (~ mu * g), an
+understeer gradient at higher speed, and sane straight-line accel/braking. The
+golden-trajectory guard reuses the TorchSim golden (the authoritative reference);
+Warp lands within the same tolerance band.
 """
 
 from __future__ import annotations
@@ -12,14 +15,18 @@ import math
 
 import torch
 
-from f1tenth_sim import TorchVehicleSim, VehicleParams
+from f1tenth_sim.params import VehicleParams
+from f1tenth_sim.sim_warp import WarpVehicleSim
 
 
 def _sim(mu=0.9, max_speed=8.0, **over):
     cfg = {"tire_friction": mu, "max_speed": max_speed}
     cfg.update(over)
     p = VehicleParams.from_config(cfg)
-    return TorchVehicleSim(p, 1, sim_dt=0.005, control_dt=0.1), p
+    return (
+        WarpVehicleSim(p, 1, device="cpu", sim_dt=0.005, control_dt=0.1),
+        p,
+    )
 
 
 def _reset(sim, speed=0.0):
@@ -48,12 +55,10 @@ def _steady(sim, throttle, steer, n=400, tail=60):
 def test_low_speed_turn_radius_matches_kinematics():
     sim, p = _sim(mu=0.9)
     _reset(sim)
-    # gentle throttle, moderate steer -> low lateral load, radius ~ kinematic
     steer_norm = 0.5
     radius, _ = _steady(sim, throttle=0.12, steer=steer_norm, n=400)
     delta = steer_norm * p.max_steer
     kin_radius = p.wheelbase / math.tan(delta)
-    # within 25% (tyre slip adds mild understeer at this load)
     assert abs(radius - kin_radius) / kin_radius < 0.25
 
 
@@ -72,7 +77,6 @@ def test_skidpad_lateral_accel_bounded_by_mu_g():
     _reset(sim)
     _, ay = _steady(sim, throttle=0.5, steer=0.8, n=600, tail=100)
     mu_g = mu * p.gravity
-    # friction-limited: below mu*g, but a meaningful fraction of it
     assert ay <= mu_g * 1.05
     assert ay >= mu_g * 0.6
 
@@ -88,7 +92,6 @@ def test_higher_mu_allows_higher_lateral_accel():
 
 
 def test_understeer_radius_grows_with_speed():
-    # Same steer, higher speed -> larger radius (understeer) for a stable car.
     sim_lo, _ = _sim(mu=1.0, max_speed=12.0)
     _reset(sim_lo)
     r_lo, _ = _steady(sim_lo, throttle=0.12, steer=0.4, n=400)
@@ -122,9 +125,8 @@ def test_golden_trajectory_regression():
     st = sim.read_state()
     pos = st["base_pos"][0, :2]
     yaw = 2.0 * math.atan2(st["base_quat"][0, 3].item(), st["base_quat"][0, 0].item())
-    # Golden values captured from the force-mode drivetrain; guards against silent
-    # dynamics regressions. Tolerance is loose enough for float ordering, tight
-    # enough to catch real changes.
+    # Golden reused from the TorchSim force-mode drivetrain; the Warp trajectory
+    # lands inside the same tolerance band (no self-referential re-baselining).
     gx, gy, gyaw = 0.6304, 10.6901, 2.9336
     assert abs(pos[0].item() - gx) < 0.25
     assert abs(pos[1].item() - gy) < 0.25

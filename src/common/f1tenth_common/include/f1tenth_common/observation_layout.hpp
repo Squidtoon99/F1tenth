@@ -19,9 +19,10 @@ namespace f1tenth_common
 struct ObservationLayout
 {
   // Dimensions.
-  static constexpr std::size_t kObservationDim = 384;       // base (solo)
-  static constexpr std::size_t kOpponentObsDim = 6;         // appended for 1v1
-  static constexpr std::size_t kObservationDim1v1 = 390;    // base + opponent
+  static constexpr std::size_t kObservationBaseDim = 384;
+  static constexpr std::size_t kOpponentObsDim = 6;
+  static constexpr std::size_t kObservationDim = 390;
+  static constexpr std::size_t kObservationDim1v1 = kObservationDim;
   static constexpr std::size_t kActionDim = 2;              // (throttle, steer)
   static constexpr std::size_t kTyreSlipDim = 8;
   static constexpr std::size_t kTyreLoadDim = 4;
