@@ -1699,7 +1699,7 @@ def main():
                             "nonfinite/reward_rate": nf_reward_rate,
                             "nonfinite/state_rate": nf_state_rate,
                         },
-                        step=vector_ticks,
+                        step=env_transitions,
                     )
                 policy_loss_accum.zero_()
                 critic_loss_accum.zero_()
@@ -1741,7 +1741,7 @@ def main():
                         control_interval=control_interval,
                         clip_actions=clip_actions,
                         run_dir=run_dir,
-                        step=vector_ticks,
+                        step=env_transitions,
                         num_steps=args.eval_video_steps,
                         num_show=args.eval_video_num_envs,
                         live=args.eval_video_live,
