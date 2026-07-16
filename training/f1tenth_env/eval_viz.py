@@ -218,6 +218,7 @@ class RolloutVisualizer:
         opp_yaw=0.0,
         done=False,
         extra_text: str = "",
+        step: int | None = None,
     ) -> None:
         """Draw one frame.
 
@@ -251,12 +252,13 @@ class RolloutVisualizer:
             ]
 
         if self._writer is not None:
-            self._render_mp4(rects, opp_rects, spd, extra_text)
+            frame_step = self._step if step is None else int(step)
+            self._render_mp4(rects, opp_rects, spd, extra_text, frame_step)
         if self.live:
             self._render_rerun(rects, opp_rects, spd)
-        self._step += 1
+        self._step = (int(step) + 1) if step is not None else (self._step + 1)
 
-    def _render_mp4(self, rects, opp_rects, spd, extra_text) -> None:
+    def _render_mp4(self, rects, opp_rects, spd, extra_text, frame_step) -> None:
         import cv2
 
         frame = self._bg.copy()
@@ -269,7 +271,7 @@ class RolloutVisualizer:
                 cv2.fillPoly(frame, [self._poly_px(r)], _opp_color(i))
         for i, r in enumerate(rects):
             cv2.fillPoly(frame, [self._poly_px(r)], _car_color(i))
-        label = (f"step {self._step}  cars={len(rects)}  "
+        label = (f"step {frame_step}  cars={len(rects)}  "
                  f"v[mean={spd.mean():4.1f} max={spd.max():4.1f}] m/s")
         if extra_text:
             label += f"  {extra_text}"

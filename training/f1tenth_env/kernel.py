@@ -577,6 +577,23 @@ def apply_contact(
 
 
 @wp.func
+def resolve_and_apply_pair_contact(
+    ego: VehicleLocal,
+    opponent: VehicleLocal,
+    opponent_params: OpponentParams,
+) -> tuple[VehicleLocal, VehicleLocal, ContactResult]:
+    contact = resolve_pair_contact(ego, opponent, opponent_params)
+    if contact.contact != 0:
+        ego, opponent = apply_contact(
+            ego,
+            opponent,
+            contact,
+            opponent_params.restitution,
+        )
+    return ego, opponent, contact
+
+
+@wp.func
 def reset_random(seed: wp.int32, env_id: wp.int32, episode_id: wp.int32):
     mixed = seed ^ (env_id * 73244475) ^ (episode_id * 295075153)
     return wp.rand_init(mixed & 2147483647)
@@ -1357,6 +1374,26 @@ def physics_stage_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def contact_stage_kernel(
+    ego_buffers: VehicleBuffers,
+    opponent_buffers: VehicleBuffers,
+    env: PhysicsBuffers,
+    opponent_params: OpponentParams,
+):
+    env_id = wp.tid()
+    ego = load_vehicle(ego_buffers, env_id)
+    opponent = load_vehicle(opponent_buffers, env_id)
+    ego, opponent, contact = resolve_and_apply_pair_contact(
+        ego, opponent, opponent_params
+    )
+    if contact.contact != 0:
+        store_vehicle(ego_buffers, env_id, ego)
+        store_vehicle(opponent_buffers, env_id, opponent)
+    env.contact[env_id] = contact.contact
+    env.contact_closing_speed[env_id] = contact.closing_speed
+
+
+@wp.kernel(enable_backward=False)
 def transaction_stage_kernel(
     ego_buffers: VehicleBuffers,
     opponent_buffers: VehicleBuffers,
@@ -1373,14 +1410,10 @@ def transaction_stage_kernel(
     opponent = load_vehicle(opponent_buffers, env_id)
     contact = ContactResult()
     if reset.has_opponent != 0:
-        contact = resolve_pair_contact(ego, opponent, opponent_params)
+        ego, opponent, contact = resolve_and_apply_pair_contact(
+            ego, opponent, opponent_params
+        )
         if contact.contact != 0:
-            ego, opponent = apply_contact(
-                ego,
-                opponent,
-                contact,
-                opponent_params.restitution,
-            )
             store_vehicle(ego_buffers, env_id, ego)
             store_vehicle(opponent_buffers, env_id, opponent)
     env.contact[env_id] = contact.contact
