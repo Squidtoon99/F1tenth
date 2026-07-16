@@ -8,7 +8,7 @@ Match format (two swapped-seat legs per pairing):
     respawned facing the track direction, on the side of the track it went off,
     held stationary for 2 s, then resumes racing;
   * match winner = more leg wins; 1-1 splits break on aggregate laps, progress,
-    penalties, then seed rank (see ``decide_match_winner``).
+    penalties, then a seat-independent hash tie-break (see ``decide_match_winner``).
 
 Both cars are driven by their own checkpoint through the *identical* ego
 observation + inference pipeline (``build_symmetric_agent_obs`` +
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import os
 import random
@@ -73,6 +74,335 @@ DEFAULT_ELIM_LOSSES = 3
 SEED_METRIC_MEAN = "mean"
 SEED_METRIC_MIN = "min"
 _RACE_GEOM_CACHE = "race"
+_RACE_CONFIG_KEYS = (
+    "track", "domain_randomization", "simulate_action_latency",
+    "opponent_strategy", "term_on_collision", "term_oob_max_consecutive",
+    "term_not_moving_time_s", "term_heading_error_rad", "episode_length",
+    "control_interval", "clip_actions", "car_length", "car_width",
+)
+_RACE_OBS_KEYS = (
+    "num_obs", "enable_opponent_obs", "opponent_obs_dim",
+    "opp_obs_ahead_m", "opp_obs_behind_m",
+)
+
+
+def _unwrap_s_gap(s_self: torch.Tensor, s_other: torch.Tensor,
+                  track_len: torch.Tensor) -> torch.Tensor:
+    gap = s_other - s_self
+    half = 0.5 * track_len
+    gap = torch.where(gap > half, gap - track_len, gap)
+    gap = torch.where(gap < -half, gap + track_len, gap)
+    return gap
+
+
+def _interaction_window(gap: torch.Tensor, reward_cfg: dict) -> torch.Tensor:
+    ahead_m = float(reward_cfg.get("passing_gate_ahead_m", 40.0))
+    behind_m = float(reward_cfg.get("passing_gate_behind_m", 20.0))
+    return (gap <= ahead_m) & (gap >= -behind_m)
+
+
+def _tie_resolver_winner(
+    model_a: str,
+    model_b: str,
+    match_id: str | None = None,
+    *,
+    leg: int | None = None,
+) -> tuple[str, str]:
+    stems = sorted([Path(model_a).stem, Path(model_b).stem])
+    parts = stems + ([match_id] if match_id else [])
+    if leg is not None:
+        parts.append(f"leg{leg}")
+    digest = hashlib.sha256("|".join(parts).encode()).hexdigest()
+    pick_first = int(digest, 16) % 2 == 0
+    winner_stem = stems[0] if pick_first else stems[1]
+    winner = "a" if Path(model_a).stem == winner_stem else "b"
+    return winner, "tie_unresolved"
+
+
+def race_config_fingerprint(cfg: dict, track: str) -> dict:
+    env_slice = {k: cfg["env"].get(k) for k in _RACE_CONFIG_KEYS if k in cfg["env"]}
+    env_slice["track"] = track
+    obs_slice = {k: cfg["obs"].get(k) for k in _RACE_OBS_KEYS if k in cfg["obs"]}
+    return {"env": env_slice, "obs": obs_slice}
+
+
+def race_config_sha(cfg: dict, track: str) -> str:
+    payload = json.dumps(race_config_fingerprint(cfg, track), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _read_config_json(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if isinstance(data, dict) and "config" in data:
+        return data["config"]
+    return data
+
+
+def load_race_base_config(
+    model_a: Path,
+    *,
+    config: str | Path | None = None,
+    config_ref: str | Path | None = None,
+) -> tuple[dict, str]:
+    if config is not None:
+        path = Path(config).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"Race config not found: {path}")
+        return _read_config_json(path), str(path)
+    if config_ref is not None:
+        ref = Path(config_ref).resolve()
+        if ref.is_file():
+            path = ref
+        else:
+            path = ref / "config.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Race config not found: {path}")
+        return _read_config_json(path), str(path)
+    cfg_path = model_a.parent.parent / "config.json"
+    if cfg_path.exists():
+        return _read_config_json(cfg_path), str(cfg_path.resolve())
+    return copy.deepcopy(DEFAULT_CONFIG), "DEFAULT_CONFIG"
+
+
+def init_race_telemetry(n: int, device: torch.device) -> dict:
+    z_i = torch.zeros(n, dtype=torch.int32, device=device)
+    z_f = torch.zeros(n, dtype=rt.tc_float, device=device)
+    z_b = torch.zeros(n, dtype=torch.bool, device=device)
+    return {
+        "sim_passes": z_i.clone(),
+        "opp_passes": z_i.clone(),
+        "sim_times_passed": z_i.clone(),
+        "opp_times_passed": z_i.clone(),
+        "sim_ahead_steps": z_i.clone(),
+        "opp_ahead_steps": z_i.clone(),
+        "interaction_steps": z_i.clone(),
+        "sim_oob_crashes": z_i.clone(),
+        "opp_oob_crashes": z_i.clone(),
+        "sim_collision_crashes": z_i.clone(),
+        "opp_collision_crashes": z_i.clone(),
+        "sim_collisions_caused": z_i.clone(),
+        "opp_collisions_caused": z_i.clone(),
+        "sim_collisions_received": z_i.clone(),
+        "opp_collisions_received": z_i.clone(),
+        "sim_respawns": z_i.clone(),
+        "opp_respawns": z_i.clone(),
+        "sim_prev_opp_ahead": z_b.clone(),
+        "opp_prev_sim_ahead": z_b.clone(),
+        "sim_lap_splits": [[] for _ in range(n)],
+        "opp_lap_splits": [[] for _ in range(n)],
+        "sim_prev_lap_int": z_i.clone(),
+        "opp_prev_lap_int": z_i.clone(),
+        "sim_last_cross_step": torch.full((n,), -1, dtype=torch.int32, device=device),
+        "opp_last_cross_step": torch.full((n,), -1, dtype=torch.int32, device=device),
+        "race_step": 0,
+        "control_dt": z_f.clone(),
+    }
+
+
+def _telemetry_numpy(telemetry: dict, idx: int = 0) -> dict:
+    ia = int(telemetry["interaction_steps"][idx])
+    sim_ahead = int(telemetry["sim_ahead_steps"][idx])
+    opp_ahead = int(telemetry["opp_ahead_steps"][idx])
+    sim_splits = telemetry["sim_lap_splits"][idx]
+    opp_splits = telemetry["opp_lap_splits"][idx]
+    return {
+        "passes_completed": int(telemetry["sim_passes"][idx]),
+        "times_passed": int(telemetry["sim_times_passed"][idx]),
+        "time_ahead_frac": (sim_ahead / ia) if ia > 0 else 0.0,
+        "oob_crashes": int(telemetry["sim_oob_crashes"][idx]),
+        "collision_crashes": int(telemetry["sim_collision_crashes"][idx]),
+        "collisions_caused": int(telemetry["sim_collisions_caused"][idx]),
+        "collisions_received": int(telemetry["sim_collisions_received"][idx]),
+        "respawns": int(telemetry["sim_respawns"][idx]),
+        "lap_splits_s": [round(x, 4) for x in sim_splits],
+        "clean_lap_count": len(sim_splits),
+        "mean_clean_split_s": (
+            round(float(sum(sim_splits) / len(sim_splits)), 4)
+            if sim_splits else None
+        ),
+        "_opp": {
+            "passes_completed": int(telemetry["opp_passes"][idx]),
+            "times_passed": int(telemetry["opp_times_passed"][idx]),
+            "time_ahead_frac": (opp_ahead / ia) if ia > 0 else 0.0,
+            "oob_crashes": int(telemetry["opp_oob_crashes"][idx]),
+            "collision_crashes": int(telemetry["opp_collision_crashes"][idx]),
+            "collisions_caused": int(telemetry["opp_collisions_caused"][idx]),
+            "collisions_received": int(telemetry["opp_collisions_received"][idx]),
+            "respawns": int(telemetry["opp_respawns"][idx]),
+            "lap_splits_s": [round(x, 4) for x in opp_splits],
+            "clean_lap_count": len(opp_splits),
+            "mean_clean_split_s": (
+                round(float(sum(opp_splits) / len(opp_splits)), 4)
+                if opp_splits else None
+            ),
+        },
+    }
+
+
+def aggregate_telemetry(leg1: dict, leg2: dict) -> dict:
+    def _sum(key: str) -> tuple[int, int]:
+        return leg1.get(key, 0) + leg2.get(key, 0), (
+            leg1.get("telemetry_b", {}).get(key, 0)
+            + leg2.get("telemetry_b", {}).get(key, 0)
+        )
+
+    passes_a, passes_b = _sum("passes_completed")
+    passed_a, passed_b = _sum("times_passed")
+    oob_a, oob_b = _sum("oob_crashes")
+    coll_crash_a, coll_crash_b = _sum("collision_crashes")
+    caused_a, caused_b = _sum("collisions_caused")
+    recv_a, recv_b = _sum("collisions_received")
+    resp_a, resp_b = _sum("respawns")
+
+    def _mean_frac(key: str) -> tuple[float, float]:
+        w1 = leg1.get("steps", 0)
+        w2 = leg2.get("steps", 0)
+        total = w1 + w2
+        if total <= 0:
+            return 0.0, 0.0
+        fa = (
+            leg1.get(key, 0.0) * w1 + leg2.get(key, 0.0) * w2
+        ) / total
+        fb = (
+            leg1.get("telemetry_b", {}).get(key, 0.0) * w1
+            + leg2.get("telemetry_b", {}).get(key, 0.0) * w2
+        ) / total
+        return fa, fb
+
+    ahead_a, ahead_b = _mean_frac("time_ahead_frac")
+
+    def _mean_splits(side: str) -> float | None:
+        vals = []
+        for lg in (leg1, leg2):
+            if side == "a":
+                v = lg.get("mean_clean_split_s")
+            else:
+                v = lg.get("telemetry_b", {}).get("mean_clean_split_s")
+            if v is not None:
+                vals.append(v)
+        if not vals:
+            return None
+        return round(float(sum(vals) / len(vals)), 4)
+
+    return {
+        "passes_completed_a": passes_a,
+        "passes_completed_b": passes_b,
+        "times_passed_a": passed_a,
+        "times_passed_b": passed_b,
+        "time_ahead_frac_a": round(ahead_a, 6),
+        "time_ahead_frac_b": round(ahead_b, 6),
+        "oob_crashes_a": oob_a,
+        "oob_crashes_b": oob_b,
+        "collision_crashes_a": coll_crash_a,
+        "collision_crashes_b": coll_crash_b,
+        "collisions_caused_a": caused_a,
+        "collisions_caused_b": caused_b,
+        "collisions_received_a": recv_a,
+        "collisions_received_b": recv_b,
+        "respawns_a": resp_a,
+        "respawns_b": resp_b,
+        "clean_lap_count_a": leg1.get("clean_lap_count", 0) + leg2.get(
+            "clean_lap_count", 0
+        ),
+        "clean_lap_count_b": (
+            leg1.get("telemetry_b", {}).get("clean_lap_count", 0)
+            + leg2.get("telemetry_b", {}).get("clean_lap_count", 0)
+        ),
+        "mean_clean_split_s_a": _mean_splits("a"),
+        "mean_clean_split_s_b": _mean_splits("b"),
+    }
+
+
+def update_race_telemetry(
+    telemetry: dict,
+    *,
+    sim_ss: dict,
+    opp_ss: dict,
+    reward_cfg: dict,
+    active: torch.Tensor,
+    suppress: torch.Tensor,
+    sim_hold: torch.Tensor,
+    opp_hold: torch.Tensor,
+    sim_fault: torch.Tensor,
+    opp_fault: torch.Tensor,
+    sim_crash: torch.Tensor,
+    opp_crash: torch.Tensor,
+    sim_laps: torch.Tensor,
+    opp_laps: torch.Tensor,
+    step: int,
+    control_dt: float,
+) -> None:
+    telemetry["race_step"] = step
+    telemetry["control_dt"] = control_dt
+    length = sim_ss["frenet"]["L"]
+    sim_s = sim_ss["frenet"]["s"]
+    opp_s = opp_ss["frenet"]["s"]
+    gap = _unwrap_s_gap(sim_s, opp_s, length)
+    in_window = _interaction_window(gap, reward_cfg)
+    non_frozen = active & ~suppress
+    count_step = non_frozen & in_window
+    telemetry["interaction_steps"] += count_step.to(torch.int32)
+
+    sim_ahead = count_step & (gap < 0)
+    opp_ahead = count_step & (gap > 0)
+    telemetry["sim_ahead_steps"] += sim_ahead.to(torch.int32)
+    telemetry["opp_ahead_steps"] += opp_ahead.to(torch.int32)
+
+    gap_gate = float(reward_cfg.get("overtake_gap_m", 5.0))
+    opp_ahead_now = gap > 0
+    sim_ahead_now = gap < 0
+    close = gap.abs() < gap_gate
+
+    sim_pass = (
+        telemetry["sim_prev_opp_ahead"] & (~opp_ahead_now) & close & non_frozen
+    )
+    opp_pass = (
+        telemetry["opp_prev_sim_ahead"] & (~sim_ahead_now) & close & non_frozen
+    )
+    telemetry["sim_passes"] += sim_pass.to(torch.int32)
+    telemetry["opp_passes"] += opp_pass.to(torch.int32)
+    telemetry["sim_times_passed"] += opp_pass.to(torch.int32)
+    telemetry["opp_times_passed"] += sim_pass.to(torch.int32)
+    telemetry["sim_prev_opp_ahead"] = torch.where(
+        non_frozen, opp_ahead_now, telemetry["sim_prev_opp_ahead"],
+    )
+    telemetry["opp_prev_sim_ahead"] = torch.where(
+        non_frozen, sim_ahead_now, telemetry["opp_prev_sim_ahead"],
+    )
+
+    telemetry["sim_collisions_caused"] += (sim_fault & active).to(torch.int32)
+    telemetry["opp_collisions_caused"] += (opp_fault & active).to(torch.int32)
+    telemetry["sim_collisions_received"] += (opp_fault & active).to(torch.int32)
+    telemetry["opp_collisions_received"] += (sim_fault & active).to(torch.int32)
+
+    sim_oob_crash = sim_crash & ~sim_fault
+    opp_oob_crash = opp_crash & ~opp_fault
+    sim_coll_crash = sim_crash & sim_fault
+    opp_coll_crash = opp_crash & opp_fault
+    telemetry["sim_oob_crashes"] += sim_oob_crash.to(torch.int32)
+    telemetry["opp_oob_crashes"] += opp_oob_crash.to(torch.int32)
+    telemetry["sim_collision_crashes"] += sim_coll_crash.to(torch.int32)
+    telemetry["opp_collision_crashes"] += opp_coll_crash.to(torch.int32)
+    telemetry["sim_respawns"] += sim_crash.to(torch.int32)
+    telemetry["opp_respawns"] += opp_crash.to(torch.int32)
+
+    for idx in range(sim_laps.shape[0]):
+        sim_li = int(sim_laps[idx])
+        opp_li = int(opp_laps[idx])
+        prev_sim = int(telemetry["sim_prev_lap_int"][idx])
+        prev_opp = int(telemetry["opp_prev_lap_int"][idx])
+        if sim_li > prev_sim and int(telemetry["sim_last_cross_step"][idx]) >= 0:
+            split = (step - int(telemetry["sim_last_cross_step"][idx])) * control_dt
+            telemetry["sim_lap_splits"][idx].append(split)
+        if opp_li > prev_opp and int(telemetry["opp_last_cross_step"][idx]) >= 0:
+            split = (step - int(telemetry["opp_last_cross_step"][idx])) * control_dt
+            telemetry["opp_lap_splits"][idx].append(split)
+        if sim_li > prev_sim:
+            telemetry["sim_last_cross_step"][idx] = step
+        if opp_li > prev_opp:
+            telemetry["opp_last_cross_step"][idx] = step
+        telemetry["sim_prev_lap_int"][idx] = sim_li
+        telemetry["opp_prev_lap_int"][idx] = opp_li
 
 
 # --------------------------------------------------------------------------- #
@@ -352,72 +682,79 @@ def decide_winner(
     collisions_b: int,
     target_laps: int,
     capped: bool,
-    seed_rank_a: int,
-    seed_rank_b: int,
-) -> tuple[str, str]:
-    """Return (winner 'a'|'b', finish_reason). Lower seed_rank is better."""
+    model_a: str,
+    model_b: str,
+    match_id: str | None = None,
+    leg: int | None = None,
+) -> tuple[str, str, bool]:
+    """Return (winner 'a'|'b', finish_reason, tie_unresolved)."""
     if laps_a >= target_laps and laps_b < target_laps:
-        return "a", "laps"
+        return "a", "laps", False
     if laps_b >= target_laps and laps_a < target_laps:
-        return "b", "laps"
+        return "b", "laps", False
     if laps_a >= target_laps and laps_b >= target_laps:
         if prog_a > prog_b:
-            return "a", "laps_both_progress"
+            return "a", "laps_both_progress", False
         if prog_b > prog_a:
-            return "b", "laps_both_progress"
+            return "b", "laps_both_progress", False
     if laps_a != laps_b:
-        return ("a", "tie_break_laps") if laps_a > laps_b else ("b", "tie_break_laps")
+        return (
+            ("a", "tie_break_laps", False) if laps_a > laps_b
+            else ("b", "tie_break_laps", False)
+        )
     if prog_a != prog_b:
-        return ("a", "tie_break_progress") if prog_a > prog_b else (
-            "b", "tie_break_progress"
+        return (
+            ("a", "tie_break_progress", False) if prog_a > prog_b
+            else ("b", "tie_break_progress", False)
         )
     pen_a = crashes_a + collisions_a
     pen_b = crashes_b + collisions_b
     if pen_a != pen_b:
-        return ("a", "tie_break_crashes") if pen_a < pen_b else (
-            "b", "tie_break_crashes"
+        return (
+            ("a", "tie_break_crashes", False) if pen_a < pen_b
+            else ("b", "tie_break_crashes", False)
         )
-    if seed_rank_a != seed_rank_b:
-        return ("a", "tie_break_seed") if seed_rank_a < seed_rank_b else (
-            "b", "tie_break_seed"
-        )
-    if capped:
-        return "a", "time_cap"
-    return "a", "tie_default"
+    winner, reason = _tie_resolver_winner(
+        model_a, model_b, match_id, leg=leg,
+    )
+    return winner, reason, True
 
 
 def decide_match_winner(
     leg1: dict,
     leg2: dict,
     *,
-    seed_rank_a: int,
-    seed_rank_b: int,
-) -> tuple[str, str]:
+    model_a: str,
+    model_b: str,
+    match_id: str | None = None,
+) -> tuple[str, str, bool]:
     """Aggregate two swapped-seat legs into one match winner.
 
     Each leg uses ``decide_winner``. The match winner is whoever wins more legs.
     On a 1-1 split, break ties by aggregate total laps (A vs B across both
-    legs), then aggregate progress, then fewer total crashes+collisions, then
-    better (lower) seed_rank.
+    legs), then aggregate progress, then fewer total crashes+collisions, then a
+    seat-independent hash tie-break.
     """
     wins_a = sum(1 for leg in (leg1, leg2) if leg["winner"] == "a")
     wins_b = 2 - wins_a
     if wins_a > wins_b:
-        return "a", "legs_won"
+        return "a", "legs_won", False
     if wins_b > wins_a:
-        return "b", "legs_won"
+        return "b", "legs_won", False
 
     laps_a = leg1["laps_a"] + leg2["laps_a"]
     laps_b = leg1["laps_b"] + leg2["laps_b"]
     if laps_a != laps_b:
-        return ("a", "tie_break_agg_laps") if laps_a > laps_b else (
-            "b", "tie_break_agg_laps"
+        return (
+            ("a", "tie_break_agg_laps", False) if laps_a > laps_b
+            else ("b", "tie_break_agg_laps", False)
         )
     prog_a = leg1["progress_a"] + leg2["progress_a"]
     prog_b = leg1["progress_b"] + leg2["progress_b"]
     if prog_a != prog_b:
-        return ("a", "tie_break_agg_progress") if prog_a > prog_b else (
-            "b", "tie_break_agg_progress"
+        return (
+            ("a", "tie_break_agg_progress", False) if prog_a > prog_b
+            else ("b", "tie_break_agg_progress", False)
         )
     pen_a = (
         leg1["crashes_a"] + leg1["collisions_a"]
@@ -428,14 +765,12 @@ def decide_match_winner(
         + leg2["crashes_b"] + leg2["collisions_b"]
     )
     if pen_a != pen_b:
-        return ("a", "tie_break_agg_penalties") if pen_a < pen_b else (
-            "b", "tie_break_agg_penalties"
+        return (
+            ("a", "tie_break_agg_penalties", False) if pen_a < pen_b
+            else ("b", "tie_break_agg_penalties", False)
         )
-    if seed_rank_a != seed_rank_b:
-        return ("a", "tie_break_seed") if seed_rank_a < seed_rank_b else (
-            "b", "tie_break_seed"
-        )
-    return "a", "tie_default"
+    winner, reason = _tie_resolver_winner(model_a, model_b, match_id)
+    return winner, reason, True
 
 
 def _leg_result_from_race(
@@ -444,25 +779,29 @@ def _leg_result_from_race(
     leg: int,
     sim_side_positive_a: bool,
     target_laps: int,
-    seed_rank_a: int,
-    seed_rank_b: int,
+    model_a: str,
+    model_b: str,
+    match_id: str | None = None,
 ) -> dict:
     sl, ol = int(out["sim_laps"][0]), int(out["opp_laps"][0])
     sp, op = float(out["sim_prog"][0]), float(out["opp_prog"][0])
-    winner, finish_reason = decide_winner(
+    winner, finish_reason, tie_unresolved = decide_winner(
         laps_a=sl, laps_b=ol, prog_a=sp, prog_b=op,
         crashes_a=int(out["sim_crashes"][0]),
         crashes_b=int(out["opp_crashes"][0]),
         collisions_a=int(out["collide_sim"][0]),
         collisions_b=int(out["collide_opp"][0]),
         target_laps=target_laps, capped=bool(out["capped"]),
-        seed_rank_a=seed_rank_a, seed_rank_b=seed_rank_b,
+        model_a=model_a, model_b=model_b, match_id=match_id, leg=leg,
     )
-    return {
+    tel = out.get("telemetry", {})
+    tel_b = tel.get("_opp", {})
+    result = {
         "leg": leg,
         "sim_side_positive_a": sim_side_positive_a,
         "winner": winner,
         "finish_reason": finish_reason,
+        "tie_unresolved": tie_unresolved,
         "laps_a": sl,
         "laps_b": ol,
         "progress_a": sp,
@@ -474,7 +813,32 @@ def _leg_result_from_race(
         "steps": out["steps"],
         "race_time_s": out["race_time_s"],
         "capped": bool(out["capped"]),
+        "passes_completed": tel.get("passes_completed", 0),
+        "times_passed": tel.get("times_passed", 0),
+        "time_ahead_frac": tel.get("time_ahead_frac", 0.0),
+        "oob_crashes": tel.get("oob_crashes", 0),
+        "collision_crashes": tel.get("collision_crashes", 0),
+        "collisions_caused": tel.get("collisions_caused", 0),
+        "collisions_received": tel.get("collisions_received", 0),
+        "respawns": tel.get("respawns", 0),
+        "lap_splits_s": tel.get("lap_splits_s", []),
+        "clean_lap_count": tel.get("clean_lap_count", 0),
+        "mean_clean_split_s": tel.get("mean_clean_split_s"),
+        "telemetry_b": {
+            "passes_completed": tel_b.get("passes_completed", 0),
+            "times_passed": tel_b.get("times_passed", 0),
+            "time_ahead_frac": tel_b.get("time_ahead_frac", 0.0),
+            "oob_crashes": tel_b.get("oob_crashes", 0),
+            "collision_crashes": tel_b.get("collision_crashes", 0),
+            "collisions_caused": tel_b.get("collisions_caused", 0),
+            "collisions_received": tel_b.get("collisions_received", 0),
+            "respawns": tel_b.get("respawns", 0),
+            "lap_splits_s": tel_b.get("lap_splits_s", []),
+            "clean_lap_count": tel_b.get("clean_lap_count", 0),
+            "mean_clean_split_s": tel_b.get("mean_clean_split_s"),
+        },
     }
+    return result
 
 
 def select_bye(
@@ -558,6 +922,7 @@ def bracket_config_fingerprint(
     seeds: list[str],
     seed_csv: str | None,
     checkpoints_dir: str,
+    race_config_source: str | None = None,
 ) -> dict:
     return {
         "track": track,
@@ -569,13 +934,14 @@ def bracket_config_fingerprint(
         "seeds": seeds,
         "seed_csv": str(seed_csv) if seed_csv else None,
         "checkpoints_dir": str(checkpoints_dir),
+        "race_config_source": race_config_source,
     }
 
 
 def validate_resume_config(saved: dict, current: dict) -> None:
     for key in (
         "track", "laps", "freeze_s", "seed", "candidates", "elim_losses",
-        "checkpoints_dir",
+        "checkpoints_dir", "race_config_source",
     ):
         if saved.get(key) != current.get(key):
             raise ValueError(
@@ -1230,12 +1596,14 @@ def advance_hold_race_step(
 
 def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positive,
          control_interval, clip_actions, freeze_steps, seed, record=None,
-         overlay_prefix=""):
+         overlay_prefix="", telemetry_enabled=True):
     n = env.num_envs
     device = env.device
     sim_actor, sim_norm = sim_policy
     opp_actor, opp_norm = opp_policy
     control_dt = float(env.control_dt)
+    reward_cfg = env.reward_cfg
+    telemetry = init_race_telemetry(n, device) if telemetry_enabled else None
     py_state = random.getstate()
     try:
         with torch.random.fork_rng(devices=[]):
@@ -1341,6 +1709,27 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
                     opp_crash = opp_active & (
                         (opp_streak >= OOB_CONSECUTIVE) | opp_fault
                     )
+
+                    if telemetry is not None:
+                        update_race_telemetry(
+                            telemetry,
+                            sim_ss=sim_ss,
+                            opp_ss=opp_ss,
+                            reward_cfg=reward_cfg,
+                            active=active,
+                            suppress=suppress,
+                            sim_hold=sim_hold,
+                            opp_hold=opp_hold,
+                            sim_fault=sim_fault,
+                            opp_fault=opp_fault,
+                            sim_crash=sim_crash,
+                            opp_crash=opp_crash,
+                            sim_laps=sim_laps,
+                            opp_laps=opp_laps,
+                            step=step,
+                            control_dt=control_dt,
+                        )
+
                     sim_crashes += sim_crash.to(torch.int32)
                     opp_crashes += opp_crash.to(torch.int32)
 
@@ -1400,7 +1789,7 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
         random.setstate(py_state)
 
     capped = step >= max_steps
-    return {
+    out = {
         "sim_laps": sim_laps.cpu().numpy(), "opp_laps": opp_laps.cpu().numpy(),
         "sim_prog": (sim_prog / track_len).cpu().numpy(),
         "opp_prog": (opp_prog / track_len).cpu().numpy(),
@@ -1411,6 +1800,9 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
         "steps": step, "capped": capped,
         "race_time_s": step * control_dt,
     }
+    if telemetry is not None:
+        out["telemetry"] = _telemetry_numpy(telemetry, 0)
+    return out
 
 
 def _record_frame(env, record, sim_laps, opp_laps, prefix, step):
@@ -1445,10 +1837,16 @@ def race_match(
     seed_rank_b: int = 1,
     match_meta: dict | None = None,
     video_path=None,
+    config: str | Path | None = None,
+    config_ref: str | Path | None = None,
+    telemetry_enabled: bool = True,
 ) -> dict:
     a_path, b_path = Path(model_a).resolve(), Path(model_b).resolve()
-    base = load_base_config(a_path)
+    base, config_source = load_race_base_config(
+        a_path, config=config, config_ref=config_ref,
+    )
     cfg = build_race_config(base, track)
+    race_cfg_sha = race_config_sha(cfg, track)
 
     device = select_device(device_str)
     rt.configure(float_dtype=torch.float64 if precision == "64" else torch.float32,
@@ -1465,8 +1863,15 @@ def race_match(
         else:
             max_steps = int(laps * 90.0 / control_dt)
 
+    match_id_str = (match_meta or {}).get("match_id")
     record = None
     try:
+        err_a = validate_policy_bundle(cfg, a_path, device)
+        if err_a:
+            raise ValueError(f"model_a ({a_path.name}): {err_a}")
+        err_b = validate_policy_bundle(cfg, b_path, device)
+        if err_b:
+            raise ValueError(f"model_b ({b_path.name}): {err_b}")
         bundle_a = load_policy_bundle(cfg, a_path, device)
         bundle_b = load_policy_bundle(cfg, b_path, device)
         side_pos = torch.ones(1, dtype=torch.bool, device=device)
@@ -1490,10 +1895,11 @@ def race_match(
             sim_side_positive=side_pos, control_interval=control_interval,
             clip_actions=clip, freeze_steps=freeze_steps, seed=seed,
             record=record, overlay_prefix=f"L1 {overlay}",
+            telemetry_enabled=telemetry_enabled,
         )
         leg1 = _leg_result_from_race(
             leg1_out, leg=1, sim_side_positive_a=True, target_laps=laps,
-            seed_rank_a=seed_rank_a, seed_rank_b=seed_rank_b,
+            model_a=str(a_path), model_b=str(b_path), match_id=match_id_str,
         )
 
         leg2_out = race(
@@ -1501,19 +1907,22 @@ def race_match(
             sim_side_positive=side_neg, control_interval=control_interval,
             clip_actions=clip, freeze_steps=freeze_steps, seed=seed + 1,
             record=None, overlay_prefix=f"L2 {overlay}",
+            telemetry_enabled=telemetry_enabled,
         )
         leg2 = _leg_result_from_race(
             leg2_out, leg=2, sim_side_positive_a=False, target_laps=laps,
-            seed_rank_a=seed_rank_a, seed_rank_b=seed_rank_b,
+            model_a=str(a_path), model_b=str(b_path), match_id=match_id_str,
         )
     finally:
         if record is not None:
             record.close()
         env.close()
 
-    winner, finish_reason = decide_match_winner(
-        leg1, leg2, seed_rank_a=seed_rank_a, seed_rank_b=seed_rank_b,
+    winner, finish_reason, tie_unresolved = decide_match_winner(
+        leg1, leg2,
+        model_a=str(a_path), model_b=str(b_path), match_id=match_id_str,
     )
+    tel_agg = aggregate_telemetry(leg1, leg2)
     result = {
         "model_a": a_path.name,
         "model_b": b_path.name,
@@ -1521,6 +1930,9 @@ def race_match(
         "model_b_path": str(b_path),
         "winner": winner,
         "finish_reason": finish_reason,
+        "tie_unresolved": tie_unresolved,
+        "race_config_source": config_source,
+        "race_config_sha": race_cfg_sha,
         "leg_wins_a": sum(1 for leg in (leg1, leg2) if leg["winner"] == "a"),
         "leg_wins_b": sum(1 for leg in (leg1, leg2) if leg["winner"] == "b"),
         "leg1": leg1,
@@ -1539,6 +1951,7 @@ def race_match(
         "laps_target": laps,
         "seed_rank_a": seed_rank_a,
         "seed_rank_b": seed_rank_b,
+        "telemetry": tel_agg,
     }
     if match_meta:
         result.update(match_meta)
@@ -1575,13 +1988,30 @@ def _bracket_state_path(out_dir: Path) -> Path:
     return out_dir / "bracket_log.json"
 
 
+def _resolve_race_config_source(args, run_dir: Path | None = None) -> str | None:
+    if args.config:
+        return str(Path(args.config).resolve())
+    if args.config_ref:
+        ref = Path(args.config_ref).resolve()
+        if ref.is_file():
+            return str(ref)
+        return str(ref / "config.json")
+    if run_dir is not None:
+        cfg = run_dir / "config.json"
+        if cfg.exists():
+            return str(cfg.resolve())
+    return None
+
+
 def _load_or_init_bracket(args, run_dir: Path, ckpt_dir: Path, out_dir: Path):
     seeds = _seed_candidates(args, run_dir, ckpt_dir)
+    race_config_source = _resolve_race_config_source(args, run_dir)
     fingerprint = bracket_config_fingerprint(
         track=args.track, laps=args.laps, freeze_s=args.freeze_s, seed=args.seed,
         candidates=args.candidates, elim_losses=args.elim_losses, seeds=seeds,
         seed_csv=str(_resolve_seed_csv(args, run_dir)),
         checkpoints_dir=str(ckpt_dir),
+        race_config_source=race_config_source,
     )
     log_path = _bracket_state_path(out_dir)
     if log_path.exists():
@@ -1716,6 +2146,12 @@ def _dispatch_match(
         cmd += ["--max-steps", str(args.max_steps)]
     if video is not None:
         cmd += ["--video", str(video)]
+    if args.config:
+        cmd += ["--config", str(args.config)]
+    elif args.config_ref:
+        cmd += ["--config-ref", str(args.config_ref)]
+    if args.no_telemetry:
+        cmd.append("--no-telemetry")
     return subprocess.Popen(
         cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     ), out, (a, b, match_id_str)
@@ -1977,6 +2413,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--round", type=int, default=0, dest="round_no")
     p.add_argument("--match-ordinal", type=int, default=0)
     p.add_argument("--rematch-index", type=int, default=0)
+    p.add_argument("--config", type=str, default=None,
+                   help="Canonical config.json for race env (worker + bracket).")
+    p.add_argument("--config-ref", type=str, default=None,
+                   help="Bracket: run dir or config.json for canonical race env.")
+    p.add_argument("--no-telemetry", action="store_true",
+                   help="Disable per-race overtaking/safety telemetry.")
     return p.parse_args()
 
 
@@ -2021,6 +2463,9 @@ def main() -> None:
         seed_rank_b=args.seed_rank_b,
         match_meta=match_meta,
         video_path=args.video,
+        config=args.config,
+        config_ref=args.config_ref,
+        telemetry_enabled=not args.no_telemetry,
     )
     atomic_write_json(Path(args.out), result)
     print(

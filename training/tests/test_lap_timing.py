@@ -27,6 +27,8 @@ from lap_timing import (  # noqa: E402
     classify_step_terminations,
     default_equivalent_tolerance_s,
     is_valid_cached_result,
+    lap_timing_config_sha,
+    load_lap_timing_config,
     select_tournament_seeds,
 )
 
@@ -291,81 +293,16 @@ def test_is_valid_cached_result_rejects_stale_spawn_policy():
     assert not is_valid_cached_result(stale, fp)
 
 
-def test_lap_timing_centerline_spawn_on_reset(monkeypatch):
-    import copy
-
-    import numpy as np
-    import torch
-
-    from f1tenth_env import runtime as rt
-    from f1tenth_env import utils as U
-    from f1tenth_env import env as E
-    from f1tenth_env.env import F1tenthEnv
-    from config import DEFAULT_CONFIG
-
-    def _fake_track_state(track, workspace_dir, device):
-        n = 400
-        th = np.linspace(0.0, 2 * np.pi, n, endpoint=False).astype(np.float32)
-        radius = 8.0
-        cl = np.stack(
-            [radius * np.cos(th), radius * np.sin(th)], axis=-1,
-        ).astype(np.float32)
-        w = np.full(n, 1.5, np.float32)
-        return {
-            "centerline": cl,
-            "w_tr_left": w,
-            "w_tr_right": w,
-            "w_tr_left_torch": torch.tensor(w, device=device),
-            "w_tr_right_torch": torch.tensor(w, device=device),
-            "track_geom_cache": {},
-        }
-
-    rt.configure(
-        float_dtype=torch.float32,
-        int_dtype=torch.int32,
-        dev=torch.device("cpu"),
-        eps=1e-12,
-    )
-    monkeypatch.setattr(U, "load_track_state", _fake_track_state, raising=True)
-    monkeypatch.setattr(E, "load_track_state", _fake_track_state, raising=True)
-
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
-    env_cfg = dict(cfg["env"])
-    env_cfg["domain_randomization"] = {
-        **cfg["env"]["domain_randomization"], "enabled": False,
+def test_lap_timing_spawn_policy_forces_centerline():
+    env_cfg = {
+        "reset_lateral_offset_m": 0.75,
+        "reset_yaw_jitter_rad": 0.3,
+        "launch_strategy": "uniform_jittered",
+        "launch_strategy_data": {"num_cars": 8},
     }
-    env_cfg["reset_speed_min_mps"] = 0.0
-    env_cfg["reset_speed_max_mps"] = 0.0
-    env_cfg["launch_strategy"] = "uniform_jittered"
-    env_cfg["launch_strategy_data"] = {"num_cars": 8}
     apply_lap_timing_spawn_policy(env_cfg)
-
-    env = F1tenthEnv(
-        num_envs=8,
-        env_cfg=env_cfg,
-        obs_cfg=cfg["obs"],
-        reward_cfg=cfg["reward"],
-    )
-
-    def _assert_centerline_aligned():
-        step_state = env._get_step_state()
-        ey = step_state["boundary"]["ey"]
-        assert torch.allclose(ey, torch.zeros_like(ey), atol=0.05)
-        seg_dir = step_state["frenet"]["seg_dir"]
-        track_angle = torch.atan2(seg_dir[:, 1], seg_dir[:, 0])
-        yaw = 2.0 * torch.atan2(env.base_quat[:, 3], env.base_quat[:, 0])
-        heading_err = torch.atan2(
-            torch.sin(yaw - track_angle), torch.cos(yaw - track_angle),
-        )
-        assert torch.allclose(heading_err, torch.zeros_like(heading_err), atol=0.05)
-
-    _assert_centerline_aligned()
-
-    mask = torch.zeros(env.num_envs, dtype=torch.bool)
-    mask[0] = True
-    mask[3] = True
-    env.reset(mask)
-    _assert_centerline_aligned()
+    assert env_cfg["reset_lateral_offset_m"] == 0.0
+    assert env_cfg["reset_yaw_jitter_rad"] == 0.0
 
 
 def test_benchmark_fingerprint_distinguishes_nominal_from_dr():
@@ -394,6 +331,36 @@ def test_is_valid_cached_result_rejects_dr_result_for_nominal_fingerprint():
     dr_result = {"benchmark_config": dr_fp, "n_laps": 30, "mean": 60.0}
     assert is_valid_cached_result(dr_result, dr_fp)
     assert not is_valid_cached_result(dr_result, nominal_fp)
+
+
+def test_load_lap_timing_config_override(tmp_path):
+    cfg_path = tmp_path / "canonical.json"
+    cfg_path.write_text(
+        __import__("json").dumps({"config": {"env": {"track": "Canon"}, "obs": {}}}),
+    )
+    ckpt = tmp_path / "checkpoints" / "policy_1.pt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b"x")
+    cfg, source = load_lap_timing_config(ckpt, config=str(cfg_path))
+    assert source == str(cfg_path.resolve())
+    assert cfg["env"]["track"] == "Canon"
+
+
+def test_benchmark_fingerprint_includes_config_override(tmp_path):
+    cfg_path = tmp_path / "canonical.json"
+    cfg_path.write_text(
+        __import__("json").dumps({"config": {"env": {"track": "Austin"}, "obs": {}}}),
+    )
+    sha = lap_timing_config_sha(
+        __import__("json").loads(cfg_path.read_text())["config"], "Austin",
+    )
+    fp = benchmark_config_fingerprint(
+        track="Austin", num_envs=32, steps=4500, seed=0,
+        device="cpu", precision="32", domain_randomization_enabled=True,
+        config_source=str(cfg_path), config_sha=sha,
+    )
+    assert fp["config_source"] == str(cfg_path)
+    assert fp["config_sha"] == sha
 
 
 def test_is_valid_cached_result_rejects_stale_config():

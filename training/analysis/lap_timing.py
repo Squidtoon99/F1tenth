@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import os
 import re
@@ -55,6 +56,39 @@ class NoQualifiedReferenceError(Exception):
 REFERENCE_MODE_ZERO_CRASH = "zero-crash"
 REFERENCE_MODE_MIN_CRASH = "min-crash"
 REFERENCE_MODES = (REFERENCE_MODE_ZERO_CRASH, REFERENCE_MODE_MIN_CRASH)
+
+
+def _read_config_json(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if isinstance(data, dict) and "config" in data:
+        return data["config"]
+    return data
+
+
+def load_lap_timing_config(
+    checkpoint: Path,
+    *,
+    config: str | Path | None = None,
+) -> tuple[dict, str]:
+    from standalone_trainer import DEFAULT_CONFIG
+
+    if config is not None:
+        path = Path(config).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"Lap timing config not found: {path}")
+        return _read_config_json(path), str(path)
+    cfg_path = checkpoint.parent.parent / "config.json"
+    if cfg_path.exists():
+        return _read_config_json(cfg_path), str(cfg_path.resolve())
+    return copy.deepcopy(DEFAULT_CONFIG), "DEFAULT_CONFIG"
+
+
+def lap_timing_config_sha(cfg: dict, track: str) -> str:
+    payload = json.dumps(
+        {"track": track, "env": cfg.get("env", {}), "obs": cfg.get("obs", {})},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -118,8 +152,10 @@ def benchmark_config_fingerprint(
     device: str,
     precision: str,
     domain_randomization_enabled: bool = True,
+    config_source: str | None = None,
+    config_sha: str | None = None,
 ) -> dict:
-    return {
+    fp = {
         "version": BENCHMARK_VERSION,
         "track": track,
         "num_envs": num_envs,
@@ -130,6 +166,11 @@ def benchmark_config_fingerprint(
         "domain_randomization_enabled": domain_randomization_enabled,
         "spawn_policy": LAP_TIMING_SPAWN_POLICY,
     }
+    if config_source is not None:
+        fp["config_source"] = config_source
+    if config_sha is not None:
+        fp["config_sha"] = config_sha
+    return fp
 
 
 def is_valid_cached_result(data: dict, fingerprint: dict) -> bool:
@@ -284,6 +325,7 @@ def evaluate_checkpoint(
     precision: str,
     benchmark_config: dict | None = None,
     disable_domain_randomization: bool = False,
+    config: str | Path | None = None,
 ) -> dict:
     import numpy as np
     import torch
@@ -292,7 +334,6 @@ def evaluate_checkpoint(
     from f1tenth_env import F1tenthEnv
     from f1tenth_env import runtime as rt
     from standalone_trainer import (
-        DEFAULT_CONFIG,
         ObsNormalizer,
         build_models,
         episode_length_for_track,
@@ -300,11 +341,7 @@ def evaluate_checkpoint(
     )
 
     ckpt_path = Path(checkpoint).resolve()
-    cfg_path = ckpt_path.parent.parent / "config.json"
-    if cfg_path.exists():
-        cfg = json.loads(cfg_path.read_text())["config"]
-    else:
-        cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg, config_source = load_lap_timing_config(ckpt_path, config=config)
 
     cfg["env"]["track"] = track
     cfg["env"]["opponent_strategy"] = None
@@ -409,6 +446,8 @@ def evaluate_checkpoint(
         "checkpoint": ckpt_path.name,
         "transitions": _transitions_from_name(ckpt_path),
         "track": track,
+        "config_source": config_source,
+        "config_sha": lap_timing_config_sha(cfg, track),
         "num_envs": num_envs,
         "steps": steps,
         "n_laps": int(laps.size),
@@ -507,6 +546,8 @@ def _run_pool(
         ]
         if args.disable_domain_randomization:
             cmd.append("--disable-domain-randomization")
+        if args.config:
+            cmd += ["--config", str(args.config)]
         p = subprocess.Popen(
             cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
@@ -572,6 +613,13 @@ def run_orchestrator(args: argparse.Namespace) -> None:
     json_dir.mkdir(exist_ok=True)
 
     dr_enabled = not args.disable_domain_randomization
+    config_source = None
+    config_sha = None
+    if args.config:
+        config_source = str(Path(args.config).resolve())
+        config_sha = lap_timing_config_sha(
+            _read_config_json(Path(args.config)), args.track,
+        )
     fingerprint = benchmark_config_fingerprint(
         track=args.track,
         num_envs=args.num_envs,
@@ -580,6 +628,8 @@ def run_orchestrator(args: argparse.Namespace) -> None:
         device=args.device,
         precision=args.precision,
         domain_randomization_enabled=dr_enabled,
+        config_source=config_source,
+        config_sha=config_sha,
     )
     dr_label = "DR on" if dr_enabled else "nominal (DR off)"
     tolerance = (
@@ -799,6 +849,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reuse per-checkpoint JSON in --out-dir and write seed outputs only.",
     )
+    p.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Canonical config.json for all checkpoints (cross-run comparison).",
+    )
     return p.parse_args()
 
 
@@ -812,6 +868,13 @@ def run_select_only(args: argparse.Namespace) -> None:
 
     run_dir = Path(args.run_dir).resolve() if args.run_dir else out_dir.parent
     dr_enabled = not args.disable_domain_randomization
+    config_source = None
+    config_sha = None
+    if args.config:
+        config_source = str(Path(args.config).resolve())
+        config_sha = lap_timing_config_sha(
+            _read_config_json(Path(args.config)), args.track,
+        )
     fingerprint = benchmark_config_fingerprint(
         track=args.track,
         num_envs=args.num_envs,
@@ -820,6 +883,8 @@ def run_select_only(args: argparse.Namespace) -> None:
         device=args.device,
         precision=args.precision,
         domain_randomization_enabled=dr_enabled,
+        config_source=config_source,
+        config_sha=config_sha,
     )
     tolerance = (
         args.equivalent_tolerance_s
@@ -858,6 +923,13 @@ def main() -> None:
         sys.exit("Worker mode needs --checkpoint and --out (or use --run-dir).")
     import torch
     torch.set_num_threads(1)
+    config_source = None
+    config_sha = None
+    if args.config:
+        config_source = str(Path(args.config).resolve())
+        config_sha = lap_timing_config_sha(
+            _read_config_json(Path(args.config)), args.track,
+        )
     fingerprint = benchmark_config_fingerprint(
         track=args.track,
         num_envs=args.num_envs,
@@ -866,6 +938,8 @@ def main() -> None:
         device=args.device,
         precision=args.precision,
         domain_randomization_enabled=not args.disable_domain_randomization,
+        config_source=config_source,
+        config_sha=config_sha,
     )
     result = evaluate_checkpoint(
         checkpoint=args.checkpoint,
@@ -877,6 +951,7 @@ def main() -> None:
         precision=args.precision,
         benchmark_config=fingerprint,
         disable_domain_randomization=args.disable_domain_randomization,
+        config=args.config,
     )
     Path(args.out).write_text(json.dumps(result))
     print(
