@@ -613,6 +613,16 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return base
 
 
+# Gated reward-scale coefficients that compute_rewards enables purely by their
+# presence in reward_scales, so they are intentionally absent from DEFAULT_CONFIG
+# (adding them there would activate the term). build_config injects them for 1v1,
+# and a --config patch may set them, so the validator accepts them under
+# reward.reward_scales even though they are not in the reference shape.
+_OPTIONAL_REWARD_SCALE_KEYS = frozenset(
+    {"overtake", "passing", "collision", "rear_end"}
+)
+
+
 def validate_config_patch(
     patch: dict, reference: dict = DEFAULT_CONFIG, path: str = ""
 ) -> None:
@@ -621,7 +631,9 @@ def validate_config_patch(
     A key is rejected when it is absent from ``reference`` at the same nesting
     depth, or when it maps a mapping onto a scalar (or vice-versa). Both are
     raised early with the offending dotted path so a typo cannot silently create
-    an ignored config key.
+    an ignored config key. Known optional gated reward-scale keys (enabled by
+    presence, so absent from ``DEFAULT_CONFIG``) are accepted under
+    ``reward.reward_scales`` as scalars.
     """
     if not isinstance(patch, dict):
         raise ValueError(
@@ -631,6 +643,13 @@ def validate_config_patch(
     for key, value in patch.items():
         loc = f"{path}.{key}" if path else key
         if key not in reference:
+            if path == "reward.reward_scales" and key in _OPTIONAL_REWARD_SCALE_KEYS:
+                if isinstance(value, dict):
+                    raise ValueError(
+                        f"type mismatch for config key '{loc}': expected a "
+                        f"scalar, got a mapping"
+                    )
+                continue
             raise ValueError(f"unknown config key '{loc}' (not in DEFAULT_CONFIG)")
         ref_val = reference[key]
         ref_is_map = isinstance(ref_val, dict)

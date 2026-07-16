@@ -924,8 +924,9 @@ def compute_reward_and_done(
     out = RewardResult()
     prev_s = env.prev_s[env_id]
     current_s = ego_frenet.s
+    raw_delta_s = wrapped_delta(current_s, prev_s, track.length)
     delta_s = wp.clamp(
-        wrapped_delta(current_s, prev_s, track.length),
+        raw_delta_s,
         -0.1 * track.length,
         0.1 * track.length,
     )
@@ -1011,7 +1012,7 @@ def compute_reward_and_done(
     stopped_now = (
         speed_squared
         < termination.speed_threshold * termination.speed_threshold
-        and wp.abs(progress_ds) < termination.minimum_progress
+        and wp.abs(raw_delta_s) < termination.minimum_progress
     )
     if stopped_now:
         env.stopped_streak[env_id] = env.stopped_streak[env_id] + 1
@@ -1046,11 +1047,10 @@ def compute_reward_and_done(
         out.done_flags = out.done_flags | 16
 
     env.lap_cross[env_id] = 0.0
-    forward_ds = wrapped_delta(current_s, prev_s, track.length)
     if (
         prev_s > 0.9 * track.length
         and current_s < 0.1 * track.length
-        and forward_ds > 0.0
+        and raw_delta_s > 0.0
     ):
         env.lap_count[env_id] = env.lap_count[env_id] + 1
         env.lap_cross[env_id] = 1.0

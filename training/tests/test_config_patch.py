@@ -86,6 +86,31 @@ def test_validate_rejects_unknown_key():
         validate_config_patch({"reward": {"nope": 1.0}})
 
 
+def test_patch_enables_overtake_reward_scale():
+    # 'overtake' is a gated reward scale absent from DEFAULT_CONFIG (presence
+    # enables the term), so a patch setting it must validate and merge through.
+    patch = {"reward": {"reward_scales": {"overtake": 2.5}}}
+    validate_config_patch(patch)
+    cfg = _resolve(["--opponent", "scripted"], patch=patch)
+    assert cfg["reward"]["reward_scales"]["overtake"] == 2.5
+
+
+def test_validate_rejects_unknown_reward_scale_key():
+    with pytest.raises(
+        ValueError, match="unknown config key 'reward.reward_scales.bogus'"
+    ):
+        validate_config_patch({"reward": {"reward_scales": {"bogus": 1.0}}})
+
+
+def test_validate_rejects_mapping_for_optional_reward_scale():
+    with pytest.raises(
+        ValueError, match="type mismatch for config key 'reward.reward_scales.overtake'"
+    ):
+        validate_config_patch(
+            {"reward": {"reward_scales": {"overtake": {"nested": 1}}}}
+        )
+
+
 def test_validate_rejects_type_mismatch():
     with pytest.raises(ValueError, match="type mismatch for config key 'reward'"):
         validate_config_patch({"reward": 1.0})
