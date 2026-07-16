@@ -160,13 +160,14 @@ def reward_passing(
     reward_state: dict[str, Any],
     episode_steps_buf: torch.Tensor,
 ) -> torch.Tensor:
-    """Reward gaining track position on the opponent: ``k * (ego_ds - opp_ds)``.
+    """Raw GT Sophy passing component ``(gap_prev - gap_cur) = (ego_ds - opp_ds)``.
 
-    Gated to opponents within ``[-behind_m, +ahead_m]`` on the centerline (GT
-    Sophy ``1_(b,f)`` locality; current-state indicator only). Built from the
-    per-step arc-length deltas of both cars, so it is naturally zeroed on reset
-    (both deltas are) and never spikes at the start/finish line. Returns zeros
-    when no opponent is present.
+    Gated to opponents within ``[-behind_m, +ahead_m]`` on the centerline with the
+    gate active when the opponent was in range in either the previous or current
+    state (``max(gate_prev, gate_cur)``). Built from the per-step arc-length deltas
+    of both cars, so it is naturally zeroed on reset (both deltas are) and never
+    spikes at the start/finish line. Returns zeros when no opponent is present; the
+    single coefficient is applied by ``compute_rewards``.
     """
     if "opp_s" not in step_state:
         return torch.zeros_like(step_state["progress_ds"])
@@ -179,8 +180,7 @@ def reward_passing(
     )
     ego_ds = step_state["progress_ds"]
     opp_ds = step_state["opp_progress_ds"]
-    k = float(reward_cfg.get("passing_k", 5.0))
-    passing = k * (ego_ds - opp_ds)
+    passing = ego_ds - opp_ds
 
     ego_s = step_state["frenet"]["s"].reshape(-1)
     opp_s = step_state["opp_s"].reshape(-1)
@@ -193,7 +193,20 @@ def reward_passing(
     ahead_m = float(reward_cfg.get("passing_gate_ahead_m", 40.0))
     behind_m = float(reward_cfg.get("passing_gate_behind_m", 20.0))
     in_window = (gap <= ahead_m) & (gap >= -behind_m)
-    return passing * in_window.to(passing.dtype)
+
+    step_now = episode_steps_buf.reshape(-1)
+    prev_in = reward_state.get("prev_opp_in_window")
+    prev_step = reward_state.get("prev_passing_step")
+    if prev_in is None or prev_in.numel() != in_window.numel():
+        prev_in = in_window.clone()
+    if prev_step is None or prev_step.numel() != step_now.numel():
+        prev_step = step_now.clone()
+    reset_mask = step_now < prev_step
+    gate = in_window | (prev_in & (~reset_mask))
+
+    reward_state["prev_opp_in_window"] = in_window.detach().clone()
+    reward_state["prev_passing_step"] = step_now.detach().clone()
+    return passing * gate.to(passing.dtype)
 
 
 def reward_overtake(
@@ -237,33 +250,37 @@ def reward_overtake(
     return k * completed.to(step_state["progress_ds"].dtype)
 
 
+def _cadence(reward_cfg: dict[str, Any]) -> float:
+    return float(reward_cfg.get("control_dt", 0.05)) / 0.1
+
+
 def reward_collision(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
-    """GT Sophy any-collision penalty ``Rc = -k * c`` for car-to-car contact.
+    """Raw GT Sophy any-collision component ``Rc = -cadence * c``.
 
-    ``c`` is the binary overlap indicator (the same ego-frame box predicate used
-    for collision termination). The penalty fires on every step the cars overlap,
-    regardless of fault. Returns zeros when no opponent is present.
+    ``c`` is the binary car-to-car overlap indicator; ``cadence`` normalizes the
+    per-step penalty to Sophy's 10 Hz reward rate. Returns zeros when no opponent
+    is present; the single coefficient is applied by ``compute_rewards``.
     """
     mask = step_state.get("car_collision")
     if mask is None:
         return torch.zeros_like(step_state["progress_ds"])
-    k = float(reward_cfg.get("collision_k", 5.0))
-    return -k * mask.to(dtype=step_state["progress_ds"].dtype)
+    return -_cadence(reward_cfg) * mask.to(dtype=step_state["progress_ds"].dtype)
 
 
 def reward_rear_end(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
-    """GT Sophy rear-end penalty ``Rr`` (Wurman et al., Nature 2022).
+    """Raw GT Sophy rear-end component ``Rr`` (Wurman et al., Nature 2022).
 
-    ``Rr = -k * c * 1(opp ahead) * ||v_ego - v_opp||^2``: it fires only when the
-    agent is in a car-car collision (same overlap predicate as ``Rc``) with an
+    ``Rr = -cadence * c * 1(opp ahead) * ||v_ego - v_opp||^2``: it fires only when
+    the agent is in a car-car collision (same overlap predicate as ``Rc``) with an
     opponent that is ahead of it on the centerline, and scales with the squared
     closing speed (relative velocity magnitude) so high-speed rear-ends are
-    punished far harder than gentle taps. Returns zeros when no opponent is
-    present (1v0) or the velocity/arc-length state is unavailable.
+    punished far harder than gentle taps. ``cadence`` normalizes to Sophy's 10 Hz
+    rate. Returns zeros when no opponent is present (1v0) or the velocity/arc-length
+    state is unavailable; the single coefficient is applied by ``compute_rewards``.
     """
     mask = step_state.get("car_collision")
     opp_s = step_state.get("opp_s")
@@ -285,33 +302,18 @@ def reward_rear_end(
     rel_v = ego_vel[:, :2] - opp_vel[:, :2]
     closing_sq = (rel_v * rel_v).sum(dim=-1)
 
-    k = float(reward_cfg.get("rear_end_k", 5.0))
     fire = mask.to(closing_sq.dtype) * opp_ahead.to(closing_sq.dtype)
-    return -k * fire * closing_sq
+    return -_cadence(reward_cfg) * fire * closing_sq
 
 
 def reward_progress(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
-    frenet_state = step_state["frenet"]
-    ds = step_state["progress_ds"]
-    pos = frenet_state["pos"].reshape(-1, 2)
-    proj = frenet_state["proj"].reshape(-1, 2)
-
-    k_fwd = float(reward_cfg.get("progress_k_fwd", 5.0))
-    k_back = float(reward_cfg.get("progress_k_back", 5.0))
-    fwd = torch.clamp(ds, min=0.0)
-    back = torch.clamp(ds, max=0.0)
-    reward = k_fwd * fwd + k_back * back
-
-    max_lateral_m = reward_cfg.get("progress_max_lateral_m", 1.0)
-    if max_lateral_m is not None:
-        e_lat = torch.linalg.norm(pos - proj, dim=-1).reshape(-1)
-        reward = torch.where(
-            e_lat <= float(max_lateral_m), reward, torch.zeros_like(reward)
-        )
-
-    return reward
+    """Raw GT Sophy course-progress component ``Rcp = delta_s`` (off-course masked
+    by ``compute_rewards``). The single coefficient is applied by ``compute_rewards``.
+    """
+    del reward_cfg
+    return step_state["progress_ds"]
 
 
 def reward_lateral(
@@ -326,18 +328,21 @@ def reward_lateral(
 def reward_oob_penalty(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
-    # GT Sophy off-course penalty: R_soc = -(time off course) * speed^2. The time
-    # off course over a single control step is constant, so it folds into oob_k;
-    # what remains is a penalty proportional to squared speed while off course (and
-    # exactly zero while on course). This punishes fast excursions far harder than
-    # slow ones and lets the boundary bind without an explicit speed cap.
+    """Raw GT Sophy off-course component ``Rsoc = -elapsed * (3.6 * speed)^2``.
+
+    ``elapsed`` is the control-step duration (constant per step) and the speed is
+    expressed in km/h, so a fast excursion is punished far harder than a slow one
+    and the penalty is exactly zero while on course. The single coefficient is
+    applied by ``compute_rewards``.
+    """
     margin_m = float(reward_cfg.get("oob_margin_m", 0.2))
-    k_oob = float(reward_cfg.get("oob_k", 0.15))
+    control_dt = float(reward_cfg.get("control_dt", 0.05))
     oob_mask, _ = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=margin_m
     )
     v = torch.linalg.norm(step_state["base_lin_vel"][:, :2], dim=-1)
-    return -k_oob * oob_mask.to(v.dtype) * v * v
+    speed_kmh = 3.6 * v
+    return -control_dt * oob_mask.to(v.dtype) * speed_kmh * speed_kmh
 
 
 def reward_smoothness_penalty(
@@ -357,30 +362,19 @@ def reward_tyre_slip_penalty(
     step_state: dict[str, Any],
     reward_cfg: dict[str, Any],
 ) -> torch.Tensor:
-    """Additive combined-slip penalty over the four tyres.
+    """Raw GT Sophy tyre-slip component ``Rts = -cadence * sum_i min(|ratio_i|, 1) * |angle_i|``.
 
-    Reads the per-wheel slip already computed by the env (single source of truth)
-    and penalizes the longitudinal (slip ratio) and lateral (slip angle) channels
-    additively, so pure wheelspin and pure drift are each penalized on their own.
-    A per-channel deadzone leaves a controlled grip-limit regime unpenalized:
-
-        R_ts = -( sum_i relu(min(|ratio_i|, 1) - d_ratio)
-                  + w_angle * sum_i relu(|angle_i| - d_angle) )
-
-    With both deadzones 0 this is the plain additive all-slip penalty.
+    Reads the per-wheel slip already computed by the env (single source of truth):
+    the longitudinal slip ratio (clamped at 1 so a spinning wheel cannot dominate)
+    multiplied by the lateral slip angle, summed over the four tyres. ``cadence``
+    normalizes to Sophy's 10 Hz rate. The single coefficient is applied by
+    ``compute_rewards``.
     """
     slip = step_state["tyre_slip"]
     slip_ratio_mag = torch.clamp(torch.abs(slip[:, :4]), max=1.0)
     slip_angle_mag = torch.abs(slip[:, 4:])
-
-    d_ratio = float(reward_cfg.get("slip_deadzone_ratio", 0.0))
-    d_angle = float(reward_cfg.get("slip_deadzone_angle", 0.0))
-    w_angle = float(reward_cfg.get("slip_angle_weight", 1.0))
-
-    ratio_excess = torch.clamp(slip_ratio_mag - d_ratio, min=0.0)
-    angle_excess = torch.clamp(slip_angle_mag - d_angle, min=0.0)
-
-    return -(ratio_excess.sum(dim=1) + w_angle * angle_excess.sum(dim=1))
+    product = (slip_ratio_mag * slip_angle_mag).sum(dim=1)
+    return -_cadence(reward_cfg) * product
 
 
 def compute_rewards(
@@ -435,19 +429,13 @@ def compute_rewards(
         )
 
     # GT Sophy masks course progress whenever the agent is off course (anti
-    # corner-cutting). Derive the mask directly from the boundary state: the
-    # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
-    # be used as a reliable off-track indicator.
+    # corner-cutting). Derive the mask directly from the boundary state; solid
+    # walls prevent shortcutting so only the off-course mask (no lateral/rejoin
+    # shaping) is applied.
     off_track, _ = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=float(reward_cfg.get("oob_margin_m", 0.2))
     )
-    prev_off = reward_state.get("prev_off_track")
-    if prev_off is None or prev_off.numel() != off_track.numel():
-        prev_off = torch.zeros_like(off_track, dtype=torch.bool)
-    on_track = ~off_track
-    rejoin = on_track & prev_off
-    progress = torch.where(off_track | rejoin, torch.zeros_like(progress), progress)
-    reward_state["prev_off_track"] = off_track.detach().clone()
+    progress = torch.where(off_track, torch.zeros_like(progress), progress)
 
     progress *= scales["progress"]
     lateral *= scales.get("lateral", 0.0)

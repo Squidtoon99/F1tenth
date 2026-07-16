@@ -1,7 +1,8 @@
 """Pure-torch tests for the GT Sophy any-collision penalty (rewards.reward_collision).
 
-The penalty is ``-collision_k * c`` where ``c`` is the binary car-to-car overlap
-indicator. These tests call ``reward_collision`` directly with a synthetic
+The raw component is ``Rc = -cadence * c`` where ``c`` is the binary car-to-car
+overlap indicator and ``cadence = control_dt / 0.1`` (0.5 at the 20 Hz control
+rate). These tests call ``reward_collision`` directly with a synthetic
 ``car_collision`` mask, so no Genesis simulation is needed.
 
 ``rewards.py`` uses package-relative imports, so we register a small
@@ -51,30 +52,20 @@ def _step_state(collision_mask):
 def test_no_opponent_returns_zero(rewards_mod):
     """No car_collision key (1v0 path) -> zero penalty, shaped like progress_ds."""
     ss = {"progress_ds": torch.zeros(3, dtype=torch.float32)}
-    r = rewards_mod.reward_collision(ss, {"collision_k": 5.0})
+    r = rewards_mod.reward_collision(ss, {"control_dt": 0.05})
     assert torch.equal(r, torch.zeros(3))
 
 
-def test_penalty_negative_on_contact(rewards_mod):
+def test_any_contact_penalty_with_cadence(rewards_mod):
+    """Representative: contact -> -cadence, separated -> 0 (cadence 0.5 at 20 Hz)."""
     ss = _step_state([True, False])
-    r = rewards_mod.reward_collision(ss, {"collision_k": 5.0})
-    assert r[0].item() == pytest.approx(-5.0, abs=1e-6)
+    r = rewards_mod.reward_collision(ss, {"control_dt": 0.05})
+    assert r[0].item() == pytest.approx(-0.5, abs=1e-6)
     assert r[1].item() == 0.0
 
 
-def test_penalty_zero_when_separated(rewards_mod):
-    ss = _step_state([False, False])
-    r = rewards_mod.reward_collision(ss, {"collision_k": 5.0})
-    assert torch.equal(r, torch.zeros(2))
-
-
-def test_penalty_scales_with_collision_k(rewards_mod):
+def test_cadence_tracks_control_dt(rewards_mod):
+    """Boundary: at the Sophy 10 Hz rate (control_dt=0.1) cadence is exactly 1."""
     ss = _step_state([True])
-    r = rewards_mod.reward_collision(ss, {"collision_k": 12.5})
-    assert r[0].item() == pytest.approx(-12.5, abs=1e-6)
-
-
-def test_default_collision_k(rewards_mod):
-    ss = _step_state([True])
-    r = rewards_mod.reward_collision(ss, {})
-    assert r[0].item() == pytest.approx(-5.0, abs=1e-6)
+    r = rewards_mod.reward_collision(ss, {"control_dt": 0.1})
+    assert r[0].item() == pytest.approx(-1.0, abs=1e-6)

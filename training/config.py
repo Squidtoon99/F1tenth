@@ -203,65 +203,45 @@ DEFAULT_CONFIG = {
         },
     },
     "reward": {
-        # Reward: course progress (primary), off-course penalty (~time-off x speed^2),
-        # tyre-slip penalty, and a small smoothness shaping term. No explicit speed
-        # reward: speed is induced purely by progress per step under the gamma=0.9896
-        # discount.
-        "progress_k_fwd": 5.0,
-        "progress_k_back": 5.0,
+        # GT Sophy Maggiore reward. Each term is a raw canonical component times one
+        # reward_scales coefficient (no duplicate *_k gain). State/event terms carry
+        # the 10 Hz cadence factor (control_dt / 0.1 = 0.5 at 20 Hz) and off-course
+        # uses the elapsed-time x km/h-squared form; both are applied in the kernel /
+        # Torch mirror, so reward_scales holds the paper coefficient directly.
         "progress_max_lateral_m": 1.0,
         "oob_margin_m": 0.2,
-        # Off-course penalty R_soc = -(time off course) * speed^2. The per-step time
-        # off course is constant and folds into oob_k; tuned so the penalty at racing
-        # speed (~6 m/s) is comparable to the previous shaping while escalating
-        # quadratically with speed for fast excursions.
-        "oob_k": 0.3,
         "lateral_k": 0.5,
-        # 1v1 passing reward gain: per-step reward = passing_k * (ego_ds - opp_ds),
-        # i.e. track position gained on the opponent. Only active when a "passing"
-        # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
-        # unaffected.
-        "passing_k": 5.0,
         "passing_gate_ahead_m": 40.0,
         "passing_gate_behind_m": 20.0,
-        # Any-collision penalty gain: per-step reward = -collision_k on car-to-car
-        # overlap (same predicate as collision termination). Only active when a
-        # "collision" entry is added to reward_scales (the trainer does this for
-        # 1v1), so 1v0 is unaffected.
-        "collision_k": 5.0,
-        # Rear-end penalty gain Rr: per-step reward = -rear_end_k * ||v_ego - v_opp||^2
-        # when the agent collides with an opponent that is ahead on the centerline.
-        # Scales with squared closing speed so high-speed rear-ends are punished
-        # hardest. Only active when a "rear_end" entry is added to reward_scales.
-        "rear_end_k": 5.0,
         # Overtake-completed bonus: one-time +overtake_bonus_k when the opponent
         # goes from ahead to behind within overtake_gap_m on the centerline (a
         # genuine pass, not a lap wrap). Only active when an "overtake" entry is
         # added to reward_scales (the trainer does this for 1v1).
         "overtake_bonus_k": 1.0,
         "overtake_gap_m": 5.0,
-        # Additive combined-slip penalty shaping. slip_angle_weight balances the
-        # (radian) slip-angle term against the (unitless) slip-ratio term; the
-        # deadzones (ratio unitless, angle radians) carve out a controlled
-        # grip-limit regime that is not penalized. Both default to 0.0 so every bit
-        # of slip is penalized (GT Sophy-faithful); raise the deadzones only if the
-        # policy is found to be under-driving the tyres.
+        # Retained for backward-compatible reproduction of old additive/deadzone
+        # slip configs; the Maggiore parity path uses the product form and ignores
+        # these.
         "slip_angle_weight": 1.0,
         "slip_deadzone_ratio": 0.0,
         "slip_deadzone_angle": 0.0,
-        # Global downscale applied to the summed reward to keep per-step total and
-        # value targets O(1) (progress alone was ~9/step before). Preserves the
-        # relative balance between the individual reward terms.
-        "global_reward_scale": 0.2,
+        # Absolute GT Sophy scale: no extra multiplier in the parity arm. Retained
+        # so old configs can still shrink overall magnitude.
+        "global_reward_scale": 1.0,
+        # Maggiore coefficients. progress (Rcp) and passing (Rps) are distance
+        # deltas; collision (Rc), rear_end (Rr) and tyre_slip (Rts) carry the 10 Hz
+        # cadence; oob (Rsoc) is the off-course km/h term. lateral/smoothness are
+        # disabled (retained for backward compat). passing/collision/rear_end are
+        # gated on by the 1v1 trainer (present here as the parity defaults).
         "reward_scales": {
-            "progress": 5.0,
-            "lateral": 1.0,
-            "oob_penalty": 0.6,
-            # Lowered from 0.05: the additive combined-slip penalty is larger in
-            # magnitude than the previous slip_ratio * slip_angle product.
-            "tyre_slip_penalty": 0.02,
-            # Mild jerk penalty to curb bang-bang throttle/steer.
-            "smoothness": 0.05,
+            "progress": 1.0,
+            "passing": 0.5,
+            "collision": 4.0,
+            "rear_end": 0.1,
+            "tyre_slip_penalty": 0.25,
+            "oob_penalty": 0.01,
+            "lateral": 0.0,
+            "smoothness": 0.0,
         },
     },
     "model": {
