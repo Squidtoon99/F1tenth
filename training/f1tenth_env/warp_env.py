@@ -116,6 +116,7 @@ class _EnvironmentStorage:
         "metric_opponent_speed",
         "metric_nonfinite",
         "contact_closing_speed",
+        "lap_cross",
     )
     _INT_FIELDS = (
         "done_flags",
@@ -672,6 +673,7 @@ class WarpF1tenthEnv:
                 "speed_xy": tensors["metric_speed"],
                 "episode_steps": tensors["episode_step"],
                 "lap_count": tensors["lap_count"],
+                "laps_completed": tensors["lap_cross"],
                 "opp_speed": tensors["metric_opponent_speed"],
                 "opponent_s": tensors["prev_opponent_s"],
                 "nonfinite_obs_envs": tensors["metric_nonfinite"],

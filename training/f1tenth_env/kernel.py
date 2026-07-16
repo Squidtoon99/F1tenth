@@ -372,6 +372,7 @@ class EnvBuffers:
     episode_step: wp.array(dtype=wp.int32)
     episode_id: wp.array(dtype=wp.int32)
     lap_count: wp.array(dtype=wp.int32)
+    lap_cross: wp.array(dtype=wp.float32)
     ego_segment: wp.array(dtype=wp.int32)
     opponent_segment: wp.array(dtype=wp.int32)
     prev_s: wp.array(dtype=wp.float32)
@@ -769,6 +770,7 @@ def reset_pair(
     env.episode_id[env_id] = next_episode
     env.episode_step[env_id] = 0
     env.lap_count[env_id] = 0
+    env.lap_cross[env_id] = 0.0
     env.oob_streak[env_id] = 0
     env.stopped_streak[env_id] = 0
     env.prev_off_track[env_id] = 0
@@ -923,8 +925,10 @@ def compute_reward_and_done(
     car_width: wp.float32,
 ) -> RewardResult:
     out = RewardResult()
+    prev_s = env.prev_s[env_id]
+    current_s = ego_frenet.s
     delta_s = wp.clamp(
-        wrapped_delta(ego_frenet.s, env.prev_s[env_id], track.length),
+        wrapped_delta(current_s, prev_s, track.length),
         -0.1 * track.length,
         0.1 * track.length,
     )
@@ -1040,9 +1044,16 @@ def compute_reward_and_done(
     if collision_done:
         out.done_flags = out.done_flags | 16
 
-    if delta_s < -0.5 * track.length:
+    env.lap_cross[env_id] = 0.0
+    forward_ds = wrapped_delta(current_s, prev_s, track.length)
+    if (
+        prev_s > 0.9 * track.length
+        and current_s < 0.1 * track.length
+        and forward_ds > 0.0
+    ):
         env.lap_count[env_id] = env.lap_count[env_id] + 1
-    env.prev_s[env_id] = ego_frenet.s
+        env.lap_cross[env_id] = 1.0
+    env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
     env.prev_off_track[env_id] = wp.int32(off_track)
     env.metric_progress[env_id] = delta_s
