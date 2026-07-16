@@ -1,4 +1,4 @@
-"""Unit tests for the additive, deadzoned combined-slip penalty."""
+"""Unit tests for the GT Sophy tyre-slip penalty (product form with cadence)."""
 
 from __future__ import annotations
 
@@ -41,44 +41,35 @@ def _slip(ratio, angle):
 
 def test_zero_slip_is_zero_penalty(rewards_mod):
     ss = {"tyre_slip": torch.zeros(1, 8)}
-    r = rewards_mod.reward_tyre_slip_penalty(ss, {})
+    r = rewards_mod.reward_tyre_slip_penalty(ss, {"control_dt": 0.05})
     assert r.item() == pytest.approx(0.0)
 
 
-def test_additive_over_channels_no_deadzone(rewards_mod):
-    """With deadzones 0 and unit angle weight, penalty = -(sum|ratio| + sum|angle|)."""
+def test_product_over_channels_with_cadence(rewards_mod):
+    """Representative: -cadence * sum_i min(|ratio_i|,1) * |angle_i|.
+
+    Four wheels at ratio 0.2, angle 0.1 -> 4 * 0.2 * 0.1 = 0.08; cadence 0.5 -> -0.04.
+    """
     ss = {"tyre_slip": _slip(0.2, 0.1)}
-    cfg = {"slip_deadzone_ratio": 0.0, "slip_deadzone_angle": 0.0, "slip_angle_weight": 1.0}
-    r = rewards_mod.reward_tyre_slip_penalty(ss, cfg)
-    assert r.item() == pytest.approx(-(4 * 0.2 + 4 * 0.1))
+    r = rewards_mod.reward_tyre_slip_penalty(ss, {"control_dt": 0.05})
+    assert r.item() == pytest.approx(-0.5 * (4 * 0.2 * 0.1))
 
 
 def test_ratio_is_clamped_to_one(rewards_mod):
-    """Slip ratio magnitude is capped at 1 so a spinning wheel can't dominate."""
-    ss = {"tyre_slip": _slip(5.0, 0.0)}
-    r = rewards_mod.reward_tyre_slip_penalty(ss, {"slip_angle_weight": 1.0})
-    assert r.item() == pytest.approx(-4.0)
+    """Boundary: slip ratio magnitude is capped at 1 so a spinning wheel cannot
+    dominate (4 * min(5,1) * 0.1 = 0.4; cadence 0.5 -> -0.2)."""
+    ss = {"tyre_slip": _slip(5.0, 0.1)}
+    r = rewards_mod.reward_tyre_slip_penalty(ss, {"control_dt": 0.05})
+    assert r.item() == pytest.approx(-0.5 * (4 * 1.0 * 0.1))
 
 
-def test_deadzone_leaves_controlled_slip_unpenalized(rewards_mod):
-    """Slip strictly inside both deadzones incurs no penalty (the controlled regime)."""
-    ss = {"tyre_slip": _slip(0.08, 0.04)}
-    cfg = {"slip_deadzone_ratio": 0.1, "slip_deadzone_angle": 0.05, "slip_angle_weight": 1.0}
-    r = rewards_mod.reward_tyre_slip_penalty(ss, cfg)
-    assert r.item() == pytest.approx(0.0)
-
-
-def test_deadzone_penalizes_only_excess(rewards_mod):
-    """Beyond the deadzone only the excess is penalized (relu behaviour)."""
-    ss = {"tyre_slip": _slip(0.3, 0.2)}
-    cfg = {"slip_deadzone_ratio": 0.1, "slip_deadzone_angle": 0.05, "slip_angle_weight": 2.0}
-    r = rewards_mod.reward_tyre_slip_penalty(ss, cfg)
-    expected = -(4 * (0.3 - 0.1) + 2.0 * 4 * (0.2 - 0.05))
-    assert r.item() == pytest.approx(expected)
-
-
-def test_angle_weight_scales_lateral_channel(rewards_mod):
-    ss = {"tyre_slip": _slip(0.0, 0.1)}
-    base = rewards_mod.reward_tyre_slip_penalty(ss, {"slip_angle_weight": 1.0})
-    heavy = rewards_mod.reward_tyre_slip_penalty(ss, {"slip_angle_weight": 3.0})
-    assert heavy.item() == pytest.approx(3.0 * base.item())
+def test_pure_slip_channels_do_not_penalize(rewards_mod):
+    """Product form: pure wheelspin (angle 0) or pure drift (ratio 0) -> no penalty."""
+    spin = {"tyre_slip": _slip(0.5, 0.0)}
+    drift = {"tyre_slip": _slip(0.0, 0.3)}
+    assert rewards_mod.reward_tyre_slip_penalty(
+        spin, {"control_dt": 0.05}
+    ).item() == pytest.approx(0.0)
+    assert rewards_mod.reward_tyre_slip_penalty(
+        drift, {"control_dt": 0.05}
+    ).item() == pytest.approx(0.0)

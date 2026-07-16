@@ -70,10 +70,10 @@ def test_sign_ego_gaining_is_positive(rewards_mod):
     cfg = _cfg()
     # establish baselines
     rewards_mod.reward_passing(_step_state(10.0, 0.0), cfg, rs, torch.tensor([5]))
-    # ego advances 0.5, opponent only 0.1 -> ego gains -> positive
+    # ego advances 0.5, opponent only 0.1 -> ego gains -> positive (raw component)
     ss = _step_state(10.1, 0.5)
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
-    assert r[0].item() == pytest.approx(5.0 * (0.5 - 0.1), abs=1e-5)
+    assert r[0].item() == pytest.approx(0.5 - 0.1, abs=1e-5)
     assert r[0].item() > 0
 
 
@@ -83,8 +83,23 @@ def test_sign_ego_losing_is_negative(rewards_mod):
     rewards_mod.reward_passing(_step_state(10.0, 0.0), cfg, rs, torch.tensor([5]))
     ss = _step_state(10.6, 0.1)  # opponent advances 0.6, ego only 0.1
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
-    assert r[0].item() == pytest.approx(5.0 * (0.1 - 0.6), abs=1e-5)
+    assert r[0].item() == pytest.approx(0.1 - 0.6, abs=1e-5)
     assert r[0].item() < 0
+
+
+def test_gate_active_when_prev_in_window_cur_out(rewards_mod):
+    """max(gate_prev, gate_cur): an opponent that was in range last step keeps the
+    passing term active this step, then deactivates once both states are out."""
+    rs = {}
+    cfg = _cfg()
+    # step A: opponent in window (gap ~5) -> prev gate set active
+    rewards_mod.reward_passing(_step_state(10.0, 0.3), cfg, rs, torch.tensor([5]))
+    # step B: opponent leaves the +40 ahead gate this step, but prev was in-window
+    b = rewards_mod.reward_passing(_step_state(46.0, 0.3), cfg, rs, torch.tensor([6]))
+    assert b[0].item() != 0.0
+    # step C: opponent stays out of window; prev now out -> gate inactive
+    c = rewards_mod.reward_passing(_step_state(46.0, 0.3), cfg, rs, torch.tensor([7]))
+    assert c[0].item() == pytest.approx(0.0, abs=1e-6)
 
 
 def test_static_relative_position_is_zero(rewards_mod):
@@ -133,16 +148,16 @@ def test_continuity_sweep_bounded(rewards_mod):
     assert max_jump < 0.5
 
 
-# --- scale / dominance --------------------------------------------------------
-def test_passing_scale_comparable_to_progress(rewards_mod):
-    """With passing_k == progress gain, ego advancing past a static opponent yields
-    a passing reward of the same scale as the raw progress term (k * ds)."""
+# --- raw magnitude ------------------------------------------------------------
+def test_raw_component_is_relative_arclength(rewards_mod):
+    """The raw component equals ego_ds - opp_ds (the single coefficient is applied
+    by compute_rewards): ego advancing 0.4 past a static opponent -> 0.4."""
     rs = {}
-    cfg = _cfg(passing_k=5.0)
+    cfg = _cfg()
     rewards_mod.reward_passing(_step_state(10.0, 0.0), cfg, rs, torch.tensor([5]))
     ss = _step_state(10.0, 0.4)  # opponent static, ego advances 0.4
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
-    assert r[0].item() == pytest.approx(5.0 * 0.4, abs=1e-5)
+    assert r[0].item() == pytest.approx(0.4, abs=1e-5)
 
 
 # --- locality gate ------------------------------------------------------------
@@ -172,7 +187,7 @@ def test_gate_opponent_in_window_passes_through(rewards_mod):
     rewards_mod.reward_passing(_step_state(10.0, 0.0), cfg, rs, torch.tensor([5]))
     ss = _step_state(10.1, 0.5)  # gap=5.1, within [-20, +40]
     r = rewards_mod.reward_passing(ss, cfg, rs, torch.tensor([6]))
-    assert r[0].item() == pytest.approx(5.0 * (0.5 - 0.1), abs=1e-5)
+    assert r[0].item() == pytest.approx(0.5 - 0.1, abs=1e-5)
 
 
 # --- overtake-completed bonus -------------------------------------------------

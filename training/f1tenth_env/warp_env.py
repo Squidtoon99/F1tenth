@@ -127,6 +127,7 @@ class _EnvironmentStorage:
         "opponent_segment",
         "prev_off_track",
         "prev_opponent_ahead",
+        "prev_opponent_in_window",
         "oob_streak",
         "stopped_streak",
         "action_head",
@@ -417,26 +418,28 @@ class WarpF1tenthEnv:
 
     def _build_reward_params(self):
         scales = self.reward_cfg.get("reward_scales", {})
+        # Sophy reward rate is 10 Hz; convert per-step state/event terms to that
+        # rate. At the 20 Hz control cadence this is 0.5.
+        cadence = self.control_dt / 0.1
         params = RewardParams()
-        params.progress_forward = float(
-            self.reward_cfg.get("progress_k_fwd", 5.0)
-        ) * float(scales.get("progress", 0.0))
-        params.progress_backward = float(
-            self.reward_cfg.get("progress_k_back", 5.0)
-        ) * float(scales.get("progress", 0.0))
+        progress_scale = float(scales.get("progress", 0.0))
+        params.progress_forward = progress_scale
+        params.progress_backward = progress_scale
         params.progress_max_lateral = float(
             self.reward_cfg.get("progress_max_lateral_m", 1.0)
         )
         params.lateral = float(
             self.reward_cfg.get("lateral_k", 0.5)
         ) * float(scales.get("lateral", 0.0))
-        params.oob = float(self.reward_cfg.get("oob_k", 0.3)) * float(
-            scales.get("oob_penalty", 0.0)
+        params.oob = (
+            float(scales.get("oob_penalty", 0.0))
+            * self.control_dt
+            * (3.6 * 3.6)
         )
         params.oob_margin = float(
             self.reward_cfg.get("oob_margin_m", 0.2)
         )
-        params.slip = float(scales.get("tyre_slip_penalty", 0.0))
+        params.slip = float(scales.get("tyre_slip_penalty", 0.0)) * cadence
         params.slip_angle_weight = float(
             self.reward_cfg.get("slip_angle_weight", 1.0)
         )
@@ -447,21 +450,15 @@ class WarpF1tenthEnv:
             self.reward_cfg.get("slip_deadzone_angle", 0.0)
         )
         params.smoothness = float(scales.get("smoothness", 0.0))
-        params.passing = float(
-            self.reward_cfg.get("passing_k", 5.0)
-        ) * float(scales.get("passing", 0.0))
+        params.passing = float(scales.get("passing", 0.0))
         params.passing_ahead = float(
             self.reward_cfg.get("passing_gate_ahead_m", 40.0)
         )
         params.passing_behind = float(
             self.reward_cfg.get("passing_gate_behind_m", 20.0)
         )
-        params.collision = float(
-            self.reward_cfg.get("collision_k", 5.0)
-        ) * float(scales.get("collision", 0.0))
-        params.rear_end = float(
-            self.reward_cfg.get("rear_end_k", 5.0)
-        ) * float(scales.get("rear_end", 0.0))
+        params.collision = float(scales.get("collision", 0.0)) * cadence
+        params.rear_end = float(scales.get("rear_end", 0.0)) * cadence
         params.overtake = float(
             self.reward_cfg.get("overtake_bonus_k", 1.0)
         ) * float(scales.get("overtake", 0.0))
@@ -499,6 +496,9 @@ class WarpF1tenthEnv:
         )
         params.terminate_on_collision = int(
             self.env_cfg.get("term_on_collision", True)
+        )
+        params.oob_margin = float(
+            self.env_cfg.get("term_oob_margin_m", 0.15)
         )
         return params
 

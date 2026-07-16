@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -598,36 +599,168 @@ def accumulate_step_diagnostics(
     diag.add_mean("obs/abs", obs.abs(), track_range=True)
 
 
-def build_config(args: argparse.Namespace) -> dict:
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["env"]["track"] = args.track
-    cfg["model"]["batch_size"] = args.batch_size
-    cfg["model"]["minimum_train_transitions"] = args.min_train_transitions
-    cfg["model"]["sampled_replay_rows_per_transition"] = (
-        args.sampled_rows_per_transition
-    )
-    cfg["model"]["replay_buffer_limit"] = args.buffer_capacity
-    cfg["model"]["alpha"] = args.alpha
-    cfg["schedule"]["total_transitions"] = args.total_transitions
-    cfg["schedule"]["log_interval_transitions"] = args.log_interval_transitions
-    cfg["schedule"]["export_interval_transitions"] = (
-        args.export_interval_transitions
-    )
-    cfg["schedule"]["eval_interval_transitions"] = args.eval_interval_transitions
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """Recursively merge ``patch`` into ``base`` in place, returning ``base``.
 
-    # Episode horizon: explicit override, else derive from the track centerline
-    # length so each track gets ~episode_lap_multiplier laps of racing time.
-    if getattr(args, "episode_length", None) is not None:
+    Nested mappings are merged key-by-key; every other value (including lists)
+    replaces the base value wholesale (deep-copied so the patch is not aliased).
+    """
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
+# Gated reward-scale coefficients that compute_rewards enables purely by their
+# presence in reward_scales, so they are intentionally absent from DEFAULT_CONFIG
+# (adding them there would activate the term). build_config injects them for 1v1,
+# and a --config patch may set them, so the validator accepts them under
+# reward.reward_scales even though they are not in the reference shape.
+_OPTIONAL_REWARD_SCALE_KEYS = frozenset(
+    {"overtake", "passing", "collision", "rear_end"}
+)
+
+
+def validate_config_patch(
+    patch: dict, reference: dict = DEFAULT_CONFIG, path: str = ""
+) -> None:
+    """Reject a JSON patch that strays from the ``DEFAULT_CONFIG`` shape.
+
+    A key is rejected when it is absent from ``reference`` at the same nesting
+    depth, or when it maps a mapping onto a scalar (or vice-versa). Both are
+    raised early with the offending dotted path so a typo cannot silently create
+    an ignored config key. Known optional gated reward-scale keys (enabled by
+    presence, so absent from ``DEFAULT_CONFIG``) are accepted under
+    ``reward.reward_scales`` as scalars.
+    """
+    if not isinstance(patch, dict):
+        raise ValueError(
+            f"config patch at '{path or '<root>'}' must be a JSON object, "
+            f"got {type(patch).__name__}"
+        )
+    for key, value in patch.items():
+        loc = f"{path}.{key}" if path else key
+        if key not in reference:
+            if path == "reward.reward_scales" and key in _OPTIONAL_REWARD_SCALE_KEYS:
+                if isinstance(value, dict):
+                    raise ValueError(
+                        f"type mismatch for config key '{loc}': expected a "
+                        f"scalar, got a mapping"
+                    )
+                continue
+            raise ValueError(f"unknown config key '{loc}' (not in DEFAULT_CONFIG)")
+        ref_val = reference[key]
+        ref_is_map = isinstance(ref_val, dict)
+        val_is_map = isinstance(value, dict)
+        if ref_is_map != val_is_map:
+            raise ValueError(
+                f"type mismatch for config key '{loc}': expected "
+                f"{'a mapping' if ref_is_map else 'a scalar'}, got "
+                f"{'a mapping' if val_is_map else 'a scalar'}"
+            )
+        if ref_is_map:
+            validate_config_patch(value, ref_val, loc)
+
+
+def load_config_patch(path: str) -> tuple[dict, dict]:
+    """Read, parse and validate a JSON config patch.
+
+    Returns the parsed patch and a provenance record (absolute path, sha256 of
+    the raw file bytes, and the parsed contents) for the run snapshot / W&B.
+    """
+    raw = Path(path).read_bytes()
+    patch = json.loads(raw)
+    validate_config_patch(patch)
+    meta = {
+        "path": str(Path(path).resolve()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "contents": patch,
+    }
+    return patch, meta
+
+
+def config_provenance(patch_meta: dict | None, explicit: set[str]) -> dict:
+    """Assemble the config-resolution provenance recorded with every run."""
+    return {
+        "precedence": ["DEFAULT_CONFIG", "config_patch", "cli_args"],
+        "patch": patch_meta,
+        "explicit_cli_args": sorted(explicit),
+    }
+
+
+def build_run_snapshot(
+    run_id: str,
+    run_dir: Path,
+    args: argparse.Namespace,
+    cfg: dict,
+    provenance: dict,
+) -> dict:
+    """Serializable run snapshot: resolved config plus config provenance."""
+    return {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "args": {k: v for k, v in vars(args).items() if v is not None},
+        "config": cfg,
+        "config_provenance": provenance,
+    }
+
+
+def build_config(
+    args: argparse.Namespace,
+    patch: dict | None = None,
+    explicit: set[str] | None = None,
+) -> dict:
+    """Resolve the run config with precedence DEFAULT_CONFIG < patch < CLI.
+
+    ``explicit`` is the set of arg dests the user actually passed; only those
+    override the (already patch-merged) config, so argparse defaults never
+    clobber patch values. Config-mapped scalars are also written back onto
+    ``args`` so the training loop, which reads some of them directly, sees the
+    resolved value.
+    """
+    explicit = set() if explicit is None else explicit
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    if patch:
+        validate_config_patch(patch)
+        _deep_merge(cfg, patch)
+
+    def cli_override(dest: str, section: str, key: str) -> None:
+        if dest in explicit:
+            cfg[section][key] = getattr(args, dest)
+        elif key in cfg[section]:
+            setattr(args, dest, cfg[section][key])
+
+    cli_override("track", "env", "track")
+    cli_override("batch_size", "model", "batch_size")
+    cli_override("min_train_transitions", "model", "minimum_train_transitions")
+    cli_override(
+        "sampled_rows_per_transition", "model", "sampled_replay_rows_per_transition"
+    )
+    cli_override("buffer_capacity", "model", "replay_buffer_limit")
+    cli_override("alpha", "model", "alpha")
+    cli_override("total_transitions", "schedule", "total_transitions")
+    cli_override("log_interval_transitions", "schedule", "log_interval_transitions")
+    cli_override(
+        "export_interval_transitions", "schedule", "export_interval_transitions"
+    )
+    cli_override("eval_interval_transitions", "schedule", "eval_interval_transitions")
+
+    # Episode horizon precedence: explicit CLI > patch > track-derived default.
+    if "episode_length" in explicit:
         cfg["env"]["episode_length"] = float(args.episode_length)
+    elif patch and "episode_length" in patch.get("env", {}):
+        cfg["env"]["episode_length"] = float(cfg["env"]["episode_length"])
     else:
         lap_multiplier = (
             float(args.episode_lap_multiplier)
-            if getattr(args, "episode_lap_multiplier", None) is not None
+            if "episode_lap_multiplier" in explicit
             else float(cfg["env"].get("episode_lap_multiplier", 3.0))
         )
         workspace_dir = str(Path(__file__).resolve().parent)
         cfg["env"]["episode_length"] = episode_length_for_track(
-            track=args.track,
+            track=cfg["env"]["track"],
             workspace_dir=workspace_dir,
             ref_lap_speed_mps=float(cfg["env"].get("expected_lap_speed_mps", 3.5)),
             lap_multiplier=lap_multiplier,
@@ -637,21 +770,21 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["model"]["n_step"] = args.n_step
 
     cfg["env"]["domain_randomization"] = {
-        **DEFAULT_CONFIG["env"]["domain_randomization"],
+        **cfg["env"]["domain_randomization"],
         "enabled": True,
     }
 
     if getattr(args, "zero_tyre_slip_obs", False):
         cfg["obs"]["zero_tyre_slip_obs"] = True
 
-    sp_defaults = DEFAULT_CONFIG["selfplay"]
-    cfg["selfplay"] = {
-        "snapshot_interval_transitions": args.selfplay_snapshot_interval,
-        "refresh_interval_transitions": args.selfplay_refresh_interval,
-        "pool_size": args.selfplay_pool_size,
-        "sample_mode": args.selfplay_sample,
-        "mixed_latest_prob": sp_defaults["mixed_latest_prob"],
-    }
+    cli_override(
+        "selfplay_snapshot_interval", "selfplay", "snapshot_interval_transitions"
+    )
+    cli_override(
+        "selfplay_refresh_interval", "selfplay", "refresh_interval_transitions"
+    )
+    cli_override("selfplay_pool_size", "selfplay", "pool_size")
+    cli_override("selfplay_sample", "selfplay", "sample_mode")
 
     # 1v1: enable the opponent and passing reward. The policy input remains the
     # fixed 390-d layout in both solo and opponent modes.
@@ -666,28 +799,29 @@ def build_config(args: argparse.Namespace) -> dict:
             cfg["env"]["opponent_strategy"] = "policy"
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
-        cfg["env"]["opponent_target_speed"] = args.opponent_target_speed
-        cfg["env"]["opponent_spawn_gap_min_m"] = args.opponent_spawn_gap_min
-        cfg["env"]["opponent_spawn_gap_max_m"] = args.opponent_spawn_gap_max
-        cfg["env"]["opponent_spawn_behind_prob"] = args.opponent_spawn_behind_prob
-        cfg["env"]["opponent_spawn_lateral_independent"] = (
-            args.opponent_spawn_lateral_independent
+        cli_override("opponent_target_speed", "env", "opponent_target_speed")
+        cli_override("opponent_spawn_gap_min", "env", "opponent_spawn_gap_min_m")
+        cli_override("opponent_spawn_gap_max", "env", "opponent_spawn_gap_max_m")
+        cli_override("opponent_spawn_behind_prob", "env", "opponent_spawn_behind_prob")
+        cli_override(
+            "opponent_spawn_lateral_independent",
+            "env",
+            "opponent_spawn_lateral_independent",
         )
-        cfg["env"]["opponent_reset_speed_min_mps"] = args.opponent_reset_speed_min
-        cfg["env"]["opponent_reset_speed_max_mps"] = args.opponent_reset_speed_max
+        cli_override("opponent_reset_speed_min", "env", "opponent_reset_speed_min_mps")
+        cli_override("opponent_reset_speed_max", "env", "opponent_reset_speed_max_mps")
         if args.opponent_ckpt is not None:
             cfg["env"]["opponent_ckpt"] = args.opponent_ckpt
-        # Activate the passing reward term (gated by presence of this scale).
-        cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
-        # Activate the GT Sophy any-collision penalty (gated by this scale).
-        cfg["reward"]["reward_scales"]["collision"] = args.collision_scale
-        # Activate the GT Sophy rear-end penalty Rr (gated by this scale). 0.0
-        # leaves it out of the reward breakdown entirely.
-        if float(args.rear_end_scale) != 0.0:
+        # reward_scales resolve from the config/patch (the single source of truth
+        # for the Maggiore coefficients); a CLI flag only wins when explicitly
+        # passed, so a --config patch is never clobbered by an argparse default.
+        if "passing_scale" in explicit:
+            cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
+        if "collision_scale" in explicit:
+            cfg["reward"]["reward_scales"]["collision"] = args.collision_scale
+        if "rear_end_scale" in explicit:
             cfg["reward"]["reward_scales"]["rear_end"] = args.rear_end_scale
-        # Activate the overtake-completed bonus (gated by this scale). 0.0 leaves it
-        # out of the reward breakdown entirely.
-        if float(args.overtake_scale) != 0.0:
+        if "overtake_scale" in explicit:
             cfg["reward"]["reward_scales"]["overtake"] = args.overtake_scale
         # Closing-speed threshold for collision termination (0.0 = terminate on any
         # overlap). Below it, contacts only apply penalties/physics and the episode
@@ -907,9 +1041,19 @@ def run_eval_video(
     log.info("Eval rollout video written to %s", out)
 
 
-def parse_args() -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(description="Standalone QRSAC trainer (1v0, single process)")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a JSON config patch merged over DEFAULT_CONFIG (nested "
+        "env/reward/model/schedule/selfplay/obs shape only). Precedence is "
+        "DEFAULT_CONFIG < patch < explicitly-passed config CLI flags; runtime "
+        "options (num-envs, seed, device, run/wandb/eval, init-ckpt, compile) "
+        "stay CLI-only.",
+    )
     parser.add_argument("--num-envs", type=int, default=512)
     parser.add_argument(
         "--total-transitions",
@@ -1017,24 +1161,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--passing-scale",
         type=float,
-        default=2.0,
-        help="Reward scale for the 1v1 passing term (track position gained on the "
-        "opponent). Only used when --opponent is not 'none'.",
+        default=cfg["reward"]["reward_scales"]["passing"],
+        help="Reward scale (Maggiore Rps coefficient) for the 1v1 passing term "
+        "(track position gained on the opponent). Defaults to config "
+        "reward.reward_scales.passing; only used when --opponent is not 'none'.",
     )
     parser.add_argument(
         "--collision-scale",
         type=float,
-        default=1.0,
-        help="Reward scale for the GT Sophy any-collision penalty (-collision_k on "
-        "car-car overlap). Only used when --opponent is not 'none'.",
+        default=cfg["reward"]["reward_scales"]["collision"],
+        help="Reward scale (Maggiore Rc coefficient) for the GT Sophy any-collision "
+        "penalty on car-car overlap. Defaults to config "
+        "reward.reward_scales.collision; only used when --opponent is not 'none'.",
     )
     parser.add_argument(
         "--rear-end-scale",
         type=float,
-        default=0.5,
-        help="Reward scale for the GT Sophy rear-end penalty Rr (-rear_end_k * "
-        "closing-speed^2 when colliding with an opponent ahead). 0.0 disables it. "
-        "Only used when --opponent is not 'none'.",
+        default=cfg["reward"]["reward_scales"]["rear_end"],
+        help="Reward scale (Maggiore Rr coefficient) for the GT Sophy rear-end "
+        "penalty (closing-speed^2 when colliding with an opponent ahead). Defaults "
+        "to config reward.reward_scales.rear_end; only used when --opponent is not "
+        "'none'.",
     )
     parser.add_argument(
         "--overtake-scale",
@@ -1213,12 +1360,32 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Human-readable hypothesis description for W&B metadata",
     )
-    return parser.parse_args()
+    return parser
+
+
+def _explicit_cli_dests(argv: list[str] | None = None) -> set[str]:
+    """Dest names the user actually passed on the command line.
+
+    Re-parses ``argv`` with every argparse default suppressed, so only options
+    present on the command line land in the namespace. This is what lets an
+    unpassed CLI flag avoid clobbering a --config patch value.
+    """
+    sentinel = _build_parser()
+    for action in sentinel._actions:
+        action.default = argparse.SUPPRESS
+    return set(vars(sentinel.parse_args(argv)).keys())
+
+
+def parse_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, set[str]]:
+    args = _build_parser().parse_args(argv)
+    return args, _explicit_cli_dests(argv)
 
 
 def main():
     load_dotenv()
-    args = parse_args()
+    args, explicit = parse_args()
 
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(args.seed)
@@ -1228,7 +1395,11 @@ def main():
     # instead of erroring on the opt-in fast path (numerics caveat is documented).
     torch.use_deterministic_algorithms(True, warn_only=args.compile)
 
-    cfg = build_config(args)
+    patch, patch_meta = (None, None)
+    if args.config is not None:
+        patch, patch_meta = load_config_patch(args.config)
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    provenance = config_provenance(patch_meta, explicit)
     obs_cfg = cfg["obs"]
     reward_cfg = cfg["reward"]
     model_cfg = cfg["model"]
@@ -1258,12 +1429,7 @@ def main():
     log = setup_trainer_logging(log_file=trainer_log_path)
     log.info("Run id: %s  run_dir: %s  checkpoints: %s", run_id, run_dir, ckpt_dir)
 
-    snapshot = {
-        "run_id": run_id,
-        "run_dir": str(run_dir),
-        "args": {k: v for k, v in vars(args).items() if v is not None},
-        "config": cfg,
-    }
+    snapshot = build_run_snapshot(run_id, run_dir, args, cfg, provenance)
     config_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
     log.info("Wrote config snapshot to %s", config_path)
     log.info("Using device: %s", device)
@@ -1340,7 +1506,7 @@ def main():
             "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
             "name": f"standalone_{run_id}",
             "id": run_id,
-            "config": {**cfg, **vars(args)},
+            "config": {**cfg, **vars(args), "config_provenance": provenance},
             "mode": os.getenv("WANDB_MODE", args.wandb_mode),
             "dir": str(run_dir),
             "tags": tags,

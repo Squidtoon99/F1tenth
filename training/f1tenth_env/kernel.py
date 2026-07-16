@@ -300,6 +300,7 @@ class TerminationParams:
     maximum_heading_error: wp.float32
     collision_speed: wp.float32
     terminate_on_collision: wp.int32
+    oob_margin: wp.float32
 
 
 @wp.struct
@@ -379,6 +380,7 @@ class EnvBuffers:
     prev_opponent_s: wp.array(dtype=wp.float32)
     prev_off_track: wp.array(dtype=wp.int32)
     prev_opponent_ahead: wp.array(dtype=wp.int32)
+    prev_opponent_in_window: wp.array(dtype=wp.int32)
     oob_streak: wp.array(dtype=wp.int32)
     stopped_streak: wp.array(dtype=wp.int32)
     last_action: wp.array(dtype=wp.vec2f)
@@ -792,6 +794,7 @@ def reset_pair(
     env.stopped_streak[env_id] = 0
     env.prev_off_track[env_id] = 0
     env.prev_opponent_ahead[env_id] = 1
+    env.prev_opponent_in_window[env_id] = 0
     env.last_action[env_id] = wp.vec2f(0.0)
     env.opponent_last_action[env_id] = wp.vec2f(0.0)
     env.current_action[env_id] = wp.vec2f(0.0)
@@ -912,15 +915,9 @@ def slip_excess(
 ) -> wp.float32:
     total = wp.float32(0.0)
     for wheel in range(4):
-        ratio = wp.max(
-            wp.abs(vehicle.slip_ratio[wheel]) - params.slip_ratio_deadzone,
-            0.0,
-        )
-        angle = wp.max(
-            wp.abs(vehicle.slip_angle[wheel]) - params.slip_angle_deadzone,
-            0.0,
-        )
-        total = total + ratio + params.slip_angle_weight * angle
+        ratio = wp.min(wp.abs(vehicle.slip_ratio[wheel]), 1.0)
+        angle = wp.abs(vehicle.slip_angle[wheel])
+        total = total + ratio * angle
     return total
 
 
@@ -944,8 +941,9 @@ def compute_reward_and_done(
     out = RewardResult()
     prev_s = env.prev_s[env_id]
     current_s = ego_frenet.s
+    raw_delta_s = wrapped_delta(current_s, prev_s, track.length)
     delta_s = wp.clamp(
-        wrapped_delta(current_s, prev_s, track.length),
+        raw_delta_s,
         -0.1 * track.length,
         0.1 * track.length,
     )
@@ -971,16 +969,18 @@ def compute_reward_and_done(
         or ego_frenet.ey - footprint
         < -(ego_frenet.width_right - reward.oob_margin)
     )
-    rejoined = env.prev_off_track[env_id] != 0 and not off_track
-    if off_track or rejoined:
-        delta_s = 0.0
+    severe_oob = (
+        ego_frenet.ey > ego_frenet.width_left - termination.oob_margin
+        or ego_frenet.ey < -(ego_frenet.width_right - termination.oob_margin)
+    )
+    progress_ds = delta_s
+    if off_track:
+        progress_ds = 0.0
 
     out.progress = (
-        reward.progress_forward * wp.max(delta_s, 0.0)
-        + reward.progress_backward * wp.min(delta_s, 0.0)
+        reward.progress_forward * wp.max(progress_ds, 0.0)
+        + reward.progress_backward * wp.min(progress_ds, 0.0)
     )
-    if wp.abs(ego_frenet.ey) > reward.progress_max_lateral:
-        out.progress = 0.0
     out.lateral = -reward.lateral * ego_frenet.ey * ego_frenet.ey
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
     if off_track:
@@ -989,8 +989,10 @@ def compute_reward_and_done(
     out.smoothness = -reward.smoothness * wp.dot(difference, difference)
     out.slip = -reward.slip * slip_excess(ego, reward)
     if opponent_enabled != 0:
-        if gap <= reward.passing_ahead and gap >= -reward.passing_behind:
+        in_window = gap <= reward.passing_ahead and gap >= -reward.passing_behind
+        if in_window or env.prev_opponent_in_window[env_id] != 0:
             out.passing = reward.passing * (delta_s - opponent_delta_s)
+        env.prev_opponent_in_window[env_id] = wp.int32(in_window)
         out.collision = -reward.collision * wp.float32(contact.contact)
         if contact.contact != 0 and gap > 0.0:
             relative_velocity = (
@@ -1020,14 +1022,14 @@ def compute_reward_and_done(
         + out.overtake
     )
 
-    if off_track:
+    if severe_oob:
         env.oob_streak[env_id] = env.oob_streak[env_id] + 1
     else:
         env.oob_streak[env_id] = 0
     stopped_now = (
         speed_squared
         < termination.speed_threshold * termination.speed_threshold
-        and wp.abs(delta_s) < termination.minimum_progress
+        and wp.abs(raw_delta_s) < termination.minimum_progress
     )
     if stopped_now:
         env.stopped_streak[env_id] = env.stopped_streak[env_id] + 1
@@ -1062,18 +1064,17 @@ def compute_reward_and_done(
         out.done_flags = out.done_flags | 16
 
     env.lap_cross[env_id] = 0.0
-    forward_ds = wrapped_delta(current_s, prev_s, track.length)
     if (
         prev_s > 0.9 * track.length
         and current_s < 0.1 * track.length
-        and forward_ds > 0.0
+        and raw_delta_s > 0.0
     ):
         env.lap_count[env_id] = env.lap_count[env_id] + 1
         env.lap_cross[env_id] = 1.0
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
     env.prev_off_track[env_id] = wp.int32(off_track)
-    env.metric_progress[env_id] = delta_s
+    env.metric_progress[env_id] = progress_ds
     env.metric_oob[env_id] = wp.float32(off_track)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
