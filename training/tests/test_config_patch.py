@@ -120,6 +120,24 @@ def test_validate_rejects_type_mismatch():
         validate_config_patch({"model": {"batch_size": {"nested": 1}}})
 
 
+def test_selfplay_anchor_patch_resolves_and_cli_wins():
+    # Anchor controls resolve DEFAULT_CONFIG < patch < explicit CLI.
+    patch = {"selfplay": {"anchor_ckpt": "/tmp/anchor.pt", "anchor_prob": 0.4}}
+    cfg = _resolve([], patch=patch)
+    assert cfg["selfplay"]["anchor_ckpt"] == "/tmp/anchor.pt"
+    assert cfg["selfplay"]["anchor_prob"] == 0.4
+
+    cfg = _resolve(["--selfplay-anchor-prob", "0.75"], patch=patch)
+    assert cfg["selfplay"]["anchor_prob"] == 0.75
+    assert cfg["selfplay"]["anchor_ckpt"] == "/tmp/anchor.pt"
+
+
+def test_selfplay_anchor_defaults_off():
+    cfg = _resolve([])
+    assert cfg["selfplay"]["anchor_ckpt"] is None
+    assert cfg["selfplay"]["anchor_prob"] == 0.0
+
+
 def test_build_config_rejects_invalid_patch():
     args, explicit = parse_args(_BASE_ARGV)
     with pytest.raises(ValueError, match="unknown config key"):

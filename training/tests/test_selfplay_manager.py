@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import copy
+import random
 from collections import Counter
 
 import torch
 import torch.nn as nn
 
+from config import DEFAULT_CONFIG
 from qrsac import Models, QuantileCritic, SquashedGaussianMLPActor
-from standalone_trainer import ObsNormalizer, SelfPlayManager
+from standalone_trainer import ObsNormalizer, SelfPlayManager, save_policy_artifact
 
 DEVICE = torch.device("cpu")
 OBS_DIM = 390
 ACT_DIM = 2
+ANCHOR_TRANSITIONS = 3_409_920_000
 
 
 def _make_models() -> Models:
@@ -65,6 +68,19 @@ class _RecordingEnv:
 
 def _recording_env() -> _RecordingEnv:
     return _RecordingEnv()
+
+
+def _write_anchor_ckpt(tmp_path) -> str:
+    """Save a real 390/2 policy artifact usable as an immutable anchor."""
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["obs"]["num_obs"] = OBS_DIM
+    cfg["env"]["num_actions"] = ACT_DIM
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    normalizer.update(torch.randn(8, OBS_DIM))
+    path = save_policy_artifact(
+        _make_models(), ANCHOR_TRANSITIONS, tmp_path, normalizer, cfg
+    )
+    return str(path)
 
 
 def test_pool_push_and_maxlen_eviction():
@@ -194,3 +210,95 @@ def test_win_rate_proxy():
     mgr.reset_win_stats()
     assert mgr._episode_total == 0
     assert mgr.win_rate() != mgr.win_rate()  # nan
+
+
+def test_anchor_survives_pool_eviction(tmp_path):
+    mgr = SelfPlayManager(
+        pool_size=3,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=10_000,
+        anchor_prob=0.5,
+    )
+    models = _make_models()
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    mgr.load_anchor(_write_anchor_ckpt(tmp_path), DEVICE, OBS_DIM, ACT_DIM)
+
+    for step in range(1000, 21000, 1000):
+        mgr.maybe_snapshot(models, normalizer, step)
+
+    # The rolling deque still evicts to maxlen; the anchor is held separately.
+    assert len(mgr.pool) == 3
+    assert [s["transitions"] for s in mgr.pool] == [18000, 19000, 20000]
+    assert mgr.anchor is not None
+    assert mgr.anchor["transitions"] == ANCHOR_TRANSITIONS
+    assert all(s["transitions"] != ANCHOR_TRANSITIONS for s in mgr.pool)
+    assert mgr.anchor["mean"].shape == (OBS_DIM,)
+    assert "net.0.weight" in mgr.anchor["actor"]
+
+
+def test_anchor_sampling_probability_wiring(tmp_path):
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
+        sample_mode="latest",
+        anchor_prob=0.5,
+    )
+    models = _make_models()
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    env = _recording_env()
+    mgr.load_anchor(_write_anchor_ckpt(tmp_path), DEVICE, OBS_DIM, ACT_DIM)
+    for step in (10, 20, 30):
+        mgr.maybe_snapshot(models, normalizer, step)
+
+    random.seed(0)
+    trials = 2000
+    anchor_hits = 0
+    for refresh_step in range(1, trials + 1):
+        mgr.maybe_refresh(env, refresh_step)
+        if mgr.opponent_transitions == ANCHOR_TRANSITIONS:
+            anchor_hits += 1
+
+    # anchor_prob=0.5 -> roughly half the refreshes select the anchor; the rest
+    # fall through to the rolling pool's "latest" (transitions=30).
+    assert 800 < anchor_hits < 1200
+
+
+def test_no_anchor_is_backward_compatible():
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
+        sample_mode="latest",
+    )
+    models = _make_models()
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    env = _recording_env()
+
+    assert mgr.anchor is None
+    assert mgr.anchor_prob == 0.0
+    for step in (10, 20, 30):
+        mgr.maybe_snapshot(models, normalizer, step)
+        mgr.maybe_refresh(env, step)
+    assert mgr.opponent_transitions == 30
+
+
+def test_anchor_prob_zero_never_samples_anchor(tmp_path):
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=1,
+        sample_mode="latest",
+        anchor_prob=0.0,
+    )
+    models = _make_models()
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    env = _recording_env()
+    mgr.load_anchor(_write_anchor_ckpt(tmp_path), DEVICE, OBS_DIM, ACT_DIM)
+    for step in (10, 20, 30):
+        mgr.maybe_snapshot(models, normalizer, step)
+
+    random.seed(0)
+    for refresh_step in range(1, 501):
+        mgr.maybe_refresh(env, refresh_step)
+        assert mgr.opponent_transitions == 30

@@ -269,5 +269,10 @@ DEFAULT_CONFIG = {
         "pool_size": 10,
         "sample_mode": "mixed",
         "mixed_latest_prob": 0.5,
+        # Immutable incumbent anchor: a fixed policy artifact added to the
+        # opponent population and never evicted from the rolling pool. Sampled
+        # with anchor_prob on each refresh/selection; None / 0.0 disables it.
+        "anchor_ckpt": None,
+        "anchor_prob": 0.0,
     },
 }

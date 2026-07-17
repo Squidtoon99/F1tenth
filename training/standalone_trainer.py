@@ -59,6 +59,7 @@ class SelfPlayManager:
         refresh_interval_transitions: int = 2_560_000,
         sample_mode: str = "mixed",
         mixed_latest_prob: float = 0.8,
+        anchor_prob: float = 0.0,
         log: logging.Logger | None = None,
     ):
         self.pool_size = pool_size
@@ -66,6 +67,8 @@ class SelfPlayManager:
         self.refresh_interval_transitions = refresh_interval_transitions
         self.sample_mode = sample_mode
         self.mixed_latest_prob = mixed_latest_prob
+        self.anchor_prob = anchor_prob
+        self.anchor: SelfPlaySnapshot | None = None
         self.log = log or logging.getLogger(LOGGER_NAME)
         self.pool: deque[SelfPlaySnapshot] = deque(maxlen=pool_size)
         self.opponent_transitions: int | None = None
@@ -86,6 +89,33 @@ class SelfPlayManager:
             mean=normalizer.mean.detach().cpu().clone(),
             var=normalizer.var.detach().cpu().clone(),
             transitions=transitions,
+        )
+
+    def load_anchor(
+        self, path: str, device: torch.device, obs_dim: int, action_dim: int
+    ) -> None:
+        """Load an immutable incumbent anchor from a policy artifact.
+
+        The anchor is kept separate from the rolling ``deque`` (never evicted)
+        and sampled with ``anchor_prob`` on each refresh/selection.
+        """
+        payload = torch.load(path, map_location=device, weights_only=False)
+        validate_policy_artifact(
+            payload, expected_obs_dim=obs_dim, expected_action_dim=action_dim
+        )
+        self.anchor = SelfPlaySnapshot(
+            actor={
+                k: v.detach().cpu().clone() for k, v in payload["actor"].items()
+            },
+            mean=payload["obs_norm"]["mean"].detach().cpu().clone(),
+            var=payload["obs_norm"]["var"].detach().cpu().clone(),
+            transitions=int(payload.get("env_transitions", 0)),
+        )
+        self.log.info(
+            "Self-play anchor loaded from %s (transitions=%d anchor_prob=%.3f)",
+            path,
+            self.anchor["transitions"],
+            self.anchor_prob,
         )
 
     def seed_snapshot(self, snapshot: SelfPlaySnapshot) -> None:
@@ -112,6 +142,8 @@ class SelfPlayManager:
         return True
 
     def _sample_snapshot(self) -> SelfPlaySnapshot | None:
+        if self.anchor is not None and random.random() < self.anchor_prob:
+            return self.anchor
         if not self.pool:
             return None
         if self.sample_mode == "latest":
@@ -785,6 +817,8 @@ def build_config(
     )
     cli_override("selfplay_pool_size", "selfplay", "pool_size")
     cli_override("selfplay_sample", "selfplay", "sample_mode")
+    cli_override("selfplay_anchor_ckpt", "selfplay", "anchor_ckpt")
+    cli_override("selfplay_anchor_prob", "selfplay", "anchor_prob")
 
     # 1v1: enable the opponent and passing reward. The policy input remains the
     # fixed 390-d layout in both solo and opponent modes.
@@ -1248,6 +1282,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How to sample an opponent snapshot from the pool (mixed: 80%% latest).",
     )
     parser.add_argument(
+        "--selfplay-anchor-ckpt",
+        type=str,
+        default=cfg["selfplay"]["anchor_ckpt"],
+        help="Immutable incumbent policy artifact added to the opponent population "
+        "and never evicted from the rolling pool. Default: no anchor.",
+    )
+    parser.add_argument(
+        "--selfplay-anchor-prob",
+        type=float,
+        default=cfg["selfplay"]["anchor_prob"],
+        help="Probability of sampling the immutable anchor instead of the rolling "
+        "pool on each opponent refresh/selection (0.0 disables it).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="auto",
@@ -1485,8 +1533,16 @@ def main():
             refresh_interval_transitions=sp_cfg["refresh_interval_transitions"],
             sample_mode=sp_cfg["sample_mode"],
             mixed_latest_prob=sp_cfg["mixed_latest_prob"],
+            anchor_prob=sp_cfg["anchor_prob"],
             log=log,
         )
+        if sp_cfg["anchor_ckpt"]:
+            selfplay_mgr.load_anchor(
+                sp_cfg["anchor_ckpt"],
+                device,
+                obs_cfg["num_obs"],
+                cfg["env"]["num_actions"],
+            )
         selfplay_mgr.seed_snapshot(
             SelfPlayManager.make_snapshot(
                 models, normalizer, transitions=init_transitions
