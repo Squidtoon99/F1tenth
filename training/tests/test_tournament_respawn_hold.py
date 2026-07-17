@@ -21,10 +21,12 @@ from standalone_trainer import DEFAULT_CONFIG  # noqa: E402
 from tournament import (  # noqa: E402
     OOB_CONSECUTIVE,
     _crashed_side_respawn,
+    _read_car_poses,
     _warp_build_step_state,
     advance_hold_race_step,
     apply_shotgun_start,
     build_race_config,
+    dual_policy_step,
     force_car_oob,
     freeze_steps_for,
     init_race_telemetry,
@@ -219,6 +221,71 @@ def test_respawn_hold_negative_side_real_env():
                 env.base_pos[0, :2] - pin_xy
             ).item() < POSE_TOL_M
         assert int(tracker["sim_hold"][0]) == 0
+    finally:
+        env.close()
+
+
+def test_healthy_car_drives_during_crash_hold():
+    """While one car is on crash-hold, the other keeps driving (no origin teleport)."""
+    env, cfg = _make_race_env()
+    control_interval = int(cfg["env"]["control_interval"])
+    clip = float(cfg["env"]["clip_actions"])
+    freeze_steps = freeze_steps_for(env, FREEZE_S)
+    zero = torch.zeros(1, 2, device=env.device)
+    forward = torch.tensor([[1.0, 0.0]], device=env.device)
+    try:
+        env.reset()
+        apply_shotgun_start(env, torch.ones(1, dtype=torch.bool, device=env.device))
+        for _ in range(20):
+            dual_policy_step(env, forward, forward, control_interval, clip)
+        _, _, _, opp_xy0, _, _ = _read_car_poses(env)
+        opp_xy0 = opp_xy0[0].clone()
+        assert torch.linalg.norm(opp_xy0).item() > 1.0
+
+        force_car_oob(env, "ego", side_positive=True)
+        tracker = _init_tracker(env)
+        for _ in range(OOB_CONSECUTIVE):
+            tracker = advance_hold_race_step(
+                env,
+                sim_actions=zero,
+                opp_actions=zero,
+                control_interval=control_interval,
+                clip_actions=clip,
+                freeze_steps=freeze_steps,
+                **tracker,
+            )
+        assert int(tracker["sim_crashes"][0]) == 1
+        assert int(tracker["sim_hold"][0]) > 0
+
+        opp_prog_before = float(tracker["opp_prog"][0].item())
+        _, _, _, opp_before, _, _ = _read_car_poses(env)
+        opp_before = opp_before[0].clone()
+        max_delta = 0.0
+        prog_gain = 0.0
+        for _ in range(freeze_steps):
+            if int(tracker["sim_hold"][0]) <= 0:
+                break
+            tracker = advance_hold_race_step(
+                env,
+                sim_actions=zero,
+                opp_actions=forward,
+                control_interval=control_interval,
+                clip_actions=clip,
+                freeze_steps=freeze_steps,
+                **tracker,
+            )
+            _, _, _, opp_now, _, _ = _read_car_poses(env)
+            max_delta = max(
+                max_delta, float(torch.linalg.norm(opp_now[0] - opp_before).item()),
+            )
+            prog_gain = max(
+                prog_gain, float(tracker["opp_prog"][0].item()) - opp_prog_before,
+            )
+        assert max_delta > 0.05
+        assert prog_gain > 0.01
+        _, _, _, opp_after, _, _ = _read_car_poses(env)
+        assert torch.linalg.norm(opp_after[0]).item() > 1.0
+        assert torch.linalg.norm(opp_after[0] - opp_xy0).item() > 0.5
     finally:
         env.close()
 

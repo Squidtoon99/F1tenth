@@ -1442,7 +1442,34 @@ def freeze_steps_for(env: F1tenthEnv, freeze_s: float) -> int:
     return max(1, int(round(float(freeze_s) / float(env.control_dt))))
 
 
-def _apply_hold_pins(
+def _zero_car_dynamics(t: dict, mask: torch.Tensor) -> None:
+    for key in (
+        "vx", "vy", "yaw_rate", "steer", "effort_state", "applied_effort", "ax", "ay",
+    ):
+        t[key][mask] = 0
+    for key in ("omega", "slip_ratio", "slip_angle", "fx_lag", "fy_lag"):
+        t[key][mask] = 0
+    t["load_ratio"][mask] = 1.0
+
+
+def _freeze_car_at_pose(
+    env: F1tenthEnv,
+    which: str,
+    mask: torch.Tensor,
+    fx: torch.Tensor,
+    fy: torch.Tensor,
+    fyaw: torch.Tensor,
+) -> None:
+    if not bool(mask.any()):
+        return
+    t = env._ego.tensor if which == "ego" else env._opponent.tensor
+    t["x"][mask] = fx[mask]
+    t["y"][mask] = fy[mask]
+    t["yaw"][mask] = fyaw[mask]
+    _zero_car_dynamics(t, mask)
+
+
+def _freeze_held_cars(
     env: F1tenthEnv,
     active: torch.Tensor,
     sim_hold: torch.Tensor,
@@ -1454,17 +1481,10 @@ def _apply_hold_pins(
     fy_o: torch.Tensor,
     fyaw_o: torch.Tensor,
 ) -> None:
-    holding = active & ((sim_hold > 0) | (opp_hold > 0))
-    if not bool(holding.any()):
-        return
-    _pin_cars(
-        env,
-        ego_xy=torch.stack((fx_s, fy_s), dim=1),
-        ego_yaw=fyaw_s,
-        opp_xy=torch.stack((fx_o, fy_o), dim=1),
-        opp_yaw=fyaw_o,
-        mask=holding,
-    )
+    sim_mask = active & (sim_hold > 0)
+    opp_mask = active & (opp_hold > 0)
+    _freeze_car_at_pose(env, "ego", sim_mask, fx_s, fy_s, fyaw_s)
+    _freeze_car_at_pose(env, "opp", opp_mask, fx_o, fy_o, fyaw_o)
 
 
 def advance_hold_race_step(
@@ -1496,24 +1516,19 @@ def advance_hold_race_step(
     active: torch.Tensor,
 ) -> dict:
     """One production race-loop iteration for hold/crash accounting (no policies)."""
-    _apply_hold_pins(
-        env, active, sim_hold, opp_hold, fx_s, fy_s, fyaw_s, fx_o, fy_o, fyaw_o,
-    )
-
     sim_act = pin_actions(sim_actions.to(rt.tc_float), sim_hold)
     opp_act = pin_actions(opp_actions.to(rt.tc_float), opp_hold)
-    holding = active & ((sim_hold > 0) | (opp_hold > 0))
-    if not bool(holding.any()):
-        dual_policy_step(env, sim_act, opp_act, control_interval, clip_actions)
+    dual_policy_step(env, sim_act, opp_act, control_interval, clip_actions)
 
-    suppress = (sim_hold > 0) | (opp_hold > 0)
+    suppress_sim = sim_hold > 0
+    suppress_opp = opp_hold > 0
     sim_ss = _warp_build_step_state(env, "ego")
     opp_ss = _warp_build_step_state(env, "opp")
     length = sim_ss["frenet"]["L"]
     ds_s, prev_sim_s = _progress_ds(
-        prev_sim_s, sim_ss["frenet"]["s"], length, suppress)
+        prev_sim_s, sim_ss["frenet"]["s"], length, suppress_sim)
     ds_o, prev_opp_s = _progress_ds(
-        prev_opp_s, opp_ss["frenet"]["s"], length, suppress)
+        prev_opp_s, opp_ss["frenet"]["s"], length, suppress_opp)
     sim_prog = sim_prog + ds_s
     opp_prog = opp_prog + ds_o
 
@@ -1573,7 +1588,7 @@ def advance_hold_race_step(
 
     sim_hm = active & (sim_hold > 0)
     opp_hm = active & (opp_hold > 0)
-    _apply_hold_pins(
+    _freeze_held_cars(
         env, active, sim_hold, opp_hold, fx_s, fy_s, fyaw_s, fx_o, fy_o, fyaw_o,
     )
     if bool(sim_hm.any()):
@@ -1642,11 +1657,6 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
 
             with torch.no_grad():
                 while step < max_steps and bool(active.any()):
-                    _apply_hold_pins(
-                        env, active, sim_hold, opp_hold,
-                        fx_s, fy_s, fyaw_s, fx_o, fy_o, fyaw_o,
-                    )
-
                     sim_obs = build_symmetric_agent_obs(env, "sim").to(torch.float32)
                     opp_obs = build_symmetric_agent_obs(env, "opp").to(torch.float32)
                     sim_act, _ = sim_actor(sim_norm.normalize(sim_obs),
@@ -1655,23 +1665,24 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
                                            deterministic=True, with_logprob=False)
                     sim_act = pin_actions(sim_act.to(rt.tc_float), sim_hold)
                     opp_act = pin_actions(opp_act.to(rt.tc_float), opp_hold)
-                    holding = active & ((sim_hold > 0) | (opp_hold > 0))
-                    if not bool(holding.any()):
-                        dual_policy_step(env, sim_act, opp_act, control_interval,
-                                         clip_actions)
+                    dual_policy_step(env, sim_act, opp_act, control_interval,
+                                     clip_actions)
                     step += 1
 
-                    suppress = (sim_hold > 0) | (opp_hold > 0)
+                    suppress_sim = sim_hold > 0
+                    suppress_opp = opp_hold > 0
                     if step <= 1:
-                        suppress = torch.ones(n, dtype=torch.bool, device=device)
+                        suppress_sim = torch.ones(n, dtype=torch.bool, device=device)
+                        suppress_opp = torch.ones(n, dtype=torch.bool, device=device)
+                    suppress = suppress_sim | suppress_opp
 
                     sim_ss = _warp_build_step_state(env, "ego")
                     opp_ss = _warp_build_step_state(env, "opp")
                     length = sim_ss["frenet"]["L"]
                     ds_s, prev_sim_s = _progress_ds(
-                        prev_sim_s, sim_ss["frenet"]["s"], length, suppress)
+                        prev_sim_s, sim_ss["frenet"]["s"], length, suppress_sim)
                     ds_o, prev_opp_s = _progress_ds(
-                        prev_opp_s, opp_ss["frenet"]["s"], length, suppress)
+                        prev_opp_s, opp_ss["frenet"]["s"], length, suppress_opp)
                     sim_prog = sim_prog + ds_s
                     opp_prog = opp_prog + ds_o
                     sim_laps = (sim_prog / length).floor().to(torch.int32)
@@ -1768,7 +1779,7 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
 
                     sim_hm = active & (sim_hold > 0)
                     opp_hm = active & (opp_hold > 0)
-                    _apply_hold_pins(
+                    _freeze_held_cars(
                         env, active, sim_hold, opp_hold,
                         fx_s, fy_s, fyaw_s, fx_o, fy_o, fyaw_o,
                     )
