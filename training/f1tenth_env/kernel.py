@@ -1166,9 +1166,7 @@ def compute_reward_and_done(
         env.prev_opponent_in_window[env_id] = wp.int32(in_window)
         out.collision = -reward.collision * wp.float32(contact.contact)
         if contact.contact != 0 and gap > 0.0:
-            relative_velocity = (
-                body_velocity_world(ego) - body_velocity_world(opponent)
-            )
+            relative_velocity = vel_world - body_velocity_world(opponent)
             out.rear_end = -reward.rear_end * wp.dot(
                 relative_velocity, relative_velocity
             )

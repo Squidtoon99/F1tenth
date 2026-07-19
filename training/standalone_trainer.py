@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 
 from f1tenth_contract import OBS_PREPROCESSING_VERSION, validate_policy_artifact
+from f1tenth_contract.action import CONTROL_HZ
 
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
@@ -38,6 +39,11 @@ LOGGER_NAME = "standalone_trainer"
 # the base vector); index 4 within it is the signed along-track gap s_other-s_self.
 OPP_OBS_BASE_IDX = 384
 OPP_TRACK_GAP_IDX = OPP_OBS_BASE_IDX + 4
+
+# Dual-observation replay: only these capacities are chosen automatically.
+REPLAY_CAPACITY_REQUESTED = 2_000_000
+REPLAY_CAPACITY_FALLBACK = 1_000_000
+REPLAY_OBS_DTYPE = torch.float16
 
 
 class SelfPlaySnapshot(dict):
@@ -60,6 +66,7 @@ class SelfPlayManager:
         sample_mode: str = "mixed",
         mixed_latest_prob: float = 0.8,
         anchor_prob: float = 0.0,
+        expected_architecture: dict | None = None,
         log: logging.Logger | None = None,
     ):
         self.pool_size = pool_size
@@ -68,6 +75,11 @@ class SelfPlayManager:
         self.sample_mode = sample_mode
         self.mixed_latest_prob = mixed_latest_prob
         self.anchor_prob = anchor_prob
+        self.expected_architecture = (
+            normalize_actor_architecture(expected_architecture)
+            if expected_architecture is not None
+            else None
+        )
         self.anchor: SelfPlaySnapshot | None = None
         self.log = log or logging.getLogger(LOGGER_NAME)
         self.pool: deque[SelfPlaySnapshot] = deque(maxlen=pool_size)
@@ -76,6 +88,18 @@ class SelfPlayManager:
         self._last_refresh_transitions = 0
         self._episode_wins = 0
         self._episode_total = 0
+
+    def _require_homogeneous_architecture(self, architecture: dict) -> dict:
+        arch = normalize_actor_architecture(architecture)
+        if self.expected_architecture is None:
+            self.expected_architecture = arch
+            return arch
+        if not architectures_match(arch, self.expected_architecture):
+            raise ValueError(
+                "Self-play pool is architecture-homogeneous; got "
+                f"{arch!r}, expected {self.expected_architecture!r}"
+            )
+        return arch
 
     @staticmethod
     def make_snapshot(
@@ -110,6 +134,7 @@ class SelfPlayManager:
             mean=payload["obs_norm"]["mean"].detach().cpu().clone(),
             var=payload["obs_norm"]["var"].detach().cpu().clone(),
             transitions=int(payload.get("env_transitions", 0)),
+            actor_architecture=architecture,
         )
         self.log.info(
             "Self-play anchor loaded from %s (transitions=%d anchor_prob=%.3f)",
@@ -119,6 +144,10 @@ class SelfPlayManager:
         )
 
     def seed_snapshot(self, snapshot: SelfPlaySnapshot) -> None:
+        arch = snapshot.get("actor_architecture")
+        if arch is None:
+            raise ValueError("Self-play snapshot is missing actor_architecture")
+        self._require_homogeneous_architecture(arch)
         self.pool.append(snapshot)
         if self.opponent_transitions is None:
             self.opponent_transitions = snapshot["transitions"]
@@ -132,6 +161,7 @@ class SelfPlayManager:
         ):
             return False
         snap = self.make_snapshot(models, normalizer, transitions)
+        self._require_homogeneous_architecture(snap["actor_architecture"])
         self.pool.append(snap)
         self._last_snapshot_transitions = transitions
         self.log.info(
@@ -165,7 +195,12 @@ class SelfPlayManager:
         snap = self._sample_snapshot()
         if snap is None:
             return False
-        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        env.refresh_opponent_policy(
+            snap["actor"],
+            snap["mean"],
+            snap["var"],
+            actor_architecture=snap.get("actor_architecture"),
+        )
         self.opponent_transitions = snap["transitions"]
         self._last_refresh_transitions = transitions
         self.log.info(
@@ -183,7 +218,12 @@ class SelfPlayManager:
         if not self.pool:
             return
         snap = self.pool[-1]
-        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        env.refresh_opponent_policy(
+            snap["actor"],
+            snap["mean"],
+            snap["var"],
+            actor_architecture=snap.get("actor_architecture"),
+        )
         self.opponent_transitions = snap["transitions"]
         self.log.info(
             "Self-play opponent bootstrapped from snapshot transitions=%d (pool_size=%d)",
@@ -198,7 +238,12 @@ class SelfPlayManager:
         snap = self._sample_snapshot()
         if snap is None:
             return False
-        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        env.refresh_opponent_policy(
+            snap["actor"],
+            snap["mean"],
+            snap["var"],
+            actor_architecture=snap.get("actor_architecture"),
+        )
         return True
 
     def record_episode_outcomes(self, ego_minus_opp_gap: torch.Tensor) -> None:
@@ -283,25 +328,34 @@ def make_target_q_network(cfg: dict) -> QuantileCritic:
 
 
 class NStepReplayBuffer:
-    """Per-env n-step deques feeding a preallocated tensor ring buffer on device."""
+    """Per-env n-step deques feeding a dual-observation float16 ring buffer."""
 
     def __init__(
         self,
         capacity: int,
-        obs_dim: int,
+        actor_obs_dim: int,
+        critic_obs_dim: int,
         act_dim: int,
         n_step: int,
         gamma: float,
         num_envs: int,
         device: torch.device,
+        obs_dtype: torch.dtype = REPLAY_OBS_DTYPE,
     ):
+        if actor_obs_dim == critic_obs_dim:
+            raise ValueError(
+                "Dual replay requires distinct actor/critic observation dimensions; "
+                f"got actor_obs_dim={actor_obs_dim} critic_obs_dim={critic_obs_dim}."
+            )
         self.capacity = capacity
         self.n_step = n_step
         self.gamma = gamma
         self.num_envs = num_envs
         self.device = device
-        self.obs_dim = obs_dim
+        self.actor_obs_dim = actor_obs_dim
+        self.critic_obs_dim = critic_obs_dim
         self.act_dim = act_dim
+        self.obs_dtype = obs_dtype
         # ``ptr``/``size`` live on device so the write cursor advances without a
         # host synchronization every step.
         self.size = torch.zeros((), device=device, dtype=torch.long)
@@ -315,10 +369,20 @@ class NStepReplayBuffer:
         # ``use_deterministic_algorithms``) and no valid row is clobbered.
         self._max_emit = num_envs * (n_step + 1)
         rows = capacity + self._max_emit
-        self.obs = torch.zeros(rows, obs_dim, device=device, dtype=torch.float32)
+        self.actor_obs = torch.zeros(
+            rows, actor_obs_dim, device=device, dtype=obs_dtype
+        )
+        self.critic_obs = torch.zeros(
+            rows, critic_obs_dim, device=device, dtype=obs_dtype
+        )
         self.action = torch.zeros(rows, act_dim, device=device, dtype=torch.float32)
         self.reward = torch.zeros(rows, device=device, dtype=torch.float32)
-        self.next_obs = torch.zeros(rows, obs_dim, device=device, dtype=torch.float32)
+        self.next_actor_obs = torch.zeros(
+            rows, actor_obs_dim, device=device, dtype=obs_dtype
+        )
+        self.next_critic_obs = torch.zeros(
+            rows, critic_obs_dim, device=device, dtype=obs_dtype
+        )
         self.done = torch.zeros(rows, device=device, dtype=torch.float32)
         self._scratch = torch.arange(
             capacity, rows, device=device, dtype=torch.long
@@ -331,8 +395,16 @@ class NStepReplayBuffer:
         # Vectorized per-env n-step windows kept on device as circular buffers.
         # All envs advance in lockstep, so a single write column index ``w_pos``
         # is shared. ``w_len`` counts valid entries per env (reset to 0 on done).
-        self.w_obs = torch.zeros(num_envs, n_step, obs_dim, device=device, dtype=torch.float32)
-        self.w_act = torch.zeros(num_envs, n_step, act_dim, device=device, dtype=torch.float32)
+        # Windows stay float32; ring storage is float16.
+        self.w_actor_obs = torch.zeros(
+            num_envs, n_step, actor_obs_dim, device=device, dtype=torch.float32
+        )
+        self.w_critic_obs = torch.zeros(
+            num_envs, n_step, critic_obs_dim, device=device, dtype=torch.float32
+        )
+        self.w_act = torch.zeros(
+            num_envs, n_step, act_dim, device=device, dtype=torch.float32
+        )
         self.w_rew = torch.zeros(num_envs, n_step, device=device, dtype=torch.float32)
         self.w_len = torch.zeros(num_envs, device=device, dtype=torch.long)
         self.w_pos = 0
@@ -340,25 +412,25 @@ class NStepReplayBuffer:
 
     def add(
         self,
-        obs: torch.Tensor,
+        actor_obs: torch.Tensor,
+        critic_obs: torch.Tensor,
         actions: torch.Tensor,
         rewards: torch.Tensor,
-        next_obs: torch.Tensor,
+        next_actor_obs: torch.Tensor,
+        next_critic_obs: torch.Tensor,
         dones: torch.Tensor,
     ) -> torch.Tensor:
         """Vectorized n-step accumulation with **no host synchronization**.
 
-        Writes the current transition into each env's circular window, then builds
-        one fixed-shape candidate block containing every completed n-step sample
-        (full, non-terminal windows) and every truncated tail sample (flushed when
-        an episode ends). A device-side prefix sum assigns each *valid* candidate a
-        unique ring slot; masked-out candidates go to a private scratch region.
-        Write positions, the insert count, and the cursor all advance on-device, so
-        nothing is read back to the host. Returns the number of inserted rows as a
-        0-dim device tensor."""
+        Writes the current dual-observation transition into each env's circular
+        window, then emits completed n-step samples (block A) and truncated
+        terminal tails (block B) in two ring passes — same candidate order as a
+        single A||B pack, without building a ``num_envs*(n_step+1)`` cat or an
+        ``(num_envs, n, n)`` reward gather. Returns inserted row count."""
         num_envs, n = self.num_envs, self.n_step
         col = self.w_pos
-        self.w_obs[:, col] = obs.detach()
+        self.w_actor_obs[:, col] = actor_obs.detach()
+        self.w_critic_obs[:, col] = critic_obs.detach()
         self.w_act[:, col] = actions.detach()
         self.w_rew[:, col] = rewards.detach()
         self.w_len = torch.clamp(self.w_len + 1, max=n)
@@ -370,56 +442,74 @@ class NStepReplayBuffer:
         oldest = self.w_pos
         order = (oldest + self._arange_n) % n
         rew_a = (self.w_rew[:, order] * self._gamma_powers).sum(dim=1)
-        obs_a = self.w_obs[:, oldest]
-        act_a = self.w_act[:, oldest]
         valid_a = (self.w_len == n) & ~dones_b
+        nxt_actor = next_actor_obs.detach()
+        nxt_critic = next_critic_obs.detach()
 
-        # Block B: truncated tails flushed for done envs, vectorized over offset.
+        slot_a = torch.cumsum(valid_a.long(), dim=0) - 1
+        n_emit_a = valid_a.long().sum()
+        pos_a = torch.where(
+            valid_a,
+            torch.remainder(self.ptr + slot_a, self.capacity),
+            self._scratch[:num_envs],
+        )
+        self.actor_obs[pos_a] = self.w_actor_obs[:, oldest].to(self.obs_dtype)
+        self.critic_obs[pos_a] = self.w_critic_obs[:, oldest].to(self.obs_dtype)
+        self.action[pos_a] = self.w_act[:, oldest]
+        self.reward[pos_a] = rew_a
+        self.next_actor_obs[pos_a] = nxt_actor.to(self.obs_dtype)
+        self.next_critic_obs[pos_a] = nxt_critic.to(self.obs_dtype)
+        self.done[pos_a] = 0.0
+
+        # Block B: truncated tails for done envs. Chronological window index
+        # ``start[:,k]`` is the k-th oldest entry; discounted returns use an O(n)
+        # backward recurrence instead of an (n, n) gather.
         start = (
             self.w_pos - self.w_len.unsqueeze(1) + self._arange_n.unsqueeze(0)
         ) % n
         horizon = self.w_len.unsqueeze(1) - self._arange_n.unsqueeze(0)
-        cols = (start.unsqueeze(2) + self._arange_n.view(1, 1, n)) % n
-        rew_win = torch.gather(self.w_rew.unsqueeze(1).expand(num_envs, n, n), 2, cols)
-        valid_k = self._arange_n.view(1, 1, n) < horizon.unsqueeze(2)
-        rew_b = (rew_win * self._gamma_powers.view(1, 1, n) * valid_k).sum(dim=2)
-        obs_b = torch.gather(
-            self.w_obs, 1, start.unsqueeze(-1).expand(num_envs, n, self.obs_dim)
-        )
-        act_b = torch.gather(
-            self.w_act, 1, start.unsqueeze(-1).expand(num_envs, n, self.act_dim)
-        )
+        chron_rew = torch.gather(self.w_rew, 1, start)
+        # S_k = r_k + gamma * S_{k+1} for k < w_len (oldest-first chronology).
+        rew_b = torch.zeros(num_envs, n, device=self.device, dtype=torch.float32)
+        next_s = torch.zeros(num_envs, device=self.device, dtype=torch.float32)
+        for k in range(n - 1, -1, -1):
+            in_window = self.w_len > k
+            s_k = chron_rew[:, k] + self.gamma * next_s
+            rew_b[:, k] = torch.where(in_window, s_k, rew_b[:, k])
+            next_s = torch.where(in_window, s_k, torch.zeros_like(next_s))
+
         valid_b = dones_b.unsqueeze(1) & (horizon > 0)
-
-        nxt = next_obs.detach()
-        cand_obs = torch.cat([obs_a, obs_b.reshape(num_envs * n, self.obs_dim)], dim=0)
-        cand_act = torch.cat([act_a, act_b.reshape(num_envs * n, self.act_dim)], dim=0)
-        cand_rew = torch.cat([rew_a, rew_b.reshape(num_envs * n)], dim=0)
-        cand_next = torch.cat(
-            [nxt, nxt.unsqueeze(1).expand(num_envs, n, self.obs_dim).reshape(
-                num_envs * n, self.obs_dim)],
-            dim=0,
+        valid_b_flat = valid_b.reshape(num_envs * n)
+        slot_b = torch.cumsum(valid_b_flat.long(), dim=0) - 1
+        pos_b = torch.where(
+            valid_b_flat,
+            torch.remainder(self.ptr + n_emit_a + slot_b, self.capacity),
+            self._scratch[num_envs:],
         )
-        cand_done = torch.cat(
-            [torch.zeros(num_envs, device=self.device),
-             torch.ones(num_envs * n, device=self.device)],
-            dim=0,
+        start_exp_actor = start.unsqueeze(-1).expand(num_envs, n, self.actor_obs_dim)
+        start_exp_critic = start.unsqueeze(-1).expand(num_envs, n, self.critic_obs_dim)
+        start_exp_act = start.unsqueeze(-1).expand(num_envs, n, self.act_dim)
+        env_idx = (
+            torch.arange(num_envs, device=self.device)
+            .unsqueeze(1)
+            .expand(num_envs, n)
+            .reshape(num_envs * n)
         )
-        valid = torch.cat([valid_a, valid_b.reshape(num_envs * n)], dim=0)
+        self.actor_obs[pos_b] = torch.gather(
+            self.w_actor_obs, 1, start_exp_actor
+        ).reshape(num_envs * n, self.actor_obs_dim).to(self.obs_dtype)
+        self.critic_obs[pos_b] = torch.gather(
+            self.w_critic_obs, 1, start_exp_critic
+        ).reshape(num_envs * n, self.critic_obs_dim).to(self.obs_dtype)
+        self.action[pos_b] = torch.gather(
+            self.w_act, 1, start_exp_act
+        ).reshape(num_envs * n, self.act_dim)
+        self.reward[pos_b] = rew_b.reshape(num_envs * n)
+        self.next_actor_obs[pos_b] = nxt_actor[env_idx].to(self.obs_dtype)
+        self.next_critic_obs[pos_b] = nxt_critic[env_idx].to(self.obs_dtype)
+        self.done[pos_b] = 1.0
 
-        # Prefix sum -> each valid candidate gets a distinct, contiguous ring slot;
-        # invalid candidates fall through to their own unique scratch row.
-        slot = torch.cumsum(valid.long(), dim=0) - 1
-        pos = torch.where(
-            valid, torch.remainder(self.ptr + slot, self.capacity), self._scratch
-        )
-        self.obs[pos] = cand_obs
-        self.action[pos] = cand_act
-        self.reward[pos] = cand_rew
-        self.next_obs[pos] = cand_next
-        self.done[pos] = cand_done
-
-        n_emit = valid.long().sum()
+        n_emit = n_emit_a + valid_b_flat.long().sum()
         self.ptr = torch.remainder(self.ptr + n_emit, self.capacity)
         self.size = torch.clamp(self.size + n_emit, max=self.capacity)
         self.w_len = torch.where(dones_b, torch.zeros_like(self.w_len), self.w_len)
@@ -435,13 +525,16 @@ class NStepReplayBuffer:
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
         # Caller gates on ``is_ready``; keep this path sync-free (no ``randint``
         # high-bound read) by sampling floats scaled to the current size.
+        # Observations are cast to float32 before normalization / network use.
         idx = (torch.rand(batch_size, device=self.device) * self.size).long()
         idx = torch.minimum(idx, self.size - 1)
         return {
-            "obs": self.obs[idx],
+            "actor_obs": self.actor_obs[idx].to(torch.float32),
+            "critic_obs": self.critic_obs[idx].to(torch.float32),
             "action": self.action[idx],
             "reward": self.reward[idx],
-            "next_obs": self.next_obs[idx],
+            "next_actor_obs": self.next_actor_obs[idx].to(torch.float32),
+            "next_critic_obs": self.next_critic_obs[idx].to(torch.float32),
             "done": self.done[idx],
         }
 
@@ -508,6 +601,201 @@ class ObsNormalizer:
         self.count = float(state["count"])
 
 
+def estimate_dual_replay_bytes(
+    capacity: int,
+    actor_obs_dim: int,
+    critic_obs_dim: int,
+    act_dim: int,
+    n_step: int,
+    num_envs: int,
+    *,
+    obs_dtype: torch.dtype = REPLAY_OBS_DTYPE,
+) -> dict[str, int]:
+    """Byte estimate for dual float16 ring storage plus float32 windows/aux."""
+    obs_item = torch.tensor([], dtype=obs_dtype).element_size()
+    f32 = torch.tensor([], dtype=torch.float32).element_size()
+    i64 = torch.tensor([], dtype=torch.long).element_size()
+    rows = capacity + num_envs * (n_step + 1)
+    ring_obs = 2 * rows * (actor_obs_dim + critic_obs_dim) * obs_item
+    ring_aux = rows * (act_dim + 1 + 1) * f32  # action + reward + done
+    window = num_envs * n_step * (
+        (actor_obs_dim + critic_obs_dim + act_dim + 1) * f32
+    )
+    misc = num_envs * i64 + (n_step + num_envs * (n_step + 1)) * i64
+    total = ring_obs + ring_aux + window + misc
+    return {
+        "capacity": int(capacity),
+        "rows": int(rows),
+        "ring_obs_bytes": int(ring_obs),
+        "ring_aux_bytes": int(ring_aux),
+        "window_bytes": int(window),
+        "total_bytes": int(total),
+    }
+
+
+def _update_headroom_ok(
+    device: torch.device,
+    actor_obs_dim: int,
+    critic_obs_dim: int,
+    act_dim: int,
+    batch_size: int,
+) -> bool:
+    """True when a float32 asymmetric update batch still fits after replay alloc."""
+    if device.type != "cuda":
+        return True
+    try:
+        torch.empty(batch_size, actor_obs_dim, device=device, dtype=torch.float32)
+        torch.empty(batch_size, critic_obs_dim, device=device, dtype=torch.float32)
+        torch.empty(batch_size, actor_obs_dim, device=device, dtype=torch.float32)
+        torch.empty(batch_size, critic_obs_dim, device=device, dtype=torch.float32)
+        torch.empty(batch_size, act_dim, device=device, dtype=torch.float32)
+        return True
+    except torch.cuda.OutOfMemoryError:
+        return False
+
+
+def make_dual_replay_buffer(
+    *,
+    capacity: int,
+    actor_obs_dim: int,
+    critic_obs_dim: int,
+    act_dim: int,
+    n_step: int,
+    gamma: float,
+    num_envs: int,
+    device: torch.device,
+    batch_size: int,
+    log: logging.Logger | None = None,
+    allow_fallback: bool = True,
+) -> tuple[NStepReplayBuffer, int, dict[str, int]]:
+    """Allocate dual replay at ``capacity``, with explicit 2M→1M CUDA fallback.
+
+    Only ``REPLAY_CAPACITY_REQUESTED`` may fall back to ``REPLAY_CAPACITY_FALLBACK``.
+    Any other requested capacity is used as-is (tests) or re-raised on failure.
+    """
+    logger = log or logging.getLogger(LOGGER_NAME)
+    estimate = estimate_dual_replay_bytes(
+        capacity,
+        actor_obs_dim,
+        critic_obs_dim,
+        act_dim,
+        n_step,
+        num_envs,
+    )
+    logger.info(
+        "Replay allocation estimate: capacity=%d rows=%d total_bytes=%d (%.2f GiB) "
+        "ring_obs_bytes=%d actor_dim=%d critic_dim=%d dtype=%s",
+        estimate["capacity"],
+        estimate["rows"],
+        estimate["total_bytes"],
+        estimate["total_bytes"] / (1024**3),
+        estimate["ring_obs_bytes"],
+        actor_obs_dim,
+        critic_obs_dim,
+        str(REPLAY_OBS_DTYPE).replace("torch.", ""),
+    )
+
+    def _alloc(cap: int) -> NStepReplayBuffer:
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        return NStepReplayBuffer(
+            capacity=cap,
+            actor_obs_dim=actor_obs_dim,
+            critic_obs_dim=critic_obs_dim,
+            act_dim=act_dim,
+            n_step=n_step,
+            gamma=gamma,
+            num_envs=num_envs,
+            device=device,
+            obs_dtype=REPLAY_OBS_DTYPE,
+        )
+
+    try:
+        buffer = _alloc(capacity)
+    except torch.cuda.OutOfMemoryError:
+        if (
+            not allow_fallback
+            or capacity != REPLAY_CAPACITY_REQUESTED
+            or device.type != "cuda"
+        ):
+            raise
+        logger.warning(
+            "CUDA OOM allocating replay capacity=%d; falling back to %d",
+            capacity,
+            REPLAY_CAPACITY_FALLBACK,
+        )
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        capacity = REPLAY_CAPACITY_FALLBACK
+        estimate = estimate_dual_replay_bytes(
+            capacity,
+            actor_obs_dim,
+            critic_obs_dim,
+            act_dim,
+            n_step,
+            num_envs,
+        )
+        logger.info(
+            "Replay fallback estimate: capacity=%d total_bytes=%d (%.2f GiB)",
+            estimate["capacity"],
+            estimate["total_bytes"],
+            estimate["total_bytes"] / (1024**3),
+        )
+        buffer = _alloc(capacity)
+    else:
+        if not _update_headroom_ok(
+            device, actor_obs_dim, critic_obs_dim, act_dim, batch_size
+        ):
+            if (
+                allow_fallback
+                and capacity == REPLAY_CAPACITY_REQUESTED
+                and device.type == "cuda"
+            ):
+                logger.warning(
+                    "Insufficient CUDA headroom for an asymmetric update at "
+                    "capacity=%d; falling back to %d",
+                    capacity,
+                    REPLAY_CAPACITY_FALLBACK,
+                )
+                del buffer
+                torch.cuda.empty_cache()
+                capacity = REPLAY_CAPACITY_FALLBACK
+                estimate = estimate_dual_replay_bytes(
+                    capacity,
+                    actor_obs_dim,
+                    critic_obs_dim,
+                    act_dim,
+                    n_step,
+                    num_envs,
+                )
+                buffer = _alloc(capacity)
+            else:
+                raise RuntimeError(
+                    f"Insufficient device headroom for QR-SAC update after "
+                    f"allocating replay capacity={capacity}."
+                )
+
+    logger.info("Replay capacity selected: %d", capacity)
+    return buffer, capacity, estimate
+
+
+def unpack_sensor_observations(
+    obs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Split a ``with_sensors=True`` env return into actor/critic float32 tensors."""
+    if not isinstance(obs, dict):
+        raise TypeError(
+            "Asymmetric trainer requires with_sensors=True dict observations "
+            f"(got {type(obs)!r}). Legacy flat observations are not supported."
+        )
+    if "actor" not in obs or "frenet" not in obs:
+        raise KeyError(
+            "Sensor observation dict must contain 'actor' and 'frenet' "
+            f"(keys={sorted(obs)})."
+        )
+    return obs["actor"].to(torch.float32), obs["frenet"].to(torch.float32)
+
+
 def learner_updates_for_transitions(
     collected_transitions: int,
     batch_size: int,
@@ -523,6 +811,20 @@ def interval_crossed(previous: int, current: int, interval: int) -> bool:
     return interval > 0 and current // interval > previous // interval
 
 
+def training_should_continue(
+    env_transitions: int, total_transitions: int, continuous: bool
+) -> bool:
+    """Finite budget terminates by default; ``continuous`` ignores the cap."""
+    return bool(continuous) or env_transitions < total_transitions
+
+
+def training_should_continue(
+    env_transitions: int, total_transitions: int, continuous: bool
+) -> bool:
+    """Finite budget terminates by default; ``continuous`` ignores the cap."""
+    return bool(continuous) or env_transitions < total_transitions
+
+
 class RunningStats:
     """Accumulates scalar means / min / max / totals for named diagnostics.
 
@@ -532,7 +834,7 @@ class RunningStats:
 
     def __init__(self):
         self._sum: dict[str, torch.Tensor] = {}
-        self._count: dict[str, int] = {}
+        self._count: dict[str, int | torch.Tensor] = {}
         self._min: dict[str, torch.Tensor] = {}
         self._max: dict[str, torch.Tensor] = {}
 
@@ -551,14 +853,24 @@ class RunningStats:
                 vmax if key not in self._max else torch.maximum(self._max[key], vmax)
             )
 
+    def add_event_mean(
+        self, key: str, value: torch.Tensor, mask: torch.Tensor
+    ) -> None:
+        """Accumulate a per-event mean over rows where ``mask`` is true."""
+        v = value.detach().reshape(-1).float()
+        m = mask.detach().reshape(-1).to(v.dtype)
+        self._sum[key] = self._sum.get(key, v.new_zeros(())) + (v * m).sum()
+        self._count[key] = self._count.get(key, 0) + m.sum()
+
     def add_total(self, key: str, value: torch.Tensor) -> None:
         v = value.detach().float()
         self._sum[key] = self._sum.get(key, v.new_zeros(())) + v.sum()
 
     def mean(self, key: str) -> float:
-        if self._count.get(key, 0) == 0:
+        count = float(self._count.get(key, 0))
+        if count == 0:
             return float("nan")
-        return float(self._sum[key]) / self._count[key]
+        return float(self._sum[key]) / count
 
     def total(self, key: str) -> float:
         return float(self._sum[key]) if key in self._sum else 0.0
@@ -586,7 +898,8 @@ def accumulate_step_diagnostics(
     """Fold one env step's reward terms, metrics and terminations into diag."""
     diag.add_mean("reward/step", reward, track_range=True)
 
-    for name, value in extras.get("rewards", {}).get("terms", {}).items():
+    terms = extras.get("rewards", {}).get("terms", {})
+    for name, value in terms.items():
         if isinstance(value, torch.Tensor):
             diag.add_mean(f"reward_term/{name}", value)
 
@@ -665,7 +978,8 @@ def validate_config_patch(
     raised early with the offending dotted path so a typo cannot silently create
     an ignored config key. Known optional gated reward-scale keys (enabled by
     presence, so absent from ``DEFAULT_CONFIG``) are accepted under
-    ``reward.reward_scales`` as scalars.
+    ``reward.reward_scales`` as scalars. ``model.hidden_layers`` is rejected with
+    an actionable split-key message rather than a generic unknown-key error.
     """
     if not isinstance(patch, dict):
         raise ValueError(
@@ -804,7 +1118,19 @@ def build_config(
     cfg["env"]["domain_randomization"] = {
         **cfg["env"]["domain_randomization"],
         "enabled": True,
+        # Asymmetric experiment: critic sees current privileged Frenet state.
+        # Sensor latency/noise belongs only on the actor stream.
+        "obs_latency_steps_range": [0, 0],
+        "obs_noise_std_range": [0.0, 0.0],
     }
+
+    actor_dim = int(cfg["obs"]["num_actor_obs"])
+    critic_dim = int(cfg["obs"]["num_obs"])
+    if actor_dim == critic_dim:
+        raise ValueError(
+            "Asymmetric trainer requires distinct actor/critic observation "
+            f"dimensions; got num_actor_obs={actor_dim} num_obs={critic_dim}."
+        )
 
     if getattr(args, "zero_tyre_slip_obs", False):
         cfg["obs"]["zero_tyre_slip_obs"] = True
@@ -862,6 +1188,7 @@ def build_config(
         # continues.
         if args.collision_term_speed is not None:
             cfg["env"]["collision_term_speed_mps"] = float(args.collision_term_speed)
+    validate_model_architecture(cfg)
     return cfg
 
 
@@ -1093,6 +1420,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--total-transitions",
         type=int,
         default=cfg["schedule"]["total_transitions"],
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        default=False,
+        help="Opt-in unbounded training: ignore --total-transitions termination "
+        "while keeping the finite budget as the default. Periodic artifacts, "
+        "logs, and eval still run.",
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        default=False,
+        help="Opt-in unbounded training: ignore --total-transitions termination "
+        "while keeping the finite budget as the default. Periodic artifacts, "
+        "logs, and eval still run.",
     )
     parser.add_argument("--batch-size", type=int, default=cfg["model"]["batch_size"])
     parser.add_argument(
@@ -1451,16 +1794,18 @@ def main():
     obs_cfg = cfg["obs"]
     reward_cfg = cfg["reward"]
     model_cfg = cfg["model"]
-    env_cfg = {
-        "launch_strategy": "uniform_jittered",
-        "launch_strategy_data": {"num_cars": args.num_envs},
-        **cfg["env"],
-    }
+    env_cfg = build_env_cfg(
+        cfg,
+        launch_strategy="uniform_jittered",
+        launch_strategy_data={"num_cars": args.num_envs},
+    )
     clip_actions = cfg["env"]["clip_actions"]
     control_interval = cfg["env"]["control_interval"]
     n_step = model_cfg["n_step"]
 
     device = select_device(args.device)
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
     rt.configure(
         float_dtype=torch.float32,
         int_dtype=torch.int32,
@@ -1504,17 +1849,31 @@ def main():
         compile=args.compile,
         compile_mode=args.compile_mode,
     )
-    buffer = NStepReplayBuffer(
+    actor_obs_dim = int(obs_cfg["num_actor_obs"])
+    critic_obs_dim = int(obs_cfg["num_obs"])
+    act_dim = cfg["env"]["num_actions"]
+    buffer, selected_capacity, replay_estimate = make_dual_replay_buffer(
         capacity=args.buffer_capacity,
-        obs_dim=obs_cfg["num_obs"],
-        act_dim=cfg["env"]["num_actions"],
+        actor_obs_dim=actor_obs_dim,
+        critic_obs_dim=critic_obs_dim,
+        act_dim=act_dim,
         n_step=n_step,
         gamma=model_cfg["rew_gamma"],
         num_envs=args.num_envs,
         device=device,
+        batch_size=args.batch_size,
+        log=log,
+        allow_fallback=True,
     )
-    normalizer = ObsNormalizer(
-        obs_dim=obs_cfg["num_obs"],
+    args.buffer_capacity = selected_capacity
+    actor_normalizer = ObsNormalizer(
+        obs_dim=actor_obs_dim,
+        device=device,
+        eps=float(obs_cfg.get("norm_eps", 1e-8)),
+        clip=float(obs_cfg.get("norm_clip", 10.0)),
+    )
+    critic_normalizer = ObsNormalizer(
+        obs_dim=critic_obs_dim,
         device=device,
         eps=float(obs_cfg.get("norm_eps", 1e-8)),
         clip=float(obs_cfg.get("norm_clip", 10.0)),
@@ -1534,35 +1893,49 @@ def main():
             sample_mode=sp_cfg["sample_mode"],
             mixed_latest_prob=sp_cfg["mixed_latest_prob"],
             anchor_prob=sp_cfg["anchor_prob"],
+            expected_architecture=actor_architecture_from_module(models.actor),
             log=log,
         )
         if sp_cfg["anchor_ckpt"]:
             selfplay_mgr.load_anchor(
                 sp_cfg["anchor_ckpt"],
                 device,
-                obs_cfg["num_obs"],
+                actor_obs_dim,
                 cfg["env"]["num_actions"],
+                expected_layout_version=int(obs_cfg["actor_layout_version"]),
+                expected_architecture=actor_architecture_from_module(models.actor),
+                expected_critic_obs_dim=int(obs_cfg["num_obs"]),
             )
-        selfplay_mgr.seed_snapshot(
-            SelfPlayManager.make_snapshot(
-                models, normalizer, transitions=init_transitions
-            )
-        )
-        selfplay_mgr.bootstrap_opponent(env)
+        # Seed/bootstrap after the first sensor batch initializes the actor normalizer.
 
     use_1v1 = args.self_play or args.mixed_opponents or args.opponent != "none"
+    continuous = bool(getattr(args, "continuous", False))
+    if continuous:
+        log.info(
+            "Continuous mode enabled: training runs until interrupted "
+            "(finite total_transitions=%d is ignored for termination).",
+            args.total_transitions,
+        )
     wandb_run = None
     if args.wandb:
         import wandb
 
-        tags = ["standalone", run_id]
+        tags = ["standalone", run_id, "asymmetric"]
+        if continuous:
+            tags.append("continuous")
         if platform.system() == "Darwin":
             tags.append("mac")
         init_kwargs = {
             "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
             "name": f"standalone_{run_id}",
             "id": run_id,
-            "config": {**cfg, **vars(args), "config_provenance": provenance},
+            "config": {
+                **cfg,
+                **vars(args),
+                "config_provenance": provenance,
+                "replay_capacity_selected": selected_capacity,
+                "replay_estimate": replay_estimate,
+            },
             "mode": os.getenv("WANDB_MODE", args.wandb_mode),
             "dir": str(run_dir),
             "tags": tags,
@@ -1575,10 +1948,18 @@ def main():
             init_kwargs["notes"] = args.hypothesis
         wandb_run = wandb.init(**init_kwargs)
 
-    obs, _ = env.reset()
-    obs = obs.to(torch.float32)
-    normalizer.update(obs)
-    act_dim = cfg["env"]["num_actions"]
+    raw_obs, _ = env.reset(with_sensors=True)
+    actor_obs, critic_obs = unpack_sensor_observations(raw_obs)
+    actor_normalizer.update(actor_obs)
+    critic_normalizer.update(critic_obs)
+    if selfplay_mgr is not None:
+        # First-batch actor normalizer stats must exist before the initial snapshot.
+        selfplay_mgr.seed_snapshot(
+            SelfPlayManager.make_snapshot(
+                models, actor_normalizer, transitions=init_transitions
+            )
+        )
+        selfplay_mgr.bootstrap_opponent(env)
     vector_ticks = 0
     env_transitions = 0
     replay_inserts = torch.zeros((), device=device, dtype=torch.long)
@@ -1601,7 +1982,9 @@ def main():
     eval_state: dict = {}
 
     try:
-        while env_transitions < args.total_transitions:
+        while training_should_continue(
+            env_transitions, args.total_transitions, continuous
+        ):
             previous_transitions = env_transitions
 
             if env_transitions < args.min_train_transitions:
@@ -1670,8 +2053,18 @@ def main():
                 for _ in range(updates_due):
                     batch = buffer.sample(args.batch_size)
                     # Buffer stores RAW obs; normalize with current stats.
-                    batch["obs"] = normalizer.normalize(batch["obs"])
-                    batch["next_obs"] = normalizer.normalize(batch["next_obs"])
+                    batch["actor_obs"] = actor_normalizer.normalize(
+                        batch["actor_obs"]
+                    )
+                    batch["next_actor_obs"] = actor_normalizer.normalize(
+                        batch["next_actor_obs"]
+                    )
+                    batch["critic_obs"] = critic_normalizer.normalize(
+                        batch["critic_obs"]
+                    )
+                    batch["next_critic_obs"] = critic_normalizer.normalize(
+                        batch["next_critic_obs"]
+                    )
                     losses = trainer.update(batch)
                     gradient_updates += 1
                     sampled_replay_rows += args.batch_size
@@ -1680,7 +2073,9 @@ def main():
                     loss_count += 1
 
             if selfplay_mgr is not None:
-                selfplay_mgr.maybe_snapshot(models, normalizer, env_transitions)
+                selfplay_mgr.maybe_snapshot(
+                    models, actor_normalizer, env_transitions
+                )
                 selfplay_mgr.maybe_refresh(env, env_transitions)
 
             if interval_crossed(
@@ -1743,6 +2138,7 @@ def main():
                     mean_policy_loss,
                     mean_critic_loss,
                     mean_ep_reward,
+                    diag.mean("episode/lifespan_s"),
                     ep_count,
                 )
                 window_env_steps = float(window_transitions)
@@ -1758,7 +2154,7 @@ def main():
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
                         "progress=%.4f passing=%.4f collision=%.4f oob_penalty=%.4f "
-                        "tyre_slip=%.4f smooth=%.4f",
+                        "wall=%.4f impact=%.4f tyre_slip=%.4f smooth=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
@@ -1868,6 +2264,9 @@ def main():
                             "train/policy_loss": mean_policy_loss,
                             "train/critic_loss": mean_critic_loss,
                             "train/mean_ep_reward": mean_ep_reward,
+                            "episode/lifespan_mean_s": diag.mean(
+                                "episode/lifespan_s"
+                            ),
                             "perf/vector_ticks_per_sec": vector_ticks_per_sec,
                             "perf/env_transitions_per_sec": transitions_per_sec,
                             "perf/replay_inserts_per_sec": inserts_per_sec,
@@ -1959,7 +2358,7 @@ def main():
                         obs_cfg=obs_cfg,
                         reward_cfg=reward_cfg,
                         models=models,
-                        normalizer=normalizer,
+                        normalizer=actor_normalizer,
                         control_interval=control_interval,
                         clip_actions=clip_actions,
                         run_dir=run_dir,

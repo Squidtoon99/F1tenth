@@ -42,6 +42,93 @@ def select_min_quantiles(
     return torch.where(use_q1, q1_quantiles, q2_quantiles)
 
 
+def _policy_phase(
+    actor,
+    critic1,
+    critic2,
+    critic1_target,
+    critic2_target,
+    actor_obs,
+    critic_obs,
+    next_actor_obs,
+    next_critic_obs,
+    reward,
+    done,
+    discount,
+    alpha,
+):
+    """Targets (no_grad) + policy loss in one compiled region."""
+    with torch.no_grad():
+        actions_next, log_prob_next = actor(next_actor_obs)
+        q1_quantile_next = critic1_target(next_critic_obs, actions_next)
+        q2_quantile_next = critic2_target(next_critic_obs, actions_next)
+        min_q_quantile_next = select_min_quantiles(
+            q1_quantile_next, q2_quantile_next
+        )
+        target_quantiles = reward.unsqueeze(-1) + discount * (
+            1.0 - done.unsqueeze(-1)
+        ) * (min_q_quantile_next - alpha * log_prob_next.unsqueeze(-1))
+
+    sampled_actions, log_prob = actor(actor_obs)
+    q1_sampled = critic1(critic_obs, sampled_actions)
+    q2_sampled = critic2(critic_obs, sampled_actions)
+    q_sampled = torch.minimum(
+        q1_sampled.mean(dim=-1, keepdim=True),
+        q2_sampled.mean(dim=-1, keepdim=True),
+    )
+    policy_loss = (alpha * log_prob.unsqueeze(-1) - q_sampled).mean()
+    return policy_loss, target_quantiles
+
+
+def _critic_phase(
+    critic1,
+    critic2,
+    critic_obs,
+    action,
+    target_quantiles,
+    kappa,
+    taus,
+):
+    """Critic forwards + quantile-Huber in one compiled region."""
+    q1_quantile_observed = critic1(critic_obs, action)
+    q2_quantile_observed = critic2(critic_obs, action)
+    return quantile_huber_loss(
+        q1_quantile_observed,
+        target_quantiles,
+        kappa=kappa,
+        taus=taus,
+    ) + quantile_huber_loss(
+        q2_quantile_observed,
+        target_quantiles,
+        kappa=kappa,
+        taus=taus,
+    )
+
+
+_ASYMMETRIC_OBS_KEYS = (
+    "actor_obs",
+    "critic_obs",
+    "next_actor_obs",
+    "next_critic_obs",
+)
+_LEGACY_OBS_KEYS = ("obs", "next_obs")
+
+
+def _require_asymmetric_batch(batch) -> None:
+    missing = [key for key in _ASYMMETRIC_OBS_KEYS if key not in batch]
+    legacy = [key for key in _LEGACY_OBS_KEYS if key in batch]
+    if missing or legacy:
+        parts = []
+        if missing:
+            parts.append(f"missing required keys {missing}")
+        if legacy:
+            parts.append(
+                f"legacy symmetric keys {legacy} are not supported "
+                "(use actor_obs/critic_obs/next_actor_obs/next_critic_obs)"
+            )
+        raise KeyError("Asymmetric QR-SAC batch invalid: " + "; ".join(parts))
+
+
 @dataclass
 class Models:
     actor: SquashedGaussianMLPActor
@@ -76,6 +163,12 @@ class QRSACTrainer:
         self.critic2 = models.critic2
         self.critic1_target = models.critic1_target
         self.critic2_target = models.critic2_target
+        # Capture dims before compile wraps callables.
+        self.actor_obs_dim = int(models.actor.net[0].weight.shape[1])
+        act_dim = int(models.actor.mu_layer.out_features)
+        self.critic_obs_dim = int(
+            models.critic1.backbone[0].weight.shape[1] - act_dim
+        )
 
         fused = compile and device.type == "cuda"
         self.actor_optimizer = Adam(self.actor.parameters(), lr=2.5e-5, fused=fused)
@@ -103,89 +196,89 @@ class QRSACTrainer:
             torch.arange(num_quantiles, device=device, dtype=torch.float32) + 0.5
         ) / num_quantiles
 
-        # Under CUDA graphs (reduce-overhead) each compiled region reuses a static
-        # output buffer, so a tensor produced by one compiled call is overwritten by
-        # the next. Clone tensors that cross between separately compiled regions.
+        # Two compiled regions (policy phase + critic phase) instead of six
+        # per-module graphs. Cross-region tensors stay live until the producer
+        # region runs again next update, so per-tensor clone guards are unnecessary.
         self._cudagraph = compile and compile_mode == "reduce-overhead"
-
-        self._quantile_huber_loss = quantile_huber_loss
+        self._policy_phase = _policy_phase
+        self._critic_phase = _critic_phase
         if compile:
-            # Compiling the modules lets AOTAutograd fuse the forward AND backward;
-            # compiling the loss fuses the (B, M, M) quantile-huber pointwise ops.
-            # mode="reduce-overhead" additionally captures CUDA graphs to collapse
-            # per-kernel launch overhead.
-            self.actor = torch.compile(self.actor, mode=compile_mode)
-            self.critic1 = torch.compile(self.critic1, mode=compile_mode)
-            self.critic2 = torch.compile(self.critic2, mode=compile_mode)
-            self.critic1_target = torch.compile(self.critic1_target, mode=compile_mode)
-            self.critic2_target = torch.compile(self.critic2_target, mode=compile_mode)
-            self._quantile_huber_loss = torch.compile(
-                quantile_huber_loss, mode=compile_mode
-            )
+            # Compiling the fused phases lets AOTAutograd fuse forward AND backward
+            # across actor/critics/huber inside each region. mode="reduce-overhead"
+            # captures one CUDA graph per phase instead of one per module.
+            self._policy_phase = torch.compile(_policy_phase, mode=compile_mode)
+            self._critic_phase = torch.compile(_critic_phase, mode=compile_mode)
 
-    def _guard(self, t: torch.Tensor) -> torch.Tensor:
-        return t.clone() if self._cudagraph else t
+    def _assert_obs_routing(
+        self,
+        actor_obs: torch.Tensor,
+        critic_obs: torch.Tensor,
+        next_actor_obs: torch.Tensor,
+        next_critic_obs: torch.Tensor,
+    ) -> None:
+        for name, tensor, expected in (
+            ("actor_obs", actor_obs, self.actor_obs_dim),
+            ("next_actor_obs", next_actor_obs, self.actor_obs_dim),
+            ("critic_obs", critic_obs, self.critic_obs_dim),
+            ("next_critic_obs", next_critic_obs, self.critic_obs_dim),
+        ):
+            if tensor.ndim != 2 or tensor.shape[-1] != expected:
+                raise ValueError(
+                    f"{name} shape={tuple(tensor.shape)}; expected (*, {expected}). "
+                    "Actor and critic observation streams must not be swapped."
+                )
 
     def update(self, batch) -> Losses:
+        _require_asymmetric_batch(batch)
         if self._cudagraph:
             torch.compiler.cudagraph_mark_step_begin()
-        obs = batch["obs"].to(self.device)
+        actor_obs = batch["actor_obs"].to(self.device)
+        critic_obs = batch["critic_obs"].to(self.device)
         action = batch["action"].to(self.device)
         reward = batch["reward"].to(self.device)
-        next_obs = batch["next_obs"].to(self.device)
+        next_actor_obs = batch["next_actor_obs"].to(self.device)
+        next_critic_obs = batch["next_critic_obs"].to(self.device)
         done = batch["done"].to(self.device)
+        self._assert_obs_routing(
+            actor_obs, critic_obs, next_actor_obs, next_critic_obs
+        )
 
-        # Values used for target construction should not backpropagate through target networks.
-        with torch.no_grad():
-            actions_next, log_prob_next = self.actor(next_obs)
-            actions_next = self._guard(actions_next)
-            log_prob_next = self._guard(log_prob_next)
-            q1_quantile_next = self._guard(self.critic1_target(next_obs, actions_next))
-            q2_quantile_next = self._guard(self.critic2_target(next_obs, actions_next))
-            min_q_quantile_next = select_min_quantiles(
-                q1_quantile_next, q2_quantile_next
-            )
-
-            reward = reward.unsqueeze(-1)
-            done = done.unsqueeze(-1)
-            discount = self.gamma**self.n_step
-            target_quantiles = reward + discount * (1.0 - done) * (
-                min_q_quantile_next - self.alpha * log_prob_next.unsqueeze(-1)
-            )
+        discount = self.gamma**self.n_step
 
         for p in self.critic_params:
             p.requires_grad = False
 
         self.actor_optimizer.zero_grad(set_to_none=True)
-        sampled_actions, log_prob = self.actor(obs)
-        sampled_actions = self._guard(sampled_actions)
-        log_prob = self._guard(log_prob)
-        q1_sampled = self._guard(self.critic1(obs, sampled_actions))
-        q2_sampled = self._guard(self.critic2(obs, sampled_actions))
-        q1_mean = q1_sampled.mean(dim=-1, keepdim=True)
-        q2_mean = q2_sampled.mean(dim=-1, keepdim=True)
-        q_sampled = torch.minimum(q1_mean, q2_mean)
-        policy_loss = (self.alpha * log_prob.unsqueeze(-1) - q_sampled).mean()
+        policy_loss, target_quantiles = self._policy_phase(
+            self.actor,
+            self.critic1,
+            self.critic2,
+            self.critic1_target,
+            self.critic2_target,
+            actor_obs,
+            critic_obs,
+            next_actor_obs,
+            next_critic_obs,
+            reward,
+            done,
+            discount,
+            self.alpha,
+        )
         policy_loss.backward()
         self.actor_optimizer.step()
 
         for p in self.critic_params:
             p.requires_grad = True
 
-        # Critic Update
         self.critic_optimizer.zero_grad(set_to_none=True)
-        q1_quantile_observed = self._guard(self.critic1(obs, action))
-        q2_quantile_observed = self._guard(self.critic2(obs, action))
-        critic_loss = self._quantile_huber_loss(
-            q1_quantile_observed,
+        critic_loss = self._critic_phase(
+            self.critic1,
+            self.critic2,
+            critic_obs,
+            action,
             target_quantiles,
-            kappa=self.kappa,
-            taus=self.quantile_fractions,
-        ) + self._quantile_huber_loss(
-            q2_quantile_observed,
-            target_quantiles,
-            kappa=self.kappa,
-            taus=self.quantile_fractions,
+            self.kappa,
+            self.quantile_fractions,
         )
         critic_loss.backward()
 
@@ -210,6 +303,6 @@ class QRSACTrainer:
             )
 
         return Losses(
-            policy_loss=self._guard(policy_loss.detach()),
-            critic_loss=self._guard(critic_loss.detach()),
+            policy_loss=policy_loss.detach(),
+            critic_loss=critic_loss.detach(),
         )

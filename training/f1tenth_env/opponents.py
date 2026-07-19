@@ -147,12 +147,11 @@ class ScriptedCenterlineOpponent(OpponentController):
 
 
 class PolicyOpponent(OpponentController):
-    """Frozen-policy opponent for future self-play.
+    """Frozen sensor-policy opponent for self-play.
 
     Wraps a ``SquashedGaussianMLPActor`` and (optional) observation-normalization
-    statistics; acts deterministically on the opponent's egocentric observation.
-    The self-play *training loop* that periodically refreshes ``actor`` from the
-    learner is deferred - the env only needs this controller to exist.
+    statistics; acts deterministically on the opponent's vehicle-centric sensor
+    observation (1,093-D). Privileged/symmetric snapshots are rejected on load.
     """
 
     requires_observation = True
@@ -189,11 +188,25 @@ class PolicyOpponent(OpponentController):
         obs_var: torch.Tensor,
     ) -> None:
         """Hot-swap frozen actor weights and observation-normalization stats."""
-        self.actor.load_state_dict(actor_state_dict)
-        self.actor.to(device=self.device, dtype=torch.float32)
-        self.actor.eval()
-        self.obs_mean = obs_mean.to(self.device, dtype=torch.float32)
-        self.obs_var = obs_var.to(self.device, dtype=torch.float32)
+        weight = actor_state_dict.get("net.0.weight")
+        if weight is not None and int(weight.shape[1]) != self.obs_dim:
+            raise ValueError(
+                f"Snapshot actor input dim={int(weight.shape[1])}; "
+                f"expected {self.obs_dim}. Privileged/symmetric schemas are rejected."
+            )
+        mean = obs_mean.to(self.device, dtype=torch.float32).reshape(-1)
+        var = obs_var.to(self.device, dtype=torch.float32).reshape(-1)
+        if mean.numel() != self.obs_dim or var.numel() != self.obs_dim:
+            raise ValueError(
+                f"Snapshot normalizer dim mean={mean.numel()} var={var.numel()}; "
+                f"expected actor obs dim {self.obs_dim}."
+            )
+        raw = self._raw_actor()
+        raw.load_state_dict(actor_state_dict)
+        raw.to(device=self.device, dtype=torch.float32)
+        raw.eval()
+        self._maybe_compile_actor()
+        self._set_norm_stats(mean, var)
 
     def act(self, ctx: OpponentContext) -> torch.Tensor:
         if ctx.opp_obs is None:
@@ -204,14 +217,21 @@ class PolicyOpponent(OpponentController):
         return self.act_observation(ctx.opp_obs)
 
     def act_observation(self, observation: torch.Tensor) -> torch.Tensor:
+        if observation.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"PolicyOpponent observation dim={observation.shape[-1]}; "
+                f"expected sensor actor dim {self.obs_dim}."
+            )
+        # Use no_grad, not inference_mode: torch.compile(mode="reduce-overhead")
+        # under inference_mode records CUDA-graph inference tensors that later
+        # break QRSAC reduce-overhead captures in the same process
+        # (Inplace update to inference tensor outside InferenceMode).
         with torch.no_grad():
             model_obs = self._normalize(
-                observation.to(self.device, dtype=torch.float32)
+                observation.to(device=self.device, dtype=torch.float32)
             )
             action, _ = self.actor(model_obs, deterministic=True, with_logprob=False)
-        return torch.clamp(action, -self.act_clip, self.act_clip).to(
-            observation.device
-        )
+            return torch.clamp(action, -self.act_clip, self.act_clip)
 
 
 class MixedOpponentController(OpponentController):
@@ -362,9 +382,10 @@ def _make_policy_opponent(
     # Imported lazily so the scripted path has no dependency on the RL stack.
     from qrsac import SquashedGaussianMLPActor
 
-    obs_dim = int(obs_cfg["num_obs"])
+    obs_dim = int(obs_cfg.get("num_actor_obs", obs_cfg["num_obs"]))
     act_dim = int(env_cfg.get("num_actions", 2))
     hidden = list(env_cfg.get("opponent_hidden_layers", [512, 512, 512]))
+    layout_version = obs_cfg.get("actor_layout_version")
 
     actor = SquashedGaussianMLPActor(
         obs_dim=obs_dim,
@@ -378,6 +399,25 @@ def _make_policy_opponent(
     ckpt_path = env_cfg.get("opponent_ckpt")
     if ckpt_path:
         payload = torch.load(ckpt_path, map_location=device, weights_only=False)
+        if not isinstance(payload, dict):
+            raise ValueError("Opponent checkpoint payload must be a dict")
+        payload_obs = payload.get("obs_dim")
+        if payload_obs is None or int(payload_obs) != obs_dim:
+            raise ValueError(
+                f"Opponent checkpoint obs_dim={payload_obs!r}; expected sensor "
+                f"actor dim {obs_dim}. Privileged/symmetric schemas are rejected."
+            )
+        if layout_version is not None:
+            payload_layout = payload.get("actor_layout_version")
+            if payload_layout is None or int(payload_layout) != int(layout_version):
+                raise ValueError(
+                    f"Opponent checkpoint actor_layout_version={payload_layout!r}; "
+                    f"expected {layout_version}."
+                )
+            if "critic_norm" in payload or "critic_obs_norm" in payload:
+                raise ValueError(
+                    "Opponent checkpoint must not include critic normalization."
+                )
         validate_policy_artifact(
             payload, expected_obs_dim=obs_dim, expected_action_dim=act_dim
         )

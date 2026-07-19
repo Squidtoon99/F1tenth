@@ -71,9 +71,13 @@ def _recording_env() -> _RecordingEnv:
 
 
 def _write_anchor_ckpt(tmp_path) -> str:
-    """Save a real 390/2 policy artifact usable as an immutable anchor."""
+    """Save a real policy artifact usable as an immutable anchor."""
     cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["obs"]["num_obs"] = OBS_DIM
+    # SelfPlayManager unit tests exercise the snapshot interface with a
+    # privileged-width actor stand-in; sensor-selfplay owns 1093-D wiring.
+    cfg["obs"]["num_actor_obs"] = OBS_DIM
+    cfg["obs"]["num_obs"] = OBS_DIM + 1
+    cfg["obs"]["actor_layout_version"] = 1
     cfg["env"]["num_actions"] = ACT_DIM
     normalizer = ObsNormalizer(OBS_DIM, DEVICE)
     normalizer.update(torch.randn(8, OBS_DIM))

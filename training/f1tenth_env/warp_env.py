@@ -32,7 +32,24 @@ from .kernel import (
     transaction_stage_kernel,
 )
 from .opponents import MixedOpponentController, PolicyOpponent, make_opponent
-from .utils import build_warp_track_data, load_track_state
+from .sensors import (
+    ACTOR_IMU_DIM,
+    ACTOR_IMU_START,
+    ACTOR_LIDAR_DIM,
+    ACTOR_OBS_DIM,
+    IMU_DIM,
+    NATIVE_NUM_BEAMS,
+    VESC_CURRENT_SCALE_A,
+    VIEW_EGO,
+    VIEW_OPPONENT,
+    sensor_actor_solo_kernel,
+    sensor_actor_stage_kernel,
+)
+from .utils import (
+    build_corridor_distance_field,
+    build_warp_track_data,
+    load_track_state,
+)
 
 
 class _VehicleStorage:
@@ -351,6 +368,23 @@ class WarpF1tenthEnv:
         self._track_host = build_warp_track_data(self.track_state)
         self.track_length = self._track_host.length
         self._track = _TrackStorage(self._track_host, self.wp_device)
+        self._corridor_host = build_corridor_distance_field(
+            self.centerline,
+            self.w_tr_left,
+            self.w_tr_right,
+        )
+        self._corridor = _CorridorDistanceStorage(
+            self._corridor_host, self.wp_device
+        )
+        self.sensor_cfg = self._resolve_sensor_cfg()
+        self._validate_native_actor_beams()
+        self._sensor_params = self._build_sensor_params()
+        self.num_lidar_beams = int(self._sensor_params.num_beams)
+        self.num_imu = IMU_DIM
+        self.num_actor_obs = ACTOR_OBS_DIM
+        self._vesc_current_scale = float(
+            self.sensor_cfg.get("vesc_current_scale_a", VESC_CURRENT_SCALE_A)
+        )
 
         self.vehicle_params = VehicleParams.from_config(env_cfg)
         self._sim_params = self.vehicle_params.to_warp(
@@ -387,6 +421,27 @@ class WarpF1tenthEnv:
         self._opponent_obs_wp = wp.from_torch(self._opponent_obs)
         self._active_obs = 0
         self.obs_buf = self._obs[0]
+        self._actor_obs = [
+            torch.zeros(
+                self.num_envs,
+                ACTOR_OBS_DIM,
+                device=self.device,
+                dtype=torch.float32,
+            )
+            for _ in range(2)
+        ]
+        self._opponent_actor_obs = [
+            torch.zeros_like(self._actor_obs[0]),
+            torch.zeros_like(self._actor_obs[0]),
+        ]
+        self._actor_obs_wp = [
+            wp.from_torch(tensor) for tensor in self._actor_obs
+        ]
+        self._opponent_actor_obs_wp = [
+            wp.from_torch(tensor) for tensor in self._opponent_actor_obs
+        ]
+        self.actor_obs_buf = self._actor_obs[0]
+        self.opponent_actor_obs_buf = self._opponent_actor_obs[0]
         self.reward_buf = self._env.tensor["reward"]
         self.reset_buf = self._env.tensor["done"]
         self.episode_steps_buf = self._env.tensor["episode_step"]
@@ -397,6 +452,20 @@ class WarpF1tenthEnv:
             self.num_envs, 2, device=self.device, dtype=torch.float32
         )
         self._policy_opponent_actions = torch.zeros_like(self.actions)
+        self._actions_wp = wp.from_torch(self.actions, dtype=wp.vec2f)
+        self._policy_opponent_actions_wp = wp.from_torch(
+            self._policy_opponent_actions, dtype=wp.vec2f
+        )
+        self._policy_actions_valid = False
+        self._policy_prefetch_pending = False
+        if self.device.type == "cuda":
+            self._policy_stream = torch.cuda.Stream(device=self.device)
+            self._policy_sensors_event = torch.cuda.Event()
+            self._policy_done_event = torch.cuda.Event()
+        else:
+            self._policy_stream = None
+            self._policy_sensors_event = None
+            self._policy_done_event = None
         self._reset_mask = torch.ones(
             self.num_envs, device=self.device, dtype=torch.bool
         )
@@ -838,12 +907,155 @@ class WarpF1tenthEnv:
             return wp.stream_from_torch(torch.cuda.current_stream(self.device))
         return None
 
+    def _wait_policy_prefetch(self) -> None:
+        if not self._policy_prefetch_pending:
+            return
+        torch.cuda.current_stream(self.device).wait_event(self._policy_done_event)
+        self._policy_prefetch_pending = False
+        self._policy_actions_valid = True
+
+    def _fill_policy_actions(self, observation: torch.Tensor) -> None:
+        """Write deterministic opponent actions for ``observation`` into the buffer."""
+        self._wait_policy_prefetch()
+        self._policy_opponent_actions.copy_(
+            self._policy_opponent.act_observation(observation)
+        )
+        self._policy_actions_valid = True
+
+    def _schedule_policy_prefetch(self, observation: torch.Tensor) -> None:
+        """Compute next-step opponent actions; overlap with later GPU work on CUDA."""
+        if self._policy_opponent is None:
+            return
+        if self._policy_stream is None:
+            self._fill_policy_actions(observation)
+            return
+        self._wait_policy_prefetch()
+        self._policy_sensors_event.record(torch.cuda.current_stream(self.device))
+        self._policy_stream.wait_event(self._policy_sensors_event)
+        with torch.cuda.stream(self._policy_stream):
+            if self._policy_opponent._actor_compiled:
+                torch.compiler.cudagraph_mark_step_begin()
+            self._policy_opponent_actions.copy_(
+                self._policy_opponent.act_observation(observation)
+            )
+            self._policy_done_event.record(self._policy_stream)
+        self._policy_prefetch_pending = True
+        self._policy_actions_valid = False
+
     def _policy_actions(self):
         if self._policy_opponent is None:
             return self._policy_opponent_actions
-        return self._policy_opponent.act_observation(self._opponent_obs)
+        # Causal: act on the prior step's opponent-centric sensor observation.
+        # Prefer a buffer filled by reset/refresh or by prefetch overlapped with the
+        # previous observation stage; compute synchronously only on a cold start.
+        self._wait_policy_prefetch()
+        if not self._policy_actions_valid:
+            self._fill_policy_actions(self.opponent_actor_obs_buf)
+        return self._policy_opponent_actions
 
-    def reset(self, envs_idx=None, *, seed: int | None = None):
+    def _should_render_opponent_actor(self) -> bool:
+        """True for policy/mixed self-play; skipped in 1v0 and scripted modes."""
+        if not self.has_opponent:
+            return False
+        strategy = self.env_cfg.get("opponent_strategy")
+        return strategy in ("policy", "mixed")
+
+    def _launch_ego_sensor_actor(self, output_wp):
+        """Fused ego LiDAR + IMU + VESC + causal commands into ``output_wp``."""
+        wheel_radius = float(self._sim_params.wheel_radius)
+        current_scale = float(self._vesc_current_scale)
+        if self.has_opponent:
+            wp.launch(
+                sensor_actor_stage_kernel,
+                dim=(self.num_envs, self.num_lidar_beams),
+                inputs=[
+                    self._ego.buffers,
+                    self._opponent.buffers,
+                    self._env.buffers,
+                    self._corridor.data,
+                    self._sensor_params,
+                    self._opponent_params,
+                    self._reset_params,
+                    self._sim_params,
+                    wheel_radius,
+                    current_scale,
+                    0,
+                    VIEW_EGO,
+                    output_wp,
+                ],
+                device=self.wp_device,
+                stream=self._stream(),
+            )
+        else:
+            wp.launch(
+                sensor_actor_solo_kernel,
+                dim=(self.num_envs, self.num_lidar_beams),
+                inputs=[
+                    self._ego.buffers,
+                    self._env.buffers,
+                    self._corridor.data,
+                    self._sensor_params,
+                    self._opponent_params,
+                    self._reset_params,
+                    self._sim_params,
+                    wheel_radius,
+                    current_scale,
+                    output_wp,
+                ],
+                device=self.wp_device,
+                stream=self._stream(),
+            )
+
+    def _launch_opponent_sensor_actor(self, output_wp):
+        """Opponent-centric fused sensors: roles swapped, ego car as OBB target."""
+        wp.launch(
+            sensor_actor_stage_kernel,
+            dim=(self.num_envs, self.num_lidar_beams),
+            inputs=[
+                self._opponent.buffers,
+                self._ego.buffers,
+                self._env.buffers,
+                self._corridor.data,
+                self._sensor_params,
+                self._opponent_params,
+                self._reset_params,
+                self._sim_params,
+                float(self._sim_params.wheel_radius),
+                float(self._vesc_current_scale),
+                1,
+                VIEW_OPPONENT,
+                output_wp,
+            ],
+            device=self.wp_device,
+            stream=self._stream(),
+        )
+
+    def _render_actor_observations(self, slot: int) -> int:
+        """Render sensors into actor slot ``slot`` before action-history advance.
+
+        Returns the number of Warp launches issued (one per rendered view).
+        """
+        launches = 0
+        self._launch_ego_sensor_actor(self._actor_obs_wp[slot])
+        launches += 1
+        if self._should_render_opponent_actor():
+            self._launch_opponent_sensor_actor(self._opponent_actor_obs_wp[slot])
+            launches += 1
+        return launches
+
+    def _sensor_obs_dict(self):
+        actor = self.actor_obs_buf
+        out = {
+            "frenet": self.obs_buf,
+            "actor": actor,
+            "lidar": actor[:, :ACTOR_LIDAR_DIM],
+            "imu": actor[:, ACTOR_IMU_START : ACTOR_IMU_START + ACTOR_IMU_DIM],
+        }
+        if self._should_render_opponent_actor():
+            out["opponent_actor"] = self.opponent_actor_obs_buf
+        return out
+
+    def reset(self, envs_idx=None, *, seed: int | None = None, with_sensors=False):
         if seed is not None:
             self._reset_params.seed = int(seed)
             self._env.tensor["episode_id"].zero_()
@@ -881,6 +1093,20 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        if with_sensors:
+            self._render_actor_observations(self._active_obs)
+            self.actor_obs_buf = self._actor_obs[self._active_obs]
+            self.opponent_actor_obs_buf = self._opponent_actor_obs[
+                self._active_obs
+            ]
+            self.extras["observations"]["actor"] = self.actor_obs_buf
+            if self._should_render_opponent_actor():
+                self.extras["observations"]["opponent_actor"] = (
+                    self.opponent_actor_obs_buf
+                )
+                if self._policy_opponent is not None:
+                    self._fill_policy_actions(self.opponent_actor_obs_buf)
+            return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
     def reset_to(
@@ -894,6 +1120,7 @@ class WarpF1tenthEnv:
         opponent_speed=None,
         envs_idx=None,
         seed=None,
+        with_sensors=False,
     ):
         """Deterministically place cars at explicit world poses (bypass random spawn).
 
@@ -903,7 +1130,7 @@ class WarpF1tenthEnv:
         for eval / telemetry reproduction and collision fixtures; identical inputs
         yield identical trajectories.
         """
-        self.reset(envs_idx, seed=seed)
+        self.reset(envs_idx, seed=seed, with_sensors=False)
 
         def _fill(buffer, values, cols):
             tensor = torch.as_tensor(
@@ -965,28 +1192,39 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        if with_sensors:
+            self._render_actor_observations(self._active_obs)
+            self.actor_obs_buf = self._actor_obs[self._active_obs]
+            self.opponent_actor_obs_buf = self._opponent_actor_obs[
+                self._active_obs
+            ]
+            self.extras["observations"]["actor"] = self.actor_obs_buf
+            if self._should_render_opponent_actor():
+                self.extras["observations"]["opponent_actor"] = (
+                    self.opponent_actor_obs_buf
+                )
+                if self._policy_opponent is not None:
+                    self._fill_policy_actions(self.opponent_actor_obs_buf)
+            return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
-    def step(self, actions, n_steps=10):
+    def step(self, actions, n_steps=10, with_sensors=False):
         if int(n_steps) != self.control_interval:
             raise ValueError("Warp environment requires n_steps=control_interval=10")
-        self.actions = actions.to(
-            device=self.device, dtype=torch.float32
-        ).contiguous()
-        if self.actions.shape != (self.num_envs, 2):
+        incoming = actions.to(device=self.device, dtype=torch.float32).contiguous()
+        if incoming.shape != (self.num_envs, 2):
             raise ValueError(
-                f"actions shape={tuple(self.actions.shape)}; "
+                f"actions shape={tuple(incoming.shape)}; "
                 f"expected ({self.num_envs}, 2)"
             )
-        opponent_actions = self._policy_actions()
+        self.actions.copy_(incoming)
+        self._policy_actions()
         inactive = 1 - self._active_obs
         if self.has_opponent:
             physics_kernel = physics_stage_kernel
             physics_inputs = [
-                wp.from_torch(self.actions, dtype=wp.vec2f),
-                wp.from_torch(
-                    opponent_actions, dtype=wp.vec2f
-                ),
+                self._actions_wp,
+                self._policy_opponent_actions_wp,
                 self._ego.buffers,
                 self._opponent.buffers,
                 self._env.physics_buffers,
@@ -1000,7 +1238,7 @@ class WarpF1tenthEnv:
         else:
             physics_kernel = physics_solo_kernel
             physics_inputs = [
-                wp.from_torch(self.actions, dtype=wp.vec2f),
+                self._actions_wp,
                 self._ego.buffers,
                 self._env.physics_buffers,
                 self._sim_params,
@@ -1030,6 +1268,18 @@ class WarpF1tenthEnv:
             device=self.wp_device,
             stream=self._stream(),
         )
+        # Actor sensors pack post-transaction state before action-history advance.
+        sensor_launches = 0
+        if with_sensors:
+            sensor_launches = self._render_actor_observations(inactive)
+        # Prefetch next opponent action from the sensors just written so it can
+        # overlap the privileged observation stage on a side CUDA stream.
+        if (
+            with_sensors
+            and self._policy_opponent is not None
+            and self._should_render_opponent_actor()
+        ):
+            self._schedule_policy_prefetch(self._opponent_actor_obs[inactive])
         wp.launch(
             observation_stage_kernel,
             dim=self.num_envs,
@@ -1048,15 +1298,49 @@ class WarpF1tenthEnv:
             device=self.wp_device,
             stream=self._stream(),
         )
+        self.step_launch_count = 3 + sensor_launches
         self._active_obs = inactive
         self.obs_buf = self._obs[inactive]
+        self.actor_obs_buf = self._actor_obs[inactive]
+        self.opponent_actor_obs_buf = self._opponent_actor_obs[inactive]
         self.extras["observations"]["critic"] = self.obs_buf
+        if with_sensors:
+            self.extras["observations"]["actor"] = self.actor_obs_buf
+            if self._should_render_opponent_actor():
+                self.extras["observations"]["opponent_actor"] = (
+                    self.opponent_actor_obs_buf
+                )
+            return (
+                self._sensor_obs_dict(),
+                self.reward_buf,
+                self.reset_buf,
+                self.extras,
+            )
         return self.obs_buf, self.reward_buf, self.reset_buf, self.extras
 
-    def refresh_opponent_policy(self, state_dict, obs_mean, obs_var):
+    def refresh_opponent_policy(
+        self, state_dict, obs_mean, obs_var, actor_architecture=None
+    ):
         if self._policy_opponent is None:
             raise RuntimeError("Environment has no policy opponent")
-        self._policy_opponent.load_snapshot(state_dict, obs_mean, obs_var)
+        expected = int(self.num_actor_obs)
+        mean = torch.as_tensor(obs_mean)
+        var = torch.as_tensor(obs_var)
+        if mean.numel() != expected or var.numel() != expected:
+            raise ValueError(
+                f"Opponent snapshot normalizer dim mean={mean.numel()} "
+                f"var={var.numel()}; expected sensor actor dim {expected}. "
+                "Privileged/symmetric (e.g. 390-D) snapshots are rejected."
+            )
+        self._wait_policy_prefetch()
+        self._policy_opponent.load_snapshot(
+            state_dict,
+            mean,
+            var,
+            actor_architecture=actor_architecture,
+        )
+        # Snapshot weights changed; refresh the buffered action from current obs.
+        self._fill_policy_actions(self.opponent_actor_obs_buf)
 
     def read_state(self):
         ego = self._read_vehicle(self._ego.tensor)
