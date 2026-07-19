@@ -171,15 +171,41 @@ class PolicyOpponent(OpponentController):
         self.norm_eps = float(norm_eps)
         self.norm_clip = float(norm_clip)
         self.act_clip = float(act_clip)
+        self.obs_dim = int(actor.net[0].weight.shape[1])
         self.obs_mean = obs_mean.to(device) if obs_mean is not None else None
         self.obs_var = obs_var.to(device) if obs_var is not None else None
+        self._inv_std: torch.Tensor | None = None
+        self._actor_compiled = False
+        self._set_norm_stats(self.obs_mean, self.obs_var)
         self.actor.eval()
 
+    def _raw_actor(self) -> torch.nn.Module:
+        """Underlying module; ``torch.compile`` wraps it as ``_orig_mod``."""
+        return getattr(self.actor, "_orig_mod", self.actor)
+
+    def _set_norm_stats(
+        self, mean: torch.Tensor | None, var: torch.Tensor | None
+    ) -> None:
+        self.obs_mean = mean
+        self.obs_var = var
+        if mean is None or var is None:
+            self._inv_std = None
+            return
+        self._inv_std = torch.rsqrt(var + self.norm_eps)
+
+    def _maybe_compile_actor(self) -> None:
+        """Compile once on CUDA; later snapshot loads update ``_orig_mod``."""
+        if self._actor_compiled or self.device.type != "cuda":
+            return
+        self.actor = torch.compile(self._raw_actor(), mode="reduce-overhead")
+        self._actor_compiled = True
+
     def _normalize(self, obs: torch.Tensor) -> torch.Tensor:
-        if self.obs_mean is None or self.obs_var is None:
+        if self.obs_mean is None or self._inv_std is None:
             return obs
-        normed = (obs - self.obs_mean) / torch.sqrt(self.obs_var + self.norm_eps)
-        return torch.clamp(normed, -self.norm_clip, self.norm_clip)
+        return torch.clamp(
+            (obs - self.obs_mean) * self._inv_std, -self.norm_clip, self.norm_clip
+        )
 
     def load_snapshot(
         self,

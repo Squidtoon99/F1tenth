@@ -52,6 +52,9 @@ def _make_race_env():
         eps=1e-12,
     )
     cfg = build_race_config(copy.deepcopy(DEFAULT_CONFIG), "Austin")
+    # Tournament races still feed privileged Frenet observations to both
+    # actors; keep actor width aligned until sensor-selfplay owns 1v1.
+    cfg["obs"]["num_actor_obs"] = int(cfg["obs"]["num_obs"])
     return make_env(cfg, 1), cfg
 
 

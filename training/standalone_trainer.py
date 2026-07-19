@@ -1325,6 +1325,40 @@ def build_models(
     return models, trainer
 
 
+def validate_sensor_policy_artifact(
+    payload,
+    *,
+    expected_actor_obs_dim: int,
+    expected_action_dim: int,
+    expected_layout_version: int,
+) -> None:
+    """Reject privileged/symmetric or stale sensor-policy schemas clearly."""
+    obs_dim = payload.get("obs_dim") if isinstance(payload, dict) else None
+    if obs_dim is None or int(obs_dim) != int(expected_actor_obs_dim):
+        raise ValueError(
+            f"Sensor policy artifact obs_dim={obs_dim!r}; expected actor dim "
+            f"{expected_actor_obs_dim}. Privileged/symmetric schemas "
+            f"(e.g. 390-D Frenet actors) are not supported."
+        )
+    layout = payload.get("actor_layout_version") if isinstance(payload, dict) else None
+    if layout is None or int(layout) != int(expected_layout_version):
+        raise ValueError(
+            f"Sensor policy artifact actor_layout_version={layout!r}; "
+            f"expected {expected_layout_version}."
+        )
+    if isinstance(payload, dict) and (
+        "critic_norm" in payload or "critic_obs_norm" in payload
+    ):
+        raise ValueError(
+            "Sensor policy artifact must not include critic normalization."
+        )
+    validate_policy_artifact(
+        payload,
+        expected_obs_dim=expected_actor_obs_dim,
+        expected_action_dim=expected_action_dim,
+    )
+
+
 def save_policy_artifact(
     models: Models,
     env_transitions: int,
@@ -1372,17 +1406,20 @@ def load_init_ckpt(
     normalizer: ObsNormalizer,
     path: str,
     device: torch.device,
+    *,
+    expected_layout_version: int,
 ) -> int:
-    """Warm-start the actor + obs-normalizer from a saved policy artifact.
+    """Warm-start the actor + actor-normalizer from a sensor policy artifact.
 
     Returns the artifact's env-transition count so self-play can seed its first
     snapshot at the policy's true maturity. Critics start fresh (not exported).
     """
     payload = torch.load(path, map_location=device, weights_only=False)
-    validate_policy_artifact(
+    validate_sensor_policy_artifact(
         payload,
-        expected_obs_dim=normalizer.mean.numel(),
+        expected_actor_obs_dim=normalizer.mean.numel(),
         expected_action_dim=models.actor.mu_layer.out_features,
+        expected_layout_version=expected_layout_version,
     )
     models.actor.load_state_dict(payload["actor"])
     normalizer.load_state_dict(payload["obs_norm"])
@@ -1422,10 +1459,12 @@ def run_eval_video(
     num_show = max(1, int(num_show))
     env = eval_state.get("env")
     if env is None:
+        # Actor-only solo (1v0) eval: sensor observations, no opponent stream.
         env = F1tenthEnv(
             num_envs=num_show,
             env_cfg={
                 **env_cfg,
+                "opponent_strategy": "none",
                 "launch_strategy_data": {"num_cars": num_show},
                 "domain_randomization": {
                     **env_cfg["domain_randomization"],
@@ -1452,15 +1491,13 @@ def run_eval_video(
         live=live,
         mp4_path=mp4_path,
         fps=10,
-        has_opponent=env.has_opponent,
+        has_opponent=False,
         rr_app_id="f1tenth_train_eval",
         rr_spawn=live,
     )
 
     was_training = models.actor.training
     models.actor.eval()
-    if selfplay_mgr is not None and getattr(env, "has_opponent", False):
-        selfplay_mgr.refresh_eval_opponent(env)
 
     def render_step(_step, rollout_env, _state_before, _reward, done, _extras):
         st = rollout_env.read_state()
@@ -1469,18 +1506,12 @@ def run_eval_video(
             [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"]]
         )
         speed = torch.linalg.norm(st["base_lin_vel"][:, :2], dim=-1).cpu().numpy()
-        opp_xy = opp_yaw = None
-        if rollout_env.has_opponent and "opp_base_pos" in st:
-            opp_xy = st["opp_base_pos"][:, :2].cpu().numpy()
-            opp_yaw = np.array(
-                [yaw_from_quat_wxyz(q.tolist()) for q in st["opp_base_quat"]]
-            )
         viz.render(
             ego_xy=ego_xy,
             ego_yaw=ego_yaw,
             speed=speed,
-            opp_xy=opp_xy,
-            opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
+            opp_xy=None,
+            opp_yaw=0.0,
             done=done.cpu().numpy(),
         )
 
@@ -1492,6 +1523,7 @@ def run_eval_video(
         control_interval=control_interval,
         clip_actions=clip_actions,
         callback=render_step,
+        with_sensors=True,
     )
     out = viz.close()
     models.actor.train(was_training)

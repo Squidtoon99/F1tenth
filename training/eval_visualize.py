@@ -52,6 +52,9 @@ def build_eval_config(args: argparse.Namespace) -> dict:
     }
     if args.opponent_ckpt is not None:
         cfg["env"]["opponent_strategy"] = args.opponent_strategy
+    else:
+        # Solo 1v0 eval: ignore any self-play strategy snapshotted in config.json.
+        cfg["env"]["opponent_strategy"] = "none"
     cfg["env"]["episode_length"] = episode_length_for_track(
         track=args.track,
         workspace_dir=str(Path(__file__).resolve().parent),
@@ -134,8 +137,9 @@ def main() -> None:
     )
 
     models, _ = build_models(cfg, device)
+    actor_obs_dim = int(cfg["obs"]["num_actor_obs"])
     normalizer = ObsNormalizer(
-        obs_dim=cfg["obs"]["num_obs"],
+        obs_dim=actor_obs_dim,
         device=device,
         eps=float(cfg["obs"].get("norm_eps", 1e-8)),
         clip=float(cfg["obs"].get("norm_clip", 10.0)),
@@ -157,7 +161,7 @@ def main() -> None:
             for k, v in opp_payload["actor"].items()
         }
         opp_normalizer = ObsNormalizer(
-            obs_dim=cfg["obs"]["num_obs"],
+            obs_dim=actor_obs_dim,
             device=device,
             eps=float(cfg["obs"].get("norm_eps", 1e-8)),
             clip=float(cfg["obs"].get("norm_clip", 10.0)),
@@ -225,6 +229,7 @@ def main() -> None:
         clip_actions=clip_actions,
         seed=args.seed,
         callback=render_step,
+        with_sensors=True,
     )
 
     out = viz.close()

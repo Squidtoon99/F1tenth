@@ -10,6 +10,20 @@ import torch
 from f1tenth_env import runtime as rt
 
 
+def _actor_obs_from_env(obs, *, with_sensors: bool) -> torch.Tensor:
+    if with_sensors:
+        if not isinstance(obs, dict) or "actor" not in obs:
+            raise TypeError(
+                "with_sensors=True requires a dict observation with an 'actor' key"
+            )
+        return obs["actor"].to(torch.float32)
+    if isinstance(obs, dict):
+        raise TypeError(
+            "with_sensors=False expects a flat observation tensor, not a dict"
+        )
+    return obs.to(torch.float32)
+
+
 def deterministic_rollout(
     env,
     actor,
@@ -21,6 +35,7 @@ def deterministic_rollout(
     seed: int = 0,
     callback: Callable | None = None,
     capture_state_before: bool = False,
+    with_sensors: bool = False,
 ) -> dict:
     python_state = random.getstate()
     devices = (
@@ -36,8 +51,8 @@ def deterministic_rollout(
         with torch.random.fork_rng(devices=devices):
             random.seed(seed)
             torch.manual_seed(seed)
-            obs, _ = env.reset(seed=seed)
-            obs = obs.to(torch.float32)
+            raw_obs, _ = env.reset(seed=seed, with_sensors=with_sensors)
+            obs = _actor_obs_from_env(raw_obs, with_sensors=with_sensors)
             with torch.no_grad():
                 for step in range(num_steps):
                     state_before = (
@@ -47,10 +62,12 @@ def deterministic_rollout(
                         normalize(obs), deterministic=True, with_logprob=False
                     )
                     actions = actions.clamp(-clip_actions, clip_actions)
-                    obs, reward, done, extras = env.step(
-                        actions.to(rt.tc_float), n_steps=control_interval
+                    raw_obs, reward, done, extras = env.step(
+                        actions.to(rt.tc_float),
+                        n_steps=control_interval,
+                        with_sensors=with_sensors,
                     )
-                    obs = obs.to(torch.float32)
+                    obs = _actor_obs_from_env(raw_obs, with_sensors=with_sensors)
                     total_reward += reward.to(torch.float32)
                     done_count += int(done.sum().item())
                     finite = finite and bool(

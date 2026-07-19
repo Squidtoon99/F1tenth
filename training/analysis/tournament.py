@@ -11,11 +11,13 @@ Match format (two swapped-seat legs per pairing):
     penalties, then a seat-independent hash tie-break (see ``decide_match_winner``).
 
 Both cars are driven by their own checkpoint through the *identical* ego
-observation + inference pipeline (``build_symmetric_agent_obs`` +
+sensor-observation + inference pipeline (``build_symmetric_agent_obs`` +
 ``dual_policy_step``); ``env.step()`` / ``PolicyOpponent`` are never used during a
-race. Bracket: triple elimination (3 losses knocks a model out). Seeding uses
-solo lap timing CSV; collisions caused are tallied per model as a standings
-tie-break.
+race. Each seat constructs its concrete actor from artifact architecture
+metadata, so flat-MLP and LiDAR-CNN policies may race under one canonical
+environment config. Bracket: triple elimination (3 losses knocks a model out).
+Seeding uses solo lap timing CSV; collisions caused are tallied per model as a
+standings tie-break.
 
 Modes:
   worker:   --model-a A.pt --model-b B.pt --out result.json
@@ -56,15 +58,18 @@ from f1tenth_env.kernel import (  # noqa: E402
     physics_stage_kernel,
     reset_to_kernel,
 )
-from f1tenth_env.observations import build_observation, obs_opponent  # noqa: E402
 from f1tenth_env.terminations import collision_mask, init_termination_params  # noqa: E402
 from f1tenth_env.utils import build_step_state, build_track_cache  # noqa: E402
 from f1tenth_env.utils import compute_oob_from_boundary_state  # noqa: E402
+from evaluation import (  # noqa: E402
+    load_sensor_actor_bundle,
+    resolve_actor_architecture_from_payload,
+)
 from standalone_trainer import (  # noqa: E402
     DEFAULT_CONFIG,
-    ObsNormalizer,
-    build_models,
+    migrate_legacy_model_config,
     select_device,
+    validate_sensor_policy_artifact,
 )
 
 OOB_CONSECUTIVE = 2
@@ -81,7 +86,8 @@ _RACE_CONFIG_KEYS = (
     "control_interval", "clip_actions", "car_length", "car_width",
 )
 _RACE_OBS_KEYS = (
-    "num_obs", "enable_opponent_obs", "opponent_obs_dim",
+    "num_obs", "num_actor_obs", "actor_layout_version",
+    "enable_opponent_obs", "opponent_obs_dim",
     "opp_obs_ahead_m", "opp_obs_behind_m",
 )
 
@@ -471,39 +477,6 @@ def _warp_build_step_state(env: F1tenthEnv, which: str) -> dict:
     if which == "opp":
         ss["opp_vel_world"] = st["opp_vel_world"]
     return ss
-
-
-def _warp_agent_dict(
-    pos: torch.Tensor,
-    quat: torch.Tensor,
-    vel_world: torch.Tensor,
-    step_state: dict,
-) -> dict[str, torch.Tensor]:
-    return {
-        "pos_xy": pos[:, :2],
-        "yaw": _warp_yaw(quat),
-        "vel_xy": vel_world[:, :2],
-        "s": step_state["frenet"]["s"],
-        "ey": step_state["boundary"]["ey"],
-        "L": step_state["frenet"]["L"],
-    }
-
-
-def _warp_apply_opponent_range_mask(
-    block: torch.Tensor,
-    s_self: torch.Tensor,
-    s_other: torch.Tensor,
-    track_len: torch.Tensor,
-    obs_cfg: dict,
-) -> torch.Tensor:
-    gap = s_other - s_self
-    half = 0.5 * track_len
-    gap = torch.where(gap > half, gap - track_len, gap)
-    gap = torch.where(gap < -half, gap + track_len, gap)
-    ahead = float(obs_cfg.get("opp_obs_ahead_m", 40.0))
-    behind = float(obs_cfg.get("opp_obs_behind_m", 20.0))
-    visible = (gap <= ahead) & (gap >= -behind)
-    return torch.where(visible.unsqueeze(-1), block, torch.zeros_like(block))
 
 
 def _warp_collision_state(env: F1tenthEnv) -> dict[str, torch.Tensor]:
@@ -1001,6 +974,7 @@ def default_workers() -> int:
 # --------------------------------------------------------------------------- #
 def build_race_config(cfg: dict, track: str) -> dict:
     cfg = copy.deepcopy(cfg)
+    migrate_legacy_model_config(cfg)
     cfg["env"]["track"] = track
     cfg["env"]["domain_randomization"] = {
         **cfg["env"].get("domain_randomization", {}),
@@ -1020,49 +994,40 @@ def build_race_config(cfg: dict, track: str) -> dict:
 
 
 def validate_policy_bundle(cfg: dict, ckpt: Path, device: torch.device) -> str | None:
-    expected = int(cfg["obs"]["num_obs"])
-    payload = torch.load(ckpt, map_location=device, weights_only=False)
-    ckpt_dim = payload.get("obs_dim")
-    if ckpt_dim is not None and int(ckpt_dim) != expected:
-        return (
-            f"{ckpt.name}: checkpoint obs_dim={ckpt_dim} "
-            f"!= race obs_dim={expected}"
+    """Validate a sensor actor artifact against the race observation contract.
+
+    Actor architecture may differ across seats; only the 1,093-D actor layout,
+    action dim, and layout version must match the canonical race config.
+    """
+    try:
+        payload = torch.load(ckpt, map_location=device, weights_only=False)
+        architecture = resolve_actor_architecture_from_payload(payload)
+        validate_sensor_policy_artifact(
+            payload,
+            expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
+            expected_action_dim=int(cfg["env"]["num_actions"]),
+            expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
+            expected_architecture=architecture,
+            expected_critic_obs_dim=int(cfg["obs"]["num_obs"]),
         )
-    if "obs_norm" in payload:
-        mean = payload["obs_norm"].get("mean")
-        if mean is not None and int(mean.shape[0]) != expected:
-            return (
-                f"{ckpt.name}: normalizer dim={mean.shape[0]} "
-                f"!= race obs_dim={expected}"
-            )
-    actor_sd = payload.get("actor", {})
-    for key, tensor in actor_sd.items():
-        if key.endswith("weight") and tensor.ndim == 2:
-            if int(tensor.shape[1]) != expected:
-                return (
-                    f"{ckpt.name}: actor input dim={tensor.shape[1]} "
-                    f"!= race obs_dim={expected}"
-                )
-            break
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        return f"{ckpt.name}: {exc}"
     return None
 
 
 def load_policy_bundle(cfg: dict, ckpt: Path, device: torch.device):
-    err = validate_policy_bundle(cfg, ckpt, device)
-    if err:
-        raise ValueError(err)
-    models, _ = build_models(cfg, device)
-    normalizer = ObsNormalizer(
-        obs_dim=cfg["obs"]["num_obs"], device=device,
-        eps=float(cfg["obs"].get("norm_eps", 1e-8)),
-        clip=float(cfg["obs"].get("norm_clip", 10.0)),
+    actor, normalizer, _architecture, _payload = load_sensor_actor_bundle(
+        ckpt,
+        device,
+        expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
+        expected_action_dim=int(cfg["env"]["num_actions"]),
+        expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
+        norm_eps=float(cfg["obs"].get("norm_eps", 1e-8)),
+        norm_clip=float(cfg["obs"].get("norm_clip", 10.0)),
+        expected_critic_obs_dim=int(cfg["obs"]["num_obs"]),
+        require_obs_norm=True,
     )
-    payload = torch.load(ckpt, map_location=device, weights_only=False)
-    models.actor.load_state_dict(payload["actor"])
-    if "obs_norm" in payload:
-        normalizer.load_state_dict(payload["obs_norm"])
-    models.actor.eval()
-    return models.actor, normalizer
+    return actor, normalizer
 
 
 def make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
@@ -1171,7 +1136,8 @@ def _clear_env_termination_state(env: F1tenthEnv, mask: torch.Tensor) -> None:
     tensors = env._env.tensor
     for key in (
         "oob_streak", "stopped_streak", "done", "term_timeout", "term_oob",
-        "term_stopped", "term_invalid", "term_collision", "done_flags",
+        "term_stopped", "term_invalid", "term_collision", "term_wall_impact",
+        "prev_wall_contact", "done_flags",
     ):
         if tensors[key].dtype == torch.bool:
             tensors[key][mask] = False
@@ -1225,43 +1191,12 @@ def apply_shotgun_start(env: F1tenthEnv, sim_side_positive: torch.Tensor) -> Non
 
 
 def build_symmetric_agent_obs(env: F1tenthEnv, agent: str) -> torch.Tensor:
+    """Return the vehicle-centric 1,093-D sensor actor row for a race seat."""
     if agent == "sim":
-        return env.obs_buf
-
-    st = env.read_state()
-    opp_read = env._read_vehicle(env._opponent.tensor)
-    opp_ss = _warp_build_step_state(env, "opp")
-    ego_ss = _warp_build_step_state(env, "ego")
-    opp_block = obs_opponent(
-        _warp_agent_dict(
-            st["opp_base_pos"], st["opp_base_quat"], st["opp_vel_world"], opp_ss,
-        ),
-        _warp_agent_dict(
-            st["base_pos"], st["base_quat"], st["base_vel_world"], ego_ss,
-        ),
-        env.obs_cfg,
-    )
-    opp_block = _warp_apply_opponent_range_mask(
-        opp_block,
-        opp_ss["frenet"]["s"],
-        ego_ss["frenet"]["s"],
-        opp_ss["frenet"]["L"],
-        env.obs_cfg,
-    )
-    return build_observation(
-        num_obs=env.obs_cfg["num_obs"],
-        num_envs=env.num_envs,
-        base_lin_vel=opp_read["base_lin_vel"],
-        base_ang_vel=opp_read["base_ang_vel"],
-        base_lin_acc=opp_read["base_lin_acc"],
-        last_actions=env._race_opp_last_actions,
-        base_pos=st["opp_base_pos"],
-        base_quat=st["opp_base_quat"],
-        obs_cfg=env.obs_cfg,
-        step_state=opp_ss,
-        device=env.device,
-        opponent_block=opp_block,
-    )
+        return env.actor_obs_buf
+    if agent == "opp":
+        return env.opponent_actor_obs_buf
+    raise ValueError(f"Unknown race agent {agent!r}; expected 'sim' or 'opp'")
 
 
 def dual_policy_step(env, sim_actions, opp_actions, n_steps, clip_actions) -> None:
@@ -1303,6 +1238,9 @@ def dual_policy_step(env, sim_actions, opp_actions, n_steps, clip_actions) -> No
         device=env.wp_device,
         stream=_warp_stream(env),
     )
+    # Pack sensors on post-contact state before observation_stage advances
+    # last_action / opponent_last_action (same ordering as env.step).
+    env._render_actor_observations(inactive)
     wp.launch(
         observation_stage_kernel,
         dim=env.num_envs,
@@ -1324,6 +1262,8 @@ def dual_policy_step(env, sim_actions, opp_actions, n_steps, clip_actions) -> No
     wp.synchronize()
     env._active_obs = inactive
     env.obs_buf = env._obs[inactive]
+    env.actor_obs_buf = env._actor_obs[inactive]
+    env.opponent_actor_obs_buf = env._opponent_actor_obs[inactive]
     env.last_actions.copy_(env.actions)
     env._race_opp_last_actions.copy_(opp_actions)
 
@@ -1626,6 +1566,9 @@ def race(env, sim_policy, opp_policy, *, target_laps, max_steps, sim_side_positi
             torch.manual_seed(seed)
             env.reset()
             apply_shotgun_start(env, sim_side_positive)
+            env._render_actor_observations(env._active_obs)
+            env.actor_obs_buf = env._actor_obs[env._active_obs]
+            env.opponent_actor_obs_buf = env._opponent_actor_obs[env._active_obs]
 
             sim_laps = torch.zeros(n, dtype=torch.int32, device=device)
             opp_laps = torch.zeros(n, dtype=torch.int32, device=device)
