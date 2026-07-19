@@ -83,7 +83,7 @@ def test_footprint_edge_only_does_not_terminate():
     try:
         w_l = _place_at_lateral(env, target_ey=0.0)
         # Centre inside the terminal margin (0.15 m) but the footprint edge (half
-        # width 0.148 m) crosses the reward margin (0.2 m): off-course but not severe.
+        # width 0.148 m) crosses the reward margin (0.15 m): off-course but not severe.
         _place_at_lateral(env, target_ey=w_l - 0.25)
 
         off_course_seen = False

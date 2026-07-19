@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
         "term_oob_margin_m": 0.15,
         # Strict OOB: chicane cuts end the episode quickly so skipping S-bends
         # cannot amortize off-track time against on-track progress.
-        "term_oob_max_consecutive": 2,
+        "term_oob_max_consecutive": 3,
         # Inward normal speed (m/s) at geometric wall contact that ends the episode.
         "wall_impact_term_speed_mps": 4.0,
         "term_speed_threshold": 0.2,
@@ -80,7 +80,7 @@ DEFAULT_CONFIG = {
         "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
         "reset_speed_min_mps": 1.0,
-        "reset_speed_max_mps": 4.0,
+        "reset_speed_max_mps": 7.0,
         # Lateral inset (m) from each track edge when sampling a spawn offset, so a
         # car never starts with a wheel on the boundary.
         "reset_spawn_margin_m": 0.2,
@@ -250,7 +250,7 @@ DEFAULT_CONFIG = {
         # uses the elapsed-time x km/h-squared form; both are applied in the kernel /
         # Torch mirror, so reward_scales holds the paper coefficient directly.
         "progress_max_lateral_m": 1.0,
-        "oob_margin_m": 0.2,
+        "oob_margin_m": 0.15,
         "lateral_k": 0.5,
         "passing_gate_ahead_m": 40.0,
         "passing_gate_behind_m": 20.0,
@@ -277,11 +277,11 @@ DEFAULT_CONFIG = {
         # passing/collision/rear_end are gated on by the 1v1 trainer.
         "reward_scales": {
             "progress": 1.0,
-            "passing": 0.5,
+            "passing": 1.0,
             "collision": 4.0,
             "rear_end": 0.1,
             "tyre_slip_penalty": 0.25,
-            "oob_penalty": 0.01,
+            "oob_penalty": 0.05,
             "wall_penalty": 0.01,
             "wall_impact": 1.0,
             "lateral": 0.0,
