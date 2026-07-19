@@ -312,6 +312,126 @@ def compute_track_boundaries(
     return left, right
 
 
+@dataclass(frozen=True)
+class CorridorDistanceData:
+    distance: np.ndarray
+    width: int
+    height: int
+    origin: tuple[float, float]
+    resolution: float
+
+
+def _euclidean_distance_transform(occupied: np.ndarray) -> np.ndarray:
+    """Distance in cells from each free cell to the nearest occupied cell."""
+    import cv2
+
+    # OpenCV measures distance to the nearest zero pixel.
+    binary = np.where(occupied, 0, 255).astype(np.uint8)
+    return cv2.distanceTransform(
+        binary, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
+    ).astype(np.float32)
+
+
+def _rasterize_polyline(
+    occupied: np.ndarray,
+    polyline: np.ndarray,
+    origin: np.ndarray,
+    resolution: float,
+    *,
+    close_loop: bool = True,
+) -> None:
+    """Mark grid cells crossed by a wall polyline (Bresenham per segment)."""
+    height, width = occupied.shape
+    pts = np.asarray(polyline, dtype=np.float64)
+    if pts.shape[0] < 2:
+        return
+    # Close only for true loops; open corridors must not draw a wrap chord.
+    if close_loop and np.linalg.norm(pts[0] - pts[-1]) > 1.0e-6:
+        pts = np.concatenate([pts, pts[:1]], axis=0)
+    scale = 1.0 / float(resolution)
+    for i in range(pts.shape[0] - 1):
+        x0 = int(np.floor((pts[i, 0] - origin[0]) * scale))
+        y0 = int(np.floor((pts[i, 1] - origin[1]) * scale))
+        x1 = int(np.floor((pts[i + 1, 0] - origin[0]) * scale))
+        y1 = int(np.floor((pts[i + 1, 1] - origin[1]) * scale))
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        x, y = x0, y0
+        while True:
+            if 0 <= x < width and 0 <= y < height:
+                occupied[y, x] = True
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+
+
+def build_corridor_distance_field(
+    centerline: np.ndarray,
+    w_tr_left: np.ndarray,
+    w_tr_right: np.ndarray,
+    *,
+    resolution: float = 0.025,
+) -> CorridorDistanceData:
+    """Bake a corridor-edge Euclidean distance field on the host.
+
+    Offsets the centerline by +/- width*normal into left/right wall polylines,
+    rasterizes them onto a grid spanning the track bbox (same index convention
+    as ``build_warp_track_data``: ``iy * width + ix``), and returns metres to
+    the nearest wall cell for sphere-traced LiDAR marching.
+    """
+    if resolution <= 0.0:
+        raise ValueError("resolution must be positive")
+    cl = np.asarray(centerline, dtype=np.float64)
+    if cl.shape[0] < 2:
+        raise ValueError("centerline must contain at least two points")
+    seg_lens = np.linalg.norm(np.diff(cl, axis=0), axis=1)
+    typical = float(np.median(seg_lens)) if seg_lens.size else 0.0
+    wrap = float(np.linalg.norm(cl[0] - cl[-1]))
+    # Closed loops have a short first/last gap; open straights wrap across the
+    # full length and must not reuse that chord for normals or raster close.
+    closed = wrap <= max(2.0 * typical, 2.0 * float(resolution))
+    left, right = compute_track_boundaries(centerline, w_tr_left, w_tr_right)
+    if not closed:
+        left = np.array(left, dtype=np.float32, copy=True)
+        right = np.array(right, dtype=np.float32, copy=True)
+        left[-1] = left[-2]
+        right[-1] = right[-2]
+    walls = np.concatenate([left, right], axis=0)
+    margin = float(max(np.max(w_tr_left), np.max(w_tr_right)) + resolution)
+    minimum = walls.min(axis=0) - margin
+    maximum = walls.max(axis=0) + margin
+    width = int(np.ceil((maximum[0] - minimum[0]) / resolution)) + 1
+    height = int(np.ceil((maximum[1] - minimum[1]) / resolution)) + 1
+    occupied = np.zeros((height, width), dtype=bool)
+    origin = minimum.astype(np.float64)
+    _rasterize_polyline(
+        occupied, left, origin, resolution, close_loop=closed
+    )
+    _rasterize_polyline(
+        occupied, right, origin, resolution, close_loop=closed
+    )
+    if not occupied.any():
+        raise ValueError("Corridor wall rasterization produced an empty grid")
+    distance_cells = _euclidean_distance_transform(occupied)
+    distance = (distance_cells * float(resolution)).astype(np.float32)
+    return CorridorDistanceData(
+        distance=np.ascontiguousarray(distance.reshape(-1)),
+        width=width,
+        height=height,
+        origin=(float(minimum[0]), float(minimum[1])),
+        resolution=float(resolution),
+    )
+
+
 def build_track_cache(
     centerline: np.ndarray,
     device: torch.device,

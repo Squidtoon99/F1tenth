@@ -200,7 +200,43 @@ DEFAULT_CONFIG = {
             # 35--65 A phase-current uncertainty around the nominal 45 A envelope.
             "drive_scale_range": [0.7777777777777778, 1.4444444444444444],
             "steer_bias_range": [0.0, 0.0],
+            # Sensor DR defaults are no-ops so DR-off / unset ranges yield clean
+            # LiDAR/IMU; enable by widening a range when training with sensors.
+            "lidar_range_noise_std_range": [0.0, 0.0],
+            "lidar_far_dropout_prob_range": [0.0, 0.0],
+            "lidar_dropout_prob_range": [0.0, 0.0],
+            "lidar_angle_bias_range": [0.0, 0.0],
+            "lidar_extrinsic_xy_range": [0.0, 0.0],
+            "lidar_extrinsic_yaw_range": [0.0, 0.0],
+            "imu_accel_bias_range": [0.0, 0.0],
+            "imu_gyro_bias_range": [0.0, 0.0],
+            "imu_accel_noise_std_range": [0.0, 0.0],
+            "imu_gyro_noise_std_range": [0.0, 0.0],
+            "imu_axis_misalign_range": [0.0, 0.0],
+            # Deploy-shaped VESC proxies on the actor obs (noop-by-default).
+            "vesc_speed_bias_range": [0.0, 0.0],
+            "vesc_current_bias_range": [0.0, 0.0],
+            "vesc_speed_noise_std_range": [0.0, 0.0],
+            "vesc_current_noise_std_range": [0.0, 0.0],
         },
+    },
+    # Hokuyo UST-10LX mock (Warp sensor kernels). Actor layout requires native
+    # 1081 beams (beam_decimation must stay 1).
+    "sensor": {
+        "num_beams": 1081,
+        "fov_deg": 270.0,
+        "range_min_m": 0.06,
+        "range_max_m": 30.0,
+        "reliable_range_m": 10.0,
+        "beam_decimation": 1,
+        # Signed motor-current proxy scale: matches vesc_actuator 10 A drive/brake.
+        "vesc_current_scale_a": 10.0,
+        # Sphere-trace iteration cap (EDT cell ~2.5 cm; 512 covers >30 m worst case).
+        "max_march_steps": 512,
+        # Nominal mount in base_link; matches deploy vehicle.yaml opponent_detector.
+        "lidar_offset_x": 0.0,
+        "lidar_offset_y": 0.0,
+        "lidar_offset_yaw": 0.0,
     },
     "reward": {
         # GT Sophy Maggiore reward. Each term is a raw canonical component times one

@@ -14,12 +14,14 @@ from . import runtime as rt
 from .kernel import (
     ACTION_HISTORY,
     OBS_DIM,
+    CorridorDistanceField,
     EnvBuffers,
     ObsParams,
     OpponentParams,
     PhysicsBuffers,
     ResetParams,
     RewardParams,
+    SensorParams,
     TerminationParams,
     TrackData,
     observation_stage_kernel,
@@ -105,6 +107,26 @@ class _EnvironmentStorage:
         "opponent_lateral_offset",
         "opponent_speed_cap",
         "observation_noise",
+        "lidar_extrinsic_x",
+        "lidar_extrinsic_y",
+        "lidar_extrinsic_yaw",
+        "lidar_angle_bias",
+        "lidar_range_noise_std",
+        "lidar_dropout_prob",
+        "lidar_far_dropout_prob",
+        "imu_accel_bias_x",
+        "imu_accel_bias_y",
+        "imu_accel_bias_z",
+        "imu_gyro_bias_x",
+        "imu_gyro_bias_y",
+        "imu_gyro_bias_z",
+        "imu_accel_noise_std",
+        "imu_gyro_noise_std",
+        "imu_axis_misalign",
+        "vesc_speed_bias",
+        "vesc_current_bias",
+        "vesc_speed_noise_std",
+        "vesc_current_noise_std",
         "terminal_x",
         "terminal_y",
         "terminal_s",
@@ -265,6 +287,19 @@ class _TrackStorage:
         self.data.lut_resolution = host.lut_resolution
 
 
+class _CorridorDistanceStorage:
+    def __init__(self, host, device: str):
+        self.array = {
+            "distance": wp.array(host.distance, dtype=wp.float32, device=device),
+        }
+        self.data = CorridorDistanceField()
+        self.data.distance = self.array["distance"]
+        self.data.width = host.width
+        self.data.height = host.height
+        self.data.origin = wp.vec2f(*host.origin)
+        self.data.resolution = host.resolution
+
+
 class WarpF1tenthEnv:
     def __init__(
         self,
@@ -392,6 +427,75 @@ class WarpF1tenthEnv:
 
         self.extras = self._build_extras()
         self.reset()
+
+    def _resolve_sensor_cfg(self):
+        override = self.env_cfg.get("sensor")
+        if override is not None:
+            return dict(override)
+        from config import DEFAULT_CONFIG
+
+        return dict(DEFAULT_CONFIG["sensor"])
+
+    def _validate_native_actor_beams(self):
+        decimation = int(self.sensor_cfg.get("beam_decimation", 1))
+        num_beams = int(self.sensor_cfg.get("num_beams", NATIVE_NUM_BEAMS))
+        if decimation != 1:
+            raise ValueError(
+                "actor sensor layout requires beam_decimation=1 "
+                f"(got {decimation})"
+            )
+        if num_beams != NATIVE_NUM_BEAMS:
+            raise ValueError(
+                "actor sensor layout requires "
+                f"num_beams={NATIVE_NUM_BEAMS} (got {num_beams})"
+            )
+
+    def _build_sensor_params(self):
+        sensor = self.sensor_cfg
+        fov = math.radians(float(sensor.get("fov_deg", 270.0)))
+        num_beams = int(sensor.get("num_beams", NATIVE_NUM_BEAMS))
+        params = SensorParams()
+        params.num_beams = num_beams
+        params.angle_min = float(-0.5 * fov)
+        params.angle_increment = float(fov / float(num_beams - 1))
+        params.range_min = float(sensor.get("range_min_m", 0.06))
+        params.range_max = float(sensor.get("range_max_m", 30.0))
+        params.reliable_range = float(sensor.get("reliable_range_m", 10.0))
+        params.lidar_offset_x = float(sensor.get("lidar_offset_x", 0.0))
+        params.lidar_offset_y = float(sensor.get("lidar_offset_y", 0.0))
+        params.lidar_offset_yaw = float(sensor.get("lidar_offset_yaw", 0.0))
+        params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
+        return params
+
+    def _resolve_sensor_cfg(self):
+        override = self.env_cfg.get("sensor")
+        if override is not None:
+            return dict(override)
+        from config import DEFAULT_CONFIG
+
+        return dict(DEFAULT_CONFIG["sensor"])
+
+    def _build_sensor_params(self):
+        sensor = self.sensor_cfg
+        fov = math.radians(float(sensor.get("fov_deg", 270.0)))
+        decimation = max(1, int(sensor.get("beam_decimation", 1)))
+        native_beams = int(sensor.get("num_beams", 1081))
+        if native_beams < 2:
+            raise ValueError("sensor.num_beams must be at least 2")
+        # Decimate by widening angular step while preserving FOV endpoints.
+        num_beams = (native_beams - 1) // decimation + 1
+        params = SensorParams()
+        params.num_beams = num_beams
+        params.angle_min = float(-0.5 * fov)
+        params.angle_increment = float(fov / float(num_beams - 1))
+        params.range_min = float(sensor.get("range_min_m", 0.06))
+        params.range_max = float(sensor.get("range_max_m", 30.0))
+        params.reliable_range = float(sensor.get("reliable_range_m", 10.0))
+        params.lidar_offset_x = float(sensor.get("lidar_offset_x", 0.0))
+        params.lidar_offset_y = float(sensor.get("lidar_offset_y", 0.0))
+        params.lidar_offset_yaw = float(sensor.get("lidar_offset_yaw", 0.0))
+        params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
+        return params
 
     def _build_obs_params(self):
         params = ObsParams()
@@ -588,6 +692,26 @@ class WarpF1tenthEnv:
         params.opponent_lateral_spawn = int(
             bool(self.env_cfg.get("opponent_spawn_lateral_independent", False))
         )
+        for field, key in (
+            ("lidar_range_noise_std", "lidar_range_noise_std_range"),
+            ("lidar_far_dropout_prob", "lidar_far_dropout_prob_range"),
+            ("lidar_dropout_prob", "lidar_dropout_prob_range"),
+            ("lidar_angle_bias", "lidar_angle_bias_range"),
+            ("lidar_extrinsic_xy", "lidar_extrinsic_xy_range"),
+            ("lidar_extrinsic_yaw", "lidar_extrinsic_yaw_range"),
+            ("imu_accel_bias", "imu_accel_bias_range"),
+            ("imu_gyro_bias", "imu_gyro_bias_range"),
+            ("imu_accel_noise_std", "imu_accel_noise_std_range"),
+            ("imu_gyro_noise_std", "imu_gyro_noise_std_range"),
+            ("imu_axis_misalign", "imu_axis_misalign_range"),
+            ("vesc_speed_bias", "vesc_speed_bias_range"),
+            ("vesc_current_bias", "vesc_current_bias_range"),
+            ("vesc_speed_noise_std", "vesc_speed_noise_std_range"),
+            ("vesc_current_noise_std", "vesc_current_noise_std_range"),
+        ):
+            minimum, maximum = interval(key, (0.0, 0.0))
+            setattr(params, f"{field}_min", minimum)
+            setattr(params, f"{field}_max", maximum)
         return params
 
     def _build_opponent_params(self):
@@ -686,6 +810,26 @@ class WarpF1tenthEnv:
                 "dr/action_latency_steps": tensors["action_latency"],
                 "dr/obs_latency_steps": tensors["observation_latency"],
                 "dr/obs_noise_std": tensors["observation_noise"],
+                "dr/lidar_extrinsic_x": tensors["lidar_extrinsic_x"],
+                "dr/lidar_extrinsic_y": tensors["lidar_extrinsic_y"],
+                "dr/lidar_extrinsic_yaw": tensors["lidar_extrinsic_yaw"],
+                "dr/lidar_angle_bias": tensors["lidar_angle_bias"],
+                "dr/lidar_range_noise_std": tensors["lidar_range_noise_std"],
+                "dr/lidar_dropout_prob": tensors["lidar_dropout_prob"],
+                "dr/lidar_far_dropout_prob": tensors["lidar_far_dropout_prob"],
+                "dr/imu_accel_bias_x": tensors["imu_accel_bias_x"],
+                "dr/imu_accel_bias_y": tensors["imu_accel_bias_y"],
+                "dr/imu_accel_bias_z": tensors["imu_accel_bias_z"],
+                "dr/imu_gyro_bias_x": tensors["imu_gyro_bias_x"],
+                "dr/imu_gyro_bias_y": tensors["imu_gyro_bias_y"],
+                "dr/imu_gyro_bias_z": tensors["imu_gyro_bias_z"],
+                "dr/imu_accel_noise_std": tensors["imu_accel_noise_std"],
+                "dr/imu_gyro_noise_std": tensors["imu_gyro_noise_std"],
+                "dr/imu_axis_misalign": tensors["imu_axis_misalign"],
+                "dr/vesc_speed_bias": tensors["vesc_speed_bias"],
+                "dr/vesc_current_bias": tensors["vesc_current_bias"],
+                "dr/vesc_speed_noise_std": tensors["vesc_speed_noise_std"],
+                "dr/vesc_current_noise_std": tensors["vesc_current_noise_std"],
             },
         }
 

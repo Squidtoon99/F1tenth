@@ -268,6 +268,30 @@ class ObsParams:
 
 
 @wp.struct
+class SensorParams:
+    num_beams: wp.int32
+    angle_min: wp.float32
+    angle_increment: wp.float32
+    range_min: wp.float32
+    range_max: wp.float32
+    reliable_range: wp.float32
+    lidar_offset_x: wp.float32
+    lidar_offset_y: wp.float32
+    lidar_offset_yaw: wp.float32
+    max_march_steps: wp.int32
+    max_march_steps: wp.int32
+
+
+@wp.struct
+class CorridorDistanceField:
+    distance: wp.array(dtype=wp.float32)
+    width: wp.int32
+    height: wp.int32
+    origin: wp.vec2f
+    resolution: wp.float32
+
+
+@wp.struct
 class RewardParams:
     progress_forward: wp.float32
     progress_backward: wp.float32
@@ -331,6 +355,58 @@ class ResetParams:
     observation_noise_max: wp.float32
     spawn_yaw_jitter: wp.float32
     opponent_lateral_spawn: wp.int32
+    lidar_range_noise_std_min: wp.float32
+    lidar_range_noise_std_max: wp.float32
+    lidar_far_dropout_prob_min: wp.float32
+    lidar_far_dropout_prob_max: wp.float32
+    lidar_dropout_prob_min: wp.float32
+    lidar_dropout_prob_max: wp.float32
+    lidar_angle_bias_min: wp.float32
+    lidar_angle_bias_max: wp.float32
+    lidar_extrinsic_xy_min: wp.float32
+    lidar_extrinsic_xy_max: wp.float32
+    lidar_extrinsic_yaw_min: wp.float32
+    lidar_extrinsic_yaw_max: wp.float32
+    imu_accel_bias_min: wp.float32
+    imu_accel_bias_max: wp.float32
+    imu_gyro_bias_min: wp.float32
+    imu_gyro_bias_max: wp.float32
+    imu_accel_noise_std_min: wp.float32
+    imu_accel_noise_std_max: wp.float32
+    imu_gyro_noise_std_min: wp.float32
+    imu_gyro_noise_std_max: wp.float32
+    imu_axis_misalign_min: wp.float32
+    imu_axis_misalign_max: wp.float32
+    lidar_range_noise_std_min: wp.float32
+    lidar_range_noise_std_max: wp.float32
+    lidar_far_dropout_prob_min: wp.float32
+    lidar_far_dropout_prob_max: wp.float32
+    lidar_dropout_prob_min: wp.float32
+    lidar_dropout_prob_max: wp.float32
+    lidar_angle_bias_min: wp.float32
+    lidar_angle_bias_max: wp.float32
+    lidar_extrinsic_xy_min: wp.float32
+    lidar_extrinsic_xy_max: wp.float32
+    lidar_extrinsic_yaw_min: wp.float32
+    lidar_extrinsic_yaw_max: wp.float32
+    imu_accel_bias_min: wp.float32
+    imu_accel_bias_max: wp.float32
+    imu_gyro_bias_min: wp.float32
+    imu_gyro_bias_max: wp.float32
+    imu_accel_noise_std_min: wp.float32
+    imu_accel_noise_std_max: wp.float32
+    imu_gyro_noise_std_min: wp.float32
+    imu_gyro_noise_std_max: wp.float32
+    imu_axis_misalign_min: wp.float32
+    imu_axis_misalign_max: wp.float32
+    vesc_speed_bias_min: wp.float32
+    vesc_speed_bias_max: wp.float32
+    vesc_current_bias_min: wp.float32
+    vesc_current_bias_max: wp.float32
+    vesc_speed_noise_std_min: wp.float32
+    vesc_speed_noise_std_max: wp.float32
+    vesc_current_noise_std_min: wp.float32
+    vesc_current_noise_std_max: wp.float32
 
 
 @wp.struct
@@ -392,6 +468,26 @@ class EnvBuffers:
     action_latency: wp.array(dtype=wp.int32)
     observation_latency: wp.array(dtype=wp.int32)
     observation_noise: wp.array(dtype=wp.float32)
+    lidar_extrinsic_x: wp.array(dtype=wp.float32)
+    lidar_extrinsic_y: wp.array(dtype=wp.float32)
+    lidar_extrinsic_yaw: wp.array(dtype=wp.float32)
+    lidar_angle_bias: wp.array(dtype=wp.float32)
+    lidar_range_noise_std: wp.array(dtype=wp.float32)
+    lidar_dropout_prob: wp.array(dtype=wp.float32)
+    lidar_far_dropout_prob: wp.array(dtype=wp.float32)
+    imu_accel_bias_x: wp.array(dtype=wp.float32)
+    imu_accel_bias_y: wp.array(dtype=wp.float32)
+    imu_accel_bias_z: wp.array(dtype=wp.float32)
+    imu_gyro_bias_x: wp.array(dtype=wp.float32)
+    imu_gyro_bias_y: wp.array(dtype=wp.float32)
+    imu_gyro_bias_z: wp.array(dtype=wp.float32)
+    imu_accel_noise_std: wp.array(dtype=wp.float32)
+    imu_gyro_noise_std: wp.array(dtype=wp.float32)
+    imu_axis_misalign: wp.array(dtype=wp.float32)
+    vesc_speed_bias: wp.array(dtype=wp.float32)
+    vesc_current_bias: wp.array(dtype=wp.float32)
+    vesc_speed_noise_std: wp.array(dtype=wp.float32)
+    vesc_current_noise_std: wp.array(dtype=wp.float32)
     opponent_mode: wp.array(dtype=wp.int32)
     contact: wp.array(dtype=wp.int32)
     valid: wp.array(dtype=wp.int32)
@@ -785,6 +881,81 @@ def reset_pair(
         env.opponent_speed_cap[env_id] = (
             opponent_params.policy_speed_cap_hi - span * u * u
         )
+
+    # Sensor DR is sampled after existing physics/obs draws so prior RNG streams
+    # (spawn, mass, latency, …) stay bit-identical when sensor ranges are no-ops.
+    env.lidar_extrinsic_x[env_id] = random_range(
+        random, reset.lidar_extrinsic_xy_min, reset.lidar_extrinsic_xy_max
+    )
+    env.lidar_extrinsic_y[env_id] = random_range(
+        random, reset.lidar_extrinsic_xy_min, reset.lidar_extrinsic_xy_max
+    )
+    env.lidar_extrinsic_yaw[env_id] = random_range(
+        random, reset.lidar_extrinsic_yaw_min, reset.lidar_extrinsic_yaw_max
+    )
+    env.lidar_angle_bias[env_id] = random_range(
+        random, reset.lidar_angle_bias_min, reset.lidar_angle_bias_max
+    )
+    env.lidar_range_noise_std[env_id] = random_range(
+        random, reset.lidar_range_noise_std_min, reset.lidar_range_noise_std_max
+    )
+    env.lidar_dropout_prob[env_id] = random_range(
+        random, reset.lidar_dropout_prob_min, reset.lidar_dropout_prob_max
+    )
+    env.lidar_far_dropout_prob[env_id] = random_range(
+        random, reset.lidar_far_dropout_prob_min, reset.lidar_far_dropout_prob_max
+    )
+    env.imu_accel_bias_x[env_id] = random_range(
+        random, reset.imu_accel_bias_min, reset.imu_accel_bias_max
+    )
+    env.imu_accel_bias_y[env_id] = random_range(
+        random, reset.imu_accel_bias_min, reset.imu_accel_bias_max
+    )
+    env.imu_accel_bias_z[env_id] = random_range(
+        random, reset.imu_accel_bias_min, reset.imu_accel_bias_max
+    )
+    env.imu_gyro_bias_x[env_id] = random_range(
+        random, reset.imu_gyro_bias_min, reset.imu_gyro_bias_max
+    )
+    env.imu_gyro_bias_y[env_id] = random_range(
+        random, reset.imu_gyro_bias_min, reset.imu_gyro_bias_max
+    )
+    env.imu_gyro_bias_z[env_id] = random_range(
+        random, reset.imu_gyro_bias_min, reset.imu_gyro_bias_max
+    )
+    env.imu_accel_noise_std[env_id] = random_range(
+        random, reset.imu_accel_noise_std_min, reset.imu_accel_noise_std_max
+    )
+    env.imu_gyro_noise_std[env_id] = random_range(
+        random, reset.imu_gyro_noise_std_min, reset.imu_gyro_noise_std_max
+    )
+    env.imu_axis_misalign[env_id] = random_range(
+        random, reset.imu_axis_misalign_min, reset.imu_axis_misalign_max
+    )
+    env.vesc_speed_bias[env_id] = random_range(
+        random, reset.vesc_speed_bias_min, reset.vesc_speed_bias_max
+    )
+    env.vesc_current_bias[env_id] = random_range(
+        random, reset.vesc_current_bias_min, reset.vesc_current_bias_max
+    )
+    env.vesc_speed_noise_std[env_id] = random_range(
+        random, reset.vesc_speed_noise_std_min, reset.vesc_speed_noise_std_max
+    )
+    env.vesc_current_noise_std[env_id] = random_range(
+        random, reset.vesc_current_noise_std_min, reset.vesc_current_noise_std_max
+    )
+    env.vesc_speed_bias[env_id] = random_range(
+        random, reset.vesc_speed_bias_min, reset.vesc_speed_bias_max
+    )
+    env.vesc_current_bias[env_id] = random_range(
+        random, reset.vesc_current_bias_min, reset.vesc_current_bias_max
+    )
+    env.vesc_speed_noise_std[env_id] = random_range(
+        random, reset.vesc_speed_noise_std_min, reset.vesc_speed_noise_std_max
+    )
+    env.vesc_current_noise_std[env_id] = random_range(
+        random, reset.vesc_current_noise_std_min, reset.vesc_current_noise_std_max
+    )
 
     env.episode_id[env_id] = next_episode
     env.episode_step[env_id] = 0

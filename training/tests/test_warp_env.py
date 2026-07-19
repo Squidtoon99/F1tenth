@@ -184,6 +184,56 @@ def test_observation_ping_pong_preserves_previous_tick():
         env.close()
 
 
+def test_with_sensors_true_returns_dict_shapes():
+    env = _make_env(num_envs=4)
+    try:
+        obs, _ = env.reset(seed=0, with_sensors=True)
+        assert set(obs) == {"frenet", "actor", "lidar", "imu"}
+        assert obs["frenet"].shape == (4, 390)
+        assert obs["actor"].shape == (4, 1093)
+        assert obs["lidar"].shape == (4, 1081)
+        assert obs["imu"].shape == (4, 6)
+        out, _, _, _ = env.step(
+            torch.zeros(4, 2),
+            n_steps=env.control_interval,
+            with_sensors=True,
+        )
+        assert set(out) == {"frenet", "actor", "lidar", "imu"}
+        assert env.step_launch_count == 4
+        assert torch.isfinite(out["lidar"]).all()
+        assert torch.isfinite(out["imu"]).all()
+        assert torch.isfinite(out["actor"]).all()
+    finally:
+        env.close()
+
+
+def test_with_sensors_false_unchanged_flat_obs_and_launch_count():
+    env_off = _make_env(num_envs=4)
+    env_on = _make_env(num_envs=4)
+    try:
+        flat, _ = env_off.reset(seed=11, with_sensors=False)
+        bundled, _ = env_on.reset(seed=11, with_sensors=True)
+        assert isinstance(flat, torch.Tensor)
+        assert flat.shape == (4, 390)
+        assert torch.equal(flat, bundled["frenet"])
+
+        actions = torch.full((4, 2), 0.15)
+        flat_step, reward_off, done_off, _ = env_off.step(
+            actions, n_steps=env_off.control_interval, with_sensors=False
+        )
+        bundled_step, reward_on, done_on, _ = env_on.step(
+            actions, n_steps=env_on.control_interval, with_sensors=True
+        )
+        assert env_off.step_launch_count == 3
+        assert env_on.step_launch_count == 4
+        assert torch.equal(flat_step, bundled_step["frenet"])
+        assert torch.equal(reward_off, reward_on)
+        assert torch.equal(done_off, done_on)
+    finally:
+        env_off.close()
+        env_on.close()
+
+
 def test_partial_reset_does_not_change_unmasked_rows():
     env = _make_env(num_envs=8)
     try:
