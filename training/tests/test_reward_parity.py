@@ -23,6 +23,7 @@ import torch
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
+from f1tenth_env.utils import build_step_state
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -134,13 +135,23 @@ def test_kernel_matches_torch_mirror(rewards_mod):
             wheels = env.read_wheel_state()
             contact = env._env.tensor["contact"].clone() > 0
             contact_seen = contact_seen or bool(contact.any())
+            track_ss = build_step_state(
+                base_pos=state["base_pos"],
+                track_state=env.track_state,
+                device=env.device,
+                cache_id="reward_parity",
+            )
 
             big = torch.full((num_envs,), 1.0e6)
             step_state = {
                 "progress_ds": ego_ds,
                 "opp_progress_ds": opp_ds,
                 "opp_s": opp_s,
-                "frenet": {"s": ego_s, "L": torch.tensor(length)},
+                "frenet": {
+                    "s": ego_s,
+                    "L": torch.tensor(length),
+                    "seg_dir": track_ss["frenet"]["seg_dir"],
+                },
                 "boundary": {
                     "ey": torch.zeros(num_envs),
                     "w_l_s": big,

@@ -527,31 +527,6 @@ class WarpF1tenthEnv:
     def _build_sensor_params(self):
         sensor = self.sensor_cfg
         fov = math.radians(float(sensor.get("fov_deg", 270.0)))
-        num_beams = int(sensor.get("num_beams", NATIVE_NUM_BEAMS))
-        params = SensorParams()
-        params.num_beams = num_beams
-        params.angle_min = float(-0.5 * fov)
-        params.angle_increment = float(fov / float(num_beams - 1))
-        params.range_min = float(sensor.get("range_min_m", 0.06))
-        params.range_max = float(sensor.get("range_max_m", 30.0))
-        params.reliable_range = float(sensor.get("reliable_range_m", 10.0))
-        params.lidar_offset_x = float(sensor.get("lidar_offset_x", 0.0))
-        params.lidar_offset_y = float(sensor.get("lidar_offset_y", 0.0))
-        params.lidar_offset_yaw = float(sensor.get("lidar_offset_yaw", 0.0))
-        params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
-        return params
-
-    def _resolve_sensor_cfg(self):
-        override = self.env_cfg.get("sensor")
-        if override is not None:
-            return dict(override)
-        from config import DEFAULT_CONFIG
-
-        return dict(DEFAULT_CONFIG["sensor"])
-
-    def _build_sensor_params(self):
-        sensor = self.sensor_cfg
-        fov = math.radians(float(sensor.get("fov_deg", 270.0)))
         decimation = max(1, int(sensor.get("beam_decimation", 1)))
         native_beams = int(sensor.get("num_beams", 1081))
         if native_beams < 2:

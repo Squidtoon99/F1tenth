@@ -426,6 +426,7 @@ def test_sensor_policy_artifact_round_trip(tmp_path):
         expected_actor_obs_dim=ACTOR_DIM,
         expected_action_dim=2,
         expected_layout_version=1,
+        expected_architecture=payload["actor_architecture"],
     )
     restored = _models()
     restored.actor.load_state_dict(payload["actor"])
@@ -455,6 +456,7 @@ def test_stale_privileged_artifact_schema_is_rejected(tmp_path):
             expected_actor_obs_dim=ACTOR_DIM,
             expected_action_dim=2,
             expected_layout_version=1,
+            expected_architecture=payload["actor_architecture"],
         )
 
 

@@ -1152,9 +1152,16 @@ def compute_reward_and_done(
         or ego_frenet.ey - footprint
         < -(ego_frenet.width_right - reward.oob_margin)
     )
+    left_wall = ego_frenet.ey + footprint >= ego_frenet.width_left
+    right_wall = ego_frenet.ey - footprint <= -ego_frenet.width_right
+    wall_contact = left_wall or right_wall
     severe_oob = (
         ego_frenet.ey > ego_frenet.width_left - termination.oob_margin
         or ego_frenet.ey < -(ego_frenet.width_right - termination.oob_margin)
+    )
+    center_penetration = (
+        ego_frenet.ey >= ego_frenet.width_left
+        or ego_frenet.ey <= -ego_frenet.width_right
     )
     progress_ds = delta_s
     if off_track:
@@ -1168,6 +1175,19 @@ def compute_reward_and_done(
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
     if off_track:
         out.oob = -reward.oob * speed_squared
+    vel_world = body_velocity_world(ego)
+    normal = wp.vec2f(-ego_frenet.tangent[1], ego_frenet.tangent[0])
+    v_lat = wp.dot(vel_world, normal)
+    v_normal = wp.float32(0.0)
+    if left_wall:
+        v_normal = wp.max(v_lat, 0.0)
+    if right_wall:
+        v_normal = wp.max(v_normal, wp.max(-v_lat, 0.0))
+    first_wall = wall_contact and env.prev_wall_contact[env_id] == 0
+    if wall_contact:
+        out.wall = -reward.wall * speed_squared
+    if first_wall:
+        out.wall_impact = -reward.wall_impact * v_normal * v_normal
     difference = action - env.last_action[env_id]
     out.smoothness = -reward.smoothness * wp.dot(difference, difference)
     out.slip = -reward.slip * slip_excess(ego, reward)
@@ -1178,9 +1198,7 @@ def compute_reward_and_done(
         env.prev_opponent_in_window[env_id] = wp.int32(in_window)
         out.collision = -reward.collision * wp.float32(contact.contact)
         if contact.contact != 0 and gap > 0.0:
-            relative_velocity = (
-                body_velocity_world(ego) - body_velocity_world(opponent)
-            )
+            relative_velocity = vel_world - body_velocity_world(opponent)
             out.rear_end = -reward.rear_end * wp.dot(
                 relative_velocity, relative_velocity
             )
@@ -1197,6 +1215,8 @@ def compute_reward_and_done(
         out.progress
         + out.lateral
         + out.oob
+        + out.wall
+        + out.wall_impact
         + out.slip
         + out.smoothness
         + out.passing
@@ -1220,7 +1240,10 @@ def compute_reward_and_done(
         env.stopped_streak[env_id] = 0
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
-    oob_done = env.oob_streak[env_id] >= termination.maximum_oob_steps
+    oob_done = (
+        center_penetration
+        or env.oob_streak[env_id] >= termination.maximum_oob_steps
+    )
     stopped = (
         env.stopped_streak[env_id] >= termination.maximum_stopped_steps
     )
@@ -1234,7 +1257,17 @@ def compute_reward_and_done(
         and contact.contact != 0
         and contact.closing_speed > termination.collision_speed
     )
-    out.done = timeout or oob_done or stopped or invalid or collision_done
+    wall_impact_done = (
+        wall_contact and v_normal >= termination.wall_impact_speed
+    )
+    out.done = (
+        timeout
+        or oob_done
+        or stopped
+        or invalid
+        or collision_done
+        or wall_impact_done
+    )
     if timeout:
         out.done_flags = out.done_flags | 1
     if oob_done:
@@ -1245,6 +1278,8 @@ def compute_reward_and_done(
         out.done_flags = out.done_flags | 8
     if collision_done:
         out.done_flags = out.done_flags | 16
+    if wall_impact_done:
+        out.done_flags = out.done_flags | 32
 
     env.lap_cross[env_id] = 0.0
     if (
@@ -1257,8 +1292,10 @@ def compute_reward_and_done(
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
     env.prev_off_track[env_id] = wp.int32(off_track)
+    env.prev_wall_contact[env_id] = wp.int32(wall_contact)
     env.metric_progress[env_id] = progress_ds
     env.metric_oob[env_id] = wp.float32(off_track)
+    env.metric_wall[env_id] = wp.float32(wall_contact)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
     env.metric_speed[env_id] = wp.sqrt(speed_squared)

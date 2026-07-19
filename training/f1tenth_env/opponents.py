@@ -171,7 +171,9 @@ class PolicyOpponent(OpponentController):
         self.norm_eps = float(norm_eps)
         self.norm_clip = float(norm_clip)
         self.act_clip = float(act_clip)
-        self.obs_dim = int(actor.net[0].weight.shape[1])
+        self.obs_dim = int(getattr(actor, "obs_dim", actor.net[0].weight.shape[1]))
+        self.act_dim = int(getattr(actor, "act_dim", actor.mu_layer.out_features))
+        self.actor_architecture = dict(getattr(actor, "actor_architecture", {}))
         self.obs_mean = obs_mean.to(device) if obs_mean is not None else None
         self.obs_var = obs_var.to(device) if obs_var is not None else None
         self._inv_std: torch.Tensor | None = None
@@ -207,19 +209,52 @@ class PolicyOpponent(OpponentController):
             (obs - self.obs_mean) * self._inv_std, -self.norm_clip, self.norm_clip
         )
 
+    def _reject_incompatible_snapshot(
+        self,
+        actor_state_dict: dict[str, torch.Tensor],
+        actor_architecture: dict | None,
+    ) -> None:
+        if actor_architecture is not None:
+            if dict(actor_architecture) != self.actor_architecture:
+                raise ValueError(
+                    "Snapshot actor_architecture mismatch: "
+                    f"got {dict(actor_architecture)!r}, "
+                    f"expected {self.actor_architecture!r}"
+                )
+        raw = self._raw_actor()
+        expected = raw.state_dict()
+        expected_keys = set(expected)
+        actual_keys = set(actor_state_dict)
+        missing = sorted(expected_keys - actual_keys)
+        if missing:
+            raise ValueError(
+                f"Snapshot missing actor key {missing[0]!r}; "
+                f"expected architecture {self.actor_architecture!r}."
+            )
+        unexpected = sorted(actual_keys - expected_keys)
+        if unexpected:
+            raise ValueError(
+                f"Snapshot unexpected actor key {unexpected[0]!r}; "
+                f"expected architecture {self.actor_architecture!r}."
+            )
+        for key in sorted(expected_keys):
+            want = tuple(int(d) for d in expected[key].shape)
+            got = tuple(int(d) for d in actor_state_dict[key].shape)
+            if got != want:
+                raise ValueError(
+                    f"Snapshot actor[{key!r}] shape={got}; expected {want}. "
+                    "Privileged/symmetric or cross-architecture schemas are rejected."
+                )
+
     def load_snapshot(
         self,
         actor_state_dict: dict[str, torch.Tensor],
         obs_mean: torch.Tensor,
         obs_var: torch.Tensor,
+        actor_architecture: dict | None = None,
     ) -> None:
         """Hot-swap frozen actor weights and observation-normalization stats."""
-        weight = actor_state_dict.get("net.0.weight")
-        if weight is not None and int(weight.shape[1]) != self.obs_dim:
-            raise ValueError(
-                f"Snapshot actor input dim={int(weight.shape[1])}; "
-                f"expected {self.obs_dim}. Privileged/symmetric schemas are rejected."
-            )
+        self._reject_incompatible_snapshot(actor_state_dict, actor_architecture)
         mean = obs_mean.to(self.device, dtype=torch.float32).reshape(-1)
         var = obs_var.to(self.device, dtype=torch.float32).reshape(-1)
         if mean.numel() != self.obs_dim or var.numel() != self.obs_dim:
@@ -228,7 +263,7 @@ class PolicyOpponent(OpponentController):
                 f"expected actor obs dim {self.obs_dim}."
             )
         raw = self._raw_actor()
-        raw.load_state_dict(actor_state_dict)
+        raw.load_state_dict(actor_state_dict, strict=True)
         raw.to(device=self.device, dtype=torch.float32)
         raw.eval()
         self._maybe_compile_actor()
@@ -363,9 +398,15 @@ class MixedOpponentController(OpponentController):
         actor_state_dict: dict[str, torch.Tensor],
         obs_mean: torch.Tensor,
         obs_var: torch.Tensor,
+        actor_architecture: dict | None = None,
     ) -> None:
         """Forward a self-play snapshot to the inner policy opponent."""
-        self.policy.load_snapshot(actor_state_dict, obs_mean, obs_var)
+        self.policy.load_snapshot(
+            actor_state_dict,
+            obs_mean,
+            obs_var,
+            actor_architecture=actor_architecture,
+        )
 
 
 def make_opponent(

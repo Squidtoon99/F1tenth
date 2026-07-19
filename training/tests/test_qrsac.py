@@ -121,12 +121,11 @@ def test_build_models_uses_independent_actor_critic_dims():
     from standalone_trainer import build_models
 
     cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["model"]["hidden_layers"] = [16, 16]
     cfg["model"]["num_quantiles"] = 4
     models, trainer = build_models(cfg, torch.device("cpu"), compile=False)
     assert trainer.actor_obs_dim == cfg["obs"]["num_actor_obs"] == 1093
     assert trainer.critic_obs_dim == cfg["obs"]["num_obs"] == 390
-    assert models.actor.net[0].weight.shape[1] == 1093
+    assert models.actor.obs_dim == 1093
     assert models.critic1.backbone[0].weight.shape[1] == 390 + 2
 
 

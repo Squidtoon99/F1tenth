@@ -52,9 +52,6 @@ def _make_race_env():
         eps=1e-12,
     )
     cfg = build_race_config(copy.deepcopy(DEFAULT_CONFIG), "Austin")
-    # Tournament races still feed privileged Frenet observations to both
-    # actors; keep actor width aligned until sensor-selfplay owns 1v1.
-    cfg["obs"]["num_actor_obs"] = int(cfg["obs"]["num_obs"])
     return make_env(cfg, 1), cfg
 
 
@@ -374,12 +371,12 @@ def test_short_race_emits_telemetry_fields():
     models_a, _ = build_models(cfg, device)
     models_b, _ = build_models(cfg, device)
     norm_a = ObsNormalizer(
-        obs_dim=cfg["obs"]["num_obs"], device=device,
+        obs_dim=cfg["obs"]["num_actor_obs"], device=device,
         eps=float(cfg["obs"].get("norm_eps", 1e-8)),
         clip=float(cfg["obs"].get("norm_clip", 10.0)),
     )
     norm_b = ObsNormalizer(
-        obs_dim=cfg["obs"]["num_obs"], device=device,
+        obs_dim=cfg["obs"]["num_actor_obs"], device=device,
         eps=float(cfg["obs"].get("norm_eps", 1e-8)),
         clip=float(cfg["obs"].get("norm_clip", 10.0)),
     )

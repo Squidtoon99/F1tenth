@@ -45,6 +45,73 @@ OPP_TRACK_GAP_IDX = OPP_OBS_BASE_IDX + 4
 REPLAY_CAPACITY_REQUESTED = 2_000_000
 REPLAY_CAPACITY_FALLBACK = 1_000_000
 REPLAY_OBS_DTYPE = torch.float16
+ARTIFACT_SCOPE_SIM_TRAINING = "simulation_training_only"
+SENSOR_POLICY_FORMAT_VERSION = 3
+
+
+def _tensor_shape(value) -> tuple[int, ...]:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return ()
+    return tuple(int(dim) for dim in shape)
+
+
+def normalize_actor_architecture(architecture: dict) -> dict:
+    """JSON-round-trip so list/tuple and int/numpy scalar forms compare equal."""
+    return json.loads(
+        json.dumps(architecture, default=lambda v: int(v) if hasattr(v, "item") else v)
+    )
+
+
+def architectures_match(left, right) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    return normalize_actor_architecture(left) == normalize_actor_architecture(right)
+
+
+def actor_architecture_from_module(actor) -> dict:
+    return normalize_actor_architecture(dict(actor.actor_architecture))
+
+
+def reference_actor_from_architecture(architecture: dict):
+    """Construct an eager actor whose state_dict shapes match ``architecture``."""
+    arch = normalize_actor_architecture(architecture)
+    name = arch.get("name")
+    if name not in ("flat_mlp", "lidar_cnn"):
+        raise ValueError(
+            f"Unsupported actor_architecture.name={name!r}; "
+            "expected 'flat_mlp' or 'lidar_cnn'"
+        )
+    return make_actor(
+        actor_type=name,
+        obs_dim=int(arch["obs_dim"]),
+        act_dim=int(arch["action_dim"]),
+        hidden_sizes=list(arch["hidden_layers"]),
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=int(arch.get("pool_bins", 32)),
+        lidar_dim=int(arch.get("lidar_dim", 1081)),
+        proprio_dim=int(arch.get("proprio_dim", 12)),
+    )
+
+
+def _first_state_dict_mismatch(
+    actual: dict, expected: dict
+) -> str | None:
+    actual_keys = set(actual)
+    expected_keys = set(expected)
+    missing = sorted(expected_keys - actual_keys)
+    if missing:
+        return f"missing actor key {missing[0]!r}"
+    unexpected = sorted(actual_keys - expected_keys)
+    if unexpected:
+        return f"unexpected actor key {unexpected[0]!r}"
+    for key in sorted(expected_keys):
+        want = _tensor_shape(expected[key])
+        got = _tensor_shape(actual[key])
+        if got != want:
+            return f"actor[{key!r}] shape={got}; expected {want}"
+    return None
 
 
 class SelfPlaySnapshot(dict):
@@ -114,10 +181,19 @@ class SelfPlayManager:
             mean=normalizer.mean.detach().cpu().clone(),
             var=normalizer.var.detach().cpu().clone(),
             transitions=transitions,
+            actor_architecture=actor_architecture_from_module(models.actor),
         )
 
     def load_anchor(
-        self, path: str, device: torch.device, obs_dim: int, action_dim: int
+        self,
+        path: str,
+        device: torch.device,
+        obs_dim: int,
+        action_dim: int,
+        *,
+        expected_layout_version: int | None = None,
+        expected_architecture: dict | None = None,
+        expected_critic_obs_dim: int | None = None,
     ) -> None:
         """Load an immutable incumbent anchor from a policy artifact.
 
@@ -125,9 +201,41 @@ class SelfPlayManager:
         and sampled with ``anchor_prob`` on each refresh/selection.
         """
         payload = torch.load(path, map_location=device, weights_only=False)
-        validate_policy_artifact(
-            payload, expected_obs_dim=obs_dim, expected_action_dim=action_dim
-        )
+        architecture = expected_architecture
+        if architecture is None and self.expected_architecture is not None:
+            architecture = self.expected_architecture
+        if architecture is None and isinstance(payload, dict):
+            architecture = payload.get("actor_architecture")
+        if expected_layout_version is not None or architecture is not None:
+            validate_sensor_policy_artifact(
+                payload,
+                expected_actor_obs_dim=obs_dim,
+                expected_action_dim=action_dim,
+                expected_layout_version=(
+                    expected_layout_version
+                    if expected_layout_version is not None
+                    else int(payload.get("actor_layout_version", 1))
+                ),
+                expected_architecture=architecture,
+                expected_critic_obs_dim=expected_critic_obs_dim,
+            )
+            if architecture is None:
+                architecture = payload.get("actor_architecture")
+        else:
+            validate_policy_artifact(
+                payload, expected_obs_dim=obs_dim, expected_action_dim=action_dim
+            )
+            architecture = payload.get("actor_architecture")
+            if architecture is None:
+                architecture = {
+                    "name": "flat_mlp",
+                    "version": 1,
+                    "obs_dim": int(obs_dim),
+                    "hidden_layers": [],
+                    "activation": "relu",
+                    "action_dim": int(action_dim),
+                }
+        architecture = self._require_homogeneous_architecture(architecture)
         self.anchor = SelfPlaySnapshot(
             actor={
                 k: v.detach().cpu().clone() for k, v in payload["actor"].items()
@@ -873,13 +981,6 @@ def training_should_continue(
     return bool(continuous) or env_transitions < total_transitions
 
 
-def training_should_continue(
-    env_transitions: int, total_transitions: int, continuous: bool
-) -> bool:
-    """Finite budget terminates by default; ``continuous`` ignores the cap."""
-    return bool(continuous) or env_transitions < total_transitions
-
-
 class RunningStats:
     """Accumulates scalar means / min / max / totals for named diagnostics.
 
@@ -1011,20 +1112,6 @@ def _deep_merge(base: dict, patch: dict) -> dict:
         else:
             base[key] = copy.deepcopy(value)
     return base
-
-
-def build_env_cfg(cfg: dict, **extra) -> dict:
-    """Assemble ``env_cfg`` for ``F1tenthEnv``, including root-level ``sensor``.
-
-    Sensor settings live at ``cfg["sensor"]`` (not under ``env``) so JSON patches
-    to ``sensor.*`` merge through ``build_config``. Callers must use this helper
-    (or equivalent) rather than passing ``cfg["env"]`` alone.
-    """
-    return {
-        **extra,
-        **cfg["env"],
-        "sensor": cfg["sensor"],
-    }
 
 
 def build_env_cfg(cfg: dict, **extra) -> dict:
@@ -1325,38 +1412,194 @@ def build_models(
     return models, trainer
 
 
+def _validate_sensor_artifact_common(
+    payload,
+    *,
+    expected_actor_obs_dim: int,
+    expected_action_dim: int,
+    expected_layout_version: int,
+    expected_critic_obs_dim: int | None,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("Sensor policy artifact must be a mapping.")
+    obs_dim = payload.get("obs_dim")
+    actor_obs_dim = payload.get("actor_obs_dim", obs_dim)
+    if (
+        obs_dim is None
+        or actor_obs_dim is None
+        or int(obs_dim) != int(expected_actor_obs_dim)
+        or int(actor_obs_dim) != int(expected_actor_obs_dim)
+    ):
+        raise ValueError(
+            f"Sensor policy artifact obs_dim={obs_dim!r} "
+            f"actor_obs_dim={actor_obs_dim!r}; expected actor dim "
+            f"{expected_actor_obs_dim}. Privileged/symmetric schemas "
+            f"(e.g. 390-D Frenet actors) are not supported."
+        )
+    layout = payload.get("actor_layout_version")
+    if layout is None or int(layout) != int(expected_layout_version):
+        raise ValueError(
+            f"Sensor policy artifact actor_layout_version={layout!r}; "
+            f"expected {expected_layout_version}."
+        )
+    if "critic_norm" in payload or "critic_obs_norm" in payload:
+        raise ValueError(
+            "Sensor policy artifact must not include critic normalization."
+        )
+    for critic_key in ("critic1", "critic2", "critic1_target", "critic2_target"):
+        if critic_key in payload:
+            raise ValueError(
+                f"Sensor policy artifact must not include critic weights ({critic_key})."
+            )
+    action_dim = payload.get("action_dim")
+    if action_dim is None or int(action_dim) != int(expected_action_dim):
+        raise ValueError(
+            f"Sensor policy artifact action_dim={action_dim!r}; "
+            f"expected {expected_action_dim}."
+        )
+    mode = payload.get("longitudinal_mode", payload.get("throttle_mode"))
+    if mode != "force":
+        raise ValueError(
+            f"Sensor policy artifact longitudinal_mode={mode!r}; expected 'force'."
+        )
+    control_hz = payload.get("control_hz")
+    if control_hz is None or abs(float(control_hz) - CONTROL_HZ) > 1.0e-6:
+        raise ValueError(
+            f"Sensor policy artifact control_hz={control_hz!r}; expected {CONTROL_HZ}."
+        )
+    if expected_critic_obs_dim is not None:
+        critic_obs_dim = payload.get("critic_obs_dim")
+        if critic_obs_dim is None or int(critic_obs_dim) != int(expected_critic_obs_dim):
+            raise ValueError(
+                f"Sensor policy artifact critic_obs_dim={critic_obs_dim!r}; "
+                f"expected provenance dim {expected_critic_obs_dim}."
+            )
+    stats = payload.get("obs_norm")
+    if not isinstance(stats, dict):
+        raise ValueError("Sensor policy artifact is missing obs_norm statistics.")
+    for name in ("mean", "var"):
+        shape = _tensor_shape(stats.get(name))
+        if shape != (int(expected_actor_obs_dim),):
+            raise ValueError(
+                f"Sensor policy artifact obs_norm.{name} shape={shape}; "
+                f"expected ({expected_actor_obs_dim},)."
+            )
+
+
+def _validate_format3_actor_state(
+    payload: dict,
+    *,
+    expected_architecture: dict,
+    expected_action_dim: int,
+) -> None:
+    architecture = payload.get("actor_architecture")
+    if not isinstance(architecture, dict):
+        raise ValueError(
+            "Format-3 sensor policy artifact is missing actor_architecture metadata."
+        )
+    if not architectures_match(architecture, expected_architecture):
+        raise ValueError(
+            "Sensor policy artifact actor_architecture mismatch: "
+            f"got {normalize_actor_architecture(architecture)!r}, "
+            f"expected {normalize_actor_architecture(expected_architecture)!r}"
+        )
+    actor = payload.get("actor")
+    if not isinstance(actor, dict):
+        raise ValueError("Sensor policy artifact is missing the actor state_dict.")
+    reference = reference_actor_from_architecture(expected_architecture)
+    mismatch = _first_state_dict_mismatch(actor, reference.state_dict())
+    if mismatch is not None:
+        raise ValueError(f"Sensor policy artifact {mismatch}")
+    mu_shape = _tensor_shape(actor.get("mu_layer.weight"))
+    log_std_shape = _tensor_shape(actor.get("log_std_layer.weight"))
+    if len(mu_shape) != 2 or mu_shape[0] != int(expected_action_dim):
+        raise ValueError(
+            f"Sensor policy artifact mu_layer.weight shape={mu_shape}; "
+            f"expected ({expected_action_dim}, *)."
+        )
+    if len(log_std_shape) != 2 or log_std_shape[0] != int(expected_action_dim):
+        raise ValueError(
+            f"Sensor policy artifact log_std_layer.weight shape={log_std_shape}; "
+            f"expected ({expected_action_dim}, *)."
+        )
+    reference.load_state_dict(actor, strict=True)
+
+
 def validate_sensor_policy_artifact(
     payload,
     *,
     expected_actor_obs_dim: int,
     expected_action_dim: int,
     expected_layout_version: int,
+    expected_architecture: dict | None = None,
+    expected_critic_obs_dim: int | None = None,
 ) -> None:
-    """Reject privileged/symmetric or stale sensor-policy schemas clearly."""
-    obs_dim = payload.get("obs_dim") if isinstance(payload, dict) else None
-    if obs_dim is None or int(obs_dim) != int(expected_actor_obs_dim):
-        raise ValueError(
-            f"Sensor policy artifact obs_dim={obs_dim!r}; expected actor dim "
-            f"{expected_actor_obs_dim}. Privileged/symmetric schemas "
-            f"(e.g. 390-D Frenet actors) are not supported."
+    """Validate simulation-training sensor policy artifacts."""
+    if not isinstance(payload, dict):
+        raise ValueError("Sensor policy artifact must be a mapping.")
+    version = payload.get("policy_format_version")
+    if version is None:
+        raise ValueError("Sensor policy artifact is missing policy_format_version.")
+    version = int(version)
+
+    if version >= SENSOR_POLICY_FORMAT_VERSION:
+        if expected_architecture is None:
+            raise ValueError(
+                "Format-3 sensor policy artifacts require expected_architecture."
+            )
+        scope = payload.get("artifact_scope")
+        if scope != ARTIFACT_SCOPE_SIM_TRAINING:
+            raise ValueError(
+                f"Sensor policy artifact artifact_scope={scope!r}; "
+                f"expected {ARTIFACT_SCOPE_SIM_TRAINING!r}."
+            )
+        _validate_sensor_artifact_common(
+            payload,
+            expected_actor_obs_dim=expected_actor_obs_dim,
+            expected_action_dim=expected_action_dim,
+            expected_layout_version=expected_layout_version,
+            expected_critic_obs_dim=expected_critic_obs_dim,
         )
-    layout = payload.get("actor_layout_version") if isinstance(payload, dict) else None
-    if layout is None or int(layout) != int(expected_layout_version):
-        raise ValueError(
-            f"Sensor policy artifact actor_layout_version={layout!r}; "
-            f"expected {expected_layout_version}."
+        _validate_format3_actor_state(
+            payload,
+            expected_architecture=expected_architecture,
+            expected_action_dim=expected_action_dim,
         )
-    if isinstance(payload, dict) and (
-        "critic_norm" in payload or "critic_obs_norm" in payload
-    ):
+        return
+
+    if version < 2:
         raise ValueError(
-            "Sensor policy artifact must not include critic normalization."
+            f"Sensor policy artifact policy_format_version={version!r} is unsupported; "
+            "need >=2."
         )
+    if expected_architecture is None:
+        raise ValueError(
+            "Format-2 sensor policy artifacts require expected_architecture "
+            "so flat-only compatibility can be enforced."
+        )
+    expected_name = normalize_actor_architecture(expected_architecture).get("name")
+    if expected_name != "flat_mlp":
+        raise ValueError(
+            "Format-2 flat-MLP artifacts cannot warm-start or seed a "
+            f"{expected_name!r} actor; there is no MLP-to-CNN weight migration."
+        )
+    _validate_sensor_artifact_common(
+        payload,
+        expected_actor_obs_dim=expected_actor_obs_dim,
+        expected_action_dim=expected_action_dim,
+        expected_layout_version=expected_layout_version,
+        expected_critic_obs_dim=expected_critic_obs_dim,
+    )
     validate_policy_artifact(
         payload,
         expected_obs_dim=expected_actor_obs_dim,
         expected_action_dim=expected_action_dim,
     )
+    reference = reference_actor_from_architecture(expected_architecture)
+    mismatch = _first_state_dict_mismatch(payload["actor"], reference.state_dict())
+    if mismatch is not None:
+        raise ValueError(f"Sensor policy artifact {mismatch}")
+    reference.load_state_dict(payload["actor"], strict=True)
 
 
 def save_policy_artifact(
@@ -1370,6 +1613,7 @@ def save_policy_artifact(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     path = artifact_dir / f"policy_{env_transitions}.pt"
     actor_obs_dim = int(cfg["obs"]["num_actor_obs"])
+    architecture = actor_architecture_from_module(models.actor)
     payload = {
         "actor": models.actor.state_dict(),
         "obs_norm": normalizer.state_dict(),
@@ -1382,6 +1626,8 @@ def save_policy_artifact(
         "action_scale": float(cfg["env"]["clip_actions"]),
         "config_version": int(cfg["config_version"]),
         "policy_format_version": int(cfg["policy_format_version"]),
+        "artifact_scope": ARTIFACT_SCOPE_SIM_TRAINING,
+        "actor_architecture": architecture,
         "longitudinal_mode": str(cfg["env"].get("longitudinal_mode", "force")),
         "f_drive_max": float(cfg["env"].get("f_drive_max", 23.0)),
         "f_brake_max": float(cfg["env"].get("f_brake_max", 23.0)),
@@ -1408,6 +1654,7 @@ def load_init_ckpt(
     device: torch.device,
     *,
     expected_layout_version: int,
+    expected_critic_obs_dim: int | None = None,
 ) -> int:
     """Warm-start the actor + actor-normalizer from a sensor policy artifact.
 
@@ -1415,13 +1662,16 @@ def load_init_ckpt(
     snapshot at the policy's true maturity. Critics start fresh (not exported).
     """
     payload = torch.load(path, map_location=device, weights_only=False)
+    architecture = actor_architecture_from_module(models.actor)
     validate_sensor_policy_artifact(
         payload,
-        expected_actor_obs_dim=normalizer.mean.numel(),
-        expected_action_dim=models.actor.mu_layer.out_features,
+        expected_actor_obs_dim=int(models.actor.obs_dim),
+        expected_action_dim=int(models.actor.act_dim),
         expected_layout_version=expected_layout_version,
+        expected_architecture=architecture,
+        expected_critic_obs_dim=expected_critic_obs_dim,
     )
-    models.actor.load_state_dict(payload["actor"])
+    models.actor.load_state_dict(payload["actor"], strict=True)
     normalizer.load_state_dict(payload["obs_norm"])
     init_transitions = int(payload.get("env_transitions", 0))
     logging.getLogger(LOGGER_NAME).info(
@@ -1552,14 +1802,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--total-transitions",
         type=int,
         default=cfg["schedule"]["total_transitions"],
-    )
-    parser.add_argument(
-        "--continuous",
-        action="store_true",
-        default=False,
-        help="Opt-in unbounded training: ignore --total-transitions termination "
-        "while keeping the finite budget as the default. Periodic artifacts, "
-        "logs, and eval still run.",
     )
     parser.add_argument(
         "--continuous",
@@ -2138,46 +2380,56 @@ def main():
             else:
                 with torch.no_grad():
                     actions, _ = models.actor(
-                        normalizer.normalize(obs),
+                        actor_normalizer.normalize(actor_obs),
                         deterministic=False,
                         with_logprob=False,
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
 
-            next_obs, reward, done, extras = env.step(
-                actions.to(rt.tc_float), n_steps=control_interval
+            next_raw_obs, reward, done, extras = env.step(
+                actions.to(rt.tc_float), n_steps=control_interval, with_sensors=True
             )
             vector_ticks += 1
             env_transitions += args.num_envs
-            next_obs = next_obs.to(torch.float32)
+            next_actor_obs, next_critic_obs = unpack_sensor_observations(next_raw_obs)
             reward = reward.to(torch.float32)
 
             episode_rewards += reward
             done_f = done.to(episode_rewards.dtype)
             ep_return_sum += (episode_rewards * done_f).sum()
             ep_return_count += done_f.sum()
-            if selfplay_mgr is not None and obs.shape[-1] > OPP_TRACK_GAP_IDX:
+            if selfplay_mgr is not None and critic_obs.shape[-1] > OPP_TRACK_GAP_IDX:
                 done_bool = done.bool()
                 if done_bool.any():
                     # Opponent block index 4 is ``s_other - s_self``; negate.
-                    ego_minus_opp = -obs[done_bool, OPP_TRACK_GAP_IDX]
+                    ego_minus_opp = -critic_obs[done_bool, OPP_TRACK_GAP_IDX]
                     selfplay_mgr.record_episode_outcomes(ego_minus_opp)
             episode_rewards = episode_rewards * (1.0 - done_f)
 
-            accumulate_step_diagnostics(diag, reward, actions, obs, extras)
+            accumulate_step_diagnostics(diag, reward, actions, critic_obs, extras)
             diag.add_mean(
                 "obs/norm_abs",
-                normalizer.normalize(obs).abs(),
+                actor_normalizer.normalize(actor_obs).abs(),
                 track_range=True,
             )
-            if use_1v1 and obs.shape[-1] > OPP_OBS_BASE_IDX:
-                opp_block = obs[:, OPP_OBS_BASE_IDX:]
-                in_range = (opp_block != 0).any(dim=-1).to(obs.dtype)
+            if use_1v1 and critic_obs.shape[-1] > OPP_OBS_BASE_IDX:
+                opp_block = critic_obs[:, OPP_OBS_BASE_IDX:]
+                in_range = (opp_block != 0).any(dim=-1).to(critic_obs.dtype)
                 diag.add_mean("metric/opponent_presence", in_range)
 
-            replay_inserts += buffer.add(obs, actions, reward, next_obs, done)
-            normalizer.update(next_obs)
-            obs = next_obs
+            replay_inserts += buffer.add(
+                actor_obs,
+                critic_obs,
+                actions,
+                reward,
+                next_actor_obs,
+                next_critic_obs,
+                done,
+            )
+            actor_normalizer.update(next_actor_obs)
+            critic_normalizer.update(next_critic_obs)
+            actor_obs = next_actor_obs
+            critic_obs = next_critic_obs
 
             if env_transitions >= args.min_train_transitions:
                 updates_due, learner_row_budget = learner_updates_for_transitions(

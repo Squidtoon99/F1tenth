@@ -61,9 +61,9 @@ class _RecordingEnv:
         self.call_count = 0
         self.last_args = None
 
-    def refresh_opponent_policy(self, actor, mean, var) -> None:
+    def refresh_opponent_policy(self, actor, mean, var, actor_architecture=None) -> None:
         self.call_count += 1
-        self.last_args = (actor, mean, var)
+        self.last_args = (actor, mean, var, actor_architecture)
 
 
 def _recording_env() -> _RecordingEnv:

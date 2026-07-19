@@ -24,6 +24,9 @@ def _make_env(num_envs=16, opponent=False, device="cpu"):
     cfg["env"]["domain_randomization"]["enabled"] = False
     cfg["env"]["reset_speed_min_mps"] = 0.0
     cfg["env"]["reset_speed_max_mps"] = 0.0
+    scales = cfg["reward"]["reward_scales"]
+    scales.pop("wall_penalty", None)
+    scales.pop("wall_impact", None)
     if opponent:
         cfg["env"]["opponent_strategy"] = "scripted"
         cfg["reward"]["reward_scales"]["passing"] = 0.5

@@ -164,7 +164,9 @@ class QRSACTrainer:
         self.critic1_target = models.critic1_target
         self.critic2_target = models.critic2_target
         # Capture dims before compile wraps callables.
-        self.actor_obs_dim = int(models.actor.net[0].weight.shape[1])
+        self.actor_obs_dim = int(
+            getattr(models.actor, "obs_dim", models.actor.net[0].weight.shape[1])
+        )
         act_dim = int(models.actor.mu_layer.out_features)
         self.critic_obs_dim = int(
             models.critic1.backbone[0].weight.shape[1] - act_dim
