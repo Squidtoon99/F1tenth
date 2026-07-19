@@ -23,6 +23,12 @@ def init_reward_state(
         "prev_step_counter": None,
         "last_progress_ds": torch.zeros((num_envs,), dtype=rt.tc_float, device=device),
         "prev_off_track": None,
+        "prev_wall_contact": torch.zeros(
+            (num_envs,), dtype=torch.bool, device=device
+        ),
+        "wall_impact_done": torch.zeros(
+            (num_envs,), dtype=torch.bool, device=device
+        ),
     }
 
 
@@ -106,6 +112,10 @@ def sync_progress_state_for_resets(
     prev_off = reward_state.get("prev_off_track")
     if prev_off is not None and prev_off.numel() == s.numel():
         prev_off[reset_mask] = False
+
+    prev_wall = reward_state.get("prev_wall_contact")
+    if prev_wall is not None and prev_wall.numel() == s.numel():
+        prev_wall[reset_mask] = False
 
 
 def ensure_opp_progress_delta(
@@ -345,6 +355,77 @@ def reward_oob_penalty(
     return -control_dt * oob_mask.to(v.dtype) * speed_kmh * speed_kmh
 
 
+def wall_contact_from_boundary(
+    boundary_state: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Footprint contact with the actual corridor boundary (no reward margin)."""
+    ey = boundary_state["ey"].reshape(-1)
+    w_l_s = boundary_state["w_l_s"].reshape(-1)
+    w_r_s = boundary_state["w_r_s"].reshape(-1)
+    half = boundary_state.get("oob_half_extent_m", 0.0)
+    if not torch.is_tensor(half):
+        half = torch.full_like(ey, float(half))
+    else:
+        half = half.reshape(-1).to(dtype=ey.dtype, device=ey.device)
+    left = (ey + half) >= w_l_s
+    right = (ey - half) <= -w_r_s
+    return left | right, left, right
+
+
+def wall_normal_speed(
+    step_state: dict[str, Any],
+    left_contact: torch.Tensor,
+    right_contact: torch.Tensor,
+) -> torch.Tensor:
+    """Inward speed into the contacted boundary normal (0 when separating)."""
+    vel = step_state.get("ego_vel_world")
+    if vel is None:
+        vel = step_state["base_lin_vel"]
+    vel_xy = vel[:, :2]
+    t_hat = step_state["frenet"]["seg_dir"]
+    n_hat = torch.stack([-t_hat[:, 1], t_hat[:, 0]], dim=-1)
+    v_lat = (vel_xy * n_hat).sum(dim=-1)
+    into_left = torch.clamp(v_lat, min=0.0)
+    into_right = torch.clamp(-v_lat, min=0.0)
+    v_normal = torch.zeros_like(v_lat)
+    v_normal = torch.where(left_contact, into_left, v_normal)
+    v_normal = torch.where(right_contact, torch.maximum(v_normal, into_right), v_normal)
+    return v_normal
+
+
+def reward_wall_penalty(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """Raw continuous wall term ``Rw = -elapsed * (3.6 * speed)^2`` while contacting."""
+    control_dt = float(reward_cfg.get("control_dt", 0.05))
+    contact, _, _ = wall_contact_from_boundary(step_state["boundary"])
+    v = torch.linalg.norm(step_state["base_lin_vel"][:, :2], dim=-1)
+    speed_kmh = 3.6 * v
+    return -control_dt * contact.to(v.dtype) * speed_kmh * speed_kmh
+
+
+def reward_wall_impact(
+    step_state: dict[str, Any],
+    reward_cfg: dict[str, Any],
+    reward_state: dict[str, Any],
+) -> torch.Tensor:
+    """One-shot first-contact impact ``-v_normal^2``; latches until reset/leave."""
+    contact, left, right = wall_contact_from_boundary(step_state["boundary"])
+    v_normal = wall_normal_speed(step_state, left, right)
+    prev = reward_state.get("prev_wall_contact")
+    if prev is None or prev.numel() != contact.numel():
+        prev = torch.zeros_like(contact)
+    first = contact & (~prev)
+    impact = -v_normal * v_normal * first.to(v_normal.dtype)
+
+    term_speed = float(reward_cfg.get("wall_impact_term_speed_mps", 4.0))
+    reward_state["wall_impact_done"] = contact & (v_normal >= term_speed)
+    reward_state["prev_wall_contact"] = contact.detach().clone()
+    reward_state["last_wall_contact"] = contact.detach().clone()
+    reward_state["last_v_normal"] = v_normal.detach().clone()
+    return impact
+
+
 def reward_smoothness_penalty(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -428,6 +509,15 @@ def compute_rewards(
             step_state, reward_cfg, reward_state, episode_steps_buf
         )
 
+    wall_enabled = "wall_penalty" in scales or "wall_impact" in scales
+    if wall_enabled:
+        wall_penalty = reward_wall_penalty(step_state, reward_cfg)
+        wall_impact = reward_wall_impact(step_state, reward_cfg, reward_state)
+    else:
+        reward_state["wall_impact_done"] = torch.zeros(
+            (num_envs,), dtype=torch.bool, device=device
+        )
+
     # GT Sophy masks course progress whenever the agent is off course (anti
     # corner-cutting). Derive the mask directly from the boundary state; solid
     # walls prevent shortcutting so only the off-course mask (no lateral/rejoin
@@ -450,6 +540,9 @@ def compute_rewards(
         rear_end *= scales["rear_end"]
     if overtake_enabled:
         overtake *= scales["overtake"]
+    if wall_enabled:
+        wall_penalty *= scales.get("wall_penalty", 0.0)
+        wall_impact *= scales.get("wall_impact", 0.0)
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
     # balance between terms intact) so returns / critic targets stay O(1).
@@ -467,6 +560,9 @@ def compute_rewards(
         rear_end *= global_scale
     if overtake_enabled:
         overtake *= global_scale
+    if wall_enabled:
+        wall_penalty *= global_scale
+        wall_impact *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
@@ -489,6 +585,10 @@ def compute_rewards(
     if overtake_enabled:
         reward_buf += overtake
         last_terms["overtake"] = overtake.clone()
+    if wall_enabled:
+        reward_buf += wall_penalty + wall_impact
+        last_terms["wall_penalty"] = wall_penalty.clone()
+        last_terms["wall_impact"] = wall_impact.clone()
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

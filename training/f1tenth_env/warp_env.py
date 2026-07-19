@@ -112,6 +112,8 @@ class _EnvironmentStorage:
         "reward_progress",
         "reward_lateral",
         "reward_oob",
+        "reward_wall",
+        "reward_wall_impact",
         "reward_slip",
         "reward_smoothness",
         "reward_passing",
@@ -149,6 +151,7 @@ class _EnvironmentStorage:
         "terminal_s",
         "metric_progress",
         "metric_oob",
+        "metric_wall",
         "metric_boundary",
         "metric_lateral",
         "metric_speed",
@@ -165,6 +168,7 @@ class _EnvironmentStorage:
         "ego_segment",
         "opponent_segment",
         "prev_off_track",
+        "prev_wall_contact",
         "prev_opponent_ahead",
         "prev_opponent_in_window",
         "oob_streak",
@@ -183,6 +187,7 @@ class _EnvironmentStorage:
         "term_stopped",
         "term_invalid",
         "term_collision",
+        "term_wall_impact",
     )
 
     def __init__(self, num_envs: int, device: torch.device):
@@ -612,6 +617,12 @@ class WarpF1tenthEnv:
         params.oob_margin = float(
             self.reward_cfg.get("oob_margin_m", 0.2)
         )
+        params.wall = (
+            float(scales.get("wall_penalty", 0.0))
+            * self.control_dt
+            * (3.6 * 3.6)
+        )
+        params.wall_impact = float(scales.get("wall_impact", 0.0))
         params.slip = float(scales.get("tyre_slip_penalty", 0.0)) * cadence
         params.slip_angle_weight = float(
             self.reward_cfg.get("slip_angle_weight", 1.0)
@@ -672,6 +683,9 @@ class WarpF1tenthEnv:
         )
         params.oob_margin = float(
             self.env_cfg.get("term_oob_margin_m", 0.15)
+        )
+        params.wall_impact_speed = float(
+            self.env_cfg.get("wall_impact_term_speed_mps", 4.0)
         )
         return params
 
@@ -841,6 +855,8 @@ class WarpF1tenthEnv:
                     "progress": tensors["reward_progress"],
                     "lateral": tensors["reward_lateral"],
                     "oob_penalty": tensors["reward_oob"],
+                    "wall_penalty": tensors["reward_wall"],
+                    "wall_impact": tensors["reward_wall_impact"],
                     "tyre_slip_penalty": tensors["reward_slip"],
                     "smoothness": tensors["reward_smoothness"],
                     "passing": tensors["reward_passing"],
@@ -855,12 +871,14 @@ class WarpF1tenthEnv:
                 "not_moving": tensors["term_stopped"],
                 "invalid_state": tensors["term_invalid"],
                 "collision": tensors["term_collision"],
+                "wall_impact": tensors["term_wall_impact"],
             },
             "time_outs": tensors["term_timeout"],
             "metrics": {
                 "progress_ds": tensors["metric_progress"],
                 "s": tensors["prev_s"],
                 "oob_mask": tensors["metric_oob"],
+                "wall_contact": tensors["metric_wall"],
                 "boundary_dist": tensors["metric_boundary"],
                 "lateral_error": tensors["metric_lateral"],
                 "speed_xy": tensors["metric_speed"],

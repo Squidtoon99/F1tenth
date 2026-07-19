@@ -299,6 +299,8 @@ class RewardParams:
     lateral: wp.float32
     oob: wp.float32
     oob_margin: wp.float32
+    wall: wp.float32
+    wall_impact: wp.float32
     slip: wp.float32
     slip_angle_weight: wp.float32
     slip_ratio_deadzone: wp.float32
@@ -325,6 +327,7 @@ class TerminationParams:
     collision_speed: wp.float32
     terminate_on_collision: wp.int32
     oob_margin: wp.float32
+    wall_impact_speed: wp.float32
 
 
 @wp.struct
@@ -433,6 +436,8 @@ class EnvBuffers:
     reward_progress: wp.array(dtype=wp.float32)
     reward_lateral: wp.array(dtype=wp.float32)
     reward_oob: wp.array(dtype=wp.float32)
+    reward_wall: wp.array(dtype=wp.float32)
+    reward_wall_impact: wp.array(dtype=wp.float32)
     reward_slip: wp.array(dtype=wp.float32)
     reward_smoothness: wp.array(dtype=wp.float32)
     reward_passing: wp.array(dtype=wp.float32)
@@ -446,6 +451,7 @@ class EnvBuffers:
     term_stopped: wp.array(dtype=wp.bool)
     term_invalid: wp.array(dtype=wp.bool)
     term_collision: wp.array(dtype=wp.bool)
+    term_wall_impact: wp.array(dtype=wp.bool)
     episode_step: wp.array(dtype=wp.int32)
     episode_id: wp.array(dtype=wp.int32)
     lap_count: wp.array(dtype=wp.int32)
@@ -455,6 +461,7 @@ class EnvBuffers:
     prev_s: wp.array(dtype=wp.float32)
     prev_opponent_s: wp.array(dtype=wp.float32)
     prev_off_track: wp.array(dtype=wp.int32)
+    prev_wall_contact: wp.array(dtype=wp.int32)
     prev_opponent_ahead: wp.array(dtype=wp.int32)
     prev_opponent_in_window: wp.array(dtype=wp.int32)
     oob_streak: wp.array(dtype=wp.int32)
@@ -499,6 +506,7 @@ class EnvBuffers:
     terminal_s: wp.array(dtype=wp.float32)
     metric_progress: wp.array(dtype=wp.float32)
     metric_oob: wp.array(dtype=wp.float32)
+    metric_wall: wp.array(dtype=wp.float32)
     metric_boundary: wp.array(dtype=wp.float32)
     metric_lateral: wp.array(dtype=wp.float32)
     metric_speed: wp.array(dtype=wp.float32)
@@ -539,6 +547,8 @@ class RewardResult:
     progress: wp.float32
     lateral: wp.float32
     oob: wp.float32
+    wall: wp.float32
+    wall_impact: wp.float32
     slip: wp.float32
     smoothness: wp.float32
     passing: wp.float32
@@ -964,6 +974,7 @@ def reset_pair(
     env.oob_streak[env_id] = 0
     env.stopped_streak[env_id] = 0
     env.prev_off_track[env_id] = 0
+    env.prev_wall_contact[env_id] = 0
     env.prev_opponent_ahead[env_id] = 1
     env.prev_opponent_in_window[env_id] = 0
     env.last_action[env_id] = wp.vec2f(0.0)
@@ -987,6 +998,7 @@ def reset_pair(
     env.prev_opponent_s[env_id] = opponent_frenet.s
     env.metric_progress[env_id] = 0.0
     env.metric_oob[env_id] = 0.0
+    env.metric_wall[env_id] = 0.0
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
     env.metric_speed[env_id] = speed
@@ -1166,7 +1178,9 @@ def compute_reward_and_done(
         env.prev_opponent_in_window[env_id] = wp.int32(in_window)
         out.collision = -reward.collision * wp.float32(contact.contact)
         if contact.contact != 0 and gap > 0.0:
-            relative_velocity = vel_world - body_velocity_world(opponent)
+            relative_velocity = (
+                body_velocity_world(ego) - body_velocity_world(opponent)
+            )
             out.rear_end = -reward.rear_end * wp.dot(
                 relative_velocity, relative_velocity
             )
@@ -1412,6 +1426,8 @@ def store_reward(
     env.reward_progress[env_id] = result.progress
     env.reward_lateral[env_id] = result.lateral
     env.reward_oob[env_id] = result.oob
+    env.reward_wall[env_id] = result.wall
+    env.reward_wall_impact[env_id] = result.wall_impact
     env.reward_slip[env_id] = result.slip
     env.reward_smoothness[env_id] = result.smoothness
     env.reward_passing[env_id] = result.passing
@@ -1425,6 +1441,7 @@ def store_reward(
     env.term_stopped[env_id] = (result.done_flags & 4) != 0
     env.term_invalid[env_id] = (result.done_flags & 8) != 0
     env.term_collision[env_id] = (result.done_flags & 16) != 0
+    env.term_wall_impact[env_id] = (result.done_flags & 32) != 0
 
 
 @wp.kernel(enable_backward=False)
@@ -1951,6 +1968,7 @@ def reset_envs_kernel(
         env.term_stopped[env_id] = False
         env.term_invalid[env_id] = False
         env.term_collision[env_id] = False
+        env.term_wall_impact[env_id] = False
         env.reward[env_id] = 0.0
         store_vehicle(ego_buffers, env_id, ego)
         store_vehicle(opponent_buffers, env_id, opponent)

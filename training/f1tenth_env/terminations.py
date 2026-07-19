@@ -186,6 +186,13 @@ def compute_terminations(
     out_of_bounds = (
         term_state["oob_consecutive_buf"] >= term_params["term_oob_max_consecutive"]
     )
+    boundary = step_state["boundary"]
+    center_penetration = (
+        boundary["ey"] >= boundary["w_l_s"]
+    ) | (
+        boundary["ey"] <= -boundary["w_r_s"]
+    )
+    out_of_bounds = out_of_bounds | center_penetration
 
     speed_xy = torch.linalg.norm(base_lin_vel[:, :2], dim=-1)
     ds = step_state.get("progress_ds")

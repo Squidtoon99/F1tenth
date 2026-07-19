@@ -2301,30 +2301,45 @@ def main():
                         diag.mean("reward_term/passing"),
                         diag.mean("reward_term/collision"),
                         diag.mean("reward_term/oob_penalty"),
+                        diag.mean("reward_term/wall_penalty"),
+                        diag.mean("reward_term/wall_impact"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
                     )
                 else:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                        "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f "
-                        "smooth=%.4f",
+                        "progress=%.4f oob_penalty=%.4f wall=%.4f impact=%.4f "
+                        "tyre_slip=%.4f smooth=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
                         diag.mean("reward_term/progress"),
                         diag.mean("reward_term/oob_penalty"),
+                        diag.mean("reward_term/wall_penalty"),
+                        diag.mean("reward_term/wall_impact"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
                     )
                 log.info(
+                    "  reward_events: oob_when=%.4f wall_when=%.4f "
+                    "impact_when=%.4f wall_contacts=%d impact_events=%d",
+                    diag.mean("reward_term/oob_penalty_when_oob"),
+                    diag.mean("reward_term/wall_penalty_when_contact"),
+                    diag.mean("reward_term/wall_impact_when_event"),
+                    int(diag.total("metric/wall_contact_count")),
+                    int(diag.total("metric/wall_impact_events")),
+                )
+                log.info(
                     "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
-                    "progress_ds=%.4f laps_completed=%d | throttle[%.2f..%.2f] "
-                    "steer[%.2f..%.2f] obs_absmax=%.2f norm_obs_absmax=%.2f",
+                    "wall_frac=%.3f progress_ds=%.4f laps_completed=%d | "
+                    "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f "
+                    "norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/opp_speed"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
+                    diag.mean("metric/wall_contact"),
                     diag.mean("metric/progress_ds"),
                     int(diag.total("metric/laps_completed")),
                     diag.vmin("action/throttle"),
@@ -2357,10 +2372,12 @@ def main():
                 )
                 if use_1v1:
                     log.info(
-                        "  terminations: time_out=%d oob=%d collision=%d "
-                        "not_moving=%d invalid=%d | opp_presence=%.3f",
+                        "  terminations: time_out=%d oob=%d wall_impact=%d "
+                        "collision=%d not_moving=%d invalid=%d | "
+                        "opp_presence=%.3f",
                         int(diag.total("term/time_out")),
                         int(diag.total("term/out_of_bounds")),
+                        int(diag.total("term/wall_impact")),
                         int(diag.total("term/collision")),
                         int(diag.total("term/not_moving")),
                         int(diag.total("term/invalid_state")),
@@ -2384,9 +2401,11 @@ def main():
                         selfplay_mgr.reset_win_stats()
                 else:
                     log.info(
-                        "  terminations: time_out=%d oob=%d not_moving=%d invalid=%d",
+                        "  terminations: time_out=%d oob=%d wall_impact=%d "
+                        "not_moving=%d invalid=%d",
                         int(diag.total("term/time_out")),
                         int(diag.total("term/out_of_bounds")),
+                        int(diag.total("term/wall_impact")),
                         int(diag.total("term/not_moving")),
                         int(diag.total("term/invalid_state")),
                     )
@@ -2424,6 +2443,21 @@ def main():
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),
+                            "reward/wall_penalty": diag.mean(
+                                "reward_term/wall_penalty"
+                            ),
+                            "reward/wall_impact": diag.mean(
+                                "reward_term/wall_impact"
+                            ),
+                            "reward/oob_penalty_when_oob": diag.mean(
+                                "reward_term/oob_penalty_when_oob"
+                            ),
+                            "reward/wall_penalty_when_contact": diag.mean(
+                                "reward_term/wall_penalty_when_contact"
+                            ),
+                            "reward/wall_impact_when_event": diag.mean(
+                                "reward_term/wall_impact_when_event"
+                            ),
                             "reward/tyre_slip_penalty": diag.mean(
                                 "reward_term/tyre_slip_penalty"
                             ),
@@ -2433,6 +2467,13 @@ def main():
                             "env/speed_xy": diag.mean("metric/speed_xy"),
                             "env/lateral_error": diag.mean("metric/lateral_error"),
                             "env/oob_frac": diag.mean("metric/oob_mask"),
+                            "env/wall_frac": diag.mean("metric/wall_contact"),
+                            "env/wall_contact_count": diag.total(
+                                "metric/wall_contact_count"
+                            ),
+                            "env/wall_impact_events": diag.total(
+                                "metric/wall_impact_events"
+                            ),
                             "env/progress_ds": diag.mean("metric/progress_ds"),
                             "env/lap_count": diag.mean("metric/lap_count"),
                             "env/laps_completed": diag.total("metric/laps_completed"),
@@ -2453,6 +2494,7 @@ def main():
                             "obs/absmax": diag.vmax("obs/abs"),
                             "term/time_out": diag.total("term/time_out"),
                             "term/out_of_bounds": diag.total("term/out_of_bounds"),
+                            "term/wall_impact": diag.total("term/wall_impact"),
                             "term/not_moving": diag.total("term/not_moving"),
                             "term/invalid_state": diag.total("term/invalid_state"),
                             "nonfinite/obs_rate": nf_obs_rate,

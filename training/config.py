@@ -71,6 +71,8 @@ DEFAULT_CONFIG = {
         # Strict OOB: chicane cuts end the episode quickly so skipping S-bends
         # cannot amortize off-track time against on-track progress.
         "term_oob_max_consecutive": 2,
+        # Inward normal speed (m/s) at geometric wall contact that ends the episode.
+        "wall_impact_term_speed_mps": 4.0,
         "term_speed_threshold": 0.2,
         "term_not_moving_time_s": 2.0,
         "term_not_moving_min_ds": 1e-3,
@@ -269,9 +271,10 @@ DEFAULT_CONFIG = {
         "global_reward_scale": 1.0,
         # Maggiore coefficients. progress (Rcp) and passing (Rps) are distance
         # deltas; collision (Rc), rear_end (Rr) and tyre_slip (Rts) carry the 10 Hz
-        # cadence; oob (Rsoc) is the off-course km/h term. lateral/smoothness are
-        # disabled (retained for backward compat). passing/collision/rear_end are
-        # gated on by the 1v1 trainer (present here as the parity defaults).
+        # cadence; oob (Rsoc) is the off-course km/h term; wall_penalty (Rw) is the
+        # continuous contact term; wall_impact is the one-shot -v_normal^2 hit.
+        # lateral/smoothness are disabled (retained for backward compat).
+        # passing/collision/rear_end are gated on by the 1v1 trainer.
         "reward_scales": {
             "progress": 1.0,
             "passing": 0.5,
@@ -279,17 +282,26 @@ DEFAULT_CONFIG = {
             "rear_end": 0.1,
             "tyre_slip_penalty": 0.25,
             "oob_penalty": 0.01,
+            "wall_penalty": 0.01,
+            "wall_impact": 1.0,
             "lateral": 0.0,
             "smoothness": 0.0,
         },
     },
     "model": {
-        "hidden_layers": [512, 512, 512],
+        # Candidate default for new runs: location-preserving LiDAR CNN actor.
+        # flat_mlp remains available for legacy evaluation / explicit baselines.
+        "actor_type": "lidar_cnn",
+        "actor_hidden_layers": [512, 512, 512],
+        "critic_hidden_layers": [1024, 1024, 1024],
+        "lidar_pool_bins": 32,
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
         "n_step": 7,
         "alpha": 0.01,
-        "replay_buffer_limit": 10**7,
+        # Dual float16 actor/critic replay. Request 2M; trainer falls back to 1M
+        # only on CUDA OOM or insufficient asymmetric-update headroom.
+        "replay_buffer_limit": 2_000_000,
         "batch_size": 1024,
         "minimum_train_transitions": 200_000,
         # With the canonical 512 envs and batch size 1024, the former one update
