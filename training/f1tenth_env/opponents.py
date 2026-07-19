@@ -18,8 +18,6 @@ from typing import Any
 
 import torch
 
-from f1tenth_contract import validate_policy_artifact
-
 from . import runtime as rt
 from .geom import quat_to_xyz
 
@@ -149,9 +147,10 @@ class ScriptedCenterlineOpponent(OpponentController):
 class PolicyOpponent(OpponentController):
     """Frozen sensor-policy opponent for self-play.
 
-    Wraps a ``SquashedGaussianMLPActor`` and (optional) observation-normalization
-    statistics; acts deterministically on the opponent's vehicle-centric sensor
-    observation (1,093-D). Privileged/symmetric snapshots are rejected on load.
+    Wraps a sensor-policy actor (flat MLP or LiDAR CNN) and optional
+    observation-normalization statistics; acts deterministically on the
+    opponent's vehicle-centric sensor observation (1,093-D). Privileged/symmetric
+    snapshots are rejected on load.
     """
 
     requires_observation = True
@@ -447,48 +446,50 @@ def _make_policy_opponent(
     device: torch.device,
 ) -> PolicyOpponent:
     # Imported lazily so the scripted path has no dependency on the RL stack.
-    from qrsac import SquashedGaussianMLPActor
+    from qrsac import make_actor
 
     obs_dim = int(obs_cfg.get("num_actor_obs", obs_cfg["num_obs"]))
     act_dim = int(env_cfg.get("num_actions", 2))
-    hidden = list(env_cfg.get("opponent_hidden_layers", [512, 512, 512]))
-    layout_version = obs_cfg.get("actor_layout_version")
+    actor_type = env_cfg.get("actor_type", "flat_mlp")
+    hidden = list(
+        env_cfg.get(
+            "actor_hidden_layers",
+            env_cfg.get("opponent_hidden_layers", [512, 512, 512]),
+        )
+    )
+    lidar_pool_bins = int(env_cfg.get("lidar_pool_bins", 32))
+    layout_version = int(obs_cfg.get("actor_layout_version", 1))
 
-    actor = SquashedGaussianMLPActor(
+    actor = make_actor(
+        actor_type=actor_type,
         obs_dim=obs_dim,
         act_dim=act_dim,
         hidden_sizes=hidden,
         activation=torch.nn.ReLU,
         act_limit=1.0,
+        lidar_pool_bins=lidar_pool_bins,
     ).to(device=device, dtype=torch.float32)
 
     obs_mean = obs_var = None
     ckpt_path = env_cfg.get("opponent_ckpt")
     if ckpt_path:
+        from standalone_trainer import (
+            actor_architecture_from_module,
+            validate_sensor_policy_artifact,
+        )
+
         payload = torch.load(ckpt_path, map_location=device, weights_only=False)
         if not isinstance(payload, dict):
             raise ValueError("Opponent checkpoint payload must be a dict")
-        payload_obs = payload.get("obs_dim")
-        if payload_obs is None or int(payload_obs) != obs_dim:
-            raise ValueError(
-                f"Opponent checkpoint obs_dim={payload_obs!r}; expected sensor "
-                f"actor dim {obs_dim}. Privileged/symmetric schemas are rejected."
-            )
-        if layout_version is not None:
-            payload_layout = payload.get("actor_layout_version")
-            if payload_layout is None or int(payload_layout) != int(layout_version):
-                raise ValueError(
-                    f"Opponent checkpoint actor_layout_version={payload_layout!r}; "
-                    f"expected {layout_version}."
-                )
-            if "critic_norm" in payload or "critic_obs_norm" in payload:
-                raise ValueError(
-                    "Opponent checkpoint must not include critic normalization."
-                )
-        validate_policy_artifact(
-            payload, expected_obs_dim=obs_dim, expected_action_dim=act_dim
+        expected_architecture = actor_architecture_from_module(actor)
+        validate_sensor_policy_artifact(
+            payload,
+            expected_actor_obs_dim=obs_dim,
+            expected_action_dim=act_dim,
+            expected_layout_version=layout_version,
+            expected_architecture=expected_architecture,
         )
-        actor.load_state_dict(payload["actor"])
+        actor.load_state_dict(payload["actor"], strict=True)
         if "obs_norm" in payload:
             obs_mean = payload["obs_norm"]["mean"].to(dtype=torch.float32)
             obs_var = payload["obs_norm"]["var"].to(dtype=torch.float32)

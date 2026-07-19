@@ -8,8 +8,17 @@ import pytest
 import torch
 import torch.nn as nn
 
-from f1tenth_env.opponents import OpponentContext, PolicyOpponent
-from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
+from config import DEFAULT_CONFIG
+from f1tenth_env.opponents import OpponentContext, PolicyOpponent, make_opponent
+from f1tenth_env.sensors import ACTOR_OBS_DIM
+from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor, make_actor
+from standalone_trainer import (
+    actor_architecture_from_module,
+    architectures_match,
+    build_env_cfg,
+    save_policy_artifact,
+    ObsNormalizer,
+)
 
 DEVICE = torch.device("cpu")
 OBS_DIM = 390
@@ -223,3 +232,59 @@ def test_reduce_overhead_opponent_warmup_allows_trainer_updates():
     losses = trainer.update(batch)
     assert torch.isfinite(losses.policy_loss)
     assert torch.isfinite(losses.critic_loss)
+
+
+def test_make_policy_opponent_cnn_matches_cnn_snapshot(tmp_path):
+    """Regression: policy opponent factory must honor env actor_type for self-play."""
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["model"]["actor_type"] = "lidar_cnn"
+    cfg["model"]["actor_hidden_layers"] = [64, 64]
+    cfg["model"]["lidar_pool_bins"] = 32
+    cfg["env"]["opponent_strategy"] = "policy"
+
+    env_cfg = build_env_cfg(cfg)
+    obs_cfg = cfg["obs"]
+    opponent = make_opponent(env_cfg, obs_cfg, DEVICE)
+    assert isinstance(opponent, PolicyOpponent)
+    assert opponent.actor_architecture["name"] == "lidar_cnn"
+    assert opponent.obs_dim == ACTOR_OBS_DIM
+
+    torch.manual_seed(7)
+    cnn_actor = make_actor(
+        actor_type="lidar_cnn",
+        obs_dim=ACTOR_OBS_DIM,
+        act_dim=ACT_DIM,
+        hidden_sizes=[64, 64],
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=32,
+    )
+    snap_arch = actor_architecture_from_module(cnn_actor)
+    assert architectures_match(opponent.actor_architecture, snap_arch)
+
+    mean = torch.zeros(ACTOR_OBS_DIM)
+    var = torch.ones(ACTOR_OBS_DIM)
+    opponent.load_snapshot(
+        cnn_actor.state_dict(),
+        mean,
+        var,
+        actor_architecture=snap_arch,
+    )
+
+    models = Models(
+        actor=cnn_actor,
+        critic1=QuantileCritic(OBS_DIM, ACT_DIM, [64, 64], 4),
+        critic2=QuantileCritic(OBS_DIM, ACT_DIM, [64, 64], 4),
+        critic1_target=QuantileCritic(OBS_DIM, ACT_DIM, [64, 64], 4),
+        critic2_target=QuantileCritic(OBS_DIM, ACT_DIM, [64, 64], 4),
+    )
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, DEVICE)
+    ckpt = save_policy_artifact(models, 100, tmp_path, normalizer, cfg)
+    bootstrap = make_opponent(
+        {**env_cfg, "opponent_ckpt": str(ckpt)},
+        obs_cfg,
+        DEVICE,
+    )
+    assert isinstance(bootstrap, PolicyOpponent)
+    assert bootstrap.actor_architecture["name"] == "lidar_cnn"
+    assert architectures_match(bootstrap.actor_architecture, snap_arch)
