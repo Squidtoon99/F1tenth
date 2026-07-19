@@ -9,6 +9,7 @@ from config import DEFAULT_CONFIG
 from standalone_trainer import (
     _deep_merge,
     build_config,
+    build_env_cfg,
     build_run_snapshot,
     config_provenance,
     load_config_patch,
@@ -179,3 +180,61 @@ def test_provenance_without_patch_is_recorded():
     assert provenance["patch"] is None
     assert provenance["precedence"] == ["DEFAULT_CONFIG", "config_patch", "cli_args"]
     assert provenance["explicit_cli_args"] == ["seed"]
+
+
+def test_asymmetric_build_config_disables_frenet_obs_latency_noise():
+    """Trainer path zeros generic Frenet obs DR so the critic sees current state."""
+    patch = {
+        "env": {
+            "domain_randomization": {
+                "obs_latency_steps_range": [0, 2],
+                "obs_noise_std_range": [0.01, 0.05],
+            }
+        }
+    }
+    cfg = _resolve([], patch=patch)
+    dr = cfg["env"]["domain_randomization"]
+    assert dr["enabled"] is True
+    assert dr["obs_latency_steps_range"] == [0, 0]
+    assert dr["obs_noise_std_range"] == [0.0, 0.0]
+    assert cfg["obs"]["num_actor_obs"] != cfg["obs"]["num_obs"]
+
+
+def test_build_config_merges_root_sensor_patch():
+    patch = {
+        "sensor": {
+            "num_beams": 541,
+            "beam_decimation": 2,
+            "max_march_steps": 128,
+        }
+    }
+    validate_config_patch(patch)
+    cfg = _resolve([], patch=patch)
+    assert cfg["sensor"]["num_beams"] == 541
+    assert cfg["sensor"]["beam_decimation"] == 2
+    assert cfg["sensor"]["max_march_steps"] == 128
+    # Sensor stays at the root; do not require a duplicated env.sensor block.
+    assert "sensor" not in cfg["env"]
+
+
+def test_build_env_cfg_forwards_root_sensor():
+    patch = {
+        "sensor": {
+            "num_beams": 541,
+            "beam_decimation": 4,
+            "max_march_steps": 64,
+        }
+    }
+    cfg = _resolve([], patch=patch)
+    env_cfg = build_env_cfg(
+        cfg,
+        launch_strategy="uniform_jittered",
+        launch_strategy_data={"num_cars": 8},
+    )
+    assert env_cfg["launch_strategy"] == "uniform_jittered"
+    assert env_cfg["launch_strategy_data"] == {"num_cars": 8}
+    assert env_cfg["track"] == cfg["env"]["track"]
+    assert env_cfg["sensor"] is cfg["sensor"]
+    assert env_cfg["sensor"]["num_beams"] == 541
+    assert env_cfg["sensor"]["beam_decimation"] == 4
+    assert env_cfg["sensor"]["max_march_steps"] == 64

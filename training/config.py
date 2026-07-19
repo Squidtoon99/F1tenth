@@ -6,14 +6,17 @@ bootstrap, S3 parameter server) is intentionally not part of this trainer.
 """
 
 DEFAULT_CONFIG = {
-    "config_version": 2,
-    "policy_format_version": 2,
+    "config_version": 3,
+    "policy_format_version": 3,
     "simulator": {
         "id": "f1tenth-torch",
         "version": 1,
     },
     "obs": {
         "num_obs": 390,
+        # Asymmetric sensor-actor layout (sim-only). Privileged critic stays 390-D.
+        "num_actor_obs": 1093,
+        "actor_layout_version": 1,
         # Observation normalization is now done with empirical running statistics in
         # the trainer (ObsNormalizer), driven by values actually experienced. Keep
         # the env-side fixed scales at 1.0 so near-raw obs reach the normalizer.

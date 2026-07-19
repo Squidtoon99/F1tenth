@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import copy
+
+import pytest
 import torch
 import torch.nn as nn
 
 from f1tenth_env.opponents import OpponentContext, PolicyOpponent
-from qrsac import SquashedGaussianMLPActor
+from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
 DEVICE = torch.device("cpu")
 OBS_DIM = 390
@@ -99,3 +102,124 @@ def test_load_snapshot_applies_obs_norm():
     out = opponent.act(_ctx(obs))
     expected = _reference_action(actor, obs, mean, var)
     assert torch.allclose(out, expected, atol=1e-6)
+
+
+def test_load_snapshot_rejects_mismatched_obs_dim():
+    actor = _make_actor(4)
+    opponent = PolicyOpponent(actor=actor, device=DEVICE)
+    torch.manual_seed(5)
+    wrong = SquashedGaussianMLPActor(
+        obs_dim=OBS_DIM + 1,
+        act_dim=ACT_DIM,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=1.0,
+    )
+    with pytest.raises(ValueError, match="expected"):
+        opponent.load_snapshot(
+            wrong.state_dict(), torch.zeros(OBS_DIM + 1), torch.ones(OBS_DIM + 1)
+        )
+    with pytest.raises(ValueError, match="expected actor obs dim"):
+        opponent.load_snapshot(
+            actor.state_dict(), torch.zeros(OBS_DIM + 1), torch.ones(OBS_DIM + 1)
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_compiled_opponent_reload_accepts_plain_state_dict():
+    """After torch.compile, snapshot keys stay unprefixed (``_orig_mod`` load)."""
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    actor_a = SquashedGaussianMLPActor(
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=1.0,
+    ).to(device)
+    actor_b = SquashedGaussianMLPActor(
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=1.0,
+    ).to(device)
+    opponent = PolicyOpponent(actor=actor_a, device=device)
+    zeros = torch.zeros(OBS_DIM, device=device)
+    ones = torch.ones(OBS_DIM, device=device)
+    opponent.load_snapshot(actor_a.state_dict(), zeros, ones)
+    assert opponent._actor_compiled
+    opponent.load_snapshot(actor_b.state_dict(), zeros, ones)
+    obs = torch.randn(2, OBS_DIM, device=device)
+    out = opponent.act_observation(obs)
+    assert out.shape == (2, ACT_DIM)
+    assert torch.isfinite(out).all()
+    assert not out.is_inference()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_reduce_overhead_opponent_warmup_allows_trainer_updates():
+    """Self-play opponent CUDA graphs must not poison QRSAC reduce-overhead.
+
+    Regression for: RuntimeError: Inplace update to inference tensor outside
+    InferenceMode (first trainer.update after PolicyOpponent reduce-overhead
+    warmup under inference_mode).
+    """
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    actor_dim, critic_dim = 1093, 390
+    batch_size, num_envs = 1024, 512
+
+    actor = SquashedGaussianMLPActor(
+        actor_dim, ACT_DIM, [256, 256], nn.ReLU, 1.0
+    ).to(device)
+    critic = QuantileCritic(critic_dim, ACT_DIM, [256, 256], 32).to(device)
+    models = Models(
+        actor=actor,
+        critic1=critic,
+        critic2=copy.deepcopy(critic),
+        critic1_target=copy.deepcopy(critic),
+        critic2_target=copy.deepcopy(critic),
+    )
+    trainer = QRSACTrainer(
+        models,
+        device,
+        n_step=7,
+        alpha=0.01,
+        compile=True,
+        compile_mode="reduce-overhead",
+    )
+
+    opp_actor = SquashedGaussianMLPActor(
+        actor_dim, ACT_DIM, [256, 256], nn.ReLU, 1.0
+    ).to(device)
+    opp_actor.load_state_dict(
+        {key: value.detach().clone() for key, value in actor.state_dict().items()}
+    )
+    opponent = PolicyOpponent(actor=opp_actor, device=device)
+    zeros = torch.zeros(actor_dim, device=device)
+    ones = torch.ones(actor_dim, device=device)
+    opponent.load_snapshot(opp_actor.state_dict(), zeros, ones)
+    assert opponent._actor_compiled
+
+    obs = torch.randn(num_envs, actor_dim, device=device)
+    for _ in range(20):
+        torch.compiler.cudagraph_mark_step_begin()
+        action = opponent.act_observation(obs)
+        assert not action.is_inference()
+
+    batch = {
+        "actor_obs": torch.randn(batch_size, actor_dim, device=device),
+        "critic_obs": torch.randn(batch_size, critic_dim, device=device),
+        "action": torch.rand(batch_size, ACT_DIM, device=device) * 2.0 - 1.0,
+        "reward": torch.randn(batch_size, device=device),
+        "next_actor_obs": torch.randn(batch_size, actor_dim, device=device),
+        "next_critic_obs": torch.randn(batch_size, critic_dim, device=device),
+        "done": torch.zeros(batch_size, device=device),
+    }
+    losses = trainer.update(batch)
+    assert torch.isfinite(losses.policy_loss)
+    assert torch.isfinite(losses.critic_loss)
+    losses = trainer.update(batch)
+    assert torch.isfinite(losses.policy_loss)
+    assert torch.isfinite(losses.critic_loss)

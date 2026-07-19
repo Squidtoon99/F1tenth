@@ -32,7 +32,8 @@ from f1tenth_env import runtime as rt
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import deterministic_rollout
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
-from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
+from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
+from qrsac.spinningup.core import ALLOWED_LIDAR_POOL_BINS
 
 LOGGER_NAME = "standalone_trainer"
 # Opponent-relative block starts right after the base observation (tyre_load ends
@@ -297,25 +298,79 @@ def setup_trainer_logging(
     return logger
 
 
-def make_policy_network(cfg: dict) -> SquashedGaussianMLPActor:
-    obs_dim = cfg["obs"]["num_obs"]
-    action_dim = cfg["env"]["num_actions"]
-    return SquashedGaussianMLPActor(
-        obs_dim=obs_dim,
-        act_dim=action_dim,
-        hidden_sizes=cfg["model"]["hidden_layers"],
+def validate_model_architecture(cfg: dict) -> None:
+    """Reject unsupported actor types / pool widths before network construction."""
+    model = cfg["model"]
+    if "hidden_layers" in model:
+        raise ValueError(
+            "model.hidden_layers is no longer supported; set both "
+            "model.actor_hidden_layers and model.critic_hidden_layers"
+        )
+    actor_type = model.get("actor_type")
+    if actor_type not in ("flat_mlp", "lidar_cnn"):
+        raise ValueError(
+            f"Unsupported model.actor_type={actor_type!r}; "
+            "expected 'flat_mlp' or 'lidar_cnn'"
+        )
+    pool_bins = model.get("lidar_pool_bins")
+    if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
+        raise ValueError(
+            f"model.lidar_pool_bins must be one of "
+            f"{sorted(ALLOWED_LIDAR_POOL_BINS)}, got {pool_bins!r}"
+        )
+    for key in ("actor_hidden_layers", "critic_hidden_layers"):
+        layers = model.get(key)
+        if not isinstance(layers, (list, tuple)) or not layers:
+            raise ValueError(f"model.{key} must be a non-empty list of ints")
+        if any(int(width) <= 0 for width in layers):
+            raise ValueError(f"model.{key} entries must be positive ints")
+
+
+def migrate_legacy_model_config(cfg: dict) -> dict:
+    """In-memory migration for persisted run configs that only have hidden_layers.
+
+    Used by evaluators opening asymmetric format-2 artifacts. Does not write the
+    migrated config back to disk. New user patches must set the split keys.
+    """
+    model = cfg.get("model")
+    if not isinstance(model, dict) or "hidden_layers" not in model:
+        return cfg
+    if "actor_hidden_layers" in model or "critic_hidden_layers" in model:
+        raise ValueError(
+            "Persisted config mixes model.hidden_layers with "
+            "model.actor_hidden_layers / model.critic_hidden_layers; "
+            "keep only one representation"
+        )
+    hidden = list(model.pop("hidden_layers"))
+    model["actor_type"] = "flat_mlp"
+    model["actor_hidden_layers"] = hidden
+    model["critic_hidden_layers"] = list(hidden)
+    model.setdefault("lidar_pool_bins", 32)
+    return cfg
+
+
+def make_policy_network(cfg: dict):
+    validate_model_architecture(cfg)
+    model = cfg["model"]
+    return make_actor(
+        actor_type=model["actor_type"],
+        obs_dim=cfg["obs"]["num_actor_obs"],
+        act_dim=cfg["env"]["num_actions"],
+        hidden_sizes=model["actor_hidden_layers"],
         activation=nn.ReLU,
         act_limit=1.0,
+        lidar_pool_bins=model["lidar_pool_bins"],
     )
 
 
 def make_q_network(cfg: dict) -> QuantileCritic:
+    validate_model_architecture(cfg)
     obs_dim = cfg["obs"]["num_obs"]
     action_dim = cfg["env"]["num_actions"]
     return QuantileCritic(
         obs_dim=obs_dim,
         act_dim=action_dim,
-        hidden_sizes=cfg["model"]["hidden_layers"],
+        hidden_sizes=cfg["model"]["critic_hidden_layers"],
         num_quantiles=cfg["model"]["num_quantiles"],
     )
 
@@ -958,6 +1013,41 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return base
 
 
+def build_env_cfg(cfg: dict, **extra) -> dict:
+    """Assemble ``env_cfg`` for ``F1tenthEnv``, including root-level ``sensor``.
+
+    Sensor settings live at ``cfg["sensor"]`` (not under ``env``) so JSON patches
+    to ``sensor.*`` merge through ``build_config``. Callers must use this helper
+    (or equivalent) rather than passing ``cfg["env"]`` alone.
+    """
+    return {
+        **extra,
+        **cfg["env"],
+        "sensor": cfg["sensor"],
+    }
+
+
+def build_env_cfg(cfg: dict, **extra) -> dict:
+    """Assemble ``env_cfg`` for ``F1tenthEnv``, including root-level ``sensor``.
+
+    Sensor settings live at ``cfg["sensor"]`` (not under ``env``) so JSON patches
+    to ``sensor.*`` merge through ``build_config``. Callers must use this helper
+    (or equivalent) rather than passing ``cfg["env"]`` alone.
+
+    Actor architecture keys are forwarded so ``PolicyOpponent`` is built with the
+    same concrete actor as the learner (homogeneous self-play).
+    """
+    model = cfg["model"]
+    return {
+        **extra,
+        **cfg["env"],
+        "sensor": cfg["sensor"],
+        "actor_type": model["actor_type"],
+        "actor_hidden_layers": list(model["actor_hidden_layers"]),
+        "lidar_pool_bins": int(model["lidar_pool_bins"]),
+    }
+
+
 # Gated reward-scale coefficients that compute_rewards enables purely by their
 # presence in reward_scales, so they are intentionally absent from DEFAULT_CONFIG
 # (adding them there would activate the term). build_config injects them for 1v1,
@@ -989,6 +1079,11 @@ def validate_config_patch(
     for key, value in patch.items():
         loc = f"{path}.{key}" if path else key
         if key not in reference:
+            if path == "model" and key == "hidden_layers":
+                raise ValueError(
+                    "model.hidden_layers is no longer supported; set both "
+                    "model.actor_hidden_layers and model.critic_hidden_layers"
+                )
             if path == "reward.reward_scales" and key in _OPTIONAL_REWARD_SCALE_KEYS:
                 if isinstance(value, dict):
                     raise ValueError(
@@ -1237,13 +1332,18 @@ def save_policy_artifact(
     normalizer: ObsNormalizer,
     cfg: dict,
 ):
+    """Save actor-only simulation artifact with sensor layout metadata."""
     artifact_dir.mkdir(parents=True, exist_ok=True)
     path = artifact_dir / f"policy_{env_transitions}.pt"
+    actor_obs_dim = int(cfg["obs"]["num_actor_obs"])
     payload = {
         "actor": models.actor.state_dict(),
         "obs_norm": normalizer.state_dict(),
         "env_transitions": env_transitions,
-        "obs_dim": int(cfg["obs"]["num_obs"]),
+        "obs_dim": actor_obs_dim,
+        "actor_obs_dim": actor_obs_dim,
+        "critic_obs_dim": int(cfg["obs"]["num_obs"]),
+        "actor_layout_version": int(cfg["obs"]["actor_layout_version"]),
         "action_dim": int(cfg["env"]["num_actions"]),
         "action_scale": float(cfg["env"]["clip_actions"]),
         "config_version": int(cfg["config_version"]),
@@ -1881,7 +1981,14 @@ def main():
 
     init_transitions = 0
     if args.init_ckpt is not None:
-        init_transitions = load_init_ckpt(models, normalizer, args.init_ckpt, device)
+        init_transitions = load_init_ckpt(
+            models,
+            actor_normalizer,
+            args.init_ckpt,
+            device,
+            expected_layout_version=int(obs_cfg["actor_layout_version"]),
+            expected_critic_obs_dim=int(obs_cfg["num_obs"]),
+        )
 
     selfplay_mgr: SelfPlayManager | None = None
     if args.self_play or args.mixed_opponents:
@@ -2340,7 +2447,7 @@ def main():
                 args.export_interval_transitions,
             ):
                 save_policy_artifact(
-                    models, env_transitions, ckpt_dir, normalizer, cfg
+                    models, env_transitions, ckpt_dir, actor_normalizer, cfg
                 )
 
             if (
@@ -2373,7 +2480,9 @@ def main():
                 except Exception as exc:
                     log.warning("Eval video rollout failed (continuing): %s", exc)
 
-        save_policy_artifact(models, env_transitions, ckpt_dir, normalizer, cfg)
+        save_policy_artifact(
+            models, env_transitions, ckpt_dir, actor_normalizer, cfg
+        )
     finally:
         try:
             env.close()
