@@ -1064,6 +1064,7 @@ def accumulate_step_diagnostics(
         "speed_xy",
         "lateral_error",
         "oob_mask",
+        "wall_contact",
         "progress_ds",
         "lap_count",
         "laps_completed",
@@ -1090,6 +1091,29 @@ def accumulate_step_diagnostics(
                     track_range=name.startswith("dr/"),
                 )
 
+    oob_mask = metrics.get("oob_mask")
+    oob_penalty = terms.get("oob_penalty")
+    if isinstance(oob_mask, torch.Tensor) and isinstance(oob_penalty, torch.Tensor):
+        diag.add_event_mean(
+            "reward_term/oob_penalty_when_oob", oob_penalty, oob_mask > 0
+        )
+    wall_mask = metrics.get("wall_contact")
+    wall_penalty = terms.get("wall_penalty")
+    if isinstance(wall_mask, torch.Tensor) and isinstance(wall_penalty, torch.Tensor):
+        diag.add_total("metric/wall_contact_count", wall_mask)
+        diag.add_event_mean(
+            "reward_term/wall_penalty_when_contact", wall_penalty, wall_mask > 0
+        )
+    wall_impact = terms.get("wall_impact")
+    if isinstance(wall_impact, torch.Tensor):
+        impact_events = wall_impact != 0
+        diag.add_total(
+            "metric/wall_impact_events", impact_events.to(wall_impact.dtype)
+        )
+        diag.add_event_mean(
+            "reward_term/wall_impact_when_event", wall_impact, impact_events
+        )
+
     for name, value in extras.get("termination", {}).items():
         if isinstance(value, torch.Tensor):
             diag.add_total(f"term/{name}", value)
@@ -1098,6 +1122,40 @@ def accumulate_step_diagnostics(
         diag.add_mean("action/throttle", actions[:, 0], track_range=True)
         diag.add_mean("action/steer", actions[:, 1], track_range=True)
     diag.add_mean("obs/abs", obs.abs(), track_range=True)
+
+
+def accumulate_completed_episode_lifespans(
+    diag: RunningStats,
+    completed_episode_steps: torch.Tensor,
+    done: torch.Tensor,
+    control_dt: float,
+) -> None:
+    """Accumulate exact pre-reset lifespans for completed episodes."""
+    lifespan_s = completed_episode_steps.to(torch.float32) * float(control_dt)
+    diag.add_event_mean("episode/lifespan_s", lifespan_s, done)
+
+
+TRAINING_SUMMARY_REWARD_TAIL = (
+    "policy_loss=%.4f critic_loss=%.4f mean_ep_reward=%.4f "
+    "episode_lifespan=%.3fs (n=%d)"
+)
+
+
+def training_summary_reward_tail_args(
+    *,
+    mean_policy_loss: float,
+    mean_critic_loss: float,
+    mean_ep_reward: float,
+    diag: RunningStats,
+    ep_count: int,
+) -> tuple[float, float, float, float, int]:
+    return (
+        mean_policy_loss,
+        mean_critic_loss,
+        mean_ep_reward,
+        diag.mean("episode/lifespan_s"),
+        int(ep_count),
+    )
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -2407,6 +2465,12 @@ def main():
             episode_rewards = episode_rewards * (1.0 - done_f)
 
             accumulate_step_diagnostics(diag, reward, actions, critic_obs, extras)
+            accumulate_completed_episode_lifespans(
+                diag,
+                extras["metrics"]["completed_episode_steps"],
+                done,
+                env.control_dt,
+            )
             diag.add_mean(
                 "obs/norm_abs",
                 actor_normalizer.normalize(actor_obs).abs(),
@@ -2513,7 +2577,7 @@ def main():
                     "ticks=%d transitions=%d replay_inserts=%d buffer=%d/%d (%.1f%%) "
                     "gradient_updates=%d ticks/s=%.1f transitions/s=%.1f "
                     "inserts/s=%.1f sampled_rows/s=%.1f updates/s=%.2f "
-                    "policy_loss=%.4f critic_loss=%.4f mean_ep_reward=%.4f (n=%d)",
+                    + TRAINING_SUMMARY_REWARD_TAIL,
                     vector_ticks,
                     env_transitions,
                     ri,
@@ -2526,11 +2590,13 @@ def main():
                     inserts_per_sec,
                     sampled_rows_per_sec,
                     updates_per_sec,
-                    mean_policy_loss,
-                    mean_critic_loss,
-                    mean_ep_reward,
-                    diag.mean("episode/lifespan_s"),
-                    ep_count,
+                    *training_summary_reward_tail_args(
+                        mean_policy_loss=mean_policy_loss,
+                        mean_critic_loss=mean_critic_loss,
+                        mean_ep_reward=mean_ep_reward,
+                        diag=diag,
+                        ep_count=ep_count,
+                    ),
                 )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps

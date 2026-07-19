@@ -163,6 +163,7 @@ class _EnvironmentStorage:
     _INT_FIELDS = (
         "done_flags",
         "episode_step",
+        "completed_episode_steps",
         "episode_id",
         "lap_count",
         "ego_segment",
@@ -858,6 +859,7 @@ class WarpF1tenthEnv:
                 "lateral_error": tensors["metric_lateral"],
                 "speed_xy": tensors["metric_speed"],
                 "episode_steps": tensors["episode_step"],
+                "completed_episode_steps": tensors["completed_episode_steps"],
                 "lap_count": tensors["lap_count"],
                 "laps_completed": tensors["lap_cross"],
                 "opp_speed": tensors["metric_opponent_speed"],

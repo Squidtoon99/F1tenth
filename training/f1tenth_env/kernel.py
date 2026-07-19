@@ -453,6 +453,7 @@ class EnvBuffers:
     term_collision: wp.array(dtype=wp.bool)
     term_wall_impact: wp.array(dtype=wp.bool)
     episode_step: wp.array(dtype=wp.int32)
+    completed_episode_steps: wp.array(dtype=wp.int32)
     episode_id: wp.array(dtype=wp.int32)
     lap_count: wp.array(dtype=wp.int32)
     lap_cross: wp.array(dtype=wp.float32)
@@ -1479,6 +1480,9 @@ def store_reward(
     env.term_invalid[env_id] = (result.done_flags & 8) != 0
     env.term_collision[env_id] = (result.done_flags & 16) != 0
     env.term_wall_impact[env_id] = (result.done_flags & 32) != 0
+    env.completed_episode_steps[env_id] = 0
+    if result.done:
+        env.completed_episode_steps[env_id] = env.episode_step[env_id]
 
 
 @wp.kernel(enable_backward=False)
