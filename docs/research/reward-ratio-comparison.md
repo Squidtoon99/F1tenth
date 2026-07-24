@@ -151,6 +151,11 @@ Torch mirror: `training/f1tenth_env/rewards.py` (parity tests; **OOB uses Sophy 
 | `overtake` | gated bonus | **Not in either paper** |
 | `global_reward_scale` | **1.0** | — |
 
+**Current Lee sensor default (ADR 0015):** `reward_scales.steering_change=0.5`
+(Lee \(\lambda^s\)) and `steering_history=0.5` (progress-normalized
+\(\approx 0.1\times\) Lee \(\lambda^h=5.0\)); formula and \(c^{s,o,d}\) unchanged.
+Resolved run snapshots that froze `5.0` keep that value.
+
 **OOB / termination semantics (stricter than papers):** `oob_margin_m=0.15` footprint-aware off-track signal; `term_oob_max_consecutive=3`; `oob_impact` on OOB termination; `collision_term_speed_mps=4.0`.
 
 ### 5.3 `darktoaster_warp_ro_8192` (symmetric-era run)

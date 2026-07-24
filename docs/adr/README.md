@@ -38,3 +38,5 @@ trade-off. Routine work is captured by the PR instead (see
   termination with one linear-speed Lee barrier reward.
 - [0014](0014-paper-literal-wall-event-scale.md) — Paper-literal wall-event
   reward without control-period scaling.
+- [0015](0015-progress-normalized-steering-history.md) — Progress-normalize
+  default `steering_history` to 0.5 (\(\approx 0.1\times\) Lee \(\lambda^h\)).

@@ -96,7 +96,7 @@ def test_default_steering_reward_scales_and_constants():
     reward = DEFAULT_CONFIG["reward"]
     scales = reward["reward_scales"]
     assert scales["steering_change"] == 0.5
-    assert scales["steering_history"] == 5.0
+    assert scales["steering_history"] == 0.5
     assert reward["wall_contact_coefficient"] == 20.0
     assert "oob_penalty" not in scales
     assert "oob_impact" not in scales
