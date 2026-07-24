@@ -9,8 +9,8 @@
 drive:
   ros__parameters:
     max_steer: 0.33
-    watchdog_timeout_s: 0.15
-    control_dt: 0.05
+    watchdog_timeout_s: 0.30
+    control_dt: 0.10
 
 # --- Current/brake VESC actuator (ADR 0006) ---
 vesc_actuator:
@@ -30,10 +30,79 @@ policy_inference:
   ros__parameters:
     device: "cpu"
 
+# --- Sensor-policy experiment (sensor_policy.launch.py; not used by race.launch) ---
+# First-run current limits are launch args (default 5 A) so the ackermann
+# vesc_actuator block above stays unchanged for the legacy 390-D path.
+sensor_racer:
+  ros__parameters:
+    device: "cpu"
+    deterministic: true
+    control_hz: 10.0
+    i_drive_max_a: 5.0
+    i_brake_max_a: 5.0
+    sensor_max_age_s: 0.15
+    twist_vx_sign: -1.0
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453292519943295
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_az_sign: 1.0
+    imu_gx_sign: 1.0
+    imu_gy_sign: 1.0
+    imu_gz_sign: 1.0
+    imu_ax_bias: -0.02114
+    imu_ay_bias: 0.07107
+    imu_az_bias: 0.0
+    imu_gx_bias: 0.0
+    imu_gy_bias: 0.0
+    imu_gz_bias: 0.0
+    recording_mode: false
+    publish_raw_observation: false
+    require_checkpoint: true
+
+rl_current_gate:
+  ros__parameters:
+    i_drive_max_a: 5.0
+    i_brake_max_a: 5.0
+    i_brake_safe_a: 5.0
+    publish_rate_hz: 50.0
+    max_steer: 0.33
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
+
+# Legacy overlay alias; launch uses node name sensor_racer.
+sensor_policy:
+  ros__parameters:
+    device: "cpu"
+    deterministic: true
+    control_hz: 10.0
+    i_drive_max_a: 5.0
+    i_brake_max_a: 5.0
+    sensor_max_age_s: 0.15
+    twist_vx_sign: -1.0
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453292519943295
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_az_sign: 1.0
+    imu_gx_sign: 1.0
+    imu_gy_sign: 1.0
+    imu_gz_sign: 1.0
+    # Static IMU bias from static_imu bag (raw g / deg/s before unit scale).
+    imu_ax_bias: -0.02114
+    imu_ay_bias: 0.07107
+    imu_az_bias: 0.0
+    imu_gx_bias: 0.0
+    imu_gy_bias: 0.0
+    imu_gz_bias: 0.0
+    recording_mode: false
+    publish_raw_observation: false
+    require_checkpoint: true
+
 # --- RL observation builder (f1tenth_rl_vehicle vehicle_obs node) ---
 vehicle_obs:
   ros__parameters:
-    num_obs: 390
+    num_obs: 392
     enable_opponent_obs: true
     zero_opponent_obs: true
     enable_load_estimation: true

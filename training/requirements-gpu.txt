@@ -8,6 +8,7 @@
 
 # Shared observation/action contract, installed EDITABLE.
 -e ../libs/f1tenth_contract
+-e ../libs/f1tenth_policy
 
 # Core ML stack (CUDA build).
 torch==2.10.0

@@ -1,5 +1,4 @@
-"""Shared deterministic policy rollout for training and evaluation tools."""
-
+"""Shared deterministic policy rollout helpers."""
 from __future__ import annotations
 
 import random
@@ -25,27 +24,14 @@ def _actor_obs_from_env(obs, *, with_sensors: bool) -> torch.Tensor:
     return obs.to(torch.float32)
 
 
-def flat_architecture_from_state_dict(
-    actor_sd: dict, *, obs_dim: int, action_dim: int
-) -> dict:
-    """Infer a format-2 flat_mlp architecture from Linear weight shapes."""
-    hidden = []
-    idx = 0
-    while f"net.{idx}.weight" in actor_sd:
-        hidden.append(int(actor_sd[f"net.{idx}.weight"].shape[0]))
-        idx += 2
-    if not hidden:
-        raise ValueError(
-            "Cannot infer flat_mlp hidden layers from actor state_dict"
-        )
-    return {
-        "name": "flat_mlp",
-        "version": 1,
-        "obs_dim": int(obs_dim),
-        "hidden_layers": hidden,
-        "activation": "relu",
-        "action_dim": int(action_dim),
-    }
+def actor_is_recurrent(actor) -> bool:
+    """True when ``actor`` exposes a GRU step API (lidar_cnn_gru)."""
+    raw = getattr(actor, "_orig_mod", actor)
+    return (
+        hasattr(raw, "step")
+        and hasattr(raw, "initial_hidden")
+        and hasattr(raw, "gru_hidden_dim")
+    )
 
 
 def resolve_actor_architecture_from_payload(payload: dict) -> dict:
@@ -56,27 +42,9 @@ def resolve_actor_architecture_from_payload(payload: dict) -> dict:
     if isinstance(arch, dict):
         return normalize_actor_architecture(arch)
     version = int(payload.get("policy_format_version", 0))
-    if version >= 3:
-        raise ValueError(
-            "Format-3 sensor policy artifact is missing actor_architecture metadata."
-        )
-    actor = payload.get("actor")
-    if not isinstance(actor, dict):
-        raise ValueError("Sensor policy artifact is missing the actor state_dict.")
-    if any(key.startswith("encoder.") for key in actor):
-        raise ValueError(
-            "CNN actor weights require format-3 actor_architecture metadata; "
-            "there is no format-2 CNN compatibility path."
-        )
-    obs_dim = payload.get("actor_obs_dim", payload.get("obs_dim"))
-    action_dim = payload.get("action_dim", 2)
-    if obs_dim is None:
-        raise ValueError(
-            "Sensor policy artifact is missing actor_obs_dim/obs_dim for "
-            "flat format-2 architecture inference."
-        )
-    return flat_architecture_from_state_dict(
-        actor, obs_dim=int(obs_dim), action_dim=int(action_dim)
+    raise ValueError(
+        "Sensor policy artifact is missing actor_architecture metadata "
+        f"(policy_format_version={version})."
     )
 
 
@@ -161,6 +129,8 @@ def deterministic_rollout(
     total_reward = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     done_count = 0
     finite = True
+    recurrent = actor_is_recurrent(actor)
+    hidden = None
 
     try:
         with torch.random.fork_rng(devices=devices):
@@ -168,14 +138,28 @@ def deterministic_rollout(
             torch.manual_seed(seed)
             raw_obs, _ = env.reset(seed=seed, with_sensors=with_sensors)
             obs = _actor_obs_from_env(raw_obs, with_sensors=with_sensors)
+            if recurrent:
+                hidden = actor.initial_hidden(
+                    env.num_envs, device=obs.device, dtype=torch.float32
+                )
             with torch.no_grad():
                 for step in range(num_steps):
                     state_before = (
                         env.read_state() if capture_state_before else None
                     )
-                    actions, _ = actor(
-                        normalize(obs), deterministic=True, with_logprob=False
-                    )
+                    model_obs = normalize(obs)
+                    if recurrent:
+                        actions, _, hidden = actor.step(
+                            model_obs,
+                            hidden,
+                            reset_mask=None,
+                            deterministic=True,
+                            with_logprob=False,
+                        )
+                    else:
+                        actions, _ = actor(
+                            model_obs, deterministic=True, with_logprob=False
+                        )
                     actions = actions.clamp(-clip_actions, clip_actions)
                     raw_obs, reward, done, extras = env.step(
                         actions.to(rt.tc_float),
@@ -183,6 +167,10 @@ def deterministic_rollout(
                         with_sensors=with_sensors,
                     )
                     obs = _actor_obs_from_env(raw_obs, with_sensors=with_sensors)
+                    if recurrent and hidden is not None:
+                        done_b = done.to(device=hidden.device, dtype=torch.bool)
+                        if done_b.any():
+                            hidden[done_b] = 0
                     total_reward += reward.to(torch.float32)
                     done_count += int(done.sum().item())
                     finite = finite and bool(

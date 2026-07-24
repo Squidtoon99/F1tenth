@@ -25,33 +25,42 @@ The modules are top-level (imported as `config`, `run_layout`, `standalone_train
 
 ## Setup
 
-The observation/action layout is documented by the shared contract, installed
-editable so format changes need no rebuild/reinstall:
+The observation/action layout is documented by the shared contract, and the Lee
+sensor actor/layout/artifact helpers live in `libs/f1tenth_policy`. Both are
+installed editable so source changes are picked up immediately:
 
 ```bash
 cd training
 
 # macOS (Apple Silicon) — the local dev/test target:
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-mac.txt        # includes: -e ../libs/f1tenth_contract
+pip install -r requirements-mac.txt
+# includes: -e ../libs/f1tenth_contract and -e ../libs/f1tenth_policy
 
 # Linux + NVIDIA GPU (HPC / training rig):
 pip install -r requirements-gpu.txt \
     --extra-index-url https://download.pytorch.org/whl/cu130
 ```
 
+Default config is the sole Lee sensor path (delta steering, termination at the
+first mapped-wall intersection of the projected footprint, and one
+`-20 * speed_mps` contact-event reward, with 10% stationary resets).
+Fixed opponents use `fixed_opponents.entries` with a once-at-startup weighted
+champion and a 50/50 centerline/champion episode mix.
+
 ## Run
 
 ```bash
 cd training
-python standalone_trainer.py --num-envs 512 --total-transitions 256000000
+python standalone_trainer.py --num-envs 1024 --total-transitions 256000000
 ```
 
 ### Warp physics
 
 ```bash
 # GPU training uses float32 Warp kernels and zero-copy PyTorch interoperability.
-python standalone_trainer.py --device cuda --precision 32 --num-envs 4096
+# Reward/model/schedule knobs belong in a --config JSON patch, not the CLI.
+python standalone_trainer.py --device cuda --num-envs 1024 --config my_run.json
 ```
 
 Training domain randomization is always enabled. Evaluation and deterministic
@@ -65,8 +74,10 @@ replay rows per collected transition, preserving the former 512-env,
 
 Policy exports under `outputs/runs/<id>/checkpoints/` are compact artifacts. They
 retain the required `actor` and `obs_norm` keys plus transition count, dimensions,
-action scaling, and format version; critic and optimizer state are not persisted,
-and runs do not resume.
+action scaling/semantics, and format version; critic and optimizer state are not
+persisted, and runs do not resume. The Lee sensor experiment uses normalized
+steering deltas of at most `pi/60` rad per 10 Hz decision; replay keeps those
+normalized deltas while sensor history and steering rewards use realized angles.
 
 ### Eval visualization (live + mp4)
 
@@ -94,7 +105,7 @@ During training you can also emit periodic eval videos (rendered on a separate
 1-env instance, logged to W&B; add `--eval-video-live` to also stream to Rerun):
 
 ```bash
-python standalone_trainer.py --num-envs 4096 \
+python standalone_trainer.py --num-envs 1024 \
     --eval-interval-transitions 20480000 --eval-video-steps 600 \
     --eval-video-num-envs 16
 ```

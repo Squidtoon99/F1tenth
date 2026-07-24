@@ -26,30 +26,23 @@ def _accumulate_once(diag: RunningStats, extras: dict, *, num_envs: int = 4) -> 
     )
 
 
-def test_accumulate_step_diagnostics_wall_and_oob_events():
+def test_accumulate_step_diagnostics_wall_contact_events():
     diag = RunningStats()
     extras = {
         "rewards": {
             "terms": {
-                "oob_penalty": torch.tensor([-0.1, 0.0, -0.2, 0.0]),
-                "wall_penalty": torch.tensor([-0.01, -0.05, 0.0, -0.02]),
-                "wall_impact": torch.tensor([0.0, -25.0, 0.0, 0.0]),
+                "wall_contact": torch.tensor([0.0, -4.0, 0.0, 0.0]),
             }
         },
         "metrics": {
-            "oob_mask": torch.tensor([1.0, 0.0, 1.0, 0.0]),
-            "wall_contact": torch.tensor([0.0, 1.0, 0.0, 1.0]),
+            "wall_contact": torch.tensor([1.0, 1.0, 0.0, 0.0]),
         },
         "termination": {},
     }
     _accumulate_once(diag, extras)
 
-    assert diag.total("metric/wall_contact_count") == 2.0
-    assert diag.total("metric/wall_impact_events") == 1.0
-    assert diag.mean("metric/wall_contact") == pytest.approx(0.5)
-    assert diag.mean("reward_term/oob_penalty_when_oob") == pytest.approx(-0.15)
-    assert diag.mean("reward_term/wall_penalty_when_contact") == pytest.approx(-0.035)
-    assert diag.mean("reward_term/wall_impact_when_event") == pytest.approx(-25.0)
+    assert diag.total("metric/wall_contact_events") == 2.0
+    assert diag.mean("reward_term/wall_contact_when_event") == pytest.approx(-2.0)
 
 
 def test_accumulate_step_diagnostics_zero_events_yields_zero_counts_and_nan_means():
@@ -57,25 +50,18 @@ def test_accumulate_step_diagnostics_zero_events_yields_zero_counts_and_nan_mean
     extras = {
         "rewards": {
             "terms": {
-                "oob_penalty": torch.zeros(2),
-                "wall_penalty": torch.zeros(2),
-                "wall_impact": torch.zeros(2),
+                "wall_contact": torch.zeros(2),
             }
         },
         "metrics": {
-            "oob_mask": torch.zeros(2),
             "wall_contact": torch.zeros(2),
         },
         "termination": {},
     }
     _accumulate_once(diag, extras, num_envs=2)
 
-    assert diag.total("metric/wall_contact_count") == 0.0
-    assert diag.total("metric/wall_impact_events") == 0.0
-    assert diag.mean("metric/wall_contact") == pytest.approx(0.0)
-    assert math.isnan(diag.mean("reward_term/oob_penalty_when_oob"))
-    assert math.isnan(diag.mean("reward_term/wall_penalty_when_contact"))
-    assert math.isnan(diag.mean("reward_term/wall_impact_when_event"))
+    assert diag.total("metric/wall_contact_events") == 0.0
+    assert math.isnan(diag.mean("reward_term/wall_contact_when_event"))
 
 
 def test_completed_episode_lifespan_accumulates_exact_reset_safe_seconds():

@@ -31,6 +31,7 @@ setup(
             "safety = f1tenth_control.safety:main",
             "rl_deadman_gate = f1tenth_control.rl_deadman_gate_node:main",
             "vesc_actuator = f1tenth_control.vesc_actuator_node:main",
+            "rl_current_gate = f1tenth_control.rl_current_gate_node:main",
         ],
     },
 )

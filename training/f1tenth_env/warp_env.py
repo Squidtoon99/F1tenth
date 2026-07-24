@@ -13,6 +13,7 @@ from f1tenth_sim.params import VehicleParams
 from . import runtime as rt
 from .kernel import (
     ACTION_HISTORY,
+    STEER_HISTORY,
     OBS_DIM,
     CorridorDistanceField,
     EnvBuffers,
@@ -110,18 +111,15 @@ class _EnvironmentStorage:
     _FLOAT_FIELDS = (
         "reward",
         "reward_progress",
-        "reward_lateral",
-        "reward_oob",
-        "reward_wall",
-        "reward_wall_impact",
-        "reward_slip",
-        "reward_smoothness",
+        "reward_wall_contact",
+        "reward_steering_change",
+        "reward_steering_history",
         "reward_passing",
         "reward_collision",
         "reward_rear_end",
-        "reward_overtake",
         "prev_s",
         "prev_opponent_s",
+        "prev_steer_delta",
         "opponent_target_speed",
         "opponent_lateral_offset",
         "opponent_speed_cap",
@@ -150,7 +148,6 @@ class _EnvironmentStorage:
         "terminal_y",
         "terminal_s",
         "metric_progress",
-        "metric_oob",
         "metric_wall",
         "metric_boundary",
         "metric_lateral",
@@ -168,11 +165,8 @@ class _EnvironmentStorage:
         "lap_count",
         "ego_segment",
         "opponent_segment",
-        "prev_off_track",
-        "prev_wall_contact",
         "prev_opponent_ahead",
         "prev_opponent_in_window",
-        "oob_streak",
         "stopped_streak",
         "action_head",
         "action_latency",
@@ -188,7 +182,6 @@ class _EnvironmentStorage:
         "term_stopped",
         "term_invalid",
         "term_collision",
-        "term_wall_impact",
     )
 
     def __init__(self, num_envs: int, device: torch.device):
@@ -224,6 +217,24 @@ class _EnvironmentStorage:
             device=device,
             dtype=torch.float32,
         )
+        self.tensor["executed_longitudinal_history"] = torch.zeros(
+            num_envs, 2, device=device, dtype=torch.float32
+        )
+        self.tensor["opponent_executed_longitudinal_history"] = torch.zeros(
+            num_envs, 2, device=device, dtype=torch.float32
+        )
+        self.tensor["executed_steer_history"] = torch.zeros(
+            num_envs,
+            STEER_HISTORY,
+            device=device,
+            dtype=torch.float32,
+        )
+        self.tensor["opponent_executed_steer_history"] = torch.zeros(
+            num_envs,
+            STEER_HISTORY,
+            device=device,
+            dtype=torch.float32,
+        )
 
         self.buffers = EnvBuffers()
         vector_fields = {
@@ -250,6 +261,10 @@ class _EnvironmentStorage:
             "opponent_segment",
             "episode_step",
             "action_history",
+            "executed_longitudinal_history",
+            "opponent_executed_longitudinal_history",
+            "executed_steer_history",
+            "opponent_executed_steer_history",
             "action_head",
             "action_latency",
             "opponent_mode",
@@ -348,11 +363,11 @@ class WarpF1tenthEnv:
         if self.device.type not in ("cpu", "cuda"):
             raise ValueError("Warp environment supports CPU and CUDA devices")
         if int(obs_cfg["num_obs"]) != OBS_DIM:
-            raise ValueError("Warp environment requires the fixed 390-d observation")
+            raise ValueError("Warp environment requires the fixed 392-d observation")
         self.dt = float(env_cfg.get("sim_dt", 0.005))
-        self.control_interval = int(env_cfg.get("control_interval", 10))
-        if self.dt != 0.005 or self.control_interval != 10:
-            raise ValueError("Warp kernel requires sim_dt=0.005 and control_interval=10")
+        self.control_interval = int(env_cfg.get("control_interval", 20))
+        if self.dt != 0.005 or self.control_interval != 20:
+            raise ValueError("Warp kernel requires sim_dt=0.005 and control_interval=20")
         self.control_dt = self.dt * self.control_interval
         self.step_launch_count = 3
         self.max_episode_steps = int(
@@ -532,7 +547,6 @@ class WarpF1tenthEnv:
         native_beams = int(sensor.get("num_beams", 1081))
         if native_beams < 2:
             raise ValueError("sensor.num_beams must be at least 2")
-        # Decimate by widening angular step while preserving FOV endpoints.
         num_beams = (native_beams - 1) // decimation + 1
         params = SensorParams()
         params.num_beams = num_beams
@@ -562,9 +576,6 @@ class WarpF1tenthEnv:
         params.opponent_behind = float(
             self.obs_cfg.get("opp_obs_behind_m", 20.0)
         )
-        params.zero_tyre_slip = int(
-            self.obs_cfg.get("zero_tyre_slip_obs", False)
-        )
         params.contact_margin = float(
             self.obs_cfg.get("contact_margin_m", 0.08)
         )
@@ -572,8 +583,6 @@ class WarpF1tenthEnv:
 
     def _build_reward_params(self):
         scales = self.reward_cfg.get("reward_scales", {})
-        # Sophy reward rate is 10 Hz; convert per-step state/event terms to that
-        # rate. At the 20 Hz control cadence this is 0.5.
         cadence = self.control_dt / 0.1
         params = RewardParams()
         progress_scale = float(scales.get("progress", 0.0))
@@ -582,34 +591,24 @@ class WarpF1tenthEnv:
         params.progress_max_lateral = float(
             self.reward_cfg.get("progress_max_lateral_m", 1.0)
         )
-        params.lateral = float(
-            self.reward_cfg.get("lateral_k", 0.5)
-        ) * float(scales.get("lateral", 0.0))
-        params.oob = (
-            float(scales.get("oob_penalty", 0.0))
-            * self.control_dt
-            * (3.6 * 3.6)
+        params.wall_contact_coefficient = float(
+            self.reward_cfg["wall_contact_coefficient"]
         )
-        params.oob_margin = float(
-            self.reward_cfg.get("oob_margin_m", 0.2)
+        params.control_dt = self.control_dt
+        params.steering_change = float(scales.get("steering_change", 0.0))
+        params.steering_history = float(scales.get("steering_history", 0.0))
+        params.max_steer = float(
+            self.env_cfg.get("delta_max", self.env_cfg.get("max_steer", 0.33))
         )
-        params.wall = (
-            float(scales.get("wall_penalty", 0.0))
-            * self.control_dt
-            * (3.6 * 3.6)
+        params.steering_c_s = float(
+            self.reward_cfg.get("steering_history_c_s", 182.883569)
         )
-        params.wall_impact = float(scales.get("wall_impact", 0.0))
-        params.slip = float(scales.get("tyre_slip_penalty", 0.0)) * cadence
-        params.slip_angle_weight = float(
-            self.reward_cfg.get("slip_angle_weight", 1.0)
+        params.steering_c_o = float(
+            self.reward_cfg.get("steering_history_c_o", 0.034)
         )
-        params.slip_ratio_deadzone = float(
-            self.reward_cfg.get("slip_deadzone_ratio", 0.0)
+        params.steering_c_d = float(
+            self.reward_cfg.get("steering_history_c_d", 0.014)
         )
-        params.slip_angle_deadzone = float(
-            self.reward_cfg.get("slip_deadzone_angle", 0.0)
-        )
-        params.smoothness = float(scales.get("smoothness", 0.0))
         params.passing = float(scales.get("passing", 0.0))
         params.passing_ahead = float(
             self.reward_cfg.get("passing_gate_ahead_m", 40.0)
@@ -619,12 +618,7 @@ class WarpF1tenthEnv:
         )
         params.collision = float(scales.get("collision", 0.0)) * cadence
         params.rear_end = float(scales.get("rear_end", 0.0)) * cadence
-        params.overtake = float(
-            self.reward_cfg.get("overtake_bonus_k", 1.0)
-        ) * float(scales.get("overtake", 0.0))
-        params.overtake_gap = float(
-            self.reward_cfg.get("overtake_gap_m", 5.0)
-        )
+        params.rear_end_any_contact = 1
         params.global_scale = float(
             self.reward_cfg.get("global_reward_scale", 1.0)
         )
@@ -633,12 +627,15 @@ class WarpF1tenthEnv:
     def _build_termination_params(self):
         params = TerminationParams()
         params.maximum_episode_steps = self.max_episode_steps
-        params.maximum_oob_steps = int(
-            self.env_cfg.get("term_oob_max_consecutive", 2)
-        )
         params.maximum_stopped_steps = int(
             round(
                 float(self.env_cfg.get("term_not_moving_time_s", 2.0))
+                / self.control_dt
+            )
+        )
+        params.minimum_stopped_step = int(
+            round(
+                float(self.env_cfg.get("stationary_startup_grace_s", 0.0))
                 / self.control_dt
             )
         )
@@ -656,12 +653,6 @@ class WarpF1tenthEnv:
         )
         params.terminate_on_collision = int(
             self.env_cfg.get("term_on_collision", True)
-        )
-        params.oob_margin = float(
-            self.env_cfg.get("term_oob_margin_m", 0.15)
-        )
-        params.wall_impact_speed = float(
-            self.env_cfg.get("wall_impact_term_speed_mps", 4.0)
         )
         return params
 
@@ -687,6 +678,11 @@ class WarpF1tenthEnv:
         params.speed_max = float(
             self.env_cfg.get("reset_speed_max_mps", 4.0)
         )
+        params.stationary_probability = float(
+            self.env_cfg.get("reset_stationary_probability", 0.0)
+        )
+        if not 0.0 <= params.stationary_probability <= 1.0:
+            raise ValueError("reset_stationary_probability must be in [0, 1]")
         params.opponent_gap_min = float(
             self.env_cfg.get("opponent_spawn_gap_min_m", 3.0)
         )
@@ -829,16 +825,12 @@ class WarpF1tenthEnv:
                 "total": tensors["reward"],
                 "terms": {
                     "progress": tensors["reward_progress"],
-                    "lateral": tensors["reward_lateral"],
-                    "oob_penalty": tensors["reward_oob"],
-                    "wall_penalty": tensors["reward_wall"],
-                    "wall_impact": tensors["reward_wall_impact"],
-                    "tyre_slip_penalty": tensors["reward_slip"],
-                    "smoothness": tensors["reward_smoothness"],
+                    "wall_contact": tensors["reward_wall_contact"],
+                    "steering_change": tensors["reward_steering_change"],
+                    "steering_history": tensors["reward_steering_history"],
                     "passing": tensors["reward_passing"],
                     "collision": tensors["reward_collision"],
                     "rear_end": tensors["reward_rear_end"],
-                    "overtake": tensors["reward_overtake"],
                 },
             },
             "termination": {
@@ -847,13 +839,11 @@ class WarpF1tenthEnv:
                 "not_moving": tensors["term_stopped"],
                 "invalid_state": tensors["term_invalid"],
                 "collision": tensors["term_collision"],
-                "wall_impact": tensors["term_wall_impact"],
             },
             "time_outs": tensors["term_timeout"],
             "metrics": {
                 "progress_ds": tensors["metric_progress"],
                 "s": tensors["prev_s"],
-                "oob_mask": tensors["metric_oob"],
                 "wall_contact": tensors["metric_wall"],
                 "boundary_dist": tensors["metric_boundary"],
                 "lateral_error": tensors["metric_lateral"],
@@ -909,12 +899,35 @@ class WarpF1tenthEnv:
         self._policy_prefetch_pending = False
         self._policy_actions_valid = True
 
-    def _fill_policy_actions(self, observation: torch.Tensor) -> None:
-        """Write deterministic opponent actions for ``observation`` into the buffer."""
+    def _fill_policy_actions(
+        self, observation: torch.Tensor, row_mask: torch.Tensor | None = None
+    ) -> None:
+        """Write deterministic opponent actions for ``observation`` into the buffer.
+
+        When ``row_mask`` is set, only masked rows update the action buffer and GRU
+        carry; unmasked rows keep their prior hidden state and buffered actions.
+        """
         self._wait_policy_prefetch()
-        self._policy_opponent_actions.copy_(
-            self._policy_opponent.act_observation(observation)
-        )
+        opp = self._policy_opponent
+        assert opp is not None
+        mask_b = None if row_mask is None else row_mask.to(dtype=torch.bool)
+        if mask_b is not None and not bool(mask_b.any()):
+            self._policy_actions_valid = True
+            return
+        saved_hidden = None
+        if (
+            mask_b is not None
+            and not bool(mask_b.all())
+            and getattr(opp, "_recurrent", False)
+        ):
+            opp._ensure_hidden(observation.shape[0])
+            saved_hidden = opp._hidden[~mask_b].clone()
+        actions = opp.act_observation(observation)
+        if saved_hidden is not None:
+            opp._hidden[~mask_b] = saved_hidden
+            self._policy_opponent_actions[mask_b] = actions[mask_b]
+        else:
+            self._policy_opponent_actions.copy_(actions)
         self._policy_actions_valid = True
 
     def _schedule_policy_prefetch(self, observation: torch.Tensor) -> None:
@@ -940,9 +953,7 @@ class WarpF1tenthEnv:
     def _policy_actions(self):
         if self._policy_opponent is None:
             return self._policy_opponent_actions
-        # Causal: act on the prior step's opponent-centric sensor observation.
         # Prefer a buffer filled by reset/refresh or by prefetch overlapped with the
-        # previous observation stage; compute synchronously only on a cold start.
         self._wait_policy_prefetch()
         if not self._policy_actions_valid:
             self._fill_policy_actions(self.opponent_actor_obs_buf)
@@ -1088,6 +1099,8 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        if self._policy_opponent is not None:
+            self._policy_opponent.reset(self._reset_mask)
         if with_sensors:
             self._render_actor_observations(self._active_obs)
             self.actor_obs_buf = self._actor_obs[self._active_obs]
@@ -1100,7 +1113,9 @@ class WarpF1tenthEnv:
                     self.opponent_actor_obs_buf
                 )
                 if self._policy_opponent is not None:
-                    self._fill_policy_actions(self.opponent_actor_obs_buf)
+                    self._fill_policy_actions(
+                        self.opponent_actor_obs_buf, row_mask=self._reset_mask
+                    )
             return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
@@ -1187,6 +1202,8 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        if self._policy_opponent is not None:
+            self._policy_opponent.reset(self._reset_mask)
         if with_sensors:
             self._render_actor_observations(self._active_obs)
             self.actor_obs_buf = self._actor_obs[self._active_obs]
@@ -1199,13 +1216,18 @@ class WarpF1tenthEnv:
                     self.opponent_actor_obs_buf
                 )
                 if self._policy_opponent is not None:
-                    self._fill_policy_actions(self.opponent_actor_obs_buf)
+                    self._fill_policy_actions(
+                        self.opponent_actor_obs_buf, row_mask=self._reset_mask
+                    )
             return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
-    def step(self, actions, n_steps=10, with_sensors=False):
+    def step(self, actions, n_steps=20, with_sensors=False):
         if int(n_steps) != self.control_interval:
-            raise ValueError("Warp environment requires n_steps=control_interval=10")
+            raise ValueError(
+                f"Warp environment requires n_steps=control_interval="
+                f"{self.control_interval}"
+            )
         incoming = actions.to(device=self.device, dtype=torch.float32).contiguous()
         if incoming.shape != (self.num_envs, 2):
             raise ValueError(
@@ -1263,17 +1285,18 @@ class WarpF1tenthEnv:
             device=self.wp_device,
             stream=self._stream(),
         )
-        # Actor sensors pack post-transaction state before action-history advance.
         sensor_launches = 0
         if with_sensors:
             sensor_launches = self._render_actor_observations(inactive)
-        # Prefetch next opponent action from the sensors just written so it can
         # overlap the privileged observation stage on a side CUDA stream.
         if (
             with_sensors
             and self._policy_opponent is not None
             and self._should_render_opponent_actor()
         ):
+            # Auto-reset rows keep done=True this tick; zero their GRU before
+            # acting on the post-reset opponent sensor observation.
+            self._policy_opponent.reset(self.reset_buf)
             self._schedule_policy_prefetch(self._opponent_actor_obs[inactive])
         wp.launch(
             observation_stage_kernel,
@@ -1325,7 +1348,7 @@ class WarpF1tenthEnv:
             raise ValueError(
                 f"Opponent snapshot normalizer dim mean={mean.numel()} "
                 f"var={var.numel()}; expected sensor actor dim {expected}. "
-                "Privileged/symmetric (e.g. 390-D) snapshots are rejected."
+                "Privileged/symmetric (e.g. 392-D) snapshots are rejected."
             )
         self._wait_policy_prefetch()
         self._policy_opponent.load_snapshot(
@@ -1334,7 +1357,6 @@ class WarpF1tenthEnv:
             var,
             actor_architecture=actor_architecture,
         )
-        # Snapshot weights changed; refresh the buffered action from current obs.
         self._fill_policy_actions(self.opponent_actor_obs_buf)
 
     def read_state(self):

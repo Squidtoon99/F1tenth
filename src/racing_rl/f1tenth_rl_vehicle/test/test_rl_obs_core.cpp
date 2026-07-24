@@ -59,7 +59,7 @@ TEST(RlObsCore, MatchesPythonFixture)
   ObsConfig cfg;
   double samples, horizon, width, contact, clip, sv, sa, sc;
   f >> samples >> horizon >> width >> contact >> clip >> sv >> sa >> sc;
-  cfg.num_obs = 390;
+  cfg.num_obs = 392;
   cfg.future_track_num_points = static_cast<int>(samples);
   cfg.future_track_horizon_s = horizon;
   cfg.future_track_width = width;
@@ -115,7 +115,7 @@ TEST(RlObsCore, MatchesPythonFixture)
         f >> st.tyre_slip[i];
       }
       OpponentState opp;
-      f >> opp.pos_x >> opp.pos_y >> opp.vx >> opp.vy;
+      f >> opp.pos_x >> opp.pos_y >> opp.yaw >> opp.vx >> opp.vy >> opp.ax >> opp.ay;
       opp.present = true;
 
       std::vector<double> expected(ocfg.num_obs);
@@ -559,7 +559,7 @@ TEST(OpponentObs, PureBlockBuildsFromState)
   const CircleTrack t = makeCircle(20.0, 120, 1.5);
   ObsConfig cfg;
   cfg.enable_opponent_obs = true;
-  cfg.num_obs = 390;
+  cfg.num_obs = 392;
   TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
 
   VehicleState st;
@@ -567,16 +567,50 @@ TEST(OpponentObs, PureBlockBuildsFromState)
   st.pos_y = 0.0;
   st.yaw = M_PI / 2.0;  // tangent at theta=0 points +y
   st.vx = 3.0;
+  st.ax = 1.0;
 
   OpponentState opp;
   opp.present = true;
   const double th = 0.15;
   opp.pos_x = 20.0 * std::cos(th);
   opp.pos_y = 20.0 * std::sin(th);
+  opp.yaw = th + M_PI / 2.0;
+  opp.ax = 2.0;
   std::vector<float> obs = builder.build(st, opp);
-  ASSERT_EQ(static_cast<int>(obs.size()), 390);
+  ASSERT_EQ(static_cast<int>(obs.size()), 392);
   EXPECT_GT(obs[384], 0.0f);                  // rel_x: opponent ahead in ego frame
-  EXPECT_GT(obs[388], 0.0f);                  // gap_norm: opponent ahead along track
+  EXPECT_GT(obs[390], 0.0f);                  // gap_norm: opponent ahead along track
+}
+
+TEST(OpponentObs, RelativeAccelBodyConsistent)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  cfg.enable_opponent_obs = true;
+  cfg.num_obs = 392;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+
+  VehicleState st;
+  st.pos_x = 20.0;
+  st.pos_y = 0.0;
+  st.yaw = 0.0;
+  st.ax = 1.0;
+  st.ay = 0.0;
+
+  OpponentState opp;
+  opp.present = true;
+  opp.pos_x = 25.0;
+  opp.pos_y = 0.0;
+  opp.yaw = M_PI / 2.0;
+  opp.ax = 2.0;
+  opp.ay = 0.0;
+
+  std::vector<float> obs = builder.build(st, opp);
+  ASSERT_EQ(static_cast<int>(obs.size()), 392);
+  // Opponent body (2,0) at yaw +90 -> world (0,2); ego body (1,0) at yaw 0 ->
+  // world (1,0); relative world (-1, 2) into ego yaw 0 stays (-1, 2).
+  EXPECT_NEAR(obs[388], -1.0f, 1e-4f);
+  EXPECT_NEAR(obs[389], 2.0f, 1e-4f);
 }
 
 TEST(OpponentObs, ZeroMaskForcesSentinel)
@@ -585,7 +619,7 @@ TEST(OpponentObs, ZeroMaskForcesSentinel)
   ObsConfig cfg;
   cfg.enable_opponent_obs = true;
   cfg.zero_opponent_obs = true;
-  cfg.num_obs = 390;
+  cfg.num_obs = 392;
   TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
 
   VehicleState st;
@@ -601,10 +635,12 @@ TEST(OpponentObs, ZeroMaskForcesSentinel)
   opp.pos_y = 20.0 * std::sin(th);
   opp.vx = 1.0;
   opp.vy = 0.5;
+  opp.ax = 0.5;
+  opp.ay = -0.25;
 
   std::vector<float> obs = builder.build(st, opp);
-  ASSERT_EQ(static_cast<int>(obs.size()), 390);
-  for (int i = 384; i < 390; ++i) {
+  ASSERT_EQ(static_cast<int>(obs.size()), 392);
+  for (int i = 384; i < 392; ++i) {
     EXPECT_FLOAT_EQ(obs[i], 0.0f) << "masked block index " << i;
   }
 }

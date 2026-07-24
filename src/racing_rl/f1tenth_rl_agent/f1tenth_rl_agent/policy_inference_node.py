@@ -1,6 +1,6 @@
 """policy_inference_node: run the trained actor on incoming observations.
 
-Subscribes to ``/rl/observation`` (384 solo / 390 for the 1v1 layout) and publishes
+Subscribes to ``/rl/observation`` (384 solo / 392 for the 1v1 layout) and publishes
 ``/rl/action`` (2-dim, in [-1, 1]). By default (``require_checkpoint`` true) a
 missing or incompatible checkpoint, or a checkpoint without ``obs_norm``, is a hard
 startup error so a mis-launched car never rolls a random-init actor. Set

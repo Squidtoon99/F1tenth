@@ -257,11 +257,13 @@ def test_straight_forward_beam_matches_analytic_wall(warp_runtime):
         ego_yaw=ego_yaw,
     )
     angle = _beam_world_angle(ego_yaw, _FWD, sensor)
+    origin_x = ego_x + math.cos(ego_yaw) * float(sensor.lidar_offset_x)
+    origin_y = ego_y + math.sin(ego_yaw) * float(sensor.lidar_offset_x)
     expected = analytic_parallel_corridor_range(
-        ego_x, ego_y, angle, half, float(sensor.range_max)
+        origin_x, origin_y, angle, half, float(sensor.range_max)
     )
     assert abs(float(ranges[0, _FWD]) - expected) <= host.resolution
-    assert abs(float(ranges[0, _FWD]) - half) <= _UST10_ACCURACY_M
+    assert abs(float(ranges[0, _FWD]) - (half - 0.27)) <= _UST10_ACCURACY_M
 
 
 def test_edt_sphere_trace_matches_analytic_within_one_cell(warp_runtime):
@@ -280,10 +282,12 @@ def test_edt_sphere_trace_matches_analytic_within_one_cell(warp_runtime):
         ego_yaw=ego_yaw,
     )
     errors = []
+    origin_x = ego_x + math.cos(ego_yaw) * float(sensor.lidar_offset_x)
+    origin_y = ego_y + math.sin(ego_yaw) * float(sensor.lidar_offset_x)
     for beam_id in (_LEFT, _RIGHT, _FWD + 180, _FWD - 180):
         angle = _beam_world_angle(ego_yaw, beam_id, sensor)
         expected = analytic_parallel_corridor_range(
-            ego_x, ego_y, angle, half, float(sensor.range_max)
+            origin_x, origin_y, angle, half, float(sensor.range_max)
         )
         if expected >= float(sensor.range_max) - 1e-6:
             continue
@@ -306,7 +310,7 @@ def test_lidar_range_min_max_sentinels(warp_runtime):
         centerline=centerline,
         width_left=width_left,
         width_right=width_right,
-        ego_pose=(radius + half - 0.02, 0.0),
+        ego_pose=(radius + half - 0.02 - float(sensor.lidar_offset_x), 0.0),
         ego_yaw=0.0,
         sensor=sensor,
     )
@@ -351,7 +355,7 @@ def test_opponent_obb_shortens_forward_beam(warp_runtime):
         opponent_pose=(radius, gap),
         opponent_yaw=math.pi / 2.0,
     )
-    expected = gap - 0.5 * _CAR_LENGTH
+    expected = gap - float(sensor.lidar_offset_x) - 0.5 * _CAR_LENGTH
     assert float(duel[0, _FWD]) == pytest.approx(expected, abs=1e-3)
     assert float(duel[0, _FWD]) < float(solo[0, _FWD])
     assert float(solo[0, _FWD]) < float(sensor.range_max)
@@ -434,9 +438,9 @@ def test_imu_dr_stays_within_bias_noise_bounds(warp_runtime):
     gyro_tol = abs(gyro_bias) + 6.0 * gyro_std
     assert abs(float(imu[0, 0]) - ax) <= accel_tol
     assert abs(float(imu[0, 1]) - ay) <= accel_tol
-    assert abs(float(imu[0, 2]) - float(sim.gravity)) <= accel_tol
-    assert abs(float(imu[0, 3]) - 0.0) <= gyro_tol
-    assert abs(float(imu[0, 4]) - 0.0) <= gyro_tol
+    assert float(imu[0, 2]) == pytest.approx(float(sim.gravity), abs=1e-5)
+    assert float(imu[0, 3]) == pytest.approx(0.0, abs=1e-5)
+    assert float(imu[0, 4]) == pytest.approx(0.0, abs=1e-5)
     assert abs(float(imu[0, 5]) - yaw_rate) <= gyro_tol
 
 
@@ -544,8 +548,8 @@ def test_with_sensors_dict_shapes_and_launch_count(warp_runtime):
     try:
         obs, _ = env.reset(seed=1, with_sensors=True)
         assert set(obs) == {"frenet", "actor", "lidar", "imu"}
-        assert obs["frenet"].shape == (4, 390)
-        assert obs["actor"].shape == (4, 1093)
+        assert obs["frenet"].shape == (4, 392)
+        assert obs["actor"].shape == (4, 1097)
         assert obs["lidar"].shape == (4, _NUM_BEAMS)
         assert obs["imu"].shape == (4, 6)
         assert torch.isfinite(obs["lidar"]).all()
@@ -557,8 +561,8 @@ def test_with_sensors_dict_shapes_and_launch_count(warp_runtime):
             with_sensors=True,
         )
         assert set(out) == {"frenet", "actor", "lidar", "imu"}
-        assert out["frenet"].shape == (4, 390)
-        assert out["actor"].shape == (4, 1093)
+        assert out["frenet"].shape == (4, 392)
+        assert out["actor"].shape == (4, 1097)
         assert out["lidar"].shape == (4, _NUM_BEAMS)
         assert out["imu"].shape == (4, 6)
         assert env.step_launch_count == 4
@@ -579,7 +583,7 @@ def test_with_sensors_false_matches_flat_obs_and_skips_kernels(warp_runtime):
         flat, _ = off.reset(seed=9, with_sensors=False)
         bundled, _ = on.reset(seed=9, with_sensors=True)
         assert isinstance(flat, torch.Tensor)
-        assert flat.shape == (4, 390)
+        assert flat.shape == (4, 392)
         assert torch.equal(flat, bundled["frenet"])
 
         actions = torch.tensor([[0.3, 0.1]]).repeat(4, 1)
@@ -655,7 +659,11 @@ def test_has_opponent_env_forward_beam_sees_car(warp_runtime):
         )
         forward = float(solo_obs["lidar"][0, _FWD])
         duel_forward = float(duel_obs["lidar"][0, _FWD])
-        expected = gap - 0.5 * float(duel._opponent_params.car_length)
+        expected = (
+            gap
+            - float(duel._sensor_params.lidar_offset_x)
+            - 0.5 * float(duel._opponent_params.car_length)
+        )
         assert duel_forward == pytest.approx(expected, abs=0.08)
         assert duel_forward < forward
     finally:

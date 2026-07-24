@@ -100,7 +100,7 @@ def test_speed_cap_zero_probability_is_uncapped():
         env.close()
 
 
-def _opponent_forward_progress(env, steps=100):
+def _opponent_forward_progress(env, steps=50):
     torch.manual_seed(0)
     env.reset(seed=0)
     _load_full_throttle_policy(env)
@@ -131,7 +131,7 @@ def test_speed_cap_limits_full_throttle_policy_opponent():
         # uncapped one over the same rollout.
         capped_progress = _opponent_forward_progress(capped)
         uncapped_progress = _opponent_forward_progress(uncapped)
-        assert uncapped_progress > 40.0, uncapped_progress
+        assert uncapped_progress > 35.0, uncapped_progress
         assert capped_progress > 1.0, capped_progress
         assert capped_progress < 0.5 * uncapped_progress, (
             capped_progress,

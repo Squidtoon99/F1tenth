@@ -3,7 +3,7 @@
 
 Emits a plain whitespace-separated fixture (test/obs_fixture.txt) consumed by
 test_rl_obs_core.cpp: the embedded track, the obs config, and a handful of
-(state -> expected 384-dim observation) cases produced by the *deployed* Python
+(state -> expected observation) cases produced by the *deployed* Python
 ObservationBuilder (which the parity test pins to f1tenth_env training math).
 The tyre-load block [380:384] uses the builder default (static ratio 1.0), which
 the C++ VehicleState mirrors, so the fixture state line is unchanged.
@@ -83,9 +83,9 @@ def main() -> None:
             (pos[0], pos[1], yaw, vx, vy, wz, ax, ay, last_t, last_s, slip, obs_np)
         )
 
-    # --- 1v1 opponent-block cases (390-dim) ----------------------------------
+    # --- 1v1 opponent-block cases (392-dim) ----------------------------------
     # Built with the deployed build_opponent_block (pinned to training obs_opponent)
-    # so the C++ opponent block at [384:390] is verified for parity.
+    # so the C++ opponent block at [384:392] is verified for parity.
     opp_cfg = default_obs_cfg(enable_opponent_obs=True)
     opp_builder = ObservationBuilder(
         centerline, wl, wr, opp_cfg, device=torch.device("cpu")
@@ -108,12 +108,16 @@ def main() -> None:
         oi = int(rng.integers(0, n))
         oo = rng.uniform(-0.5, 0.5, size=2).astype(np.float64)
         opos = np.array([centerline[oi, 0] + oo[0], centerline[oi, 1] + oo[1], 0.0])
+        oyaw = float(rng.uniform(-np.pi, np.pi))
         # Some cases stationary (parity for the static-opponent path), some moving.
         if k % 3 == 0:
             ovx, ovy = 0.0, 0.0
+            oax, oay = 0.0, 0.0
         else:
             ovx = float(rng.uniform(-4.0, 4.0))
             ovy = float(rng.uniform(-2.0, 2.0))
+            oax = float(rng.uniform(-3.0, 3.0))
+            oay = float(rng.uniform(-2.0, 2.0))
 
         ego_vel_world = _rot(eyaw) @ np.array([evx, evy], dtype=np.float64)
         block = opp_builder.build_opponent_block(
@@ -122,6 +126,9 @@ def main() -> None:
             ego_vel_world=torch.tensor([ego_vel_world], dtype=torch.float32),
             opp_pos=torch.tensor([opos], dtype=torch.float32),
             opp_vel_world=torch.tensor([[ovx, ovy]], dtype=torch.float32),
+            ego_acc_body=torch.tensor([[ax, ay]], dtype=torch.float32),
+            opp_yaw=torch.tensor([oyaw], dtype=torch.float32),
+            opp_acc_body=torch.tensor([[oax, oay]], dtype=torch.float32),
         )
         obs = opp_builder.build(
             base_lin_vel=torch.tensor([[evx, evy, 0.0]], dtype=torch.float32),
@@ -137,14 +144,17 @@ def main() -> None:
         opp_cases.append(
             (
                 epos[0], epos[1], eyaw, evx, evy, wz, ax, ay, lt, ls, slip,
-                opos[0], opos[1], ovx, ovy, obs_np,
+                opos[0], opos[1], oyaw, ovx, ovy, oax, oay, obs_np,
             )
         )
 
     with open(out_path, "w") as f:
         f.write(f"{n}\n")
         for i in range(n):
-            f.write(f"{centerline[i,0]:.9g} {centerline[i,1]:.9g} {wl[i]:.9g} {wr[i]:.9g}\n")
+            f.write(
+                f"{centerline[i, 0]:.9g} {centerline[i, 1]:.9g} "
+                f"{wl[i]:.9g} {wr[i]:.9g}\n"
+            )
         f.write(
             "{} {} {} {} {} {} {} {}\n".format(
                 obs_cfg["future_track_num_points"],
@@ -167,10 +177,13 @@ def main() -> None:
         f.write(f"{len(opp_cases)}\n")
         for case in opp_cases:
             (px, py, yaw, vx, vy, wz, ax, ay, lt, ls, slip,
-             opx, opy, ovx, ovy, obs_np) = case
+             opx, opy, oyaw, ovx, ovy, oax, oay, obs_np) = case
             state = [px, py, yaw, vx, vy, wz, ax, ay, lt, ls] + list(slip)
             f.write(" ".join(f"{v:.9g}" for v in state) + "\n")
-            f.write(f"{opx:.9g} {opy:.9g} {ovx:.9g} {ovy:.9g}\n")
+            f.write(
+                f"{opx:.9g} {opy:.9g} {oyaw:.9g} {ovx:.9g} {ovy:.9g} "
+                f"{oax:.9g} {oay:.9g}\n"
+            )
             f.write(" ".join(f"{v:.9g}" for v in obs_np) + "\n")
 
     print(

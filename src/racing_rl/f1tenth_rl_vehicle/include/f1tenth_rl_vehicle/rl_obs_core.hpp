@@ -20,7 +20,7 @@ namespace f1tenth_rl_vehicle
 // after the training/deploy parity alignment (scales 1.0, loose clip 50).
 struct ObsConfig
 {
-  int num_obs = 390;
+  int num_obs = 392;
   int future_track_num_points = 60;
   double future_track_horizon_s = 6.0;
   // Lower bound on the future-point lookahead distance (matches training
@@ -32,24 +32,28 @@ struct ObsConfig
   double lin_vel_scale = 1.0;
   double ang_vel_scale = 1.0;
   double lin_acc_scale = 1.0;
-  // 1v1: when enabled, a 6-dim opponent-relative block is appended at [384:390]
-  // (num_obs becomes 390). Off by default to preserve the solo deploy.
+  // 1v1: when enabled, an 8-dim opponent-relative block is appended at [384:392]
+  // (num_obs becomes 392). Off by default to preserve the solo deploy.
   bool enable_opponent_obs = false;
-  int opponent_obs_dim = 6;
-  // Force [384:390] to zeros (1v0 sentinel) even when enable_opponent_obs is
-  // true, so a 390-dim checkpoint can run without a working opponent detector.
+  int opponent_obs_dim = 8;
+  // Force [384:392] to zeros (1v0 sentinel) even when enable_opponent_obs is
+  // true, so a 392-dim checkpoint can run without a working opponent detector.
   bool zero_opponent_obs = false;
 };
 
-// Opponent estimate in the map frame. Velocity is world-frame (the obs block
-// rotates the relative velocity into the ego body frame). ``present`` is set by
-// the detector; masking is applied by the caller (vehicle_obs_node).
+// Opponent estimate in the map frame. Velocity is world-frame; acceleration is
+// body-frame (rotated to world then into the ego frame with ego body accel).
+// ``present`` is set by the detector; masking is applied by the caller
+// (vehicle_obs_node).
 struct OpponentState
 {
   double pos_x = 0.0;
   double pos_y = 0.0;
+  double yaw = 0.0;
   double vx = 0.0;  // world frame
   double vy = 0.0;  // world frame
+  double ax = 0.0;  // body frame
+  double ay = 0.0;  // body frame
   bool present = false;
 };
 
@@ -215,7 +219,7 @@ public:
 
   // Assemble the observation. Returns a vector of length cfg.num_obs (float to
   // match the Float32MultiArray wire format). Throws if the assembled size differs.
-  // When cfg.enable_opponent_obs is set, the 6-dim opponent block is appended from
+  // When cfg.enable_opponent_obs is set, the 8-dim opponent block is appended from
   // `opp`; an absent opponent yields the exact zero sentinel.
   std::vector<float> build(
     const VehicleState & state, const OpponentState & opp = OpponentState{}) const;

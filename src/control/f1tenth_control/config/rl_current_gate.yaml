@@ -1,0 +1,18 @@
+rl_current_gate:
+  ros__parameters:
+    i_drive_max_a: 10.0
+    i_brake_max_a: 10.0
+    i_brake_safe_a: 5.0
+    i_slew_a_per_s: 200.0
+    rl_command_timeout_s: 0.15
+    teleop_timeout_s: 0.2
+    safety_timeout_s: 0.1
+    publish_rate_hz: 50.0
+    publish_servo: true
+    max_steer: 0.33
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
+    desired_topic: /rl/actuator/desired
+    applied_topic: /rl/actuator/applied
+    teleop_topic: /teleop
+    brake_topic: /brake

@@ -1,0 +1,83 @@
+# Sensor racer runtime defaults (no-localization recurrent RL).
+sensor_racer:
+  ros__parameters:
+    checkpoint_path: ""
+    require_checkpoint: true
+    state_dict_key: actor
+    device: cpu
+    deterministic: true
+    control_hz: 10.0
+    scan_topic: /scan
+    imu_topic: /sensors/imu/raw
+    odom_topic: /odom
+    applied_actuator_topic: /rl/actuator/applied
+    sensor_max_age_s: 0.15
+    twist_vx_sign: -1.0
+    i_drive_max_a: 10.0
+    i_brake_max_a: 10.0
+    max_steer: 0.33
+    steering_action_mode: delta
+    steering_delta_max_rad: 0.05235987755982988
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453292519943295
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_az_sign: 1.0
+    imu_gx_sign: 1.0
+    imu_gy_sign: 1.0
+    imu_gz_sign: 1.0
+    imu_ax_bias: -0.02114
+    imu_ay_bias: 0.07107
+    imu_az_bias: 0.0
+    imu_gx_bias: 0.0
+    imu_gy_bias: 0.0
+    imu_gz_bias: 0.0
+    recording_mode: false
+    publish_raw_observation: false
+    publish_diagnostics: true
+    norm_clip: 10.0
+    norm_eps: 1.0e-8
+
+# Legacy overlay alias (prefer sensor_racer in per-car params).
+sensor_policy:
+  ros__parameters:
+    checkpoint_path: ""
+    require_checkpoint: true
+    state_dict_key: actor
+    device: cpu
+    deterministic: true
+    control_hz: 10.0
+    scan_topic: /scan
+    imu_topic: /sensors/imu/raw
+    odom_topic: /odom
+    applied_actuator_topic: /rl/actuator/applied
+    sensor_max_age_s: 0.15
+    twist_vx_sign: -1.0
+    i_drive_max_a: 10.0
+    i_brake_max_a: 10.0
+    max_steer: 0.33
+    steering_action_mode: delta
+    steering_delta_max_rad: 0.05235987755982988
+    steering_angle_to_servo_gain: -1.2135
+    steering_angle_to_servo_offset: 0.4495
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453292519943295
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_az_sign: 1.0
+    imu_gx_sign: 1.0
+    imu_gy_sign: 1.0
+    imu_gz_sign: 1.0
+    imu_ax_bias: -0.02114
+    imu_ay_bias: 0.07107
+    imu_az_bias: 0.0
+    imu_gx_bias: 0.0
+    imu_gy_bias: 0.0
+    imu_gz_bias: 0.0
+    recording_mode: false
+    publish_raw_observation: false
+    publish_diagnostics: true
+    norm_clip: 10.0
+    norm_eps: 1.0e-8

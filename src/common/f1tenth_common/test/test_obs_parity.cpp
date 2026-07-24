@@ -11,9 +11,9 @@ using L = f1tenth_common::ObservationLayout;
 TEST(ObservationParity, Dimensions)
 {
   EXPECT_EQ(L::kObservationBaseDim, 384u);
-  EXPECT_EQ(L::kOpponentObsDim, 6u);
-  EXPECT_EQ(L::kObservationDim, 390u);
-  EXPECT_EQ(L::kObservationDim1v1, 390u);
+  EXPECT_EQ(L::kOpponentObsDim, 8u);
+  EXPECT_EQ(L::kObservationDim, 392u);
+  EXPECT_EQ(L::kObservationDim1v1, 392u);
   EXPECT_EQ(L::kObservationBaseDim + L::kOpponentObsDim, L::kObservationDim);
   EXPECT_EQ(L::kActionDim, 2u);
   EXPECT_EQ(L::kTyreSlipDim, 8u);

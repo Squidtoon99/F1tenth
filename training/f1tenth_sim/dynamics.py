@@ -127,17 +127,24 @@ def apply_command(
         vehicle.effort_state = target
         vehicle.applied_effort = target
 
-    steer_target = wp.clamp(
-        action[1] * params.max_steer + steer_bias,
-        -params.max_steer,
-        params.max_steer,
-    )
-    steer_alpha = params.control_dt / (
-        params.steer_time_constant + params.control_dt
-    )
-    vehicle.steer = vehicle.steer + steer_alpha * (
-        steer_target - vehicle.steer
-    )
+    if params.steering_action_mode != 0:
+        vehicle.steer = wp.clamp(
+            vehicle.steer + action[1] * params.steering_delta_max,
+            -params.max_steer,
+            params.max_steer,
+        )
+    else:
+        steer_target = wp.clamp(
+            action[1] * params.max_steer + steer_bias,
+            -params.max_steer,
+            params.max_steer,
+        )
+        steer_alpha = params.control_dt / (
+            params.steer_time_constant + params.control_dt
+        )
+        vehicle.steer = vehicle.steer + steer_alpha * (
+            steer_target - vehicle.steer
+        )
     return vehicle
 
 

@@ -58,7 +58,10 @@ def _meta(ref) -> dict:
 
 
 def _run_warp(ref, meta):
-    params = VehicleParams.from_config(dict(meta["config"]))
+    cfg = dict(meta["config"])
+    # Torch reference trajectory was recorded under absolute steering.
+    cfg.setdefault("steering_action_mode", "absolute")
+    params = VehicleParams.from_config(cfg)
     num_envs = int(meta["num_envs"])
     sim = WarpVehicleSim(
         params,

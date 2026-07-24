@@ -477,7 +477,7 @@ std::vector<float> TrackObservationBuilder::build(
     obs[load_base + i] = static_cast<float>(st.tyre_load[i]);
   }
 
-  // [384:390] opponent-relative block (port of f1tenth_env obs_opponent). Pure
+  // [384:392] opponent-relative block (port of f1tenth_env obs_opponent). Pure
   // relative features; the caller zeros the block when the opponent is masked out.
   if (cfg_.enable_opponent_obs) {
     const int opp_base = 384;
@@ -502,6 +502,17 @@ std::vector<float> TrackObservationBuilder::build(
         const double rel_vx = cos_y * dvx + sin_y * dvy;
         const double rel_vy = -sin_y * dvx + cos_y * dvy;
 
+        const double ego_ax_w = cos_y * st.ax - sin_y * st.ay;
+        const double ego_ay_w = sin_y * st.ax + cos_y * st.ay;
+        const double cos_o = std::cos(opp.yaw);
+        const double sin_o = std::sin(opp.yaw);
+        const double opp_ax_w = cos_o * opp.ax - sin_o * opp.ay;
+        const double opp_ay_w = sin_o * opp.ax + cos_o * opp.ay;
+        const double dax = opp_ax_w - ego_ax_w;
+        const double day = opp_ay_w - ego_ay_w;
+        const double rel_ax = cos_y * dax + sin_y * day;
+        const double rel_ay = -sin_y * dax + cos_y * day;
+
         const LateralInfo opp_lat = lateral(opp.pos_x, opp.pos_y);
         const double L = std::max(fr.L, 1e-6);
         double gap = opp_lat.s - fr.s;
@@ -517,8 +528,10 @@ std::vector<float> TrackObservationBuilder::build(
         obs[opp_base + 1] = static_cast<float>(rel_y);
         obs[opp_base + 2] = static_cast<float>(rel_vx);
         obs[opp_base + 3] = static_cast<float>(rel_vy);
-        obs[opp_base + 4] = static_cast<float>(gap_norm);
-        obs[opp_base + 5] = static_cast<float>(opp_lat.ey);
+        obs[opp_base + 4] = static_cast<float>(rel_ax);
+        obs[opp_base + 5] = static_cast<float>(rel_ay);
+        obs[opp_base + 6] = static_cast<float>(gap_norm);
+        obs[opp_base + 7] = static_cast<float>(opp_lat.ey);
       }
     }
   }

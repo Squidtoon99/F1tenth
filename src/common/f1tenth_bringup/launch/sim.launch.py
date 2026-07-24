@@ -7,8 +7,8 @@ the agent-side ROS graph in the agent container and closes the loop on /drive.
 The on-car C++ autonomy graph (vehicle_obs -> policy_inference -> drive) from
 bringup_vehicle.launch.py is pointed at the gym's ground-truth odom in place of the
 particle filter + VESC odom. Solo racing: the opponent detector is off and the
-6-dim opponent block [384:390) is zeroed (the vehicle.yaml sentinel), so the
-390-dim policy runs without a detector.
+8-dim opponent block [384:392) is zeroed (the vehicle.yaml sentinel), so the
+392-dim policy runs without a detector.
 
 The evaluation node (read-only) provides spawn/reset + lap/progress/OOB/stuck metrics;
 it is composed here alongside track_server.
@@ -50,7 +50,7 @@ def generate_launch_description() -> LaunchDescription:
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path",
         default_value="/policies/policy.pt",
-        description="Trained 390-dim policy .pt (must include obs_norm).",
+        description="Trained 392-dim policy .pt (must include obs_norm).",
     )
     declare_agent_params = DeclareLaunchArgument(
         "agent_params_file",

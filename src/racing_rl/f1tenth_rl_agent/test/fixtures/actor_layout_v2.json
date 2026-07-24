@@ -1,0 +1,20 @@
+{
+  "source": "training/f1tenth_env/sensors.py frozen actor layout (v2)",
+  "actor_layout_version": 2,
+  "num_obs": 1097,
+  "proprio_dim": 16,
+  "lidar_dim": 1081,
+  "imu_dim": 6,
+  "imu_start": 1081,
+  "vesc_speed": 1087,
+  "vesc_current": 1088,
+  "throttle_current": 1089,
+  "throttle_pred": 1090,
+  "steer_t": 1091,
+  "steer_t1": 1092,
+  "steer_t2": 1093,
+  "steer_delta0": 1094,
+  "steer_delta1": 1095,
+  "steer_delta2": 1096,
+  "vesc_current_scale_a": 5.0
+}

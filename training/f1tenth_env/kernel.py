@@ -15,7 +15,7 @@ from f1tenth_sim.params import SimParams
 
 FRENET_WINDOW = 40
 FUTURE_SAMPLES = 60
-OBS_DIM = 390
+OBS_DIM = 392
 OBS_FUTURE_START = 12
 OBS_SLIP_RATIO_START = 372
 OBS_SLIP_ANGLE_START = 376
@@ -23,6 +23,7 @@ OBS_LOAD_START = 380
 OBS_OPPONENT_START = 384
 MAX_FORWARD_SEGMENTS = 2048
 ACTION_HISTORY = 4
+STEER_HISTORY = 4
 
 
 @wp.struct
@@ -263,7 +264,6 @@ class ObsParams:
     clip: wp.float32
     opponent_ahead: wp.float32
     opponent_behind: wp.float32
-    zero_tyre_slip: wp.int32
     contact_margin: wp.float32
 
 
@@ -278,7 +278,6 @@ class SensorParams:
     lidar_offset_x: wp.float32
     lidar_offset_y: wp.float32
     lidar_offset_yaw: wp.float32
-    max_march_steps: wp.int32
     max_march_steps: wp.int32
 
 
@@ -296,38 +295,33 @@ class RewardParams:
     progress_forward: wp.float32
     progress_backward: wp.float32
     progress_max_lateral: wp.float32
-    lateral: wp.float32
-    oob: wp.float32
-    oob_margin: wp.float32
-    wall: wp.float32
-    wall_impact: wp.float32
-    slip: wp.float32
-    slip_angle_weight: wp.float32
-    slip_ratio_deadzone: wp.float32
-    slip_angle_deadzone: wp.float32
-    smoothness: wp.float32
+    wall_contact_coefficient: wp.float32
+    control_dt: wp.float32
+    steering_change: wp.float32
+    steering_history: wp.float32
+    max_steer: wp.float32
+    steering_c_s: wp.float32
+    steering_c_o: wp.float32
+    steering_c_d: wp.float32
     passing: wp.float32
     passing_ahead: wp.float32
     passing_behind: wp.float32
     collision: wp.float32
     rear_end: wp.float32
-    overtake: wp.float32
-    overtake_gap: wp.float32
     global_scale: wp.float32
+    rear_end_any_contact: wp.int32
 
 
 @wp.struct
 class TerminationParams:
     maximum_episode_steps: wp.int32
-    maximum_oob_steps: wp.int32
     maximum_stopped_steps: wp.int32
+    minimum_stopped_step: wp.int32
     speed_threshold: wp.float32
     minimum_progress: wp.float32
     maximum_heading_error: wp.float32
     collision_speed: wp.float32
     terminate_on_collision: wp.int32
-    oob_margin: wp.float32
-    wall_impact_speed: wp.float32
 
 
 @wp.struct
@@ -337,6 +331,7 @@ class ResetParams:
     spawn_margin: wp.float32
     speed_min: wp.float32
     speed_max: wp.float32
+    stationary_probability: wp.float32
     opponent_gap_min: wp.float32
     opponent_gap_max: wp.float32
     opponent_behind_probability: wp.float32
@@ -358,28 +353,6 @@ class ResetParams:
     observation_noise_max: wp.float32
     spawn_yaw_jitter: wp.float32
     opponent_lateral_spawn: wp.int32
-    lidar_range_noise_std_min: wp.float32
-    lidar_range_noise_std_max: wp.float32
-    lidar_far_dropout_prob_min: wp.float32
-    lidar_far_dropout_prob_max: wp.float32
-    lidar_dropout_prob_min: wp.float32
-    lidar_dropout_prob_max: wp.float32
-    lidar_angle_bias_min: wp.float32
-    lidar_angle_bias_max: wp.float32
-    lidar_extrinsic_xy_min: wp.float32
-    lidar_extrinsic_xy_max: wp.float32
-    lidar_extrinsic_yaw_min: wp.float32
-    lidar_extrinsic_yaw_max: wp.float32
-    imu_accel_bias_min: wp.float32
-    imu_accel_bias_max: wp.float32
-    imu_gyro_bias_min: wp.float32
-    imu_gyro_bias_max: wp.float32
-    imu_accel_noise_std_min: wp.float32
-    imu_accel_noise_std_max: wp.float32
-    imu_gyro_noise_std_min: wp.float32
-    imu_gyro_noise_std_max: wp.float32
-    imu_axis_misalign_min: wp.float32
-    imu_axis_misalign_max: wp.float32
     lidar_range_noise_std_min: wp.float32
     lidar_range_noise_std_max: wp.float32
     lidar_far_dropout_prob_min: wp.float32
@@ -434,16 +407,12 @@ class OpponentParams:
 class EnvBuffers:
     reward: wp.array(dtype=wp.float32)
     reward_progress: wp.array(dtype=wp.float32)
-    reward_lateral: wp.array(dtype=wp.float32)
-    reward_oob: wp.array(dtype=wp.float32)
-    reward_wall: wp.array(dtype=wp.float32)
-    reward_wall_impact: wp.array(dtype=wp.float32)
-    reward_slip: wp.array(dtype=wp.float32)
-    reward_smoothness: wp.array(dtype=wp.float32)
+    reward_wall_contact: wp.array(dtype=wp.float32)
+    reward_steering_change: wp.array(dtype=wp.float32)
+    reward_steering_history: wp.array(dtype=wp.float32)
     reward_passing: wp.array(dtype=wp.float32)
     reward_collision: wp.array(dtype=wp.float32)
     reward_rear_end: wp.array(dtype=wp.float32)
-    reward_overtake: wp.array(dtype=wp.float32)
     done: wp.array(dtype=wp.bool)
     done_flags: wp.array(dtype=wp.int32)
     term_timeout: wp.array(dtype=wp.bool)
@@ -451,7 +420,6 @@ class EnvBuffers:
     term_stopped: wp.array(dtype=wp.bool)
     term_invalid: wp.array(dtype=wp.bool)
     term_collision: wp.array(dtype=wp.bool)
-    term_wall_impact: wp.array(dtype=wp.bool)
     episode_step: wp.array(dtype=wp.int32)
     completed_episode_steps: wp.array(dtype=wp.int32)
     episode_id: wp.array(dtype=wp.int32)
@@ -461,17 +429,19 @@ class EnvBuffers:
     opponent_segment: wp.array(dtype=wp.int32)
     prev_s: wp.array(dtype=wp.float32)
     prev_opponent_s: wp.array(dtype=wp.float32)
-    prev_off_track: wp.array(dtype=wp.int32)
-    prev_wall_contact: wp.array(dtype=wp.int32)
     prev_opponent_ahead: wp.array(dtype=wp.int32)
     prev_opponent_in_window: wp.array(dtype=wp.int32)
-    oob_streak: wp.array(dtype=wp.int32)
     stopped_streak: wp.array(dtype=wp.int32)
     last_action: wp.array(dtype=wp.vec2f)
     opponent_last_action: wp.array(dtype=wp.vec2f)
+    prev_steer_delta: wp.array(dtype=wp.float32)
     current_action: wp.array(dtype=wp.vec2f)
     current_opponent_action: wp.array(dtype=wp.vec2f)
     action_history: wp.array2d(dtype=wp.vec2f)
+    executed_longitudinal_history: wp.array2d(dtype=wp.float32)
+    opponent_executed_longitudinal_history: wp.array2d(dtype=wp.float32)
+    executed_steer_history: wp.array2d(dtype=wp.float32)
+    opponent_executed_steer_history: wp.array2d(dtype=wp.float32)
     action_head: wp.array(dtype=wp.int32)
     action_latency: wp.array(dtype=wp.int32)
     observation_latency: wp.array(dtype=wp.int32)
@@ -506,7 +476,6 @@ class EnvBuffers:
     terminal_y: wp.array(dtype=wp.float32)
     terminal_s: wp.array(dtype=wp.float32)
     metric_progress: wp.array(dtype=wp.float32)
-    metric_oob: wp.array(dtype=wp.float32)
     metric_wall: wp.array(dtype=wp.float32)
     metric_boundary: wp.array(dtype=wp.float32)
     metric_lateral: wp.array(dtype=wp.float32)
@@ -521,6 +490,10 @@ class PhysicsBuffers:
     opponent_segment: wp.array(dtype=wp.int32)
     episode_step: wp.array(dtype=wp.int32)
     action_history: wp.array2d(dtype=wp.vec2f)
+    executed_longitudinal_history: wp.array2d(dtype=wp.float32)
+    opponent_executed_longitudinal_history: wp.array2d(dtype=wp.float32)
+    executed_steer_history: wp.array2d(dtype=wp.float32)
+    opponent_executed_steer_history: wp.array2d(dtype=wp.float32)
     action_head: wp.array(dtype=wp.int32)
     action_latency: wp.array(dtype=wp.int32)
     opponent_mode: wp.array(dtype=wp.int32)
@@ -546,16 +519,12 @@ class ContactResult:
 class RewardResult:
     total: wp.float32
     progress: wp.float32
-    lateral: wp.float32
-    oob: wp.float32
-    wall: wp.float32
-    wall_impact: wp.float32
-    slip: wp.float32
-    smoothness: wp.float32
+    wall_contact: wp.float32
+    steering_change: wp.float32
+    steering_history: wp.float32
     passing: wp.float32
     collision: wp.float32
     rear_end: wp.float32
-    overtake: wp.float32
     done: wp.bool
     done_flags: wp.int32
 
@@ -586,6 +555,16 @@ def body_velocity_world(vehicle: VehicleLocal) -> wp.vec2f:
     return wp.vec2f(
         cosine * vehicle.vx - sine * vehicle.vy,
         sine * vehicle.vx + cosine * vehicle.vy,
+    )
+
+
+@wp.func
+def body_accel_world(vehicle: VehicleLocal) -> wp.vec2f:
+    cosine = wp.cos(vehicle.yaw)
+    sine = wp.sin(vehicle.yaw)
+    return wp.vec2f(
+        cosine * vehicle.ax - sine * vehicle.ay,
+        sine * vehicle.ax + cosine * vehicle.ay,
     )
 
 
@@ -782,6 +761,11 @@ def reset_pair(
     width_right = track.width_right[segment] - reset.spawn_margin
     lateral = random_range(random, -wp.max(width_right, 0.0), wp.max(width_left, 0.0))
     speed = random_range(random, reset.speed_min, reset.speed_max)
+    if (
+        reset.stationary_probability > 0.0
+        and wp.randf(random) < reset.stationary_probability
+    ):
+        speed = 0.0
     ego_yaw_jitter = random_range(
         random, -reset.spawn_yaw_jitter, reset.spawn_yaw_jitter
     )
@@ -893,8 +877,6 @@ def reset_pair(
             opponent_params.policy_speed_cap_hi - span * u * u
         )
 
-    # Sensor DR is sampled after existing physics/obs draws so prior RNG streams
-    # (spawn, mass, latency, …) stay bit-identical when sensor ranges are no-ops.
     env.lidar_extrinsic_x[env_id] = random_range(
         random, reset.lidar_extrinsic_xy_min, reset.lidar_extrinsic_xy_max
     )
@@ -955,31 +937,16 @@ def reset_pair(
     env.vesc_current_noise_std[env_id] = random_range(
         random, reset.vesc_current_noise_std_min, reset.vesc_current_noise_std_max
     )
-    env.vesc_speed_bias[env_id] = random_range(
-        random, reset.vesc_speed_bias_min, reset.vesc_speed_bias_max
-    )
-    env.vesc_current_bias[env_id] = random_range(
-        random, reset.vesc_current_bias_min, reset.vesc_current_bias_max
-    )
-    env.vesc_speed_noise_std[env_id] = random_range(
-        random, reset.vesc_speed_noise_std_min, reset.vesc_speed_noise_std_max
-    )
-    env.vesc_current_noise_std[env_id] = random_range(
-        random, reset.vesc_current_noise_std_min, reset.vesc_current_noise_std_max
-    )
-
     env.episode_id[env_id] = next_episode
     env.episode_step[env_id] = 0
     env.lap_count[env_id] = 0
     env.lap_cross[env_id] = 0.0
-    env.oob_streak[env_id] = 0
     env.stopped_streak[env_id] = 0
-    env.prev_off_track[env_id] = 0
-    env.prev_wall_contact[env_id] = 0
     env.prev_opponent_ahead[env_id] = 1
     env.prev_opponent_in_window[env_id] = 0
     env.last_action[env_id] = wp.vec2f(0.0)
     env.opponent_last_action[env_id] = wp.vec2f(0.0)
+    env.prev_steer_delta[env_id] = 0.0
     env.current_action[env_id] = wp.vec2f(0.0)
     env.current_opponent_action[env_id] = wp.vec2f(0.0)
     env.contact[env_id] = 0
@@ -988,6 +955,12 @@ def reset_pair(
     env.action_head[env_id] = 0
     for history_index in range(ACTION_HISTORY):
         env.action_history[env_id, history_index] = wp.vec2f(0.0)
+    for longitudinal_index in range(2):
+        env.executed_longitudinal_history[env_id, longitudinal_index] = 0.0
+        env.opponent_executed_longitudinal_history[env_id, longitudinal_index] = 0.0
+    for steer_index in range(STEER_HISTORY):
+        env.executed_steer_history[env_id, steer_index] = 0.0
+        env.opponent_executed_steer_history[env_id, steer_index] = 0.0
 
     ego_frenet = project_track(wp.vec2f(ego.x, ego.y), segment, track)
     opponent_frenet = project_track(
@@ -998,7 +971,6 @@ def reset_pair(
     env.prev_s[env_id] = ego_frenet.s
     env.prev_opponent_s[env_id] = opponent_frenet.s
     env.metric_progress[env_id] = 0.0
-    env.metric_oob[env_id] = 0.0
     env.metric_wall[env_id] = 0.0
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
@@ -1041,6 +1013,28 @@ def delayed_physics_action(
 
 
 @wp.func
+def push_executed_steer(
+    history: wp.array2d(dtype=wp.float32),
+    env_id: wp.int32,
+    steer: wp.float32,
+):
+    history[env_id, 3] = history[env_id, 2]
+    history[env_id, 2] = history[env_id, 1]
+    history[env_id, 1] = history[env_id, 0]
+    history[env_id, 0] = steer
+
+
+@wp.func
+def push_executed_longitudinal(
+    history: wp.array2d(dtype=wp.float32),
+    env_id: wp.int32,
+    longitudinal: wp.float32,
+):
+    history[env_id, 1] = history[env_id, 0]
+    history[env_id, 0] = longitudinal
+
+
+@wp.func
 def scripted_opponent_action(
     env_id: wp.int32,
     opponent: VehicleLocal,
@@ -1051,11 +1045,15 @@ def scripted_opponent_action(
 ) -> wp.vec2f:
     heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading_error = wrap_angle(opponent.yaw - heading)
-    steering = -(
+    steering_target = -(
         params.kp_lateral
         * (frenet.ey - env.opponent_lateral_offset[env_id])
         + params.kp_heading * heading_error
-    ) / wp.max(sim.max_steer, 1.0e-6)
+    )
+    steering = steering_target / wp.max(sim.max_steer, 1.0e-6)
+    steering = (steering_target - opponent.steer) / wp.max(
+        sim.steering_delta_max, 1.0e-6
+    )
     track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
     throttle = params.kp_speed * (
         env.opponent_target_speed[env_id] - track_speed
@@ -1077,11 +1075,15 @@ def scripted_physics_opponent_action(
 ) -> wp.vec2f:
     heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading_error = wrap_angle(opponent.yaw - heading)
-    steering = -(
+    steering_target = -(
         params.kp_lateral
         * (frenet.ey - buffers.opponent_lateral_offset[env_id])
         + params.kp_heading * heading_error
-    ) / wp.max(sim.max_steer, 1.0e-6)
+    )
+    steering = steering_target / wp.max(sim.max_steer, 1.0e-6)
+    steering = (steering_target - opponent.steer) / wp.max(
+        sim.steering_delta_max, 1.0e-6
+    )
     track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
     throttle = params.kp_speed * (
         buffers.opponent_target_speed[env_id] - track_speed
@@ -1090,19 +1092,6 @@ def scripted_physics_opponent_action(
         wp.clamp(throttle, -1.0, 1.0),
         wp.clamp(steering, -1.0, 1.0),
     )
-
-
-@wp.func
-def slip_excess(
-    vehicle: VehicleLocal,
-    params: RewardParams,
-) -> wp.float32:
-    total = wp.float32(0.0)
-    for wheel in range(4):
-        ratio = wp.min(wp.abs(vehicle.slip_ratio[wheel]), 1.0)
-        angle = wp.abs(vehicle.slip_angle[wheel])
-        total = total + ratio * angle
-    return total
 
 
 @wp.func
@@ -1147,104 +1136,76 @@ def compute_reward_and_done(
         0.5 * car_length * wp.abs(wp.sin(heading_error))
         + 0.5 * car_width * wp.abs(wp.cos(heading_error))
     )
-    off_track = (
-        ego_frenet.ey + footprint
-        > ego_frenet.width_left - reward.oob_margin
-        or ego_frenet.ey - footprint
-        < -(ego_frenet.width_right - reward.oob_margin)
-    )
-    left_wall = ego_frenet.ey + footprint >= ego_frenet.width_left
-    right_wall = ego_frenet.ey - footprint <= -ego_frenet.width_right
-    wall_contact = left_wall or right_wall
-    severe_oob = (
-        ego_frenet.ey > ego_frenet.width_left - termination.oob_margin
-        or ego_frenet.ey < -(ego_frenet.width_right - termination.oob_margin)
-    )
-    center_penetration = (
-        ego_frenet.ey >= ego_frenet.width_left
-        or ego_frenet.ey <= -ego_frenet.width_right
+    wall_contact = (
+        ego_frenet.ey + footprint >= ego_frenet.width_left
+        or ego_frenet.ey - footprint <= -ego_frenet.width_right
     )
     progress_ds = delta_s
-    if off_track:
+    if wall_contact:
         progress_ds = 0.0
 
     out.progress = (
         reward.progress_forward * wp.max(progress_ds, 0.0)
         + reward.progress_backward * wp.min(progress_ds, 0.0)
     )
-    out.lateral = -reward.lateral * ego_frenet.ey * ego_frenet.ey
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
-    if off_track:
-        out.oob = -reward.oob * speed_squared
-    vel_world = body_velocity_world(ego)
-    normal = wp.vec2f(-ego_frenet.tangent[1], ego_frenet.tangent[0])
-    v_lat = wp.dot(vel_world, normal)
-    v_normal = wp.float32(0.0)
-    if left_wall:
-        v_normal = wp.max(v_lat, 0.0)
-    if right_wall:
-        v_normal = wp.max(v_normal, wp.max(-v_lat, 0.0))
-    first_wall = wall_contact and env.prev_wall_contact[env_id] == 0
     if wall_contact:
-        out.wall = -reward.wall * speed_squared
-    if first_wall:
-        out.wall_impact = -reward.wall_impact * v_normal * v_normal
-    difference = action - env.last_action[env_id]
-    out.smoothness = -reward.smoothness * wp.dot(difference, difference)
-    out.slip = -reward.slip * slip_excess(ego, reward)
+        out.wall_contact = (
+            -reward.wall_contact_coefficient
+            * wp.sqrt(speed_squared)
+        )
+    vel_world = body_velocity_world(ego)
+    theta_t = env.executed_steer_history[env_id, 0]
+    theta_prev = env.executed_steer_history[env_id, 1]
+    delta_t = theta_t - theta_prev
+    prev_delta = env.prev_steer_delta[env_id]
+    out.steering_change = -reward.steering_change * wp.abs(delta_t)
+    delta_sum = wp.abs(delta_t) + wp.abs(prev_delta)
+    m_t = wp.float32(0.0)
+    if (
+        wp.abs(delta_t) > reward.steering_c_d
+        and wp.abs(prev_delta) > reward.steering_c_d
+        and delta_t * prev_delta < 0.0
+    ):
+        m_t = wp.float32(1.0)
+    out.steering_history = (
+        -reward.steering_history
+        * m_t
+        * (
+            1.0
+            + wp.exp(
+                -reward.steering_c_s * (delta_sum - reward.steering_c_o)
+            )
+        )
+    )
+    env.prev_steer_delta[env_id] = delta_t
     if opponent_enabled != 0:
         in_window = gap <= reward.passing_ahead and gap >= -reward.passing_behind
         if in_window or env.prev_opponent_in_window[env_id] != 0:
             out.passing = reward.passing * (delta_s - opponent_delta_s)
         env.prev_opponent_in_window[env_id] = wp.int32(in_window)
         out.collision = -reward.collision * wp.float32(contact.contact)
-        if contact.contact != 0 and gap > 0.0:
+        if contact.contact != 0 and (
+            reward.rear_end_any_contact != 0 or gap > 0.0
+        ):
             relative_velocity = vel_world - body_velocity_world(opponent)
             out.rear_end = -reward.rear_end * wp.dot(
                 relative_velocity, relative_velocity
             )
-        opponent_ahead = gap > 0.0
-        if (
-            env.prev_opponent_ahead[env_id] != 0
-            and not opponent_ahead
-            and wp.abs(gap) <= reward.overtake_gap
-        ):
-            out.overtake = reward.overtake
-        env.prev_opponent_ahead[env_id] = wp.int32(opponent_ahead)
+        env.prev_opponent_ahead[env_id] = wp.int32(gap > 0.0)
 
-    out.total = reward.global_scale * (
-        out.progress
-        + out.lateral
-        + out.oob
-        + out.wall
-        + out.wall_impact
-        + out.slip
-        + out.smoothness
-        + out.passing
-        + out.collision
-        + out.rear_end
-        + out.overtake
-    )
-
-    if severe_oob:
-        env.oob_streak[env_id] = env.oob_streak[env_id] + 1
-    else:
-        env.oob_streak[env_id] = 0
     stopped_now = (
         speed_squared
         < termination.speed_threshold * termination.speed_threshold
         and wp.abs(raw_delta_s) < termination.minimum_progress
     )
-    if stopped_now:
+    if stopped_now and env.episode_step[env_id] > termination.minimum_stopped_step:
         env.stopped_streak[env_id] = env.stopped_streak[env_id] + 1
     else:
         env.stopped_streak[env_id] = 0
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
-    oob_done = (
-        center_penetration
-        or env.oob_streak[env_id] >= termination.maximum_oob_steps
-    )
+    oob_done = wall_contact
     stopped = (
         env.stopped_streak[env_id] >= termination.maximum_stopped_steps
     )
@@ -1258,16 +1219,23 @@ def compute_reward_and_done(
         and contact.contact != 0
         and contact.closing_speed > termination.collision_speed
     )
-    wall_impact_done = (
-        wall_contact and v_normal >= termination.wall_impact_speed
+
+    out.total = reward.global_scale * (
+        out.progress
+        + out.wall_contact
+        + out.steering_change
+        + out.steering_history
+        + out.passing
+        + out.collision
+        + out.rear_end
     )
+
     out.done = (
         timeout
         or oob_done
         or stopped
         or invalid
         or collision_done
-        or wall_impact_done
     )
     if timeout:
         out.done_flags = out.done_flags | 1
@@ -1279,8 +1247,6 @@ def compute_reward_and_done(
         out.done_flags = out.done_flags | 8
     if collision_done:
         out.done_flags = out.done_flags | 16
-    if wall_impact_done:
-        out.done_flags = out.done_flags | 32
 
     env.lap_cross[env_id] = 0.0
     if (
@@ -1292,10 +1258,7 @@ def compute_reward_and_done(
         env.lap_cross[env_id] = 1.0
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
-    env.prev_off_track[env_id] = wp.int32(off_track)
-    env.prev_wall_contact[env_id] = wp.int32(wall_contact)
     env.metric_progress[env_id] = progress_ds
-    env.metric_oob[env_id] = wp.float32(off_track)
     env.metric_wall[env_id] = wp.float32(wall_contact)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
@@ -1373,12 +1336,8 @@ def write_raw_observation(
         obs_params.future_minimum_lookahead,
     )
     for wheel in range(4):
-        if obs_params.zero_tyre_slip != 0:
-            output[env_id, OBS_SLIP_RATIO_START + wheel] = 0.0
-            output[env_id, OBS_SLIP_ANGLE_START + wheel] = 0.0
-        else:
-            output[env_id, OBS_SLIP_RATIO_START + wheel] = ego.slip_ratio[wheel]
-            output[env_id, OBS_SLIP_ANGLE_START + wheel] = ego.slip_angle[wheel]
+        output[env_id, OBS_SLIP_RATIO_START + wheel] = ego.slip_ratio[wheel]
+        output[env_id, OBS_SLIP_ANGLE_START + wheel] = ego.slip_angle[wheel]
         output[env_id, OBS_LOAD_START + wheel] = ego.load_ratio[wheel]
 
     visible = wp.int32(0)
@@ -1401,14 +1360,23 @@ def write_raw_observation(
                 -wp.sin(ego.yaw) * relative_velocity[0]
                 + wp.cos(ego.yaw) * relative_velocity[1],
             )
+            relative_accel = body_accel_world(opponent) - body_accel_world(ego)
+            relative_accel_body = wp.vec2f(
+                wp.cos(ego.yaw) * relative_accel[0]
+                + wp.sin(ego.yaw) * relative_accel[1],
+                -wp.sin(ego.yaw) * relative_accel[0]
+                + wp.cos(ego.yaw) * relative_accel[1],
+            )
             output[env_id, OBS_OPPONENT_START] = relative_position[0]
             output[env_id, OBS_OPPONENT_START + 1] = relative_position[1]
             output[env_id, OBS_OPPONENT_START + 2] = relative_velocity_body[0]
             output[env_id, OBS_OPPONENT_START + 3] = relative_velocity_body[1]
-            output[env_id, OBS_OPPONENT_START + 4] = (
+            output[env_id, OBS_OPPONENT_START + 4] = relative_accel_body[0]
+            output[env_id, OBS_OPPONENT_START + 5] = relative_accel_body[1]
+            output[env_id, OBS_OPPONENT_START + 6] = (
                 gap / wp.max(0.5 * track.length, 1.0e-6)
             )
-            output[env_id, OBS_OPPONENT_START + 5] = opponent_frenet.ey
+            output[env_id, OBS_OPPONENT_START + 7] = opponent_frenet.ey
 
     if obs_params.clip > 0.0:
         for feature in range(OBS_DIM):
@@ -1462,16 +1430,12 @@ def store_reward(
 ):
     env.reward[env_id] = result.total
     env.reward_progress[env_id] = result.progress
-    env.reward_lateral[env_id] = result.lateral
-    env.reward_oob[env_id] = result.oob
-    env.reward_wall[env_id] = result.wall
-    env.reward_wall_impact[env_id] = result.wall_impact
-    env.reward_slip[env_id] = result.slip
-    env.reward_smoothness[env_id] = result.smoothness
+    env.reward_wall_contact[env_id] = result.wall_contact
+    env.reward_steering_change[env_id] = result.steering_change
+    env.reward_steering_history[env_id] = result.steering_history
     env.reward_passing[env_id] = result.passing
     env.reward_collision[env_id] = result.collision
     env.reward_rear_end[env_id] = result.rear_end
-    env.reward_overtake[env_id] = result.overtake
     env.done[env_id] = result.done
     env.done_flags[env_id] = result.done_flags
     env.term_timeout[env_id] = (result.done_flags & 1) != 0
@@ -1479,7 +1443,6 @@ def store_reward(
     env.term_stopped[env_id] = (result.done_flags & 4) != 0
     env.term_invalid[env_id] = (result.done_flags & 8) != 0
     env.term_collision[env_id] = (result.done_flags & 16) != 0
-    env.term_wall_impact[env_id] = (result.done_flags & 32) != 0
     env.completed_episode_steps[env_id] = 0
     if result.done:
         env.completed_episode_steps[env_id] = env.episode_step[env_id]
@@ -1499,9 +1462,17 @@ def physics_solo_kernel(
         wp.clamp(actions[env_id][1], -1.0, 1.0),
     )
     execution_action = delayed_physics_action(env_id, action, env)
+    push_executed_longitudinal(
+        env.executed_longitudinal_history, env_id, execution_action[0]
+    )
     ego = load_vehicle(ego_buffers, env_id)
     ego = apply_command(
         ego, execution_action, ego_buffers.steer_bias[env_id], sim
+    )
+    executed_steer = execution_action[1]
+    executed_steer = ego.steer
+    push_executed_steer(
+        env.executed_steer_history, env_id, executed_steer
     )
     for _ in range(substeps):
         ego = integrate_vehicle_substep(
@@ -1545,9 +1516,17 @@ def physics_stage_kernel(
             wp.clamp(actions[env_id][1], -1.0, 1.0),
         )
         execution_action = delayed_physics_action(env_id, action, env)
+        push_executed_longitudinal(
+            env.executed_longitudinal_history, env_id, execution_action[0]
+        )
         ego = load_vehicle(ego_buffers, env_id)
         ego = apply_command(
             ego, execution_action, ego_buffers.steer_bias[env_id], sim
+        )
+        executed_steer = execution_action[1]
+        executed_steer = ego.steer
+        push_executed_steer(
+            env.executed_steer_history, env_id, executed_steer
         )
         for _ in range(substeps):
             ego = integrate_vehicle_substep(
@@ -1583,11 +1562,23 @@ def physics_stage_kernel(
             )
             if forward_speed > env.opponent_speed_cap[env_id]:
                 opponent_action = wp.vec2f(0.0, opponent_action[1])
+        push_executed_longitudinal(
+            env.opponent_executed_longitudinal_history,
+            env_id,
+            opponent_action[0],
+        )
         opponent = apply_command(
             opponent,
             opponent_action,
             opponent_buffers.steer_bias[env_id],
             sim,
+        )
+        opponent_executed_steer = opponent_action[1]
+        opponent_executed_steer = opponent.steer
+        push_executed_steer(
+            env.opponent_executed_steer_history,
+            env_id,
+            opponent_executed_steer,
         )
         for _ in range(substeps):
             opponent = integrate_vehicle_substep(
@@ -1795,6 +1786,11 @@ def env_step_kernel(
     ego = apply_command(
         ego, execution_action, ego_buffers.steer_bias[env_id], sim
     )
+    executed_steer = execution_action[1]
+    executed_steer = ego.steer
+    push_executed_steer(
+        env.executed_steer_history, env_id, executed_steer
+    )
 
     opponent_frenet = project_track(
         wp.vec2f(opponent.x, opponent.y),
@@ -1818,6 +1814,13 @@ def env_step_kernel(
             opponent_action,
             opponent_buffers.steer_bias[env_id],
             sim,
+        )
+        opponent_executed_steer = opponent_action[1]
+        opponent_executed_steer = opponent.steer
+        push_executed_steer(
+            env.opponent_executed_steer_history,
+            env_id,
+            opponent_executed_steer,
         )
 
     contact = ContactResult()
@@ -2009,7 +2012,6 @@ def reset_envs_kernel(
         env.term_stopped[env_id] = False
         env.term_invalid[env_id] = False
         env.term_collision[env_id] = False
-        env.term_wall_impact[env_id] = False
         env.reward[env_id] = 0.0
         store_vehicle(ego_buffers, env_id, ego)
         store_vehicle(opponent_buffers, env_id, opponent)

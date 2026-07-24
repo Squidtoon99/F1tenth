@@ -56,11 +56,31 @@ VESC_STATE_STAMPED = """
 std_msgs/Header header
 vesc_msgs/VescState state
 """
+ACTUATOR_COMMAND = """
+std_msgs/Header header
+uint64 generation
+builtin_interfaces/Time observation_stamp
+float64 drive_current_a
+float64 brake_current_a
+float64 servo_position
+float32 longitudinal
+float32 steering
+uint8 SOURCE_SAFE=0
+uint8 SOURCE_RL=1
+uint8 SOURCE_TELEOP=2
+uint8 SOURCE_SAFETY=3
+uint8 source
+"""
+
+TOPIC_IMU_RAW_RECORD = "/sensor_policy/imu_raw_record"
+TOPIC_IMU_ACTOR_RECORD = "/sensor_policy/imu_actor_record"
 
 # Topics used by the calibration fits.
 DEFAULT_TOPICS = (
     "/odom",
     "/sensors/imu/raw",
+    TOPIC_IMU_RAW_RECORD,
+    TOPIC_IMU_ACTOR_RECORD,
     "/pf/pose/odom",
     "/ackermann_cmd",
     "/teleop",
@@ -86,6 +106,9 @@ def build_typestore():
     types.update(get_types_from_msg(VESC_STATE, "vesc_msgs/msg/VescState"))
     types.update(
         get_types_from_msg(VESC_STATE_STAMPED, "vesc_msgs/msg/VescStateStamped")
+    )
+    types.update(
+        get_types_from_msg(ACTUATOR_COMMAND, "f1tenth_interfaces/msg/ActuatorCommand")
     )
     ts.register(types)
     return ts
@@ -122,6 +145,7 @@ def load_series(
     Column layouts:
       /odom                         -> t, vx, yaw_rate
       /sensors/imu/raw              -> t, ax, ay, az, gx, gy, gz
+      /sensor_policy/imu_*_record   -> t, ax, ay, az, gx, gy, gz
       /pf/pose/odom                 -> t, x, y, yaw
       /ackermann_cmd|/teleop|/drive -> t, speed, steering, acceleration
       /commands/motor/speed|current|brake
@@ -135,6 +159,7 @@ def load_series(
     ts = typestore or build_typestore()
 
     odom, imu, pf = [], [], []
+    imu_raw_record, imu_actor_record = [], []
     ackermann, teleop, drive = [], [], []
     motor_speed, motor_current, motor_brake = [], [], []
     servo, servo_cmd = [], []
@@ -152,6 +177,15 @@ def load_series(
                 a = m.linear_acceleration
                 g = m.angular_velocity
                 imu.append((t, a.x, a.y, a.z, g.x, g.y, g.z))
+            elif conn.topic in (TOPIC_IMU_RAW_RECORD, TOPIC_IMU_ACTOR_RECORD):
+                data = list(m.data)
+                if len(data) < 6:
+                    continue
+                row = (t, *data[:6])
+                if conn.topic == TOPIC_IMU_RAW_RECORD:
+                    imu_raw_record.append(row)
+                else:
+                    imu_actor_record.append(row)
             elif conn.topic == "/pf/pose/odom":
                 p = m.pose.pose
                 pf.append(
@@ -212,6 +246,8 @@ def load_series(
     return {
         "/odom": arr(odom, 3),
         "/sensors/imu/raw": arr(imu, 7),
+        TOPIC_IMU_RAW_RECORD: arr(imu_raw_record, 7),
+        TOPIC_IMU_ACTOR_RECORD: arr(imu_actor_record, 7),
         "/pf/pose/odom": arr(pf, 4),
         "/ackermann_cmd": arr(ackermann, 4),
         "/teleop": arr(teleop, 4),
@@ -222,6 +258,93 @@ def load_series(
         "/commands/servo/position": arr(servo, 2),
         "/sensors/servo_position_command": arr(servo_cmd, 2),
         "/sensors/core": arr(core, 17),
+    }
+
+
+def load_sensor_policy_series(
+    bag_dir: Path | str,
+    typestore=None,
+) -> dict[str, np.ndarray]:
+    """Load sensor-policy replay topics without requiring a ROS installation.
+
+    Scan columns are ``t, header_t, angle_min, angle_increment, range_min,
+    range_max, ranges...``. Actuator columns are ``t, generation,
+    observation_t, drive_a, brake_a, servo, longitudinal, steering, source``.
+    Other variable-length array topics use ``t, data...``.
+    """
+    bag_dir = Path(bag_dir)
+    ts = typestore or build_typestore()
+    rows = {
+        "/scan": [],
+        "/sensors/imu/raw": [],
+        "/odom": [],
+        "/rl/actuator/desired": [],
+        "/rl/actuator/applied": [],
+        "/sensor_racer/diagnostics": [],
+        "/sensor_racer/observation": [],
+    }
+
+    with AnyReader([bag_dir], default_typestore=ts) as reader:
+        for conn, t_ns, raw in reader.messages():
+            if conn.topic not in rows:
+                continue
+            t = t_ns * 1e-9
+            m = reader.deserialize(raw, conn.msgtype)
+            if conn.topic == "/scan":
+                header_t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+                rows[conn.topic].append(
+                    (
+                        t,
+                        header_t,
+                        m.angle_min,
+                        m.angle_increment,
+                        m.range_min,
+                        m.range_max,
+                        *m.ranges,
+                    )
+                )
+            elif conn.topic == "/sensors/imu/raw":
+                a = m.linear_acceleration
+                g = m.angular_velocity
+                rows[conn.topic].append((t, a.x, a.y, a.z, g.x, g.y, g.z))
+            elif conn.topic == "/odom":
+                rows[conn.topic].append((t, m.twist.twist.linear.x))
+            elif conn.topic in ("/rl/actuator/desired", "/rl/actuator/applied"):
+                observation_t = (
+                    m.observation_stamp.sec + m.observation_stamp.nanosec * 1e-9
+                )
+                rows[conn.topic].append(
+                    (
+                        t,
+                        m.generation,
+                        observation_t,
+                        m.drive_current_a,
+                        m.brake_current_a,
+                        m.servo_position,
+                        m.longitudinal,
+                        m.steering,
+                        m.source,
+                    )
+                )
+            else:
+                rows[conn.topic].append((t, *m.data))
+
+    widths = {
+        "/scan": 6,
+        "/sensors/imu/raw": 7,
+        "/odom": 2,
+        "/rl/actuator/desired": 9,
+        "/rl/actuator/applied": 9,
+        "/sensor_racer/diagnostics": 1,
+        "/sensor_racer/observation": 1,
+    }
+    return {
+        topic: (
+            np.asarray(values, dtype=float)
+            if values
+            else np.zeros((0, widths[topic]), dtype=float)
+        )
+        for topic, values in rows.items()
     }
 
 

@@ -92,3 +92,124 @@ Outputs feed:
 
 - the simulator model used by [`training/`](../training/)
 - the per-car overlay [`deploy/cars/<carNN>/params.yaml`](../deploy/cars/)
+
+## IMU bias/noise characterization (sensor policy)
+
+Quantify per-axis bias, noise, drift, sample rate, and VESC current/temperature
+correlation from sensor-policy calibration bags. Outputs are small JSON/Markdown
+summaries under `calibration/results/` (gitignored); raw rosbags stay off-repo.
+
+### On-car recording (later hardware step)
+
+Run with the sensor-policy stack in **recording mode** (`recording_mode:=true` on
+the policy node). The runtime publishes converted SI means and actor IMU values
+without changing the control path:
+
+| Topic | Content |
+| --- | --- |
+| `/sensors/imu/raw` | Driver-frame IMU (required) |
+| `/sensor_policy/imu_raw_record` | Converted SI mean per policy interval |
+| `/sensor_policy/imu_actor_record` | Actor indices `[1081:1087]` after preprocess |
+| `/sensors/core` | VESC temp/current (optional; needed for correlation) |
+| `/scan`, `/odom` | Context for dynamic runs (optional for static analysis) |
+
+Capture three conditions before accepting bias/sign changes:
+
+1. **static_off** — car level, electronics/motor off where possible (~60 s).
+2. **static_on** — full VESC/LiDAR/compute powered, zero drive current (~60 s).
+3. **dynamic** — boxed-wheel, low-speed, or live-track segments with motor load.
+
+Example bag record (adjust launch/remaps to your on-car workflow):
+
+```bash
+ros2 bag record -o ~/f1tenth_calib_bags/static_imu_on_$(date +%H%M%S) \
+  /sensors/imu/raw /sensor_policy/imu_raw_record /sensor_policy/imu_actor_record \
+  /sensors/core /scan /odom
+```
+
+### Offline analysis
+
+```bash
+.venv/bin/python calibration/characterize_imu.py \
+  --bag ~/f1tenth_calib_bags/static_imu_on_HHMMSS \
+  --condition static_on \
+  --cal-yaml src/racing_rl/f1tenth_rl_agent/config/sensor_policy.yaml \
+  --out-json calibration/results/imu_static_on.json \
+  --out-report calibration/results/imu_static_on.md
+```
+
+Flags:
+
+- `--condition {static_off,static_on,dynamic,unknown}` — tags the summary.
+- `--cal-yaml` — optional IMU params (`sensor_policy.yaml` or a multi-node car
+  overlay with `imu_*` keys); defaults to static-fit inference from the bag.
+- `--require-core` — exit non-zero when `/sensors/core` is missing (dynamic
+  runs where current/temp correlation is required).
+
+The tool fails clearly when `/sensors/imu/raw` is absent. It replays raw IMU
+through the deploy preprocessor and compares against recorded actor values when
+present. Review `proposed_sensor_policy_params` in the JSON before editing car
+params; re-run the same bag after any change to confirm replay parity.
+Proposed `imu_az_bias` stays `0` so gravity is not nulled in converted SI.
+
+Each summary includes per-axis mean/std/outlier counts, sample rate, short-term
+drift slope, 10 Hz actor replay stats, and (when `/sensors/core` is present)
+Pearson correlations of rolling noise vs `|current_motor|` and VESC FET/motor
+temperature.
+
+Unit tests (synthetic data, no bags):
+
+```bash
+.venv/bin/python -m pytest calibration/test_imu_characterization.py -q
+```
+
+### Remaining physical recording steps
+
+1. Launch the sensor-policy stack with `recording_mode:=true` (no actuator /
+   remapped outputs for the first passes).
+2. Record **static_off** (~60 s, car level) and **static_on** (~60 s, stack
+   powered, zero current).
+3. Run `characterize_imu.py` on each bag; compare powered vs unpowered noise and
+   review proposed ax/ay/gyro biases.
+4. During boxed-wheel / low-speed / live-track tests, keep recording raw + actor
+   IMU with `/sensors/core`; re-run with `--condition dynamic --require-core`.
+5. Accept param changes only after replaying the same bag through preprocessing;
+   do not tune filters mid-lap. Feed measured bias/noise into a later retraining
+   follow-up if `az/gx/gy` should stop being frozen.
+
+## Sensor-policy four-condition parity capture
+
+This capture is a future physical step. Keep motor actuation disabled: use a
+mechanical stand/chock for stationary captures and hand-push the car for moving
+captures. Do not infer or fabricate these measurements while the car is
+unavailable.
+
+Collect exactly four bags with unchanged sensor-policy parameters and checkpoint:
+
+1. `race_corridor_stationary`: bounded race corridor, level and still, 60 seconds.
+2. `race_corridor_hand_push`: same placement, three straight hand-pushed passes at
+   approximately 0.5–1.0 m/s.
+3. `hallway_open_stationary`: hallway with one open side, level and still, 60 seconds.
+4. `hallway_open_hand_push`: same placement, three straight hand-pushed passes at
+   approximately 0.5–1.0 m/s.
+
+Enable `recording_mode` and `publish_raw_observation` on `sensor_racer`, verify
+that `/commands/motor/current` remains zero and `/rl/actuator/applied` never
+reports `SOURCE_RL`, then record each condition:
+
+```bash
+CONDITION=race_corridor_stationary
+ros2 bag record -o ~/f1tenth_calib_bags/sensor_parity_${CONDITION}_$(date -u +%Y%m%dT%H%M%SZ) \
+  /scan /sensors/imu/raw /sensor_racer/imu_raw_record \
+  /sensor_racer/imu_actor_record /sensor_racer/observation \
+  /sensor_racer/diagnostics /odom /sensors/core \
+  /rl/actuator/desired /rl/actuator/applied \
+  /commands/motor/current /commands/motor/brake \
+  /commands/servo/position
+```
+
+Repeat with each condition name. Before accepting a bag, check its duration,
+topic counts, zero motor current, source ownership, and observation/action
+replay with `training/analysis/sensor_policy_bag.py`. Record corridor dimensions,
+open-side orientation, checkpoint SHA-256, parameter-file SHA-256, and whether
+the car was stationary or hand-pushed beside each bag.

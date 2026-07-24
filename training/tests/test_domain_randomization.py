@@ -153,13 +153,13 @@ def test_dr_enabled_samples_vary_and_respect_bounds(warp_runtime):
 
         control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
         obs, _ = env.reset()
-        assert torch.equal(obs[:, 384:390], torch.zeros_like(obs[:, 384:390]))
+        assert torch.equal(obs[:, 384:392], torch.zeros_like(obs[:, 384:392]))
         for _ in range(120):
             actions = torch.rand(num_envs, 2, device=env.device) * 0.4
             obs, reward, _, _ = env.step(actions, n_steps=control_interval)
             assert torch.isfinite(obs).all()
             assert torch.isfinite(reward).all()
-            assert torch.equal(obs[:, 384:390], torch.zeros_like(obs[:, 384:390]))
+            assert torch.equal(obs[:, 384:392], torch.zeros_like(obs[:, 384:392]))
     finally:
         env.close()
 

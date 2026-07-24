@@ -9,14 +9,20 @@ images.
   - `Dockerfile.base` — ROS 2 Humble + all deps + tooling (rarely changes).
   - `Dockerfile.dev` — base + dev conveniences; source mounted live (see
     [`tools/dev.sh`](../tools/dev.sh)).
-  - `Dockerfile.runtime` — base + a baked colcon install. The **generic car image**.
+  - `Dockerfile.runtime` — base + a baked colcon install. The **generic racing
+    car image** (`f1tenth-racing`).
+  - `Dockerfile.sensor_policy` — JetPack 6 iGPU PyTorch + **full** `src/` colcon
+    workspace (`f1tenth-sensor-policy`). See ADR 0008.
+  - `smoke_sensor_policy.sh` — non-powered CUDA/ROS/artifact/launch smoke for the
+    sensor-policy image.
   - `entrypoint.sh` — sources ROS + workspace and applies the mounted per-car overlay.
 - `apptainer/` — `training.def` (HPC RL training) and `racing.def` (run the racing
   image where Apptainer is preferred).
 - `cars/` — per-car config overlays (identity + params + map). See
   [`cars/README.md`](cars/README.md).
 - `releases/manifest.csv` — git SHA -> image sha256 -> car, for traceability.
-- `scripts/` — `build_image.sh`, `snapshot.sh`, `load_to_jetson.sh`.
+- `scripts/` — `build_image.sh`, `snapshot.sh`, `load_to_jetson.sh`,
+  `rollback_jetson.sh` (`TARGET=racing|sensor_policy`).
 - `snapshots/` — built image artifacts (gitignored).
 
 ## Release flow

@@ -33,7 +33,7 @@ def _latched_qos() -> QoSProfile:
 class ScriptedOpponentNode(Node):
     def __init__(self, **kwargs):
         super().__init__("scripted_opponent", **kwargs)
-        self.declare_parameter("control_hz", 20.0)
+        self.declare_parameter("control_hz", ifc.CONTROL_HZ)
         self.declare_parameter("opponent_target_speed", 3.0)
         self.declare_parameter("kp_ey", 1.0)
         self.declare_parameter("kh_heading", 1.0)
@@ -60,7 +60,7 @@ class ScriptedOpponentNode(Node):
         self.create_subscription(Odometry, ifc.TOPIC_OPP_RACE_ODOM, self._on_odom, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, ifc.TOPIC_OPP_DRIVE, 10)
-        self.create_timer(1.0 / hz if hz > 0 else 0.05, self._on_timer)
+        self.create_timer(1.0 / hz if hz > 0 else 1.0 / ifc.CONTROL_HZ, self._on_timer)
         self.get_logger().info(
             f"scripted_opponent ready (target_speed={self.target_speed:.2f} m/s)"
         )

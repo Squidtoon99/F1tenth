@@ -69,7 +69,7 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 - `car.yaml` — identity, authored on the car, **never overwritten**.
 - `params.yaml` — **node-scoped ROS 2 parameters** (keyed by node name with a
   `ros__parameters` block) layered on top of the package launch defaults. Covers the
-  RL `drive` limits, `vehicle_obs` observation mode (390-dim solo, opponent block
+  RL `drive` limits, `vehicle_obs` observation mode (392-dim solo, opponent block
   zeroed), and the vendored VESC calibration. It is passed directly to the nodes —
   `race.launch.py` forwards it as `overlay_params_file:=/config/params.yaml` and
   `car.launch.py` as `vesc_config:=/config/params.yaml`; there is no custom parser.
@@ -83,15 +83,15 @@ or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
 The RL graph emits no drive command until pose + twist are live.
 
 **Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
-are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
+are not compatible with the monorepo 392-dim contract; retrain before RL deploy.
 
 ## Certification gate (f1tenth_gym)
 
 Before a release, the stack is certified against the `f1tenth_gym` bridge with a
-real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
+real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
 `policy_inference` → `drive`) is the sole gate. All commands run from the repo root.
 
-1. **Contract, parity, unit (host `.venv`)** — the 390-dim contract and the
+1. **Contract, parity, unit (host `.venv`)** — the 392-dim contract and the
    training↔deploy observation parity:
 
    ```bash
@@ -133,14 +133,14 @@ real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
 
 ### Acceptance criteria (validator PASS)
 
-- observations are all finite and exactly 390-dim; actions in `[-1, 1]`; drive
+- observations are all finite and exactly 392-dim; actions in `[-1, 1]`; drive
   `acceleration` in `[-1, 1]`, `speed == 0`, and `|steer|` within `max_steer`;
 - the car moves (odom speed above the floor for enough samples);
-- the opponent block `[384:390)` stays zero in solo mode;
+- the opponent block `[384:392)` stays zero in solo mode;
 - ≥ 3 consecutive IV_2026 laps and a 10-minute soak with no process exits and no
   watchdog trips during normal operation;
 - policy-loss and non-finite-input fault tests command a safe brake within the
-  ~0.15 s (3-cycle @ 20 Hz) drive watchdog (covered by the `f1tenth_control` node
+  ~0.30 s (3-cycle @ 10 Hz) drive watchdog (covered by the `f1tenth_control` node
   tests).
 - checkpoints must be `policy_format_version >= 2` with `longitudinal_mode: force`
   (speed-trained artifacts are rejected at load).
@@ -161,25 +161,8 @@ single-mode build and calibrated `deploy/cars/car01/params.yaml` together.
 
 Confirm `deploy/cars/car01/params.yaml` has measured VESC servo gains
 (`steering_angle_to_servo_*`) and bench-safe current limits before any powered
-run. The observation mode
-(`enable_load_estimation` / `enable_slip_estimation`) must also match how the
-deployed checkpoint was trained.
-When the checkpoint was trained with live slip/load channels (`zero_tyre_slip_obs:
-false`), enable both flags in the per-car overlay and set `slip_obs_mean` from the
-checkpoint's saved `obs_norm` running mean:
-
-```bash
-.venv/bin/python -c "
-import torch
-p = torch.load('/path/to/policy.pt', map_location='cpu', weights_only=False)
-print(p['obs_norm']['mean'][372:380].tolist())
-"
-```
-
-Paste the eight values into `vehicle_obs.slip_obs_mean` in
-`deploy/cars/<car_id>/params.yaml`. With estimation off, `vehicle_obs` emits zeros
-`[372:380)` and ones `[380:384)` — out-of-distribution for slip/load-trained
-policies.
+run. Sensor-policy deploy uses delta steering; set `steering_action_mode: delta`
+and matching `steering_delta_max_rad` on the sensor racer.
 
 ### On-car slip/load calibration (first powered test)
 
@@ -194,10 +177,107 @@ IMU sign and filter tuning happens on the ground, not in the gym bridge (which h
    `vx_ground_lp_alpha`, and `slip_speed_min_mps` from a rosbag if channels look
    wrong post-`obs_norm`.
 
+## Sensor-policy experiment (1097-D recurrent + current gate)
+
+Isolated from the 390-D racing path (ADR 0008). Same per-car `/config` overlay;
+different image name, moving tag, launch, and checkpoint filename.
+
+### What it runs
+
+`sensor_policy.launch.py` starts vendored sensor drivers, `joy_teleop`,
+`rl_deadman_gate`, optional safety brake, `sensor_racer`, and `rl_current_gate`.
+`rl_current_gate` is the **sole** publisher of VESC motor/brake/servo commands.
+It does **not** start PF, map server, SLAM, `ackermann_mux`, Ackermann-mode
+`vesc_actuator`, or the 390-D RL graph.
+
+Staged enable flags support non-powered certification:
+
+- `enable_drivers:=false` — no serial/LiDAR/joy nodes
+- `enable_racer:=false` — no inference node
+- `enable_gate:=false` — no VESC command publisher
+
+First-run current limits default to **5 A** via launch args (`i_drive_max_a`,
+`i_brake_max_a`, `i_brake_safe_a`). The launch passes the same drive/brake limits
+to both `sensor_racer` and `rl_current_gate`; keep the two node-scoped values equal
+in the per-car overlay.
+
+Record `/sensor_racer/diagnostics` and `/rl_current_gate/diagnostics` during dry
+runs. They expose applied ownership, consecutive SAFE ticks, GRU reset reasons,
+and gate rejection totals/reason counters. A drive- or brake-limit rejection
+means the producer and gate limits are not aligned and must remain fail-closed.
+
+### Build / snapshot / load (SHA-pinned, native arm64)
+
+Requires a Docker-capable **linux/arm64** host (Jetson or arm64 builder). The NGC
+`-igpu` base is arm64-only; this amd64 dev host cannot certify the image.
+
+Initialize the range_libc submodule before building:
+
+```bash
+git submodule update --init src/localization/range_libc
+```
+
+```bash
+# 1) Build (tags f1tenth-sensor-policy:<gitsha> and :sensor-policy)
+TARGET=sensor_policy deploy/scripts/build_image.sh
+
+# Base pin (Jammy / CUDA 12.6 / ROS 2 Humble):
+# nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
+
+# 2) Non-powered smoke on the build host (Jetson, after build):
+SMOKE=1 TARGET=sensor_policy deploy/scripts/build_image.sh
+# Optional: CHECKPOINT_PATH=/path/to/policy.pt SMOKE=1 ...
+
+# 3) Snapshot
+TARGET=sensor_policy deploy/scripts/snapshot.sh
+# -> deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz
+
+# 4) Inventory + load (never overwrites :develop or policies/policy.pt)
+TARGET=sensor_policy \
+  CHECKPOINT=training/outputs/runs/7210e365/checkpoints/policy_271360000.pt \
+  ACTOR_LAYOUT=2 POLICY_FORMAT=4 JETPACK_L4T=R36.4.7 \
+  deploy/scripts/load_to_jetson.sh shereef@f1tenth \
+  deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz car01
+```
+
+Load records the previous `:sensor-policy` tag, checkpoint path, and Torch/CUDA pins
+under `/opt/f1tenth/rollback/sensor_policy/` and appends `deploy/releases/manifest.csv`.
+
+### Run / dry-run / smoke / rollback
+
+```bash
+# On the car (helper written by load_to_jetson.sh):
+ssh shereef@f1tenth /opt/f1tenth/rollback/sensor_policy/run.sh
+
+# Explicit dry-run (VESC topics -> *_dryrun; no drivers/gate/racer):
+docker run --rm -it --runtime nvidia --privileged --net=host \
+  -v /dev:/dev \
+  -v /opt/f1tenth/config:/config:ro \
+  -v /opt/f1tenth/policies:/policies:ro \
+  f1tenth-sensor-policy:sensor-policy \
+  ros2 launch f1tenth_bringup sensor_policy.launch.py \
+    dry_run:=true device:=cuda \
+    enable_drivers:=false enable_gate:=false enable_racer:=false
+
+# Non-powered image smoke (CUDA + artifact + inventory + launch parse):
+docker run --rm --runtime nvidia \
+  -v /opt/f1tenth/policies:/policies:ro \
+  --entrypoint smoke_sensor_policy.sh f1tenth-sensor-policy:sensor-policy
+
+# Rollback moving tag to the pre-load image:
+deploy/scripts/rollback_jetson.sh shereef@f1tenth sensor_policy
+```
+
+Logs: container stdout plus on-car `tegrastats` / rosbag as required by the 10 Hz
+gate. Keep racing rollback available via
+`deploy/scripts/rollback_jetson.sh shereef@f1tenth racing`.
+
 ## Releases
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`). Build + snapshot that
 exact commit and note the tag in the manifest. There is no release branch.
+Sensor-policy experimental loads use the same manifest with `sensor_policy` in
+the notes column; they do not replace a racing release tag.
 
 ## Offboard training (HPC)
 
@@ -205,7 +285,7 @@ RL training can run on HPC via Apptainer:
 
 ```bash
 apptainer build training.sif deploy/apptainer/training.def
-apptainer run --nv training.sif --num-envs 4096 --total-steps 2000000
+apptainer run --nv training.sif --num-envs 1024 --total-steps 2000000
 ```
 
 Weights produced there are delivered to the car as the mounted `/policies/policy.pt`

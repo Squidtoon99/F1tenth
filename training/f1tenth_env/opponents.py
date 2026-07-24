@@ -1,16 +1,3 @@
-"""Generic, pluggable opponent framework for 1v1 racing.
-
-There is always exactly one opponent (hard 1v1; no multi-agent generality). The
-environment talks only to an :class:`OpponentController`; whether the opponent is
-a scripted controller or a neural policy is invisible to the env.
-
-Concrete controllers:
-- :class:`ScriptedCenterlineOpponent` - a centerline-following P-controller with
-  closed-loop longitudinal speed control (shipped, the default 1v1 opponent).
-- :class:`PolicyOpponent` - a frozen-policy opponent for self-play. The delayed
-  snapshot/refresh training loop lives in ``standalone_trainer.py`` (``SelfPlayManager``).
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,12 +11,6 @@ from .geom import quat_to_xyz
 
 @dataclass
 class OpponentContext:
-    """Everything a controller needs to choose the opponent's actions this step.
-
-    ``opp_obs`` is only populated when the controller declares
-    ``requires_observation = True`` (e.g. the policy opponent), so the scripted
-    opponent never pays for building a full egocentric observation.
-    """
 
     step_state: dict[str, Any]
     opp_pos: torch.Tensor
@@ -46,12 +27,6 @@ class OpponentContext:
 
 
 class OpponentController:
-    """Base class for the single 1v1 opponent.
-
-    Subclasses return ``(num_envs, num_actions)`` actions in ``[-1, 1]`` from
-    :meth:`act`. ``requires_observation`` tells the env whether to build the
-    opponent's full egocentric observation before calling :meth:`act`.
-    """
 
     requires_observation: bool = False
 
@@ -59,19 +34,10 @@ class OpponentController:
         raise NotImplementedError
 
     def reset(self, mask: torch.Tensor) -> None:
-        """Optional hook for stateful controllers. No-op by default."""
         return None
 
 
 class ScriptedCenterlineOpponent(OpponentController):
-    """Track-following opponent: P-control on lateral error + heading error.
-
-    Each env row holds a target cruise speed (kept below the ego's pace so an
-    overtake is feasible) and a lateral line offset, both sampled per reset. When
-    ``opponent_target_speed_range`` is unset the speed is the fixed
-    ``opponent_target_speed``; when ``opponent_lateral_offset_m`` is 0 the line is
-    the centerline -- so the defaults reproduce a fixed-speed centerline follower.
-    """
 
     requires_observation = False
 
@@ -144,14 +110,16 @@ class ScriptedCenterlineOpponent(OpponentController):
         return torch.stack([throttle, steer], dim=-1)
 
 
-class PolicyOpponent(OpponentController):
-    """Frozen sensor-policy opponent for self-play.
+def _actor_is_recurrent(actor: torch.nn.Module) -> bool:
+    raw = getattr(actor, "_orig_mod", actor)
+    return (
+        hasattr(raw, "step")
+        and hasattr(raw, "initial_hidden")
+        and hasattr(raw, "gru_hidden_dim")
+    )
 
-    Wraps a sensor-policy actor (flat MLP or LiDAR CNN) and optional
-    observation-normalization statistics; acts deterministically on the
-    opponent's vehicle-centric sensor observation (1,093-D). Privileged/symmetric
-    snapshots are rejected on load.
-    """
+
+class PolicyOpponent(OpponentController):
 
     requires_observation = True
 
@@ -177,12 +145,34 @@ class PolicyOpponent(OpponentController):
         self.obs_var = obs_var.to(device) if obs_var is not None else None
         self._inv_std: torch.Tensor | None = None
         self._actor_compiled = False
+        self._hidden: torch.Tensor | None = None
+        self._recurrent = _actor_is_recurrent(actor)
         self._set_norm_stats(self.obs_mean, self.obs_var)
         self.actor.eval()
 
     def _raw_actor(self) -> torch.nn.Module:
-        """Underlying module; ``torch.compile`` wraps it as ``_orig_mod``."""
         return getattr(self.actor, "_orig_mod", self.actor)
+
+    def _ensure_hidden(self, num_envs: int) -> torch.Tensor:
+        raw = self._raw_actor()
+        if (
+            self._hidden is None
+            or self._hidden.shape[0] != num_envs
+            or self._hidden.device != self.device
+        ):
+            self._hidden = raw.initial_hidden(
+                num_envs, device=self.device, dtype=torch.float32
+            )
+        return self._hidden
+
+    def reset(self, mask: torch.Tensor) -> None:
+        if not self._recurrent or mask is None:
+            return
+        num_envs = int(mask.shape[0])
+        hidden = self._ensure_hidden(num_envs)
+        mask_b = mask.to(device=hidden.device, dtype=torch.bool)
+        if mask_b.any():
+            hidden[mask_b] = 0
 
     def _set_norm_stats(
         self, mean: torch.Tensor | None, var: torch.Tensor | None
@@ -195,7 +185,6 @@ class PolicyOpponent(OpponentController):
         self._inv_std = torch.rsqrt(var + self.norm_eps)
 
     def _maybe_compile_actor(self) -> None:
-        """Compile once on CUDA; later snapshot loads update ``_orig_mod``."""
         if self._actor_compiled or self.device.type != "cuda":
             return
         self.actor = torch.compile(self._raw_actor(), mode="reduce-overhead")
@@ -252,7 +241,6 @@ class PolicyOpponent(OpponentController):
         obs_var: torch.Tensor,
         actor_architecture: dict | None = None,
     ) -> None:
-        """Hot-swap frozen actor weights and observation-normalization stats."""
         self._reject_incompatible_snapshot(actor_state_dict, actor_architecture)
         mean = obs_mean.to(self.device, dtype=torch.float32).reshape(-1)
         var = obs_var.to(self.device, dtype=torch.float32).reshape(-1)
@@ -265,8 +253,12 @@ class PolicyOpponent(OpponentController):
         raw.load_state_dict(actor_state_dict, strict=True)
         raw.to(device=self.device, dtype=torch.float32)
         raw.eval()
+        self._recurrent = _actor_is_recurrent(raw)
         self._maybe_compile_actor()
         self._set_norm_stats(mean, var)
+        # Snapshot weights changed; drop any carried GRU state.
+        if self._hidden is not None:
+            self._hidden.zero_()
 
     def act(self, ctx: OpponentContext) -> torch.Tensor:
         if ctx.opp_obs is None:
@@ -290,107 +282,38 @@ class PolicyOpponent(OpponentController):
             model_obs = self._normalize(
                 observation.to(device=self.device, dtype=torch.float32)
             )
-            action, _ = self.actor(model_obs, deterministic=True, with_logprob=False)
+            if not self._recurrent:
+                raise ValueError(
+                    "PolicyOpponent requires a recurrent lidar_cnn_gru actor"
+                )
+            hidden = self._ensure_hidden(model_obs.shape[0])
+            action, _, next_hidden = self.actor.step(
+                model_obs,
+                hidden,
+                reset_mask=None,
+                deterministic=True,
+                with_logprob=False,
+            )
+            self._hidden = next_hidden
             return torch.clamp(action, -self.act_clip, self.act_clip)
 
 
 class MixedOpponentController(OpponentController):
-    """Per-env mixed opponent population (GT Sophy-style).
-
-    Each parallel env row is independently assigned, on reset, to either the
-    scripted centerline follower or the frozen self-play policy according to the
-    configured mix weights. This is the simple hard-1v1 analogue of GT Sophy's
-    mixed opponent population (built-in slower AI + curated policy snapshots),
-    which the paper found important so the agent does not overfit to pure
-    self-play opponents.
-
-    ``mode_buf`` is a per-row bool: ``True`` -> policy, ``False`` -> scripted.
-    """
 
     requires_observation = True
 
-    def __init__(
-        self,
-        scripted: ScriptedCenterlineOpponent,
-        policy: PolicyOpponent,
-        scripted_weight: float = 0.3,
-        policy_weight: float = 0.7,
-        policy_speed_cap_prob: float = 0.0,
-        policy_speed_cap_range: tuple[float, float] = (2.5, 5.0),
-    ):
-        self.scripted = scripted
+    def __init__(self, policy: PolicyOpponent):
         self.policy = policy
-        total = float(scripted_weight) + float(policy_weight)
-        if total <= 0.0:
-            raise ValueError(
-                "opponent_mix weights must sum to a positive value; got "
-                f"scripted={scripted_weight}, policy={policy_weight}"
-            )
-        self.policy_prob = float(policy_weight) / total
-        self.cap_prob = float(policy_speed_cap_prob)
-        self.cap_range = tuple(policy_speed_cap_range)
         self.mode_buf: torch.Tensor | None = None
-        # Per-env speed cap for policy-mode rows; +inf means uncapped.
         self.cap_buf: torch.Tensor | None = None
 
-    def _ensure_buf(self, num_envs: int, device: torch.device) -> None:
-        if self.mode_buf is None or self.mode_buf.numel() != num_envs:
-            # Default everyone to policy until the first reset assigns a mix.
-            self.mode_buf = torch.ones(num_envs, dtype=torch.bool, device=device)
-        if self.cap_buf is None or self.cap_buf.numel() != num_envs:
-            self.cap_buf = torch.full(
-                (num_envs,), float("inf"), dtype=rt.tc_float, device=device
-            )
-
     def reset(self, mask: torch.Tensor) -> None:
-        if mask is None:
-            return
-        self._ensure_buf(mask.shape[0], mask.device)
-        assert self.mode_buf is not None and self.cap_buf is not None
-        n_reset = int(mask.sum().item())
-        if n_reset > 0:
-            draws = torch.rand(n_reset, device=mask.device) < self.policy_prob
-            self.mode_buf[mask] = draws
-            # Reset caps for these rows, then cap a fraction of policy-mode rows.
-            self.cap_buf[mask] = float("inf")
-            if self.cap_prob > 0.0:
-                lo, hi = self.cap_range
-                cap_draw = torch.rand(mask.shape[0], device=mask.device) < self.cap_prob
-                capped = mask & self.mode_buf & cap_draw
-                # Skew caps toward the high end (u**2 concentrates near 0 -> caps
-                # near hi), so most capped opponents are fast-but-passable rather
-                # than trivially slow, with a thinner tail down to lo.
-                u = torch.rand(mask.shape[0], dtype=rt.tc_float, device=mask.device)
-                caps = hi - (hi - lo) * u * u
-                self.cap_buf = torch.where(capped, caps, self.cap_buf)
-        self.scripted.reset(mask)
         self.policy.reset(mask)
 
-    def _apply_speed_cap(
-        self, policy_act: torch.Tensor, ctx: OpponentContext
-    ) -> torch.Tensor:
-        """Coast (zero throttle) on policy-mode rows whose forward speed exceeds
-        their per-env cap, so a capped opponent settles near a slower cruise."""
-        assert self.cap_buf is not None
-        if not bool(torch.isfinite(self.cap_buf).any()):
-            return policy_act
-        seg_dir = ctx.step_state["frenet"]["seg_dir"]
-        seg_dir = seg_dir / torch.linalg.norm(
-            seg_dir, dim=-1, keepdim=True
-        ).clamp_min(1e-6)
-        speed = (ctx.opp_vel[:, :2] * seg_dir).sum(dim=-1)
-        over = speed > self.cap_buf.to(speed.device, speed.dtype)
-        throttle = torch.where(over, torch.zeros_like(policy_act[:, 0]), policy_act[:, 0])
-        return torch.stack([throttle, policy_act[:, 1]], dim=-1)
-
     def act(self, ctx: OpponentContext) -> torch.Tensor:
-        num_envs = ctx.opp_pos.shape[0]
-        self._ensure_buf(num_envs, ctx.opp_pos.device)
-        assert self.mode_buf is not None
-        scripted_act = self.scripted.act(ctx)
-        policy_act = self._apply_speed_cap(self.policy.act(ctx), ctx)
-        mode = self.mode_buf.to(scripted_act.device).unsqueeze(-1)
-        return torch.where(mode, policy_act, scripted_act)
+        raise RuntimeError(
+            "MixedOpponentController.act is unused; Warp samples the mix in-kernel"
+        )
 
     def load_snapshot(
         self,
@@ -399,7 +322,6 @@ class MixedOpponentController(OpponentController):
         obs_var: torch.Tensor,
         actor_architecture: dict | None = None,
     ) -> None:
-        """Forward a self-play snapshot to the inner policy opponent."""
         self.policy.load_snapshot(
             actor_state_dict,
             obs_mean,
@@ -413,12 +335,6 @@ def make_opponent(
     obs_cfg: dict[str, Any],
     device: torch.device,
 ) -> OpponentController | None:
-    """Factory keyed on ``env_cfg['opponent_strategy']``.
-
-    Returns ``None`` when no opponent is configured (solo / 1v0). Hard 1v1: this
-    only ever returns a single controller (the mixed controller still drives one
-    opponent, just sampling its behavior per env row).
-    """
     strategy = env_cfg.get("opponent_strategy")
     if strategy is None:
         return None
@@ -427,15 +343,8 @@ def make_opponent(
     if strategy == "policy":
         return _make_policy_opponent(env_cfg, obs_cfg, device)
     if strategy == "mixed":
-        mix = env_cfg.get("opponent_mix", {})
-        cap_range = mix.get("policy_speed_cap_range", (2.5, 5.0))
         return MixedOpponentController(
-            scripted=ScriptedCenterlineOpponent(env_cfg),
-            policy=_make_policy_opponent(env_cfg, obs_cfg, device),
-            scripted_weight=float(mix.get("scripted_weight", 0.3)),
-            policy_weight=float(mix.get("policy_weight", 0.7)),
-            policy_speed_cap_prob=float(mix.get("policy_speed_cap_prob", 0.0)),
-            policy_speed_cap_range=tuple(cap_range),
+            _make_policy_opponent(env_cfg, obs_cfg, device)
         )
     raise ValueError(f"Unknown opponent_strategy: {strategy!r}")
 
@@ -450,15 +359,15 @@ def _make_policy_opponent(
 
     obs_dim = int(obs_cfg.get("num_actor_obs", obs_cfg["num_obs"]))
     act_dim = int(env_cfg.get("num_actions", 2))
-    actor_type = env_cfg.get("actor_type", "flat_mlp")
+    actor_type = env_cfg.get("actor_type", "lidar_cnn_gru")
     hidden = list(
         env_cfg.get(
             "actor_hidden_layers",
-            env_cfg.get("opponent_hidden_layers", [512, 512, 512]),
+            env_cfg.get("opponent_hidden_layers", [1024, 1024, 1024]),
         )
     )
     lidar_pool_bins = int(env_cfg.get("lidar_pool_bins", 32))
-    layout_version = int(obs_cfg.get("actor_layout_version", 1))
+    layout_version = int(obs_cfg.get("actor_layout_version", 2))
 
     actor = make_actor(
         actor_type=actor_type,
@@ -473,7 +382,7 @@ def _make_policy_opponent(
     obs_mean = obs_var = None
     ckpt_path = env_cfg.get("opponent_ckpt")
     if ckpt_path:
-        from standalone_trainer import (
+        from f1tenth_policy import (
             actor_architecture_from_module,
             validate_sensor_policy_artifact,
         )

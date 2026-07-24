@@ -202,12 +202,12 @@ def test_obs_parity(real_modules):
 
 
 def test_obs_parity_1v1_opponent_block(real_modules):
-    """390-dim parity with a non-trivial opponent-relative block appended."""
+    """392-dim parity with a non-trivial opponent-relative block appended."""
     real_utils, real_obs = real_modules
     device = torch.device("cpu")
     cl, wl, wr = _make_track()
     obs_cfg = default_obs_cfg(enable_opponent_obs=True)
-    assert obs_cfg["num_obs"] == 390
+    assert obs_cfg["num_obs"] == 392
 
     builder = obs_core.ObservationBuilder(cl, wl, wr, obs_cfg, device=device)
     track_state = {
@@ -269,18 +269,26 @@ def test_obs_parity_1v1_opponent_block(real_modules):
     ego_yaw = torch.tensor(yaw, dtype=torch.float32)
     ego_vel = base_lin_vel.clone()
     opp_vel = torch.tensor(rng.uniform(-1, 4, size=(b, 3)).astype(np.float32))
+    ego_acc = torch.tensor(rng.uniform(-2, 2, size=(b, 2)).astype(np.float32))
+    opp_acc = torch.tensor(rng.uniform(-2, 2, size=(b, 2)).astype(np.float32))
+    opp_yaw = torch.tensor(
+        rng.uniform(-np.pi, np.pi, size=b).astype(np.float32)
+    )
 
     self_agent = {
         "pos_xy": base_pos[:, :2],
         "yaw": ego_yaw,
         "vel_xy": ego_vel[:, :2],
+        "acc_xy": ego_acc,
         "s": step_state["frenet"]["s"],
         "ey": step_state["boundary"]["ey"],
         "L": step_state["frenet"]["L"],
     }
     other_agent = {
         "pos_xy": opp_pos[:, :2],
+        "yaw": opp_yaw,
         "vel_xy": opp_vel[:, :2],
+        "acc_xy": opp_acc,
         "s": opp_step["frenet"]["s"],
         "ey": opp_step["boundary"]["ey"],
         "L": opp_step["frenet"]["L"],

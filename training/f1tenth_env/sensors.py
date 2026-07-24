@@ -1,22 +1,26 @@
-"""Warp LiDAR (UST-10LX), 6-axis IMU, and fused 1,093-D actor sensor kernels.
-
-EDT sphere-trace for corridor walls, analytic opponent OBB when ``has_opponent``,
-and per-episode / per-step domain randomization. Instantaneous scans only;
-``beam_time`` is reserved for a later motion-distortion path.
-
-``sensor_actor_*_kernel`` writes LiDAR + IMU + VESC + causal commands in one
-launch per view (beam 0 owns the 12 non-LiDAR slots). Standalone LiDAR/IMU
-kernels remain for geometry unit tests.
-
-Frozen actor layout (offsets inclusive of the stated half-open ranges):
-LiDAR ``[0:1081]``, IMU ``[1081:1087]``, VESC speed ``[1087]``, signed current
-proxy ``[1088]``, current command ``[1089:1091]``, predecessor ``[1091:1093]``.
-"""
-
 from __future__ import annotations
 
 import warp as wp
 
+from f1tenth_policy.layout import (  # noqa: F401
+    ACTOR_OBS_DIM,
+    IMU_DIM,
+    IMU_START as ACTOR_IMU_START,
+    LIDAR_DIM as ACTOR_LIDAR_DIM,
+    NATIVE_NUM_BEAMS,
+    PROPRIO_DIM as ACTOR_PROPRIO_DIM,
+    STEER_DELTA0 as ACTOR_STEER_DELTA0,
+    STEER_DELTA1 as ACTOR_STEER_DELTA1,
+    STEER_DELTA2 as ACTOR_STEER_DELTA2,
+    STEER_T as ACTOR_STEER_T,
+    STEER_T1 as ACTOR_STEER_T1,
+    STEER_T2 as ACTOR_STEER_T2,
+    THROTTLE_CURRENT as ACTOR_THROTTLE_CURRENT,
+    THROTTLE_PRED as ACTOR_THROTTLE_PRED,
+    VESC_CURRENT as ACTOR_VESC_CURRENT,
+    VESC_CURRENT_SCALE_A,
+    VESC_SPEED as ACTOR_VESC_SPEED,
+)
 from f1tenth_sim.dynamics import VehicleBuffers, VehicleLocal, load_vehicle
 from f1tenth_sim.params import SimParams
 
@@ -29,39 +33,14 @@ from .kernel import (
     observation_noise,
 )
 
-# Bound sphere-trace iterations for GPU latency. At ~2.5 cm cells and 30 m max
-# range, sphere tracing typically finishes far sooner; this is a hard safety cap.
 MAX_LIDAR_MARCH_STEPS = 512
-# Warp IMU kernel layout: ax, ay, az, gx, gy, gz.
-IMU_DIM = 6
-_EDT_HIT_FRAC = 0.55
-
-# Frozen asymmetric actor observation layout (native UST-10LX beams).
-NATIVE_NUM_BEAMS = 1081
-ACTOR_LIDAR_DIM = NATIVE_NUM_BEAMS
 ACTOR_IMU_DIM = IMU_DIM
-ACTOR_LIDAR_START = 0
-ACTOR_IMU_START = ACTOR_LIDAR_DIM
-ACTOR_VESC_SPEED = ACTOR_IMU_START + ACTOR_IMU_DIM
-ACTOR_VESC_CURRENT = ACTOR_VESC_SPEED + 1
-ACTOR_CMD_CURRENT_START = ACTOR_VESC_CURRENT + 1
-ACTOR_CMD_PRED_START = ACTOR_CMD_CURRENT_START + 2
-ACTOR_OBS_DIM = ACTOR_CMD_PRED_START + 2
-VESC_CURRENT_SCALE_A = 10.0
-# View ids key independent white-noise / dropout draws for ego vs opponent.
+_EDT_HIT_FRAC = 0.55
 VIEW_EGO = 0
 VIEW_OPPONENT = 1
 _VIEW_SEED_PRIME = 668265263
-# Distinct feature ids for VESC per-step noise (away from IMU 0..5 / lidar beams).
 _VESC_SPEED_NOISE_FEATURE = 10_000
 _VESC_CURRENT_NOISE_FEATURE = 10_001
-
-assert ACTOR_OBS_DIM == 1093
-assert ACTOR_IMU_START == 1081
-assert ACTOR_VESC_SPEED == 1087
-assert ACTOR_VESC_CURRENT == 1088
-assert ACTOR_CMD_CURRENT_START == 1089
-assert ACTOR_CMD_PRED_START == 1091
 
 
 @wp.func
@@ -70,7 +49,6 @@ def sample_corridor_distance(
     x: wp.float32,
     y: wp.float32,
 ) -> wp.float32:
-    """Bilinear EDT sample. Returns -1 outside the grid (no-return)."""
     gx = (x - field.origin[0]) / field.resolution
     gy = (y - field.origin[1]) / field.resolution
     if (
@@ -109,7 +87,6 @@ def ray_obb_distance(
     half_length: wp.float32,
     half_width: wp.float32,
 ) -> wp.float32:
-    """Ray vs oriented box; returns entry distance or a large miss sentinel."""
     cosine = wp.cos(box_yaw)
     sine = wp.sin(box_yaw)
     dx = origin[0] - box_x
@@ -182,7 +159,6 @@ def sphere_trace_walls(
 
 @wp.func
 def sensor_view_seed(seed: wp.int32, view_id: wp.int32) -> wp.int32:
-    """Mix a view id into the episode seed so ego/opponent noise is independent."""
     return seed ^ (view_id * _VIEW_SEED_PRIME)
 
 
@@ -200,7 +176,6 @@ def lidar_beam_range(
     has_opponent: wp.int32,
     view_id: wp.int32,
 ) -> wp.float32:
-    # Instantaneous scan; beam_time reserved for motion-distortion interpolation.
     beam_time = wp.float32(0.0)
     mount_x = sensor.lidar_offset_x + env.lidar_extrinsic_x[env_id]
     mount_y = sensor.lidar_offset_y + env.lidar_extrinsic_y[env_id]
@@ -373,9 +348,6 @@ def write_imu_columns(
 
     ax = ax + env.imu_accel_bias_x[env_id]
     ay = ay + env.imu_accel_bias_y[env_id]
-    az = az + env.imu_accel_bias_z[env_id]
-    gx = gx + env.imu_gyro_bias_x[env_id]
-    gy = gy + env.imu_gyro_bias_y[env_id]
     gz = gz + env.imu_gyro_bias_z[env_id]
 
     view_seed = sensor_view_seed(reset.seed, view_id)
@@ -386,10 +358,7 @@ def write_imu_columns(
     if accel_std > 0.0:
         ax = ax + observation_noise(view_seed, env_id, episode, step, 0, accel_std)
         ay = ay + observation_noise(view_seed, env_id, episode, step, 1, accel_std)
-        az = az + observation_noise(view_seed, env_id, episode, step, 2, accel_std)
     if gyro_std > 0.0:
-        gx = gx + observation_noise(view_seed, env_id, episode, step, 3, gyro_std)
-        gy = gy + observation_noise(view_seed, env_id, episode, step, 4, gyro_std)
         gz = gz + observation_noise(view_seed, env_id, episode, step, 5, gyro_std)
 
     output[env_id, col0 + 0] = ax
@@ -445,15 +414,27 @@ def write_vesc_and_commands(
     output[env_id, ACTOR_VESC_CURRENT] = current
 
     if use_opponent_commands != 0:
-        command = env.current_opponent_action[env_id]
-        predecessor = env.opponent_last_action[env_id]
+        longitudinal = env.opponent_executed_longitudinal_history[env_id, 0]
+        longitudinal_predecessor = env.opponent_executed_longitudinal_history[env_id, 1]
+        steer_t = env.opponent_executed_steer_history[env_id, 0]
+        steer_t1 = env.opponent_executed_steer_history[env_id, 1]
+        steer_t2 = env.opponent_executed_steer_history[env_id, 2]
+        steer_t3 = env.opponent_executed_steer_history[env_id, 3]
     else:
-        command = env.current_action[env_id]
-        predecessor = env.last_action[env_id]
-    output[env_id, ACTOR_CMD_CURRENT_START] = command[0]
-    output[env_id, ACTOR_CMD_CURRENT_START + 1] = command[1]
-    output[env_id, ACTOR_CMD_PRED_START] = predecessor[0]
-    output[env_id, ACTOR_CMD_PRED_START + 1] = predecessor[1]
+        longitudinal = env.executed_longitudinal_history[env_id, 0]
+        longitudinal_predecessor = env.executed_longitudinal_history[env_id, 1]
+        steer_t = env.executed_steer_history[env_id, 0]
+        steer_t1 = env.executed_steer_history[env_id, 1]
+        steer_t2 = env.executed_steer_history[env_id, 2]
+        steer_t3 = env.executed_steer_history[env_id, 3]
+    output[env_id, ACTOR_THROTTLE_CURRENT] = longitudinal
+    output[env_id, ACTOR_THROTTLE_PRED] = longitudinal_predecessor
+    output[env_id, ACTOR_STEER_T] = steer_t
+    output[env_id, ACTOR_STEER_T1] = steer_t1
+    output[env_id, ACTOR_STEER_T2] = steer_t2
+    output[env_id, ACTOR_STEER_DELTA0] = steer_t - steer_t1
+    output[env_id, ACTOR_STEER_DELTA1] = steer_t1 - steer_t2
+    output[env_id, ACTOR_STEER_DELTA2] = steer_t2 - steer_t3
 
 
 @wp.kernel(enable_backward=False)
@@ -483,11 +464,6 @@ def sensor_actor_solo_kernel(
     current_scale: wp.float32,
     output: wp.array2d(dtype=wp.float32),
 ):
-    """Fused 1v0 sensor→actor write: each beam fills LiDAR; beam 0 fills the rest.
-
-    Must run on post-transaction state before ``observation_stage_kernel``
-    advances ``last_action`` / ``opponent_last_action``.
-    """
     env_id, beam_id = wp.tid()
     if beam_id >= sensor.num_beams:
         return
@@ -539,11 +515,6 @@ def sensor_actor_stage_kernel(
     view_id: wp.int32,
     output: wp.array2d(dtype=wp.float32),
 ):
-    """Fused 1v1 sensor→actor write with optional role-swap via buffer order.
-
-    Must run on post-transaction state before ``observation_stage_kernel``
-    advances ``last_action`` / ``opponent_last_action``.
-    """
     env_id, beam_id = wp.tid()
     if beam_id >= sensor.num_beams:
         return

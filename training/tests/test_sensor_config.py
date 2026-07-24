@@ -27,7 +27,7 @@ def test_default_sensor_block_matches_ust10lx():
     assert sensor["reliable_range_m"] == 10.0
     assert sensor["beam_decimation"] == 1
     assert sensor["max_march_steps"] == 512
-    assert sensor["lidar_offset_x"] == 0.0
+    assert sensor["lidar_offset_x"] == 0.27
     assert sensor["lidar_offset_y"] == 0.0
     assert sensor["lidar_offset_yaw"] == 0.0
 
@@ -41,8 +41,9 @@ def test_root_sensor_patch_reaches_warp_env(warp_runtime):
             "vesc_current_scale_a": 12.0,
         }
     }
-    args, explicit = parse_args(["--episode-length", "60"])
-    cfg = build_config(args, patch=patch, explicit=explicit)
+    args, explicit = parse_args([])
+    merged = {"env": {"episode_length": 60}, "sensor": patch["sensor"]}
+    cfg = build_config(args, patch=merged, explicit=explicit)
     assert "sensor" not in cfg["env"]
 
     rt.configure(
@@ -71,8 +72,11 @@ def test_root_sensor_patch_reaches_warp_env(warp_runtime):
 
 def test_root_sensor_decimation_patch_rejected_by_env(warp_runtime):
     del warp_runtime
-    patch = {"sensor": {"beam_decimation": 2}}
-    args, explicit = parse_args(["--episode-length", "60"])
+    patch = {
+        "env": {"episode_length": 60},
+        "sensor": {"beam_decimation": 2},
+    }
+    args, explicit = parse_args([])
     cfg = build_config(args, patch=patch, explicit=explicit)
     assert cfg["sensor"]["beam_decimation"] == 2
     rt.configure(
@@ -92,8 +96,10 @@ def test_root_sensor_decimation_patch_rejected_by_env(warp_runtime):
 
 def test_default_env_cfg_keeps_ust10lx_sensor_geometry(warp_runtime):
     del warp_runtime
-    args, explicit = parse_args(["--episode-length", "60"])
-    cfg = build_config(args, patch=None, explicit=explicit)
+    args, explicit = parse_args([])
+    cfg = build_config(
+        args, patch={"env": {"episode_length": 60}}, explicit=explicit
+    )
     rt.configure(
         float_dtype=torch.float32,
         int_dtype=torch.int32,
@@ -109,28 +115,29 @@ def test_default_env_cfg_keeps_ust10lx_sensor_geometry(warp_runtime):
     try:
         assert env.num_lidar_beams == 1081
         assert int(env._sensor_params.max_march_steps) == 512
+        assert float(env._sensor_params.lidar_offset_x) == pytest.approx(0.27)
     finally:
         env.close()
 
 
-def test_sensor_dr_ranges_default_to_noop():
+def test_default_sensor_dr_matches_measured_evidence():
     dr = DEFAULT_CONFIG["env"]["domain_randomization"]
+    assert dr["lidar_extrinsic_xy_range"] == [-0.01, 0.01]
+    assert dr["lidar_extrinsic_yaw_range"] == [-0.008726646, 0.008726646]
+    assert dr["imu_accel_bias_range"] == [-0.08, 0.08]
+    assert dr["imu_gyro_bias_range"] == [-0.005, 0.005]
+    assert dr["imu_accel_noise_std_range"] == [0.005, 0.015]
+    assert dr["imu_gyro_noise_std_range"] == [0.0005, 0.0015]
+    assert dr["vesc_current_bias_range"] == [-0.005, 0.005]
+    assert dr["vesc_current_noise_std_range"] == [0.0, 0.005]
     noop_keys = [
         "lidar_range_noise_std_range",
         "lidar_far_dropout_prob_range",
         "lidar_dropout_prob_range",
         "lidar_angle_bias_range",
-        "lidar_extrinsic_xy_range",
-        "lidar_extrinsic_yaw_range",
-        "imu_accel_bias_range",
-        "imu_gyro_bias_range",
-        "imu_accel_noise_std_range",
-        "imu_gyro_noise_std_range",
         "imu_axis_misalign_range",
         "vesc_speed_bias_range",
-        "vesc_current_bias_range",
         "vesc_speed_noise_std_range",
-        "vesc_current_noise_std_range",
     ]
     for key in noop_keys:
         assert key in dr

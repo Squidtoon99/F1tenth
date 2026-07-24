@@ -2,9 +2,9 @@
 
 The block (`observations.obs_opponent`) is pure geometry, so every value has a
 closed form. These tests pin the ego-frame rotation convention, the signed
-track-gap wrap, and the symmetric self/other property used to build the
-opponent's own egocentric observation. Masking is applied by the env caller.
-No Genesis sim is started.
+track-gap wrap, relative acceleration, and the symmetric self/other property used
+to build the opponent's own egocentric observation. Masking is applied by the env
+caller. No Genesis sim is started.
 """
 
 from __future__ import annotations
@@ -43,19 +43,23 @@ def _apply_range_mask(block, s_self, s_other, track_len=_RANGE_MASK_L):
 
 
 def _sample_opponent_block():
-    return torch.tensor([[1.0, -2.0, 3.0, -4.0, 0.5, 0.37]], dtype=torch.float32)
+    return torch.tensor(
+        [[1.0, -2.0, 3.0, -4.0, 0.5, -0.25, 0.5, 0.37]], dtype=torch.float32
+    )
 
 
-def _agent(pos_xy, yaw, vel_xy, s, ey, L):
+def _agent(pos_xy, yaw, vel_xy, s, ey, L, acc_xy=(0.0, 0.0)):
     def t(x):
         return torch.tensor(np.atleast_1d(np.asarray(x, np.float32)), dtype=torch.float32)
 
     pos = torch.tensor(np.atleast_2d(np.asarray(pos_xy, np.float32)), dtype=torch.float32)
     vel = torch.tensor(np.atleast_2d(np.asarray(vel_xy, np.float32)), dtype=torch.float32)
+    acc = torch.tensor(np.atleast_2d(np.asarray(acc_xy, np.float32)), dtype=torch.float32)
     return {
         "pos_xy": pos,
         "yaw": t(yaw),
         "vel_xy": vel,
+        "acc_xy": acc,
         "s": t(s),
         "ey": t(ey),
         "L": t(L),
@@ -63,7 +67,7 @@ def _agent(pos_xy, yaw, vel_xy, s, ey, L):
 
 
 def _opp_cfg():
-    return {"enable_opponent_obs": True, "opponent_obs_dim": 6}
+    return {"enable_opponent_obs": True, "opponent_obs_dim": 8}
 
 
 # --- relative-position geometry ----------------------------------------------
@@ -114,6 +118,44 @@ def test_relative_velocity_in_self_frame(real_modules):
     assert blk[3].item() == pytest.approx(0.0, abs=1e-5)
 
 
+def test_relative_acceleration_body_consistent(real_modules):
+    """Body ax/ay → world → subtract → ego frame."""
+    obs_opponent = real_modules.observations.obs_opponent
+    # Ego yaw 0: body accel is world accel. Opponent yaw +90deg with body ax=2
+    # contributes world (0, 2). Relative world accel = (0, 2) - (1, 0) = (-1, 2).
+    me = _agent(
+        [0.0, 0.0], 0.0, [0.0, 0.0], 0.0, 0.0, 100.0, acc_xy=[1.0, 0.0]
+    )
+    other = _agent(
+        [5.0, 0.0],
+        math.pi / 2.0,
+        [0.0, 0.0],
+        5.0,
+        0.0,
+        100.0,
+        acc_xy=[2.0, 0.0],
+    )
+    blk = obs_opponent(me, other, _opp_cfg())[0]
+    assert blk[4].item() == pytest.approx(-1.0, abs=1e-5)
+    assert blk[5].item() == pytest.approx(2.0, abs=1e-5)
+
+
+def test_relative_acceleration_rotates_into_self_frame(real_modules):
+    obs_opponent = real_modules.observations.obs_opponent
+    # Ego yaw +90deg. Both body accel (1, 0) → world (0, 1) for both → rel 0.
+    # Opponent body (0, 2) at yaw 0 → world (0, 2). Ego body 0 → rel world (0, 2)
+    # into ego +90 frame: (2, 0).
+    me = _agent(
+        [0.0, 0.0], math.pi / 2.0, [0.0, 0.0], 0.0, 0.0, 100.0, acc_xy=[0.0, 0.0]
+    )
+    other = _agent(
+        [1.0, 0.0], 0.0, [0.0, 0.0], 1.0, 0.0, 100.0, acc_xy=[0.0, 2.0]
+    )
+    blk = obs_opponent(me, other, _opp_cfg())[0]
+    assert blk[4].item() == pytest.approx(2.0, abs=1e-5)
+    assert blk[5].item() == pytest.approx(0.0, abs=1e-5)
+
+
 # --- signed track gap + wrap --------------------------------------------------
 def test_track_gap_simple(real_modules):
     obs_opponent = real_modules.observations.obs_opponent
@@ -121,7 +163,7 @@ def test_track_gap_simple(real_modules):
     other = _agent([0.0, 0.0], 0.0, [0.0, 0.0], 15.0, 0.0, 100.0)
     blk = obs_opponent(me, other, _opp_cfg())[0]
     # gap = (15 - 10) wrapped, normalized by L/2 = 50 -> 5/50 = 0.1, opponent ahead
-    assert blk[4].item() == pytest.approx(0.1, abs=1e-5)
+    assert blk[6].item() == pytest.approx(0.1, abs=1e-5)
 
 
 def test_track_gap_wraps_start_finish(real_modules):
@@ -132,8 +174,8 @@ def test_track_gap_wraps_start_finish(real_modules):
     other = _agent([0.0, 0.0], 0.0, [0.0, 0.0], 1.0, 0.0, L)
     blk = obs_opponent(me, other, _opp_cfg())[0]
     # raw gap = -98 -> wrapped +2 -> normalized 2/50 = 0.04 (small + => just ahead)
-    assert blk[4].item() == pytest.approx(0.04, abs=1e-5)
-    assert abs(blk[4].item()) < 0.5
+    assert blk[6].item() == pytest.approx(0.04, abs=1e-5)
+    assert abs(blk[6].item()) < 0.5
 
 
 def test_other_lateral_offset_passthrough(real_modules):
@@ -141,7 +183,7 @@ def test_other_lateral_offset_passthrough(real_modules):
     me = _agent([0.0, 0.0], 0.0, [0.0, 0.0], 0.0, 0.0, 100.0)
     other = _agent([5.0, 0.0], 0.0, [0.0, 0.0], 5.0, 0.37, 100.0)
     blk = obs_opponent(me, other, _opp_cfg())[0]
-    assert blk[5].item() == pytest.approx(0.37, abs=1e-6)
+    assert blk[7].item() == pytest.approx(0.37, abs=1e-6)
 
 
 # --- symmetry -----------------------------------------------------------------
@@ -151,7 +193,7 @@ def test_gap_antisymmetry(real_modules):
     b = _agent([4.0, 1.0], -0.2, [0.0, 0.0], 20.0, -0.2, 100.0)
     blk_ab = obs_opponent(a, b, _opp_cfg())[0]
     blk_ba = obs_opponent(b, a, _opp_cfg())[0]
-    assert blk_ab[4].item() == pytest.approx(-blk_ba[4].item(), abs=1e-5)
+    assert blk_ab[6].item() == pytest.approx(-blk_ba[6].item(), abs=1e-5)
 
 
 # --- env range mask (F1tenthEnv._apply_opponent_range_mask) ------------------
@@ -185,10 +227,10 @@ def test_range_mask_wrap_around_near_finish_line():
 def test_range_mask_batch_masks_rows_independently():
     block = torch.tensor(
         [
-            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            [7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            [13.0, 14.0, 15.0, 16.0, 17.0, 18.0],
-            [19.0, 20.0, 21.0, 22.0, 23.0, 24.0],
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            [7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0],
+            [13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0],
+            [19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0],
         ],
         dtype=torch.float32,
     )
@@ -210,6 +252,7 @@ def test_block_finite_random_batch(real_modules):
         "pos_xy": torch.rand(n, 2, generator=g) * 40 - 20,
         "yaw": (torch.rand(n, generator=g) * 2 - 1) * math.pi,
         "vel_xy": torch.rand(n, 2, generator=g) * 10 - 5,
+        "acc_xy": torch.rand(n, 2, generator=g) * 6 - 3,
         "s": torch.rand(n, generator=g) * 100,
         "ey": torch.rand(n, generator=g) * 2 - 1,
         "L": torch.full((n,), 100.0),
@@ -218,14 +261,15 @@ def test_block_finite_random_batch(real_modules):
         "pos_xy": torch.rand(n, 2, generator=g) * 40 - 20,
         "yaw": (torch.rand(n, generator=g) * 2 - 1) * math.pi,
         "vel_xy": torch.rand(n, 2, generator=g) * 10 - 5,
+        "acc_xy": torch.rand(n, 2, generator=g) * 6 - 3,
         "s": torch.rand(n, generator=g) * 100,
         "ey": torch.rand(n, generator=g) * 2 - 1,
         "L": torch.full((n,), 100.0),
     }
     blk = obs_opponent(me, other, _opp_cfg())
-    assert blk.shape == (n, 6)
+    assert blk.shape == (n, 8)
     assert torch.isfinite(blk).all()
-    assert (blk[:, 4].abs() <= 1.0 + 1e-5).all()  # normalized gap in [-1, 1]
+    assert (blk[:, 6].abs() <= 1.0 + 1e-5).all()  # normalized gap in [-1, 1]
 
 
 # --- build_observation: shape, append, sentinel ------------------------------
@@ -247,7 +291,7 @@ def _ego_step_state(real_modules, track_state, pos_xy):
     return base_pos, ss
 
 
-def _build_obs_cfg(obs_cfg, *, enabled, k=6):
+def _build_obs_cfg(obs_cfg, *, enabled, k=8):
     cfg = dict(obs_cfg)
     cfg["enable_opponent_obs"] = enabled
     cfg["opponent_obs_dim"] = k
@@ -262,7 +306,7 @@ def test_build_observation_appends_block_when_enabled(real_modules, obs_cfg):
     base_pos, ss = _ego_step_state(real_modules, ts, [10.0, 0.0])
     n = base_pos.shape[0]
     quat = yaw_quat_wxyz(0.0)
-    block = torch.arange(6, dtype=torch.float32).reshape(1, 6)
+    block = torch.arange(8, dtype=torch.float32).reshape(1, 8)
 
     cfg = _build_obs_cfg(obs_cfg, enabled=True)
     out = obs.build_observation(
@@ -279,7 +323,7 @@ def test_build_observation_appends_block_when_enabled(real_modules, obs_cfg):
         device=DEVICE,
         opponent_block=block,
     )
-    assert out.shape == (n, 390)
+    assert out.shape == (n, 392)
     assert torch.allclose(out[:, 384:], block)
 
 
@@ -304,8 +348,8 @@ def test_build_observation_sentinel_when_block_none(real_modules, obs_cfg):
         device=DEVICE,
         opponent_block=None,
     )
-    assert out.shape == (n, 390)
-    assert torch.allclose(out[:, 384:], torch.zeros(n, 6))
+    assert out.shape == (n, 392)
+    assert torch.allclose(out[:, 384:], torch.zeros(n, 8))
 
 
 def test_build_observation_uses_sentinel_when_disabled(real_modules, obs_cfg):
@@ -328,5 +372,5 @@ def test_build_observation_uses_sentinel_when_disabled(real_modules, obs_cfg):
         step_state=ss,
         device=DEVICE,
     )
-    assert out.shape == (n, 390)
-    assert torch.equal(out[:, 384:390], torch.zeros(n, 6))
+    assert out.shape == (n, 392)
+    assert torch.equal(out[:, 384:392], torch.zeros(n, 8))

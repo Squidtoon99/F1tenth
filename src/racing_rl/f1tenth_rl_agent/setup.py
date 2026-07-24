@@ -31,6 +31,8 @@ setup(
             "localization_preflight = f1tenth_rl_agent.localization_preflight_node:main",
             "evaluation = f1tenth_rl_agent.evaluation_node:main",
             "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
+            "sensor_racer = f1tenth_rl_agent.sensor_racer_node:main",
+            "sensor_policy = f1tenth_rl_agent.sensor_racer_node:main",
         ],
     },
 )

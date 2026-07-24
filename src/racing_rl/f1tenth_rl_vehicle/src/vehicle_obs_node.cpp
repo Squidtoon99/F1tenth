@@ -1,10 +1,10 @@
-// vehicle_obs_node: build the policy observation on the real car (384 base, or 390
-// with the 6-dim opponent block appended at [384:390) for the 1v1 layout).
+// vehicle_obs_node: build the policy observation on the real car (384 base, or 392
+// with the 8-dim opponent block appended at [384:392) for the 1v1 layout).
 //
 // Merges the sim stack's track_server + observation_builder (+ odom adapter) into a
 // single lean C++ node. It loads the training centerline CSV directly, samples the
 // latest map-frame pose (particle filter) and body-frame twist (VESC odom) on a
-// fixed 20 Hz timer, reconstructs the exact training observation via rl_obs_core,
+// fixed 10 Hz timer, reconstructs the exact training observation via rl_obs_core,
 // and publishes /rl/observation.
 //
 // Tyre-slip observation dims [372:380] default to zeros (no per-wheel sensing on the
@@ -43,7 +43,7 @@ namespace f1tenth_rl_vehicle
 
 namespace
 {
-// Base (solo) observation dimension; the opponent block is appended at [384:390).
+// Base (solo) observation dimension; the opponent block is appended at [384:392).
 // Mirror of f1tenth_common::ObservationLayout::kObservationBaseDim.
 constexpr int kBaseObsDim = 384;
 
@@ -62,7 +62,7 @@ public:
   : rclcpp::Node("vehicle_obs")
   {
     const std::string track_csv = declare_parameter<std::string>("track_csv", "");
-    control_hz_ = declare_parameter<double>("control_hz", 20.0);
+    control_hz_ = declare_parameter<double>("control_hz", 10.0);
     const std::string pose_topic =
       declare_parameter<std::string>("pose_topic", "/pf/pose/odom");
     const std::string twist_topic =
@@ -143,7 +143,7 @@ public:
     }
 
     ObsConfig cfg;
-    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 390));
+    cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 392));
     cfg.future_track_num_points =
       static_cast<int>(declare_parameter<int>("future_track_num_points", 60));
     cfg.future_track_horizon_s = declare_parameter<double>("future_track_horizon_s", 6.0);
@@ -161,7 +161,7 @@ public:
     cfg.zero_opponent_obs = zero_opponent_obs_;
     opponent_obs_dim_ = cfg.opponent_obs_dim;
     if (cfg.num_obs != kBaseObsDim + cfg.opponent_obs_dim) {
-      throw std::runtime_error("vehicle_obs: num_obs must be 390");
+      throw std::runtime_error("vehicle_obs: num_obs must be 392");
     }
 
     if (track_csv.empty()) {
@@ -283,6 +283,8 @@ private:
   {
     opp_x_ = msg.pose.pose.position.x;
     opp_y_ = msg.pose.pose.position.y;
+    const auto & q = msg.pose.pose.orientation;
+    opp_yaw_ = quatToYaw(q.x, q.y, q.z, q.w);
     opp_vx_ = msg.twist.twist.linear.x;  // world frame
     opp_vy_ = msg.twist.twist.linear.y;
     opp_stamp_ = now();
@@ -370,8 +372,26 @@ private:
         opp.present = true;
         opp.pos_x = opp_x_;
         opp.pos_y = opp_y_;
+        opp.yaw = opp_yaw_;
         opp.vx = opp_vx_;
         opp.vy = opp_vy_;
+        // Finite-diff world velocity at the control rate, then rotate into the
+        // opponent body frame (matches training body-frame ax/ay).
+        double opp_ax_w = 0.0;
+        double opp_ay_w = 0.0;
+        if (have_prev_opp_vel_) {
+          opp_ax_w = (opp_vx_ - prev_opp_vx_) / dt;
+          opp_ay_w = (opp_vy_ - prev_opp_vy_) / dt;
+        }
+        const double cos_o = std::cos(opp_yaw_);
+        const double sin_o = std::sin(opp_yaw_);
+        opp.ax = cos_o * opp_ax_w + sin_o * opp_ay_w;
+        opp.ay = -sin_o * opp_ax_w + cos_o * opp_ay_w;
+        prev_opp_vx_ = opp_vx_;
+        prev_opp_vy_ = opp_vy_;
+        have_prev_opp_vel_ = true;
+      } else {
+        have_prev_opp_vel_ = false;
       }
     }
 
@@ -399,16 +419,19 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  double control_hz_ = 20.0;
+  double control_hz_ = 10.0;
   bool twist_in_world_frame_ = false;
   double twist_vx_sign_ = -1.0;
 
   bool enable_opponent_obs_ = false;
   bool zero_opponent_obs_ = false;
-  int opponent_obs_dim_ = 6;
+  int opponent_obs_dim_ = 8;
   double opponent_timeout_s_ = 0.5;
   bool have_opp_ = false;
-  double opp_x_ = 0.0, opp_y_ = 0.0, opp_vx_ = 0.0, opp_vy_ = 0.0;
+  double opp_x_ = 0.0, opp_y_ = 0.0, opp_yaw_ = 0.0;
+  double opp_vx_ = 0.0, opp_vy_ = 0.0;
+  bool have_prev_opp_vel_ = false;
+  double prev_opp_vx_ = 0.0, prev_opp_vy_ = 0.0;
   rclcpp::Time opp_stamp_{0, 0, RCL_ROS_TIME};
 
   bool have_pose_ = false;
