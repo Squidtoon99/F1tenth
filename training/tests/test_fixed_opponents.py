@@ -82,3 +82,24 @@ def test_select_champion_is_deterministic(tmp_path):
     assert meta["checkpoint"] == a.checkpoint
     assert meta["transitions"] == a.transitions
     assert c.checkpoint in {e["checkpoint"] for e in entries}
+
+
+def test_select_champion_allows_learner_steering_delta_mismatch(tmp_path, caplog):
+    path = tmp_path / "champ.pt"
+    arch = _write_artifact(path, seed=0)
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="fixed_opponents")
+    selection = select_champion(
+        [{"checkpoint": str(path), "weight": 1.0}],
+        seed=42,
+        expected_architecture=arch,
+        expected_actor_obs_dim=ACTOR_OBS_DIM,
+        expected_action_dim=2,
+        expected_layout_version=2,
+        expected_critic_obs_dim=CRITIC_OBS_DIM,
+        expected_steering_action_mode=STEERING_ACTION_MODE,
+        expected_steering_delta_max_rad=STEERING_DELTA_MAX_RAD * 2.0,
+    )
+    assert selection.checkpoint == str(path)
+    assert any("differs from learner" in r.message for r in caplog.records)

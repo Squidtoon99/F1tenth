@@ -951,14 +951,16 @@ def build_config(
         cfg.get("fixed_opponents", {}).get("entries")
     )
     use_1v1 = use_fixed or args.opponent != "none"
+    patch_env = (patch or {}).get("env", {})
     if use_1v1:
         if use_fixed:
             cfg["env"]["opponent_strategy"] = "mixed"
-            mix = cfg["env"].setdefault("opponent_mix", {})
-            mix["scripted_weight"] = 0.5
-            mix["policy_weight"] = 0.5
-            mix["policy_speed_cap_prob"] = 0.5
-            mix["policy_speed_cap_range"] = [5.0, 7.0]
+            if "opponent_mix" not in patch_env:
+                mix = cfg["env"].setdefault("opponent_mix", {})
+                mix["scripted_weight"] = 0.5
+                mix["policy_weight"] = 0.5
+                mix["policy_speed_cap_prob"] = 0.5
+                mix["policy_speed_cap_range"] = [5.0, 7.0]
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
 
@@ -966,7 +968,8 @@ def build_config(
     cfg["env"]["steering_action_mode"] = "delta"
     if float(cfg["env"].get("steering_delta_max_rad", 0.0)) <= 0.0:
         raise ValueError("env.steering_delta_max_rad must be positive")
-    cfg["env"]["reset_stationary_probability"] = 0.10
+    if "reset_stationary_probability" not in patch_env:
+        cfg["env"]["reset_stationary_probability"] = 0.10
     scales = cfg["reward"]["reward_scales"]
     for dead in (
         "wall_penalty",

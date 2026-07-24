@@ -67,6 +67,11 @@ def select_champion(
     path, weight = parsed[idx]
 
     payload = load_sensor_artifact(path, map_location=device)
+    champion_delta = payload.get("steering_delta_max_rad")
+    if champion_delta is None:
+        artifact_delta = expected_steering_delta_max_rad
+    else:
+        artifact_delta = float(champion_delta)
     validate_sensor_policy_artifact(
         payload,
         expected_architecture=expected_architecture,
@@ -75,8 +80,19 @@ def select_champion(
         expected_layout_version=expected_layout_version,
         expected_critic_obs_dim=expected_critic_obs_dim,
         expected_steering_action_mode=expected_steering_action_mode,
-        expected_steering_delta_max_rad=expected_steering_delta_max_rad,
+        expected_steering_delta_max_rad=artifact_delta,
     )
+    logger = log or logging.getLogger("fixed_opponents")
+    if (
+        champion_delta is not None
+        and abs(artifact_delta - float(expected_steering_delta_max_rad)) > 1.0e-9
+    ):
+        logger.warning(
+            "Fixed champion steering_delta_max_rad=%.12f differs from learner "
+            "env %.12f; opponent normalized actions use the learner env scale.",
+            artifact_delta,
+            float(expected_steering_delta_max_rad),
+        )
     selection = ChampionSelection(
         checkpoint=path,
         weight=weight,
@@ -86,7 +102,6 @@ def select_champion(
         var=payload["obs_norm"]["var"].detach().cpu().clone(),
         actor_architecture=dict(payload["actor_architecture"]),
     )
-    logger = log or logging.getLogger("fixed_opponents")
     logger.info(
         "Fixed champion selected index=%d/%d checkpoint=%s weight=%.4f "
         "transitions=%d seed=%d",

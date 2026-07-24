@@ -166,6 +166,27 @@ def test_fixed_opponents_patch_merges_entries():
     assert cfg["fixed_opponents"]["entries"][0]["checkpoint"] == "/tmp/a.pt"
 
 
+def test_fixed_opponents_patch_can_set_opponent_mix_and_stationary():
+    patch = {
+        "fixed_opponents": {
+            "entries": [{"checkpoint": "/tmp/a.pt", "weight": 1.0}]
+        },
+        "env": {
+            "reset_stationary_probability": 0.3,
+            "opponent_mix": {
+                "scripted_weight": 0.1,
+                "policy_weight": 0.9,
+                "policy_speed_cap_prob": 0.5,
+                "policy_speed_cap_range": [5.0, 8.0],
+            },
+        },
+    }
+    cfg = _resolve(["--fixed-opponents"], patch=patch)
+    assert cfg["env"]["reset_stationary_probability"] == 0.3
+    assert cfg["env"]["opponent_mix"]["policy_weight"] == 0.9
+    assert cfg["env"]["opponent_mix"]["policy_speed_cap_range"] == [5.0, 8.0]
+
+
 def test_build_config_rejects_invalid_patch():
     args, explicit = parse_args([])
     with pytest.raises(ValueError, match="unknown config key"):
