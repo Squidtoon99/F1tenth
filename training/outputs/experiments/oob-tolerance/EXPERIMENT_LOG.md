@@ -25,4 +25,11 @@ shift vs `pcplus300`).
 
 ## Status
 
-Queued for lark-2 after `replay10m-clean001` completes and harvest verifies.
+Launched on lark-2 @ 09:15 UTC after `replay10m-clean001` completed (100M,
+20 checkpoints harvested+verified; run.log lost to watchdog restart but
+`policy_100000768.pt` confirmed). Self-play telemetry active
+(`selfplay: pool_size=1`).
+
+**Replay capacity interim:** `replay3m-clean001` 100M mean ~2.7 m/s;
+`replay10m-clean001` completed to 100M (trajectory log lost); neither arm
+approaches pcplus300 — replay capacity not the bottleneck.
