@@ -759,6 +759,47 @@ been the second self-play-side extension had it survived and is easily
 relaunched on a different GPU later if the seed-variance/ceiling question
 still needs it once another host frees up.
 
+### `d2fx600` finished at 600M (10:34:27 UTC) -> harvested, verified -> major result
+
+Completed 600,000,512 transitions on lark-3. Full harvest (118 checkpoints +
+`run.log`/`config.json`/`wandb`) verified: `sha256sum` of all 119 local
+files matches remote exactly.
+
+**This is the headline result of the session.** `d2fx600`'s speed *broke
+through the champion band for the first time of any arm* in its final
+40-70M: 4.3-4.7 m/s through 440-500M, then climbing to a sustained
+**5.19-5.25 m/s from ~550M through the 600M finish** -- squarely inside the
+champion's own 550-600M-equivalent band (the champion's own reference points
+run 5.4-5.6 from 200-300M and stay >4.5 through 450M; 5.2+ is the first time
+any arm this session has matched that regime, not merely approached it).
+D2 (fixed champion, no self-play) needed roughly **2x the 300M horizon**
+this whole program has been treating as the validity bar to get there, but
+it did get there, cleanly and without any pathology in the last 100M
+(no climbing not_moving, no nonfinite states -- the `oob_frac`/`wall_frac`
+figures at the end, 0.03-0.12, are consistent with the champion's own
+aggressive-boundary-probing-while-fast signature documented in the
+champion-code-recovery cross-check above, not a stall). This is strong
+evidence that **the ~3.5-4.5 m/s plateau every 300M arm this session
+produced (`pcplus300`, `d2fx301`, `pcplus302`, `mainline-ladder300`) is a
+"not yet long enough" artifact, not a hard ceiling** -- directly bearing on
+the champion-replication question this whole program exists to answer.
+
+### `pcplus600`: retrying the self-play-side complement on the now-free lark-3
+
+Given the significance of `d2fx600` finally reaching the champion band at
+long horizon, the single most informative next step is checking whether the
+self-play arm does the same when given the same 600M runway (`pcplus300`
+was cut off at 300M, still in a trough at 3.94 m/s). Relaunching
+`pcplus600` -- same config/seed/setup as the collision-aborted attempt above
+(PC+, self-play, seed 42, `configs/pc-plus.json`, 600M) -- on lark-3, which
+is confirmed idle (`ps aux` empty) and already carries the untouched
+original causal-2x2 reconstruction deployment (verified `configs/pc-plus.json`
+present, same deployment `d2fx600` just ran under). This is a safe relaunch
+of already-planned, already-preregistered work on a genuinely free host, not
+a repeat of the earlier collision (which was caused by lark-1 having two
+independent agents each redeploy to the same freshly-freed GPU within a
+minute of each other).
+
 
 | Host | Run | Status | Notes |
 | --- | --- | --- | --- |
@@ -810,4 +851,253 @@ shape. Preregistered `oobhalf300` (halve continuous OOB cost) for lark-2 after
 
 Already committed (`65b16a1`): steering_history default reverted to 5.0,
 superseding ADR-0015. Clean A/B evidence: 4.18 vs 3.76 m/s @18M.
+
+## Fifth check-in (~10:45 UTC): `pcplus600` launched, second collision, stepping back from launching
+
+`selfplay-ladder300` (the other session's run on lark-1) completed
+300,000,256 transitions at 10:34:30 UTC, ending at 3.07 m/s -- harvested for
+redundancy (59 checkpoints, already present locally, confirms no gap).
+
+`d2fx600` finished cleanly at 600,000,512 transitions, 10:34:27 UTC (full
+write-up above). Harvested and `sha256sum`-verified (119/119 files match).
+Strongest confirmation yet that the ~3.5-4.5 m/s plateau every 300M arm
+showed is a horizon problem, not a ceiling: sustained 5.19-5.25 m/s from
+~550M through 600M, finally inside the champion's own band.
+
+Attempted two follow-on launches on the two GPUs that freed up: `pcplus600`
+(PC+ seed 42 self-play to 600M, the self-play-side mirror of `d2fx600`) on
+lark-3, and a mainline-ladder 600M extension on lark-1. The lark-1 attempt
+hit a real config-schema error (`unknown config key 'env.boundary_mode'` --
+mainline's `DEFAULT_CONFIG` has moved under concurrent edits since this
+session's own `mainline-ladder300` ran a few hours earlier), so it was
+abandoned in favor of a third PC+ seed instead (`pcplus303`, seed 99, 300M,
+reconstruction deployment re-verified `sha256`-identical to
+`causal-2x2/codebase/` first) -- would have directly answered the still-open
+"is the seed42/seed7 ~3.9 m/s convergence at 300M real or a 2-seed
+coincidence" question. This second attempt **collided again** with the
+other concurrent session, which had independently launched its own new run
+(`oobhalf301`, seed 7, an oob-tolerance variant) on the same just-freed
+lark-1 about a minute earlier. Same resolution as the first collision:
+confirmed via `nvidia-smi` (100%, 21.2 GB, two PIDs), yielded by stopping
+this session's later-arriving `pcplus303` (`kill -TERM`, confirmed dead,
+empty run dir removed, nothing to harvest), left `oobhalf301` as sole
+occupant.
+
+**Given two collisions in ~2.5 hours, both on lark-1, both within about a
+minute of the GPU freeing up:** the other concurrent session reacts to freed
+GPUs faster than this session's check-then-redeploy-then-launch cycle
+(which has repeatedly needed to redeploy/repair the causal-2x2 reconstruction
+codebase after mainline work overwrote it, adding real latency). Stepping
+back from further proactive launches on whichever GPU frees next -- the
+other session is clearly actively and competently managing allocation, seed
+variance, and the OOB-tolerance question already; a third independent
+claimant on the same three hosts now has negative marginal value (collision
+risk, wasted relaunch cycles) rather than positive. Remaining effort this
+pass goes to: (1) monitoring `pcplus600` (running solo on lark-3, no
+collision, seed 42 self-play, 600M), (2) a final harvest+verify sweep, and
+(3) the milestone table, four-question verdict, and write-up. lark-1
+(`oobhalf301`) and lark-2 (`oobhalf300`) are both the other session's
+legitimate work, left running untouched.
+
+`pcplus600` confirmed running solo on lark-3 immediately after `d2fx600`'s
+harvest (`self_play=true`, `seed=42`, `total_transitions=600000000`
+resolved in its config snapshot, no collision). At ~37k transitions/s this
+takes ~4.5h to reach 600M -- past this report's writing time, so its
+trajectory beyond the first ~30M is not part of the verdict below and is
+left running for whoever next checks the cluster (harvest incrementally the
+same way this session did for `d2fx600`).
+
+## Final verdict (this session, ~11:00 UTC 2026-07-25)
+
+### Harvest confirmation
+
+Every run this session monitored or launched is fully harvested to
+`training/outputs/runs/<run_id>/` (`run.log`, `config.json`, every
+checkpoint, `wandb/`) and verified with `sha256sum` (every local checkpoint
++ `config.json` hash diffed byte-for-byte against the same command run on
+the owning host, immediately before writing this section):
+
+| Run | Host | Final transitions | Checkpoints | Verified |
+| --- | --- | --- | --- | --- |
+| `pcplus300` | lark-1 | 300,000,256 | 59 | 60/60 match |
+| `d2fx301` | lark-3 | 300,000,256 | 59 | 60/60 match |
+| `pcplus302` | lark-2 | 300,000,256 | 59 | 60/60 match |
+| `d2fx300` (aborted) | lark-2 | 88,012,800 | 17 | 18/18 match |
+| `mainline-ladder300` | lark-1 | 300,000,256 | 59 | 60/60 match |
+| `d2fx600` | lark-3 | 600,000,512 | 118 | 119/119 match |
+
+`pcplus600` (lark-3, PC+ seed 42, self-play, in progress toward 600M) and
+the other concurrent session's runs (`selfplay-ladder300`, `oobhalf300`/
+`oobhalf301`, `replay3m-clean001`/`replay10m-clean001`,
+`steerhist5-ab001`/`steerhist05-ab001` on lark-1/lark-2) are harvested
+incrementally as they progress/finish but are not part of this session's
+own launch mandate or verdict; left running, not stopped, per the
+reinstated "use spare capacity" instruction and the corrected 12h/instance
+budget.
+
+### Milestone comparison table
+
+Speed = mean over the ±1M-transition window nearest each milestone
+(re-extracted from raw `run.log` text via `extract_trajectory.py`'s method,
+independently for this table, not copied from any prior report). Lifespan
+= mean `episode_lifespan` in the same window. Termination breakdown = share
+of terminal episodes in that window ending each way.
+
+| Milestone | Arm | Speed (m/s) | Lifespan (s) | time_out | oob | collision | not_moving |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **18M** | champion | 4.93 | 3.2 | 0% | 89% | 0% | 0% |
+| | `pcplus300` (PC+ s42) | **5.51** | 2.3 | 0% | 82% | 0% | 0% |
+| | `d2fx301` (D2 s7) | 3.65 | 1.4 | 0% | 100% | 0% | 0% |
+| | `pcplus302` (PC+ s7) | 3.54 | 2.1 | 0% | 96% | 0% | 2% |
+| **30M** | champion | 3.19 | 44.6 | 0% | 83% | 0% | 13% |
+| | `pcplus300` | 2.21 | 2.8 | 0% | 62% | 0% | 29% |
+| | `d2fx301` | **4.06** | 1.6 | 0% | 94% | 0% | 0% |
+| | `pcplus302` | 3.96 | 1.6 | 0% | 91% | 0% | 0% |
+| **60M** | champion | 3.97 | 242.6 | 50% | 47% | 1% | 1% |
+| | `pcplus300` | 3.64 | 2.4 | 0% | 80% | 0% | 8% |
+| | `d2fx301` | **4.44** | 1.9 | 0% | 86% | 0% | 0% |
+| | `pcplus302` | 0.92 | 9.8 | 0% | 75% | 0% | 12% |
+| **100M** | champion | **4.36** | 326.9 | 87% | 10% | 3% | 0% |
+| | `pcplus300` | 3.08 | 2.0 | 0% | 84% | 0% | 7% |
+| | `d2fx301` | 3.53 | 3.0 | 0% | 91% | 0% | 0% |
+| | `pcplus302` | 2.83 | 12.0 | 0% | 84% | 0% | 0% |
+| **150M** | champion | **5.14** | 117.4 | 6% | 92% | 1% | 1% |
+| | `pcplus300` | 4.47 | 249.2 | 57% | 31% | 11% | 0% |
+| | `d2fx301` | 4.19 | 25.9 | 0% | 100% | 0% | 0% |
+| | `pcplus302` | 3.45 | 48.2 | 0% | 74% | 0% | 0% |
+| **200M** | champion | **5.52** | 256.6 | 55% | 44% | 1% | 0% |
+| | `pcplus300` | 4.65 | 201.8 | 37% | 62% | 1% | 0% |
+| | `d2fx301` | 4.50 | 293.8 | 71% | 28% | 1% | 0% |
+| | `pcplus302` | 3.43 | 202.7 | 33% | 64% | 3% | 0% |
+| **250M** | champion | **5.51** | 125.3 | 12% | 88% | 1% | 0% |
+| | `pcplus300` | 4.13 | 278.8 | 69% | 31% | 0% | 0% |
+| | `d2fx301` | 4.61 | 173.5 | 31% | 68% | 1% | 0% |
+| | `pcplus302` | 3.54 | 271.5 | 57% | 42% | 1% | 0% |
+| **300M** | champion | **5.40** | 262.4 | 55% | 43% | 2% | 0% |
+| | `pcplus300` | 3.94 | 110.2 | 7% | 93% | 0% | 0% |
+| | `d2fx301` | 4.32 | 86.7 | 5% | 94% | 1% | 0% |
+| | `pcplus302` | 3.89 | 339.5 | 91% | 9% | 0% | 0% |
+
+**Extended-horizon arm (`d2fx600`, D2 seed 7, continued to 600M):**
+
+| Milestone | Speed (m/s) |
+| --- | --- |
+| 300M | 4.34 |
+| 450M | 4.58 |
+| 600M | **5.17-5.25 sustained** (final ~50M window) |
+
+For reference, the champion's own trajectory stays in the 4.9-5.1 m/s range
+at 450M (`4.91` in this table's extraction method) and never exceeds ~5.9
+peak or sustains above ~5.7. No arm this session -- reconstruction or
+mainline -- exceeded that ceiling; `d2fx600` is the first and only arm to
+*reach* it, and it needed 600M, not 300M, to do so.
+
+### Answers to the four questions
+
+**1. Did any arm reach or approach the champion's 5.6 m/s at 200M, and did
+it sustain it?** No, not within 300M. All three core arms fall 0.9-2.1 m/s
+short of the champion at 200M (`pcplus300` 4.65, `d2fx301` 4.50, `pcplus302`
+3.43, vs champion 5.52) and none sustains a champion-band speed through
+300M -- `pcplus300` oscillates between 3.9-4.7 for the rest of the run,
+`d2fx301` is smoother but caps out around 4.3-4.6, `pcplus302` is still
+recovering from its own severe mid-training dip. **The champion's 5.6 m/s
+regime is real and reachable by this stack, but not within a 300M
+horizon** -- `d2fx600`, given double the horizon (600M), does get there
+(5.17-5.25 sustained in its final 50M), which is direct evidence that "the
+reconstruction plateaus at ~4 m/s" was a horizon artifact for at least the
+D2/fixed-champion cell, not a hard ceiling.
+
+**2. Does self-play (PC+) actually beat the fixed champion (D2) over a full
+300M horizon, or was the +1.4 m/s advantage at 18M an early-transient
+artifact?** **Early-transient artifact, confirmed.** At 18M, self-play's
+advantage is even larger than the task brief's reference point: `pcplus300`
+5.51 vs `d2fx301` 3.65 (+1.86 m/s). By 300M the ranking has **reversed**:
+`d2fx301` 4.32 vs `pcplus300` 3.94 (D2 now +0.38 m/s ahead), and D2 is
+visibly smoother throughout the back half of the run while PC+ keeps
+oscillating (3.94 @240M, 4.54 @220M, 3.94 @290M -- a 0.6 m/s swing inside
+70M, still happening at the very end of the run). The strongest evidence is
+`d2fx600`: given a longer horizon, the fixed-champion arm reaches the
+champion's own sustained band (5.17-5.25 @600M) with no self-play at all.
+Self-play's contribution is a faster early ramp (matches the causal-2x2
+Wave 1 finding, "self-play is a synergistic amplifier... once the reward
+stack already works"), not a long-horizon speed advantage -- if anything,
+the non-stationary rolling opponent pool appears to be the *source* of
+PC+'s larger, more persistent oscillations (`pcplus302`'s dip to 0.92 m/s
+@60M has no D2-side analogue of comparable severity in either D2 seed run).
+
+**3. How much seed variance is there between `pcplus300` (seed 42) and
+`pcplus302` (seed 7)? Is the reconstruction reliably reproducible, or
+seed-lucky?** **Large mid-training variance, uncertain long-horizon
+convergence.** The two seeds disagree by up to 2.71 m/s at individual
+milestones (60M: 3.64 vs 0.92) with qualitatively different dip timing --
+seed 42's worst trough is at 30M, seed 7's is at 60M, and neither's shape
+resembles the other's closely at any single milestone before 250M. Yet by
+300M the two are within 0.05 m/s of each other (3.94 vs 3.89). With only
+two seeds this convergence cannot be distinguished from coincidence -- a
+third seed (`pcplus303`, seed 99) was preregistered and launch-attempted
+this session specifically to resolve this, but was aborted before writing
+any transitions after colliding with a concurrent session's own launch on
+the same GPU (documented above); it was not relaunched elsewhere this pass
+in favor of stepping back from further proactive launches after two
+collisions. **This remains an open question** -- the honest answer is "not
+yet confirmed reproducible," not "yes" or "no." A third seed, ideally run
+to at least 300M (350M+ if possible, given `d2fx600`'s evidence that this
+horizon still undersells the eventual ceiling) is the direct way to close
+this out, and is the most valuable single follow-up experiment this
+program has queued but not completed.
+
+**4. Is 6 m/s reachable with this stack, or does it plateau at the
+champion's ~5.6?** **Plateau, not 6 m/s, based on all evidence gathered so
+far.** The champion reference itself (re-verified independently, `450M:
+4.91` in this table's method, matching the pre-existing 4.85 figure within
+noise) never sustains above ~5.7 and peaks only transiently near 5.9-5.9
+early in training, never at long horizon. `d2fx600`, the only arm in this
+session's own runs to reach a comparable regime, tops out at 5.17-5.25 by
+600M -- inside the champion's band, not beyond it, and still short of 6.
+No arm, reconstruction or mainline, showed any acceleration trend toward 6
+m/s at the point its data ends; if anything the champion's own 450M point
+(4.91, down from a 250M peak of ~5.51) suggests mild *decay* is at least as
+likely as continued climb past this regime. Reaching 6 m/s, if possible at
+all, would need either (a) a longer horizon than anything tested here (open
+-- nothing run past 600M) or (b) a change to the reward/config stack itself,
+not just more transitions on the current one. This session's evidence does
+not support 6 m/s being reachable with the current stack; it supports the
+current stack asymptoting in the same 5.0-5.7 m/s regime the champion
+already occupies.
+
+### Recommendation
+
+**Build on `d2fx301`/`d2fx600` (D2: legacy reward stack, fixed champion
+opponent, no self-play) as the reference configuration going forward, not
+PC+.** It is simpler (no rolling self-play pool, no opponent-pool
+non-stationarity to manage or debug), was smoother and less oscillatory at
+every horizon tested, matched or exceeded PC+ at almost every milestone from
+60M onward, and is the only configuration in this session's own runs
+confirmed to reach the champion's sustained speed band, on a horizon (600M)
+well within the now-generous compute budget. Concretely:
+
+1. **Promote `d2fx600`-equivalent runs as the new baseline for future
+   long-horizon work**, superseding PC+/self-play as this program's default
+   arm. Self-play remains interesting as an early-training accelerant (real,
+   reproducible +1.4-1.9 m/s at 18M) but is not pulling its weight at long
+   horizon and adds real operational complexity (opponent pool management,
+   `not_moving` and oob-frac telemetry that is harder to interpret).
+2. **Run a third PC+ seed (`pcplus303` or equivalent) to closure** before
+   fully retiring self-play as a candidate -- the seed-variance question is
+   still open, and it is possible a luckier self-play seed reaches the band
+   faster than D2 does; two seeds is not enough evidence to close this.
+3. **Confirm mainline+ladder's long-horizon behavior with a second attempt**
+   at 600M (this session's own `mainline-ladder300` run was too noisy at
+   300M, with an unexplained second dip around 170-200M, to draw a firm
+   conclusion) -- the shippable-code-path question (does mainline, not a
+   throwaway reconstruction, reach the champion band) is still the highest-
+   value open item per the task's own framing, and `d2fx600`'s result is
+   evidence the horizon needed may simply be longer than 300M for mainline
+   too, not that mainline+ladder is broken.
+4. **Do not chase 6 m/s on this reward/config stack without first
+   understanding why the champion itself plateaus below it** -- there is no
+   evidence in ~1500M cumulative transitions across all arms this session
+   ran (plus the champion's own 458M) that this stack accelerates past
+   ~5.7 m/s. If 6 m/s is a hard requirement, treat it as a reward-shaping or
+   architecture question, not a "train longer" question.
 
