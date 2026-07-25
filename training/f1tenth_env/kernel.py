@@ -310,6 +310,7 @@ class RewardParams:
     rear_end: wp.float32
     global_scale: wp.float32
     rear_end_any_contact: wp.int32
+    wall_cost_continuous: wp.int32
 
 
 @wp.struct
@@ -322,6 +323,7 @@ class TerminationParams:
     maximum_heading_error: wp.float32
     collision_speed: wp.float32
     terminate_on_collision: wp.int32
+    recoverable_boundary: wp.int32
 
 
 @wp.struct
@@ -1150,10 +1152,17 @@ def compute_reward_and_done(
     )
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
     if wall_contact:
-        out.wall_contact = (
-            -reward.wall_contact_coefficient
-            * wp.sqrt(speed_squared)
-        )
+        if reward.wall_cost_continuous != 0:
+            out.wall_contact = (
+                -reward.wall_contact_coefficient
+                * reward.control_dt
+                * wp.sqrt(speed_squared)
+            )
+        else:
+            out.wall_contact = (
+                -reward.wall_contact_coefficient
+                * wp.sqrt(speed_squared)
+            )
     vel_world = body_velocity_world(ego)
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
@@ -1205,7 +1214,12 @@ def compute_reward_and_done(
         env.stopped_streak[env_id] = 0
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
-    oob_done = wall_contact
+    if termination.recoverable_boundary != 0:
+        full_out_left = ego_frenet.ey - footprint > ego_frenet.width_left
+        full_out_right = ego_frenet.ey + footprint < -ego_frenet.width_right
+        oob_done = full_out_left or full_out_right
+    else:
+        oob_done = wall_contact
     stopped = (
         env.stopped_streak[env_id] >= termination.maximum_stopped_steps
     )

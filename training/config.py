@@ -98,6 +98,7 @@ DEFAULT_CONFIG = {
         "opponent_kp_speed": 1.0,
         "term_on_collision": True,
         "collision_term_speed_mps": 4.0,
+        "boundary_mode": "first_contact_terminal",
         "car_length": 0.568,
         "car_width": 0.296,
         "collision_margin_m": 0.0,
@@ -144,6 +145,7 @@ DEFAULT_CONFIG = {
     "reward": {
         "progress_max_lateral_m": 1.0,
         "wall_contact_coefficient": 20.0,
+        "wall_cost_mode": "one_shot",
         "passing_gate_ahead_m": 40.0,
         "passing_gate_behind_m": 20.0,
         "global_reward_scale": 1.0,

@@ -622,6 +622,9 @@ class WarpF1tenthEnv:
         params.global_scale = float(
             self.reward_cfg.get("global_reward_scale", 1.0)
         )
+        params.wall_cost_continuous = int(
+            self.reward_cfg.get("wall_cost_mode", "one_shot") == "continuous"
+        )
         return params
 
     def _build_termination_params(self):
@@ -653,6 +656,10 @@ class WarpF1tenthEnv:
         )
         params.terminate_on_collision = int(
             self.env_cfg.get("term_on_collision", True)
+        )
+        params.recoverable_boundary = int(
+            self.env_cfg.get("boundary_mode", "first_contact_terminal")
+            == "recoverable_full_car_out"
         )
         return params
 
