@@ -2,6 +2,7 @@
   "env": {
     "track": "Austin",
     "reset_stationary_probability": 0.3,
+    "opponent_strategy": "policy",
     "opponent_mix": {
       "scripted_weight": 0.1,
       "policy_weight": 0.9,
@@ -14,17 +15,13 @@
     "term_wall_impact": false
   },
   "reward": {
-    "reward_stack": "legacy",
-    "oob_penalty_form": "footprint_margin",
-    "oob_margin_m": 0.0,
-    "sophy_oob_footprint": true,
-    "boundary_contact_penalty": 4.0,
-    "terminal_oob_skip_seconds": 1.0,
+    "reward_stack": "lee",
+    "wall_contact_coefficient": 20.0,
     "rear_end_gate": "any_contact",
     "reward_scales": {
       "progress": 1.0,
-      "oob_penalty": 0.01,
-      "boundary_contact": 1.0,
+      "oob_penalty": 0.0,
+      "boundary_contact": 0.0,
       "wall_penalty": 0.0,
       "passing": 3.0,
       "collision": 6.0,
@@ -32,7 +29,7 @@
       "steering_change": 0.5,
       "steering_history": 5.0,
       "tyre_slip_penalty": 0.0,
-      "oob_impact": 0.01,
+      "oob_impact": 0.0,
       "wall_impact": 0.0,
       "lateral": 0.0,
       "smoothness": 0.0
@@ -44,13 +41,5 @@
   },
   "schedule": {
     "total_transitions": 25000000
-  },
-  "fixed_opponents": {
-    "entries": [
-      {
-        "checkpoint": "/home/shadeform/F1tenth/training/outputs/runs/642a7a80/checkpoints/policy_199680000.pt",
-        "weight": 1.0
-      }
-    ]
   }
 }

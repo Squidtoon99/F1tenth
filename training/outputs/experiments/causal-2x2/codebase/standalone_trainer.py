@@ -3367,6 +3367,9 @@ def main():
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),
+                            "reward/wall_contact": diag.mean(
+                                "reward_term/wall_contact"
+                            ),
                             "reward/wall_penalty": diag.mean(
                                 "reward_term/wall_penalty"
                             ),

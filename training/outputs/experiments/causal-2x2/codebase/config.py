@@ -149,6 +149,7 @@ DEFAULT_CONFIG = {
         "progress_max_lateral_m": 1.0,
         "oob_margin_m": 0.0,
         "wall_contact_coefficient": 20.0,
+        "reward_stack": "legacy",
         "oob_penalty_form": "footprint_margin",
         "sophy_oob_footprint": True,
         "boundary_contact_penalty": 4.0,

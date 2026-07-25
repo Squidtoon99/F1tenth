@@ -15,6 +15,7 @@
     "term_wall_impact": false
   },
   "reward": {
+    "reward_stack": "legacy",
     "oob_penalty_form": "footprint_margin",
     "oob_margin_m": 0.0,
     "sophy_oob_footprint": true,

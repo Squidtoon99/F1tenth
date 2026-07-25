@@ -612,7 +612,7 @@ class WarpF1tenthEnv:
             self.reward_cfg.get("wall_contact_coefficient", 20.0)
         )
         params.lee_wall_mode = int(
-            self.env_cfg.get("term_oob_mode", "full_car_out") == "wall_contact"
+            self.reward_cfg.get("reward_stack", "legacy") == "lee"
         )
         params.steering_change = float(scales.get("steering_change", 0.0))
         params.steering_history = float(scales.get("steering_history", 0.0))
