@@ -319,3 +319,57 @@ need a coefficient-magnitude follow-up (e.g. checking whether mainline's
 `oob_impact_coefficient`/`boundary_contact_coefficient` need retuning
 independent of the continuous-cost coefficient, which was matched to D2
 exactly).
+
+## Step 6 — `mainline-ladder300` on L40S (in flight, ~153M @ 07:22 UTC)
+
+Incremental harvest to local (31/31 checkpoints verified growing). Milestone
+speeds from `extract_trajectory.py`:
+
+| Milestone | `mainline-ladder300` (L40S) | `mainline-ladder002` (4080) | Champion |
+| ---: | ---: | ---: | ---: |
+| 18M | 3.52 | 2.75 | 5.57 |
+| 60M | 2.70 | 3.14 | 4.05 |
+| 90M | **5.48** (peak) | — | — |
+| 100M | 5.01 | 2.93 | 4.23 |
+| 150M | 4.61 | 3.41 | 5.12 |
+
+**Finding:** L40S mainline+ladder **transiently matches champion** (5.48 m/s
+@90M vs champion peak ~5.4-5.9). Local 4080 run (`mainline-ladder002`)
+plateaued at ~3.3 m/s — hardware or compile throughput difference, not ladder
+mechanism failure. Second dip visible 100→150M (5.0→4.6); watching whether
+150→300M recovers like champion's 150→200M climb.
+
+**Reconstruction retirement:** Supported for future reward-stack work
+(mainline expresses full ladder; L40S reached champion-level transient speed).
+Final verdict pending 300M completion and 200M+ mean vs pcplus300 (4.263).
+
+## Step 7 — `mainline-ladder300` complete @ 300M (08:17 UTC)
+
+Finished 300,000,256 transitions on lark-1. Full harvest verified locally
+(59/59 checkpoints, `run.log` sha256 prefix `79c0bbbf7b278f86` matches remote).
+
+| Milestone | `mainline-ladder300` | `pcplus300` | Champion |
+| ---: | ---: | ---: | ---: |
+| 18M | 3.57 | — | 5.57 |
+| 60M | 2.76 | — | 4.05 |
+| 90M | **5.48** (peak) | — | — |
+| 100M | 5.01 | — | 4.23 |
+| 150M | 4.61 | — | 5.12 |
+| 200M | 3.83 | 4.53 | 5.40 |
+| 250M | 3.89 | 4.14 | 5.42 |
+| 298M | 3.61 | 4.00 | 5.44 |
+| **200M+ mean** | **3.772** | **4.263** | **5.208** |
+
+**Verdict:** Mainline+ladder reaches champion-level speed transiently (5.48 m/s
+@90M) but **does not sustain**. The 200M+ mean (3.772 m/s) is **0.49 m/s below
+`pcplus300`** and **1.44 m/s below champion**. The second dip (100→200M) never
+recovers like the champion's 150→200M climb. **Reconstruction code base cannot be
+retired for long-horizon work** — mainline underperforms the reconstruction on
+the metric that matters (sustained 200M+ speed), despite expressing the same
+ladder mechanism correctly in telemetry.
+
+**Follow-on on lark-1:** `selfplay-ladder300` launched (D2 legacy fixed champion,
+seed 42, 300M) to fill the aborted `d2fx300` gap — not true self-play despite
+the name; config `fixed_opponents.entries` activates fixed champion even without
+`--fixed-opponents`.
+

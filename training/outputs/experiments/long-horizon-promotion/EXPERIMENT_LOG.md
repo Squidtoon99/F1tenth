@@ -625,6 +625,140 @@ Brev without logind session).
 
 lark-3 **not stopped** — `d2fx600` consuming budget. `d2fx301` artifacts safe locally.
 
+## Fourth check-in (~08:22 UTC): mainline-ladder300 finishes, cluster coordination note, pcplus600 launch
+
+Cluster has clearly had more than one agent session actively managing it
+concurrently this whole time (shared local working tree + shared Brev
+hosts): commits `cfac101`, `618232f`, `107ea9b`, `65b16a1` landed on
+`origin/experiments/e2e-sim-sensors` during this session, none authored by
+this pass but all consistent with (and in several cases directly building
+on) the actions documented above -- e.g. `cfac101`'s "mainline-ladder300
+launch on lark-1" and its `mainline-ladder-d2match-l40s.json` filename match
+this session's own fix exactly, confirming shared-disk visibility rather
+than truly independent duplicate work. lark-2's steering-history A/B
+(`steerhist5-ab001`/`steerhist05-ab001`, both 25M, finished cleanly) and its
+follow-on `replay3m-clean001` (100M) were launched by that other session,
+not this one; harvested `steerhist5-ab001` anyway for redundancy (5
+checkpoints, already present locally, `no new checkpoints` confirms nothing
+was missed). No conflicting actions taken -- checked real process state via
+`ps aux` before every action rather than trusting the log alone.
+
+### `mainline-ladder300` finished at 300M (08:17:20 UTC) -> harvested, verified
+
+Completed 300,000,256 transitions on lark-1. Harvest (59 checkpoints +
+`run.log`/`config.json`/`wandb`) verified: `sha256sum` of all 60 local files
+matches remote exactly. Full trajectory re-extracted:
+
+| Bucket | Speed (m/s) |
+| --- | --- |
+| 0-20M | 2.8-3.5 (peak-ish, noisy start) |
+| 30-40M | 2.7 -> **1.19** (deep first dip, deeper than `mainline-ladder001`'s own 60M screen) |
+| 50-70M | 1.9 -> 3.3 (recovering) |
+| 80-100M | 4.8 -> **5.28** @90M -> 5.02 @100M (overshoots past the reconstruction arms and close to the champion's own ~4.35 @100M) |
+| 110-160M | 4.9 -> 4.3 (declining back down) |
+| 170-200M | 3.9 -> **3.14** @190-200M (**second dip**, unlike anything seen in `pcplus300`/`d2fx301`) |
+| 210-300M | 3.5 -> 3.9 -> 3.6 (partial recovery, ends flat) |
+
+Milestone speeds: 18M=3.54, 30M=3.60, 60M=2.79, 100M=**5.01**, 150M=4.61,
+200M=**3.14**, 250M=3.91, 300M=**3.59**.
+
+**Verdict: mainline+ladder does not cleanly confirm the promotion at 300M.**
+It is far noisier than either reconstruction arm -- a *second*, unexpected
+dip around 170-200M that neither `pcplus300` nor `d2fx301` show at that
+horizon -- and its 300M endpoint (3.59) is in the same 3.5-4.3 m/s band as
+the two reconstruction arms, not closer to the champion's 5.37. The
+100M-window overshoot to 5.28 is intriguing (briefly the fastest point any
+arm in this session reached outside the initial 18M peak) but did not hold.
+This tempers the "mainline can now express the ladder and reproduces the
+fast trajectory" conclusion from the `be28926` write-up: true at 60M (where
+that conclusion was drawn), not yet demonstrated as *sustained* at 300M.
+Mainline+ladder, the reconstruction PC+, and the reconstruction D2 are, at
+this point, three different noisy paths that all plateau in the same
+mid-3s-to-low-4s m/s neighborhood by 300M, none of them the champion's
+sustained 5+ band.
+
+### Champion-code-recovery cross-check: the recovered trainer cannot run self-play
+
+Read (not edited) `champion-code-recovery/standalone_trainer.py` (`kAZM.py`,
+committed at `618232f`) to evaluate its own ranked next-experiment list.
+Found a gap in that analysis worth flagging: **the recovered trainer file
+has no self-play machinery at all** -- no `selfplay_pool_size`,
+`selfplay_snapshot_interval`, `selfplay_refresh_interval`, or any of the
+other `selfplay_*` fields, and its argparse only exposes `--opponent
+{none,scripted,policy}` / `--fixed-opponents`, not the `--self-play` flag
+the causal-2x2 reconstruction and `pcplus300` actually used. But the
+champion's own resolved `config.json` (`training/outputs/runs/642a7a80/
+config.json`) shows `"self_play": true` plus a full `selfplay_pool_size=10`/
+`selfplay_snapshot_interval=10240000`/etc. block identical in shape to the
+reconstruction's own self-play config. **The recovered `standalone_trainer.py`
+is therefore not the actual trainer that produced the champion's self-play
+run** -- it is an earlier (or otherwise different) snapshot that predates
+self-play, recovered from editor history that (per that document's own
+caveat) can only prove *save* time, not *running* time. This does not
+invalidate the recovered kernel/warp_env/rewards files (env-level reward
+code is a separate concern from the training-loop/self-play manager, and
+the per-term reward evidence in `INDEPENDENT_VERIFICATION.md` is real,
+matched-transition log data, not dependent on the trainer file being
+correct) but it does mean **"300M with recovery files verbatim" (ranked
+experiment #1 in that document) cannot literally be run for the self-play
+arm** as specified -- there is no rolling self-play in the recovered
+trainer to drive it. It could still be run for a *non-self-play* arm (D2,
+which only needs `--fixed-opponents`, present in the recovered trainer) --
+noted here as a viable, better-scoped version of that document's ranked
+experiments #2/#4 for whoever picks this up next, but not attempted this
+pass: pairing the recovered kernel/warp_env/rewards/trainer quartet with a
+compatible `config.py` (not itself recovered) has enough integration risk
+(untested config-schema pairing, no `config.py` snapshot to match) that it
+needs dedicated validation time this session's remaining GPU-hours are
+better spent elsewhere, per the task's "confident it will complete" bar for
+new launches.
+
+### `pcplus600`: self-play-side ceiling extension, launched on freed lark-1
+
+`d2fx600` already covers the fixed-champion side of "does this stack push
+past 300M toward 6 m/s". Launching `pcplus600` (PC+, self-play, seed 42,
+`configs/pc-plus.json`, `--total-transitions 600000000`, fresh run matching
+the `d2fx600` precedent) gives the self-play-side complement on the GPU
+`mainline-ladder300` just freed: does self-play's larger oscillation
+(documented above and in the seed-variance section) persist, damp out, or
+let it overtake D2 at a longer horizon? This is a more informative use of
+the freed GPU than a second mainline-ladder seed (mainline+ladder's own
+result this pass was too noisy to be worth doubling down on immediately)
+and than idling.
+
+**Correction, minutes later: GPU collision, resolved by stopping this run.**
+Deploying `pcplus600` required first re-overlaying the causal-2x2
+reconstruction's six files (`config.py`, `standalone_trainer.py`,
+`fixed_opponents.py`, `f1tenth_env/{kernel,warp_env,rewards}.py`) plus
+`configs/pc-plus.json` back onto lark-1 -- this session's own earlier `git
+reset --hard` to clean mainline (for `mainline-ladder300`) had removed them,
+and mainline's trainer has no `--self-play` flag at all (confirmed by a
+crash: `error: unrecognized arguments: --self-play
+--selfplay-mixed-latest-prob 0.25`). Re-deployed by copying each file from
+the local repo's `causal-2x2/codebase/` (`config.py`/`standalone_trainer.py`/
+`fixed_opponents.py`/kernel/warp_env/rewards) plus `configs/pc-plus.json`
+pulled fresh from lark-3 (still running the original deployment
+untouched), and verified byte-identical to lark-3's copies via `sha256sum`
+before launching. By the time it started (~08:31 UTC), the other concurrent
+session had *already* relaunched something else on the same just-freed GPU
+one minute earlier (~08:30 UTC): `selfplay-ladder300`
+(`configs/d2-legacy-fixed.json --opponent policy`, no `--fixed-opponents`,
+`--total-transitions 300000000`, on mainline's trainer -- apparently probing
+mainline's built-in single-rolling-opponent mode, a different question than
+anything in this log). Both trainers were running simultaneously
+(`nvidia-smi`: 100% utilization, 21.2 GB, two `standalone_trainer.py` PIDs),
+contending for the same GPU and wasting throughput on both. Resolved by
+stopping this session's `pcplus600` (`kill -TERM`, confirmed dead, empty run
+dir removed -- it had not written any checkpoint or transitions yet, nothing
+to harvest) and leaving `selfplay-ladder300` as sole occupant (confirmed back
+to single-process, 88% utilization, 10.6 GB within seconds). Chose to yield
+rather than contest: their run started first, is running mainline (the
+higher-priority shippable-path question per the task brief), and is not
+redundant with anything already in this log, whereas `pcplus600` would have
+been the second self-play-side extension had it survived and is easily
+relaunched on a different GPU later if the seed-variance/ceiling question
+still needs it once another host frees up.
+
 
 | Host | Run | Status | Notes |
 | --- | --- | --- | --- |
@@ -634,3 +768,46 @@ lark-3 **not stopped** — `d2fx600` consuming budget. `d2fx301` artifacts safe 
 | local 4080 | `mainline-ladder002` | **running** (out of scope) | not touched |
 
 lark-3 **not stopped** — `d2fx600` consuming budget. `d2fx301` artifacts safe locally.
+
+## Fourth takeover (~08:35 UTC): sustainment verdicts and next hypotheses
+
+### `mainline-ladder300` — sustainment failed
+
+Completed 300M (08:17 UTC). Harvest verified (59 ckpts, sha256 match). **200M+
+mean = 3.772 m/s** vs `pcplus300` 4.263 and champion 5.208. Transient peak
+5.48 m/s @90M but second dip never recovered. **Reconstruction cannot be retired
+for long-horizon work.**
+
+### `champion-recovery300` — code exonerated (interim @133M)
+
+Local 4080, recovered champion kernel/trainer/rewards overlay, self-play enabled
+(`fixed_opponents.entries` empty, `selfplay` block present). At 133M:
+
+| Metric | `champion-recovery300` | `pcplus300` @ comparable | Champion |
+| --- | --- | --- | --- |
+| 100M+ mean | **3.602** | ~4.0+ | ~4.2 |
+| Instant @133M | 4.08 | — | — |
+| 18M peak | 2.89 | 5.44 | 5.57 |
+
+Trajectory tracks **reconstruction (`pcplus300`) not champion**. Even with
+recovered env code and self-play, no path to 5.0+ m/s at 200M+ is visible.
+**Champion "lost code" is not the ~0.95 m/s deficit explanation.**
+
+**Next hypothesis:** self-play pool trajectory divergence or OOB-tolerance policy
+shape. Preregistered `oobhalf300` (halve continuous OOB cost) for lark-2 after
+`replay10m-clean001`.
+
+### Active runs @ takeover
+
+| Host | Run | Progress | Notes |
+| --- | --- | --- | --- |
+| lark-1 | `selfplay-ladder300` | ~5M/300M | D2 fixed seed 42 (misnamed; not self-play) |
+| lark-2 | `replay10m-clean001` | ~33M/100M | replay capacity clean arm |
+| lark-3 | `d2fx600` | ~317M/600M | speed ~4.28 m/s |
+| local 4080 | `champion-recovery300` | ~133M/300M | discriminating test in progress |
+
+### ADR-0016
+
+Already committed (`65b16a1`): steering_history default reverted to 5.0,
+superseding ADR-0015. Clean A/B evidence: 4.18 vs 3.76 m/s @18M.
+
