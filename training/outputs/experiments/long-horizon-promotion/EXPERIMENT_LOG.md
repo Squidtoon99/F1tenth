@@ -1101,3 +1101,110 @@ well within the now-generous compute budget. Concretely:
    ~5.7 m/s. If 6 m/s is a hard requirement, treat it as a reward-shaping or
    architecture question, not a "train longer" question.
 
+## Addendum (15:10 UTC): `pcplus600` finished -- recommendation 1 above is wrong
+
+`pcplus600` (PC+, self-play, seed 42, 600M) finished at 15:07:47 UTC, about
+three hours after the verdict above was written. It was launched precisely to
+be the self-play-side mirror of `d2fx600`, and its result **reverses the
+head-to-head conclusion that the verdict drew from the 300M arms.** Harvested
+and `sha256sum`-verified before anything else (120/120 files identical, 118
+checkpoints + `run.log` + `config.json`).
+
+### Head-to-head at matched 600M horizon
+
+| Window | `pcplus600` (PC+, self-play) | `d2fx600` (D2, fixed champion) | champion `642a7a80` |
+| --- | --- | --- | --- |
+| 20M | 4.200 | 3.779 | 4.503 |
+| 60M | 3.531 | 4.390 | 4.045 |
+| 100M | 2.934 | 3.577 | 4.234 |
+| 200M | 4.593 | 4.478 | 5.399 |
+| 300M | 4.209 | 4.377 | 5.436 |
+| 400M | 5.066 | 4.207 | 5.444 |
+| 500M | 4.679 | 4.441 | (ended 458M) |
+| 598M | **5.367** | 5.166 | -- |
+| mean last 40M (560-600M) | **5.292** (5.162-5.406) | 5.047 (4.889-5.215) | -- |
+| champion's own sustained mean, 200-458M | -- | -- | 5.206 (4.108-5.680) |
+
+Two things follow, and both matter more than anything in the verdict above.
+
+**PC+ beats D2 at the horizon where either of them is actually competitive.**
+The 300M verdict called D2 the winner because D2 "matched or exceeded PC+ at
+almost every milestone from 60M onward." That was a true statement about a
+regime in which *neither* arm had converged -- both were still in the 4-4.5 m/s
+pre-plateau valley, and the ordering there turns out not to predict the
+ordering at convergence. Over the last 40M, PC+ is ahead by **+0.245 m/s**
+(5.292 vs 5.047), and the two bands barely overlap (PC+ min 5.162 vs D2 max
+5.215). PC+ also crosses 5 m/s far earlier (~400M vs ~590M). Recommendation 1
+above -- promote D2, retire self-play -- is **withdrawn**; it was an artifact
+of stopping the comparison at a horizon where both arms were still in transit.
+
+**The reconstruction reaches the champion's sustained band; it is just ~3x
+less sample-efficient.** `pcplus600`'s terminal 40M mean (5.292) is slightly
+*above* the champion's own sustained mean across 200-458M (5.206), and inside
+its band. The gap that dominated every earlier check-in was never a ceiling
+gap -- it was a schedule gap. The champion reaches ~5.4 m/s by 200M; the
+reconstruction needs ~600M to reach the same place. That is a real and
+important deficit, but it is a different bug from "the reconstruction cannot
+get there," which is what the 300M arms appeared to show.
+
+### What this does and does not change in the four answers
+
+- **Q1 (did any arm reach/sustain the champion's speed):** upgraded from "only
+  `d2fx600`, marginally" to "yes -- `pcplus600` sustains 5.29 m/s mean over its
+  final 40M, at or slightly above the champion's own 200-458M sustained mean of
+  5.206, and holds it for the full last ~60M rather than touching it."
+- **Q2 (does self-play beat fixed champion over a full horizon):** **answer
+  flips to yes**, but only at 600M. At 300M the honest answer remains no. The
+  crossover is around 380-400M.
+- **Q3 (seed variance):** unchanged and still open -- `pcplus600` is seed 42
+  only. The third seed still has not run to closure, so recommendation 2 above
+  stands unmodified and is now *more* urgent, since the arm it would be
+  testing is the recommended one again.
+- **Q4 (is 6 m/s reachable):** unchanged. Nothing here approaches 6 m/s. Both
+  600M arms asymptote in the 5.0-5.4 m/s regime and the champion plateaus
+  ~5.44 and then *declines* to 4.85 by its 458M end. Recommendation 4 stands.
+
+### Revised recommendation
+
+Supersedes recommendation 1 only; 2, 3 and 4 stand as written. **Keep PC+
+(self-play) as the reference long-horizon configuration, and treat the
+sample-efficiency gap -- not the terminal speed -- as the open defect.** The
+question worth compute is no longer "which opponent scheme wins" but "why does
+the reconstruction need 600M to reach what the champion reaches at 200M," since
+closing that 3x would matter far more than the 0.245 m/s between the two arms.
+
+### Cluster state at 15:20 UTC -- lark-3 deleted mid-harvest
+
+`pcplus600` was harvested and `sha256sum`-verified (120/120 files) at ~15:12
+UTC. Immediately afterward, a sweep of lark-3 found two *older* runs from an
+earlier session still unharvested (`br10m003` and `sphst003`, 40 checkpoints
+each, both 200M, finished 2026-07-24). `br10m003` harvested cleanly (40/40).
+`sphst003`'s checkpoint pull then failed with `Workspace is not running`, and
+`brev ls` now shows **only two instances**: lark-3 has been *deleted*, not
+stopped, by the other concurrent session, roughly five minutes after this
+session's `pcplus600` verification completed.
+
+**Nothing from this session's own work was lost** -- `pcplus600`, `d2fx600`,
+and `d2fx301` were all fully harvested and checksum-verified before the
+deletion. The only casualty is 39 *intermediate* checkpoints of `sphst003`;
+its complete `run.log` (5.5 MB, through the 200M finish), its `config.json`,
+and its final `policy_200000512.pt` are all present locally, so its full speed
+trajectory is still recoverable and its final policy is intact. The loss is
+intermediate-checkpoint granularity on one prior-session run, nothing more.
+
+Two operational notes for whoever picks this up:
+
+- **`brev stop` vs `brev delete` matters and the distinction was not honored
+  here.** A stopped instance keeps its disk, so a missed artifact stays
+  recoverable; a deleted one does not. This session had planned to `brev stop`
+  lark-3 after the sweep for exactly that reason. Anyone sharing these hosts
+  should confirm co-tenant harvests are complete before deleting.
+- **Harvest-before-teardown held up under a genuinely adversarial race.** The
+  margin between `pcplus600`'s checksum verification and lark-3's deletion was
+  about five minutes. Harvesting incrementally as runs finish, rather than
+  batching to the end, is what made that survivable.
+
+Remaining cluster: lark-1 running `oobhalf-d2-600`, lark-2 running
+`oobhalf-d2-300` -- both the other session's runs, left untouched. This
+session has no further work queued and no instance of its own still running.
+
