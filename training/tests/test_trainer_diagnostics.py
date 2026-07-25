@@ -45,6 +45,26 @@ def test_accumulate_step_diagnostics_wall_contact_events():
     assert diag.mean("reward_term/wall_contact_when_event") == pytest.approx(-2.0)
 
 
+def test_accumulate_step_diagnostics_boundary_contact_and_oob_impact_events():
+    diag = RunningStats()
+    extras = {
+        "rewards": {
+            "terms": {
+                "boundary_contact": torch.tensor([0.0, -4.0, 0.0, -4.0]),
+                "oob_impact": torch.tensor([0.0, 0.0, -1.62, 0.0]),
+            }
+        },
+        "metrics": {},
+        "termination": {},
+    }
+    _accumulate_once(diag, extras)
+
+    assert diag.total("metric/boundary_contact_events") == 2.0
+    assert diag.mean("reward_term/boundary_contact_when_event") == pytest.approx(-4.0)
+    assert diag.total("metric/oob_impact_events") == 1.0
+    assert diag.mean("reward_term/oob_impact_when_event") == pytest.approx(-1.62)
+
+
 def test_accumulate_step_diagnostics_zero_events_yields_zero_counts_and_nan_means():
     diag = RunningStats()
     extras = {

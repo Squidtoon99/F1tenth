@@ -552,6 +552,18 @@ def accumulate_step_diagnostics(
             wall_contact_events,
         )
 
+    for term_name in ("boundary_contact", "oob_impact"):
+        term_value = terms.get(term_name)
+        if isinstance(term_value, torch.Tensor):
+            fired = term_value != 0
+            diag.add_total(
+                f"metric/{term_name}_events",
+                fired.to(term_value.dtype),
+            )
+            diag.add_event_mean(
+                f"reward_term/{term_name}_when_event", term_value, fired
+            )
+
     for name, value in extras.get("termination", {}).items():
         if isinstance(value, torch.Tensor):
             diag.add_total(f"term/{name}", value)
@@ -1883,9 +1895,15 @@ def main():
                         diag.mean("reward_term/steering_history"),
                     )
                 log.info(
-                    "  reward_events: wall_contact_when=%.4f wall_contact_events=%d",
+                    "  reward_events: wall_contact_when=%.4f wall_contact_events=%d "
+                    "boundary_contact_when=%.4f boundary_contact_events=%d "
+                    "oob_impact_when=%.4f oob_impact_events=%d",
                     diag.mean("reward_term/wall_contact_when_event"),
                     int(diag.total("metric/wall_contact_events")),
+                    diag.mean("reward_term/boundary_contact_when_event"),
+                    int(diag.total("metric/boundary_contact_events")),
+                    diag.mean("reward_term/oob_impact_when_event"),
+                    int(diag.total("metric/oob_impact_events")),
                 )
                 log.info(
                     "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f "
@@ -1975,6 +1993,18 @@ def main():
                             ),
                             "reward/wall_contact_when_event": diag.mean(
                                 "reward_term/wall_contact_when_event"
+                            ),
+                            "reward/boundary_contact": diag.mean(
+                                "reward_term/boundary_contact"
+                            ),
+                            "reward/boundary_contact_events": diag.total(
+                                "metric/boundary_contact_events"
+                            ),
+                            "reward/oob_impact": diag.mean(
+                                "reward_term/oob_impact"
+                            ),
+                            "reward/oob_impact_events": diag.total(
+                                "metric/oob_impact_events"
                             ),
                             "reward/steering_change": diag.mean(
                                 "reward_term/steering_change"
