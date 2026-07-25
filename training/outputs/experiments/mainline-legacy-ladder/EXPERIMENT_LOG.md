@@ -227,18 +227,95 @@ directly-mandated validation run.
 
 ## Step 4 — evaluation
 
-_Filled in against the milestone table below as `mainline-ladder001`
-accumulates transitions. Reference points: D2 (`d2fx001`, reconstruction)
-4.11 m/s @18M, peak 4.25 m/s; champion `642a7a80` 5.37 @18M, 3.17 @30M, 4.08
-@60M._
+`mainline-ladder001` completed cleanly (systemd exit 0) after 37m30s
+wall-clock (~24,800-26,300 transitions/s throughout). Full 0.5M-bucketed
+trajectory recoverable from `training/outputs/runs/mainline-ladder001/
+run.log` via `training/outputs/experiments/long-horizon-promotion/
+extract_trajectory.py`.
 
 | Milestone (M transitions) | `mainline-ladder001` (m/s) | D2 `d2fx001` (m/s) | Champion `642a7a80` (m/s) | In D2 band (±0.7)? |
 | ---: | ---: | ---: | ---: | ---: |
-| 18 | _pending_ | 4.11 | 5.37 | _pending_ |
-| 30 | _pending_ | — | 3.17 | _pending_ |
-| 60 | _pending_ | — | 4.08 | _pending_ |
+| 16 (peak region) | 4.43 (peak) | 4.25 (peak) | 5.4-5.9 (peak) | — |
+| 18 | 3.84 | 4.11 | 5.37 | **yes** (Δ=0.27) |
+| 30 | 2.36 | — (D2 only ran to 25M) | 3.17 | no, Δ=0.81 (just outside ±0.7) |
+| 60 (59.5M, last full bucket) | 3.33 | — | 4.08 | no, Δ=0.75 (just outside ±0.7) |
 
-## Step 5 — keeping the GPU busy after this run
+**Shape:** `mainline-ladder001` rises to a peak of 4.43 m/s at 16.0M (crossing
+4.0 m/s by 15.5M), **matches D2's peak (4.25 m/s) almost exactly** and lands
+inside the task's ±0.7 m/s band around D2's 18M reference point (4.11 vs
+3.84). It then dips sharply — bottoming around 1.0-1.3 m/s in the 20-22M
+window, lower and earlier than the champion's own dip floor (3.1-3.6 m/s,
+26-56M) — before recovering: climbing steadily from ~2.1 m/s (23M) through
+~2.4-2.9 m/s (30-45M) to 3.0-3.3 m/s by 55-60M, still visibly climbing at the
+point the run ended. **This is the same rise-dip-recover shape the champion
+and the reconstruction (`r642a001`/PC+) show**, just uniformly shifted
+roughly 0.5-0.8 m/s lower at every post-peak milestone and with a deeper,
+earlier trough.
 
-_Preregistered below before launching the follow-up; filled in once
-`mainline-ladder001` finishes or reaches a decision point._
+**Verdict, per the task's own decision rule** ("tracks D2 within ±0.7 m/s
+through 18M and shows the same dip-and-begin-recovery shape by 60M ->
+retire the reconstruction"): **mainline+ladder passes both conditions.** It
+tracks D2 within band through 18M (in fact matching D2's peak almost
+exactly) and clearly shows the dip-and-begin-recovery shape by 60M, still
+climbing at the point of measurement rather than flat or falling. The two
+sub-band deviations (30M, 60M vs. the *champion*, not D2 — D2 itself has no
+30M/60M reference) are modest (~0.75-0.8 m/s, close to but outside the
+band) and in the expected direction for a run only 60M into what the
+champion needed 130-200M to fully recover from; they are not evidence
+against the ladder mechanism, they are evidence this run has not yet reached
+the champion's long-horizon recovery point — which is exactly what the
+200M extension below is for.
+
+**Recommendation: retire the reconstruction code base for future reward/
+termination-stack work.** Mainline's `compute_reward_and_done` can now
+express the full legacy ladder, reproduces D2's early-training speed almost
+exactly (including its peak), and reproduces the champion's qualitative
+long-horizon shape (rise, dip, recover) rather than the flat 0.7-1.7 m/s
+plateau the pre-`5916647` Lee-only mainline stack was stuck at. The
+remaining ~0.5-0.8 m/s gap at 30-60M is a *magnitude* question for further
+long-horizon runs to resolve (see Step 5), not evidence mainline is
+structurally incapable of the ladder — the mechanism verification in Step 3
+(all three rungs simultaneously live, correct relative frequencies, correct
+termination geometry) already rules that out directly from telemetry.
+
+## Step 5 — keeping the GPU busy: sustainment extension to 200M
+
+**Preregistered before launch:** `mainline-ladder001` succeeded at 60M by
+the task's own decision rule, so per the task's explicit guidance ("if
+mainline+ladder succeeded, the natural follow-up is extending it toward
+200M to confirm sustainment, or a self-play variant..."), the self-play
+option was excluded because mainline's trainer has no rolling self-play
+implementation at all (only the fixed-champion pool used here — porting
+self-play would be a second, larger, out-of-scope change to
+`standalone_trainer.py`, not an "extend knobs minimally" change to the
+reward kernel). The 200M sustainment extension is strictly in-scope (same
+code, same config, just a longer horizon) and is the more informative of
+the two options anyway: it directly tests whether the ~0.5-0.8 m/s
+under-shoot at 30-60M closes as training continues, the same way the
+champion's own dip closed by 130-200M, which is the one open question Step
+4 left unresolved.
+
+Launched fresh (not resumed — matches the `d2fx001` -> `d2fx200` precedent
+in the causal-2x2 log, a new run at the higher horizon rather than a
+mid-training warm-start that would lose replay/optimizer state) as
+`mainline-ladder002`, identical config
+(`mainline-ladder-d2match.json`) with `schedule.total_transitions` raised to
+`200,000,000`, via a new durable systemd unit
+(`f1tenth-mainline-legacy-ladder-200m.service`, enabled). The completed
+60M unit (`f1tenth-mainline-legacy-ladder.service`) was disabled (not
+removed) so it will not redundantly restart and re-contend for the GPU.
+Confirmed running with all three ladder rungs active in its first telemetry
+window (`wall_contact_events=3052`, `boundary_contact_events=842`,
+`oob_impact_events=790`, matching `terminations: oob=790` exactly) and
+~83% GPU utilization.
+
+**Success criterion for the next reporting pass:** speed at 130-150M should
+close most of the way to the champion's own 4.9-5.2 m/s at that horizon (or
+at minimum keep climbing past the 60M value of 3.33 m/s, mirroring the
+champion's 60->150M trajectory of 4.08->5.22 m/s); a flat plateau at
+~3.0-3.5 m/s through 150M+ would instead suggest the ladder's early-training
+fidelity does not fully carry through to long-horizon sustainment and would
+need a coefficient-magnitude follow-up (e.g. checking whether mainline's
+`oob_impact_coefficient`/`boundary_contact_coefficient` need retuning
+independent of the continuous-cost coefficient, which was matched to D2
+exactly).
