@@ -1146,12 +1146,20 @@ def compute_reward_and_done(
         0.5 * car_length * wp.abs(wp.sin(heading_error))
         + 0.5 * car_width * wp.abs(wp.cos(heading_error))
     )
+    off_track = (
+        ego_frenet.ey + footprint > ego_frenet.width_left
+        or ego_frenet.ey - footprint < -ego_frenet.width_right
+    )
     wall_contact = (
         ego_frenet.ey + footprint >= ego_frenet.width_left
         or ego_frenet.ey - footprint <= -ego_frenet.width_right
     )
+    if termination.recoverable_boundary != 0:
+        boundary_event = off_track
+    else:
+        boundary_event = wall_contact
     progress_ds = delta_s
-    if wall_contact:
+    if boundary_event:
         progress_ds = 0.0
 
     out.progress = (
@@ -1159,7 +1167,7 @@ def compute_reward_and_done(
         + reward.progress_backward * wp.min(progress_ds, 0.0)
     )
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
-    if wall_contact:
+    if boundary_event:
         if reward.wall_cost_mode == 1:
             out.wall_contact = (
                 -reward.wall_contact_coefficient
@@ -1177,7 +1185,7 @@ def compute_reward_and_done(
                 -reward.wall_contact_coefficient
                 * wp.sqrt(speed_squared)
             )
-    first_wall_contact = wall_contact and env.prev_wall_contact[env_id] == 0
+    first_wall_contact = boundary_event and env.prev_wall_contact[env_id] == 0
     if first_wall_contact:
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
@@ -1293,9 +1301,9 @@ def compute_reward_and_done(
         env.lap_cross[env_id] = 1.0
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
-    env.prev_wall_contact[env_id] = wp.int32(wall_contact)
+    env.prev_wall_contact[env_id] = wp.int32(boundary_event)
     env.metric_progress[env_id] = progress_ds
-    env.metric_wall[env_id] = wp.float32(wall_contact)
+    env.metric_wall[env_id] = wp.float32(boundary_event)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
     env.metric_speed[env_id] = wp.sqrt(speed_squared)
