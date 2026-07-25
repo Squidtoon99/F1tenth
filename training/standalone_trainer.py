@@ -976,10 +976,16 @@ def build_config(
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
 
-    # Canonical Lee / ADR-0011 path only.
-    cfg["env"]["steering_action_mode"] = "delta"
-    if float(cfg["env"].get("steering_delta_max_rad", 0.0)) <= 0.0:
-        raise ValueError("env.steering_delta_max_rad must be positive")
+    steering_mode = str(cfg["env"].get("steering_action_mode", "delta"))
+    if steering_mode not in ("absolute", "delta"):
+        raise ValueError(
+            "env.steering_action_mode must be 'absolute' or 'delta', got "
+            f"{steering_mode!r}"
+        )
+    cfg["env"]["steering_action_mode"] = steering_mode
+    if steering_mode == "delta":
+        if float(cfg["env"].get("steering_delta_max_rad", 0.0)) <= 0.0:
+            raise ValueError("env.steering_delta_max_rad must be positive")
     if "reset_stationary_probability" not in patch_env:
         cfg["env"]["reset_stationary_probability"] = 0.10
     scales = cfg["reward"]["reward_scales"]

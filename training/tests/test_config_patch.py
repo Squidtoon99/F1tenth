@@ -126,6 +126,13 @@ def test_patch_can_disable_steering_reward_scales():
     assert cfg["reward"]["reward_scales"]["steering_history"] == 0.0
 
 
+def test_patch_can_select_absolute_steering():
+    patch = {"env": {"steering_action_mode": "absolute"}}
+    validate_config_patch(patch)
+    cfg = _resolve([], patch=patch)
+    assert cfg["env"]["steering_action_mode"] == "absolute"
+
+
 def test_validate_rejects_unknown_key():
     with pytest.raises(ValueError, match="unknown config key 'reward.nope'"):
         validate_config_patch({"reward": {"nope": 1.0}})
