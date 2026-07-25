@@ -146,6 +146,8 @@ DEFAULT_CONFIG = {
         "progress_max_lateral_m": 1.0,
         "wall_contact_coefficient": 20.0,
         "wall_cost_mode": "one_shot",
+        "boundary_contact_coefficient": 0.0,
+        "oob_impact_coefficient": 0.0,
         "passing_gate_ahead_m": 40.0,
         "passing_gate_behind_m": 20.0,
         "global_reward_scale": 1.0,

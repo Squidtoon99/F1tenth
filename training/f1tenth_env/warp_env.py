@@ -112,6 +112,8 @@ class _EnvironmentStorage:
         "reward",
         "reward_progress",
         "reward_wall_contact",
+        "reward_boundary_contact",
+        "reward_oob_impact",
         "reward_steering_change",
         "reward_steering_history",
         "reward_passing",
@@ -165,6 +167,7 @@ class _EnvironmentStorage:
         "lap_count",
         "ego_segment",
         "opponent_segment",
+        "prev_wall_contact",
         "prev_opponent_ahead",
         "prev_opponent_in_window",
         "stopped_streak",
@@ -595,6 +598,12 @@ class WarpF1tenthEnv:
             self.reward_cfg["wall_contact_coefficient"]
         )
         params.control_dt = self.control_dt
+        params.boundary_contact_coefficient = float(
+            self.reward_cfg.get("boundary_contact_coefficient", 0.0)
+        )
+        params.oob_impact_coefficient = float(
+            self.reward_cfg.get("oob_impact_coefficient", 0.0)
+        )
         params.steering_change = float(scales.get("steering_change", 0.0))
         params.steering_history = float(scales.get("steering_history", 0.0))
         params.max_steer = float(
@@ -836,6 +845,8 @@ class WarpF1tenthEnv:
                 "terms": {
                     "progress": tensors["reward_progress"],
                     "wall_contact": tensors["reward_wall_contact"],
+                    "boundary_contact": tensors["reward_boundary_contact"],
+                    "oob_impact": tensors["reward_oob_impact"],
                     "steering_change": tensors["reward_steering_change"],
                     "steering_history": tensors["reward_steering_history"],
                     "passing": tensors["reward_passing"],

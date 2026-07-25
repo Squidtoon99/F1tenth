@@ -86,9 +86,9 @@ def test_first_footprint_intersection_terminates_with_one_lee_reward(
         assert bool(extras["termination"]["out_of_bounds"][0])
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
-        assert set(terms).isdisjoint(
-            {"oob_penalty", "oob_impact", "boundary_contact"}
-        )
+        assert "oob_penalty" not in terms
+        assert float(terms["oob_impact"][0]) == 0.0
+        assert float(terms["boundary_contact"][0]) == 0.0
         assert float(terms["progress"][0]) == 0.0
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4

@@ -297,6 +297,8 @@ class RewardParams:
     progress_max_lateral: wp.float32
     wall_contact_coefficient: wp.float32
     control_dt: wp.float32
+    boundary_contact_coefficient: wp.float32
+    oob_impact_coefficient: wp.float32
     steering_change: wp.float32
     steering_history: wp.float32
     max_steer: wp.float32
@@ -410,6 +412,8 @@ class EnvBuffers:
     reward: wp.array(dtype=wp.float32)
     reward_progress: wp.array(dtype=wp.float32)
     reward_wall_contact: wp.array(dtype=wp.float32)
+    reward_boundary_contact: wp.array(dtype=wp.float32)
+    reward_oob_impact: wp.array(dtype=wp.float32)
     reward_steering_change: wp.array(dtype=wp.float32)
     reward_steering_history: wp.array(dtype=wp.float32)
     reward_passing: wp.array(dtype=wp.float32)
@@ -431,6 +435,7 @@ class EnvBuffers:
     opponent_segment: wp.array(dtype=wp.int32)
     prev_s: wp.array(dtype=wp.float32)
     prev_opponent_s: wp.array(dtype=wp.float32)
+    prev_wall_contact: wp.array(dtype=wp.int32)
     prev_opponent_ahead: wp.array(dtype=wp.int32)
     prev_opponent_in_window: wp.array(dtype=wp.int32)
     stopped_streak: wp.array(dtype=wp.int32)
@@ -522,6 +527,8 @@ class RewardResult:
     total: wp.float32
     progress: wp.float32
     wall_contact: wp.float32
+    boundary_contact: wp.float32
+    oob_impact: wp.float32
     steering_change: wp.float32
     steering_history: wp.float32
     passing: wp.float32
@@ -944,6 +951,7 @@ def reset_pair(
     env.lap_count[env_id] = 0
     env.lap_cross[env_id] = 0.0
     env.stopped_streak[env_id] = 0
+    env.prev_wall_contact[env_id] = 0
     env.prev_opponent_ahead[env_id] = 1
     env.prev_opponent_in_window[env_id] = 0
     env.last_action[env_id] = wp.vec2f(0.0)
@@ -1169,6 +1177,9 @@ def compute_reward_and_done(
                 -reward.wall_contact_coefficient
                 * wp.sqrt(speed_squared)
             )
+    first_wall_contact = wall_contact and env.prev_wall_contact[env_id] == 0
+    if first_wall_contact:
+        out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
@@ -1226,6 +1237,8 @@ def compute_reward_and_done(
         oob_done = full_out_left or full_out_right
     else:
         oob_done = wall_contact
+    if oob_done:
+        out.oob_impact = -reward.oob_impact_coefficient * speed_squared
     stopped = (
         env.stopped_streak[env_id] >= termination.maximum_stopped_steps
     )
@@ -1243,6 +1256,8 @@ def compute_reward_and_done(
     out.total = reward.global_scale * (
         out.progress
         + out.wall_contact
+        + out.boundary_contact
+        + out.oob_impact
         + out.steering_change
         + out.steering_history
         + out.passing
@@ -1278,6 +1293,7 @@ def compute_reward_and_done(
         env.lap_cross[env_id] = 1.0
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
+    env.prev_wall_contact[env_id] = wp.int32(wall_contact)
     env.metric_progress[env_id] = progress_ds
     env.metric_wall[env_id] = wp.float32(wall_contact)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
@@ -1451,6 +1467,8 @@ def store_reward(
     env.reward[env_id] = result.total
     env.reward_progress[env_id] = result.progress
     env.reward_wall_contact[env_id] = result.wall_contact
+    env.reward_boundary_contact[env_id] = result.boundary_contact
+    env.reward_oob_impact[env_id] = result.oob_impact
     env.reward_steering_change[env_id] = result.steering_change
     env.reward_steering_history[env_id] = result.steering_history
     env.reward_passing[env_id] = result.passing
