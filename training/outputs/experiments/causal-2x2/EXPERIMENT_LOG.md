@@ -280,3 +280,38 @@ Preregistered before launch:
 D2@200M is a long run (~85-90 min at ~38-40k transitions/s); TERM-B-seed7 and
 PC+-seed7 are the standard 25M screens (~10-11 min). All three verified
 running (high GPU utilization, process alive) shortly after launch.
+
+### Wave 3 outcome: superseded by a concurrent cluster-wide pivot
+
+All three Wave 3 arms were terminated by SIGTERM at ~03:45 UTC, roughly five
+minutes after launch, by a concurrent agent session working on the same three
+Brev hosts (`training/outputs/experiments/long-horizon-promotion/`). Each
+stopped run carries a `STOPPED.md` written by that agent explaining the
+takeover; nothing was deleted.
+
+Its stated reason: champion run `642a7a80` was re-verified to follow a
+rise–dip–recover speed trajectory (peak ~5.6-5.9 m/s @18-20M, collapse to
+3.1-3.6 m/s sustained through 26-56M, recovery to 5.0-5.7 m/s by 130-200M+),
+so the 25-30M window this whole 2x2 screened in is inside a normal mid-training
+dip rather than a final-quality verdict. The cluster was repurposed to 300M
+promotion runs: `pcplus300` (PC+, seed 42) on lark-1, `d2fx300` (D2, seed 42)
+on lark-2, `d2fx301` (D2, seed 7) on lark-3 — all three confirmed running with
+78-82% GPU utilisation at 03:52 UTC, so no GPU is idle.
+
+Implication for this experiment: the Wave 1 and Wave 2 conclusions remain valid
+as statements about *early* (≤25M) learning speed, which is what they measured,
+but they should not be read as final-quality verdicts. The long-horizon runs
+supersede them on that question.
+
+Partial Wave 3 data (all pulled locally with sha256 verification, 10 files each,
+one checkpoint at 5.12M transitions per run):
+
+| Arm | Run id | Stopped at | Speed at stop | Note |
+| --- | --- | --- | --- | --- |
+| D2 @ 200M | d2fx200 | 9.22M | 3.63 m/s | climbing; superseded in place by d2fx300 |
+| TERM-B seed7 | termB002 | 8.24M | 3.24 m/s | flat ~3.1-3.24 since 0.5M; seed42 twin had already begun decaying by this point |
+| PC+ seed7 | pcplus002 | 7.94M | 3.02 m/s | tracks seed42 twin's early shape |
+
+Trajectories for all three are merged into `speed-trajectories.json`. No
+conclusions are drawn from them — each covers only about a third of its
+intended screen.
