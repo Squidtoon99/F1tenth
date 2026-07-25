@@ -163,11 +163,92 @@ transitions to reach a milestone; this is a multi-hour experiment and the
 table will be filled in incrementally as of the time this report is
 finalized (see "Status as of report time" below), not all at once.
 
-### Status as of report time (see final report for the actual clock-time snapshot)
+### Local RTX 4080 slot reclaimed by the other agent
 
-Runs were only launched moments before this section was written; the useful
-signal available immediately is that all four are alive, GPU-bound, and
-running the correct config (see verification table above), not yet a
-milestone comparison. Progress will be tracked by re-running
-`extract_trajectory.py` against each run's `run.log` at intervals; see the
-per-arm sections appended below.
+`pcplus-local001` (seed 123, isolated scratch codebase overlay) ran cleanly to
+23.24M transitions, then the concurrent agent stopped/disabled the systemd
+unit and launched its own `mainline-ladder001` (D2-matched legacy-ladder
+validation, 60M, now built directly into mainline `training/` per its commits
+`3ac8255`/`5916647`/`471d38d`) on the same GPU. This is accepted rather than
+contested: the local RTX 4080 was explicitly the lowest-priority slot, the
+replacement run answers a closely related question on a more integrated
+codebase, and fighting over a non-expiring, low-priority resource is not
+worth the risk of clobbering someone else's work. `pcplus-local001`'s partial
+trajectory (peak only 3.4-3.7 m/s @0-8M, well below the seed-42/seed-7 peaks
+of 5.3-5.7 m/s, dipping further to 0.9 m/s @12M before being stopped) is too
+short and was interrupted mid-dip, so no conclusion is drawn from it -- it may
+simply be a weaker seed, or it may have recovered like seed 42 did if left
+running.
+
+### Arm abort: `d2fx300` (D2, seed 42) stopped at 88M -- pathology, not a dip
+
+At ~04:29 UTC, `d2fx300` was aborted after showing two independent
+task-specified abort conditions simultaneously, both confirmed from raw
+`run.log` telemetry (not just the speed number):
+
+1. **Sustained band violation past 60M.** Speed fell from ~3.9-4.4 m/s @12-24M
+   to 1.1-2.3 m/s from 30M onward and stayed there continuously through 84M --
+   54M+ below the champion band (band at 60M: 3.38-4.78; d2fx300 was at 1.6-2.2
+   for the entire 30-84M stretch), not a transient dip.
+2. **Climbing not_moving fraction** (explicitly called out as a pathology
+   signature in the task brief): 0.2% @18M -> 7.7% @24M -> 11-16% through
+   30-66M -> 21.8% @78M, monotonic and non-noisy. The sibling `d2fx301` (same
+   reward stack and opponent mode, seed 7) shows exactly 0.000 not_moving
+   fraction throughout its own run to 96M+, and the champion's own log does
+   not show this signature either -- this is specific to `d2fx300`, most
+   likely a seed-42-specific local optimum where the policy learns to stall
+   rather than race the static fixed-champion opponent, not evidence against
+   the reward stack itself.
+
+Stopped by SIGTERM, confirmed dead, `STOPPED.md` written with full reasoning
+(`training/outputs/runs/d2fx300/STOPPED.md` on lark-2), nothing deleted.
+Replaced immediately by `pcplus302` (PC+, seed 7, self-play, 300M) on the same
+host, preregistered reasoning: seed-7-matched against `d2fx301` to test
+whether the seed-42 pattern (self-play arm dips-and-recovers repeatedly;
+fixed-champion arm stalls and never recovers) replicates at another seed or
+was a seed-42-specific artifact. Verified running with `selfplay: pool_size=1
+...` telemetry and correct resolved config (`self_play=true`, `seed=7`,
+`total_transitions=300000000`).
+
+### Milestone comparison table (as of ~04:33 UTC, this report time)
+
+Speed in m/s, mean over the nearest ~2M-transition window; band is champion
+milestone value ± 0.7 m/s. "In band" / "below band" / "above band" per the
+task's rule; a single low reading is not an abort trigger by itself.
+
+| Milestone | Champion | Band | `pcplus300` (PC+ seed42) | `d2fx301` (D2 seed7) | `d2fx300` (D2 seed42, ABORTED @88M) |
+| --- | --- | --- | --- | --- | --- |
+| 18M | 5.37 | 4.67-6.07 | ~5.4 (peak 12-18M window) -- in band | 3.76 -- below band (D2 has no self-play boost, consistent with Wave 1/2) | 3.92 -- below band |
+| 30M | 3.17 | 2.47-3.87 | 3.24 -- in band (matches the dip) | 4.09 -- above band (D2 climbing steadily, no dip) | 1.12 -- below band, decline begins |
+| 60M | 4.08 | 3.38-4.78 | 3.45 -- in band (recovering from a 2nd dip) | 4.29 -- in band | 1.92 -- below band, not_moving climbing |
+| 90-100M | 4.35 (@100M) | 3.65-5.05 | 2.6-2.9 at 100-102M -- **below band, declining, watch closely** | 3.6-3.9 -- in/near band, mild recent softening | aborted @88M |
+
+`pcplus300` (the single most important arm, per the task brief) shows a more
+oscillatory pattern than the champion itself -- rise to ~5.4-5.7 @16-18M, dip
+to ~2.2-2.7 @24-30M, a second rise to ~5.1-5.3 @36-42M (exceeding the
+champion's own peak), a second dip now underway (~2.6-2.9 @100-102M). This is
+not (yet) the abort case: the current below-band stretch is only ~10-12M old,
+well short of the 60M sustained-underperformance bar, and the not_moving
+fraction is flat/noisy around 5-8% (not climbing like `d2fx300`'s clear
+pathology). It needs to be watched over the next 50-100M to see whether it
+recovers the way the champion did after its own 26-56M trough, or continues
+declining into d2fx300-style territory. `d2fx301` (D2 seed 7) remains the
+cleanest, most consistently on-track arm of the three so far -- smooth
+climb, no dip, no pathology, currently 3.6-3.9 m/s and holding roughly in
+band through 96M.
+
+### Status at end of this report session
+
+All GPUs are occupied by durable, detached long-horizon runs that will keep
+running after this session ends (three via `setsid nohup ... & disown` on the
+Brev L40S hosts, confirmed already reparented to PID 1 so they survive SSH
+disconnection; the local slot is now the other agent's systemd-managed
+`mainline-ladder001`). None of the surviving promoted arms (`pcplus300`,
+`d2fx301`, `pcplus302`) meet an abort condition as of this writing. Whoever
+next checks in on this cluster should: pull each `run.log`, re-run
+`extract_trajectory.py`, and extend the milestone table above, especially
+watching whether `pcplus300` recovers past its second dip and whether
+`pcplus302` reproduces `pcplus300`'s dip-recover shape or `d2fx301`'s smooth
+climb (it is the same reward stack and opponent mode as `pcplus300`, just a
+different seed, so a third data point on how variable this arm is
+seed-to-seed).
