@@ -310,7 +310,7 @@ class RewardParams:
     rear_end: wp.float32
     global_scale: wp.float32
     rear_end_any_contact: wp.int32
-    wall_cost_continuous: wp.int32
+    wall_cost_mode: wp.int32
 
 
 @wp.struct
@@ -1152,11 +1152,17 @@ def compute_reward_and_done(
     )
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
     if wall_contact:
-        if reward.wall_cost_continuous != 0:
+        if reward.wall_cost_mode == 1:
             out.wall_contact = (
                 -reward.wall_contact_coefficient
                 * reward.control_dt
                 * wp.sqrt(speed_squared)
+            )
+        elif reward.wall_cost_mode == 2:
+            out.wall_contact = (
+                -reward.wall_contact_coefficient
+                * reward.control_dt
+                * speed_squared
             )
         else:
             out.wall_contact = (

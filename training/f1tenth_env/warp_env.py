@@ -622,9 +622,12 @@ class WarpF1tenthEnv:
         params.global_scale = float(
             self.reward_cfg.get("global_reward_scale", 1.0)
         )
-        params.wall_cost_continuous = int(
-            self.reward_cfg.get("wall_cost_mode", "one_shot") == "continuous"
-        )
+        wall_cost_mode = self.reward_cfg.get("wall_cost_mode", "one_shot")
+        params.wall_cost_mode = {
+            "one_shot": 0,
+            "continuous": 1,
+            "continuous_quadratic": 2,
+        }[wall_cost_mode]
         return params
 
     def _build_termination_params(self):

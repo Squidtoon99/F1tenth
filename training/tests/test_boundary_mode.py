@@ -4,7 +4,7 @@ Exercises the real Warp kernel through ``F1tenthEnv`` (no mocks). Covers the two
 independent switches added on top of ADR 0013/0014's first-footprint-terminal,
 one-shot wall event: ``env.boundary_mode`` ("first_contact_terminal", the
 default, vs "recoverable_full_car_out") and ``reward.wall_cost_mode``
-("one_shot", the default, vs "continuous").
+("one_shot", the default, vs "continuous" or "continuous_quadratic").
 """
 
 from __future__ import annotations
@@ -84,6 +84,30 @@ def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_rewa
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
         assert float(terms["progress"][0]) == 0.0
+        assert float(terms["wall_contact"][0]) == pytest.approx(
+            expected_reward, abs=1e-4
+        )
+        assert float(reward[0]) == pytest.approx(expected_reward, abs=1e-4)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(
+    ("speed", "expected_reward"),
+    [(1.0, -2.0), (2.0, -8.0), (5.0, -50.0)],
+)
+def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed, expected_reward):
+    env = _make_env(wall_cost_mode="continuous_quadratic")
+    try:
+        w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
+        half_width = 0.5 * float(env.env_cfg["car_width"])
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=speed)
+        _, reward, done, extras = env.step(
+            torch.zeros(1, 2), n_steps=env.control_interval
+        )
+        assert bool(extras["termination"]["out_of_bounds"][0])
+        assert bool(done[0])
+        terms = extras["rewards"]["terms"]
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4
         )
