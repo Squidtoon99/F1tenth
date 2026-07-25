@@ -1,0 +1,42 @@
+--- /home/ubuntu/projects/F1tenth/training/outputs/experiments/champion-code-recovery/warp_env.py	2026-07-24 23:32:39.548763172 -0700
++++ /home/ubuntu/projects/F1tenth/training/outputs/experiments/causal-2x2/codebase/f1tenth_env/warp_env.py	2026-07-24 20:26:51.277493841 -0700
+@@ -114,6 +114,7 @@
+         "reward_oob",
+         "reward_oob_impact",
+         "reward_boundary_contact",
++        "reward_wall_contact",
+         "reward_steering_change",
+         "reward_steering_history",
+         "reward_passing",
+@@ -607,6 +608,12 @@
+         params.terminal_oob_skip_seconds = float(
+             self.reward_cfg.get("terminal_oob_skip_seconds", 10.0)
+         )
++        params.wall_contact_coefficient = float(
++            self.reward_cfg.get("wall_contact_coefficient", 20.0)
++        )
++        params.lee_wall_mode = int(
++            self.reward_cfg.get("reward_stack", "legacy") == "lee"
++        )
+         params.steering_change = float(scales.get("steering_change", 0.0))
+         params.steering_history = float(scales.get("steering_history", 0.0))
+         params.max_steer = float(
+@@ -668,7 +675,9 @@
+             self.env_cfg.get("term_on_collision", True)
+         )
+         params.oob_margin = 0.0
+-        params.full_car_out = 1
++        params.full_car_out = int(
++            self.env_cfg.get("term_oob_mode", "full_car_out") != "wall_contact"
++        )
+         return params
+ 
+     def _build_reset_params(self):
+@@ -843,6 +852,7 @@
+                     "oob_penalty": tensors["reward_oob"],
+                     "oob_impact": tensors["reward_oob_impact"],
+                     "boundary_contact": tensors["reward_boundary_contact"],
++                    "wall_contact": tensors["reward_wall_contact"],
+                     "steering_change": tensors["reward_steering_change"],
+                     "steering_history": tensors["reward_steering_history"],
+                     "passing": tensors["reward_passing"],

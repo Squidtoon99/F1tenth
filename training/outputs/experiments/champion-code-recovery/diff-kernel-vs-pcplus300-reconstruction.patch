@@ -1,0 +1,91 @@
+--- /home/ubuntu/projects/F1tenth/training/outputs/experiments/champion-code-recovery/kernel.py	2026-07-24 23:32:39.547254635 -0700
++++ /home/ubuntu/projects/F1tenth/training/outputs/experiments/causal-2x2/codebase/f1tenth_env/kernel.py	2026-07-24 19:59:17.318030650 -0700
+@@ -300,6 +300,8 @@
+     oob_margin: wp.float32
+     boundary_contact: wp.float32
+     terminal_oob_skip_seconds: wp.float32
++    wall_contact_coefficient: wp.float32
++    lee_wall_mode: wp.int32
+     steering_change: wp.float32
+     steering_history: wp.float32
+     max_steer: wp.float32
+@@ -416,6 +418,7 @@
+     reward_oob: wp.array(dtype=wp.float32)
+     reward_oob_impact: wp.array(dtype=wp.float32)
+     reward_boundary_contact: wp.array(dtype=wp.float32)
++    reward_wall_contact: wp.array(dtype=wp.float32)
+     reward_steering_change: wp.array(dtype=wp.float32)
+     reward_steering_history: wp.array(dtype=wp.float32)
+     reward_passing: wp.array(dtype=wp.float32)
+@@ -533,6 +536,7 @@
+     oob: wp.float32
+     oob_impact: wp.float32
+     boundary_contact: wp.float32
++    wall_contact: wp.float32
+     steering_change: wp.float32
+     steering_history: wp.float32
+     passing: wp.float32
+@@ -1161,8 +1165,11 @@
+         or ego_frenet.ey - footprint <= -ego_frenet.width_right
+     )
+     first_boundary_contact = off_track and env.prev_off_track[env_id] == 0
++    progress_mask = off_track
++    if reward.lee_wall_mode != 0:
++        progress_mask = wall_contact
+     progress_ds = delta_s
+-    if off_track:
++    if progress_mask:
+         progress_ds = 0.0
+ 
+     out.progress = (
+@@ -1170,10 +1177,16 @@
+         + reward.progress_backward * wp.min(progress_ds, 0.0)
+     )
+     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
+-    if off_track:
+-        out.oob = -reward.oob * speed_squared
+-    if first_boundary_contact:
+-        out.boundary_contact = -reward.boundary_contact
++    if reward.lee_wall_mode != 0:
++        if wall_contact:
++            out.wall_contact = -reward.wall_contact_coefficient * wp.sqrt(
++                speed_squared
++            )
++    else:
++        if off_track:
++            out.oob = -reward.oob * speed_squared
++        if first_boundary_contact:
++            out.boundary_contact = -reward.boundary_contact
+     vel_world = body_velocity_world(ego)
+     theta_t = env.executed_steer_history[env_id, 0]
+     theta_prev = env.executed_steer_history[env_id, 1]
+@@ -1228,8 +1241,11 @@
+     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
+     full_out_left = ego_frenet.ey - footprint > ego_frenet.width_left
+     full_out_right = ego_frenet.ey + footprint < -ego_frenet.width_right
+-    oob_done = full_out_left or full_out_right
+-    if oob_done:
++    if termination.full_car_out != 0:
++        oob_done = full_out_left or full_out_right
++    else:
++        oob_done = wall_contact
++    if oob_done and reward.lee_wall_mode == 0:
+         out.oob_impact = (
+             -reward.oob_impact
+             * reward.terminal_oob_skip_seconds
+@@ -1255,6 +1271,7 @@
+         + out.oob
+         + out.oob_impact
+         + out.boundary_contact
++        + out.wall_contact
+         + out.steering_change
+         + out.steering_history
+         + out.passing
+@@ -1467,6 +1484,7 @@
+     env.reward_oob[env_id] = result.oob
+     env.reward_oob_impact[env_id] = result.oob_impact
+     env.reward_boundary_contact[env_id] = result.boundary_contact
++    env.reward_wall_contact[env_id] = result.wall_contact
+     env.reward_steering_change[env_id] = result.steering_change
+     env.reward_steering_history[env_id] = result.steering_history
+     env.reward_passing[env_id] = result.passing
