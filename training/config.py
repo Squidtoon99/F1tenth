@@ -161,7 +161,7 @@ DEFAULT_CONFIG = {
             "collision": 6.0,
             "rear_end": 0.5,
             "steering_change": 0.5,
-            "steering_history": 0.5,
+            "steering_history": 5.0,
         },
     },
     "model": {

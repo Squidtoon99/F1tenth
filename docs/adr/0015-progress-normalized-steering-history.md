@@ -1,6 +1,6 @@
 # 0015 — Progress-normalize steering-history scale
 
-- Status: Accepted
+- Status: Superseded by [0016](0016-revert-steering-history-to-paper-literal.md)
 - Date: 2026-07-24
 
 ## Context

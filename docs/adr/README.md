@@ -39,4 +39,8 @@ trade-off. Routine work is captured by the PR instead (see
 - [0014](0014-paper-literal-wall-event-scale.md) — Paper-literal wall-event
   reward without control-period scaling.
 - [0015](0015-progress-normalized-steering-history.md) — Progress-normalize
-  default `steering_history` to 0.5 (\(\approx 0.1\times\) Lee \(\lambda^h\)).
+  default `steering_history` to 0.5 (\(\approx 0.1\times\) Lee \(\lambda^h\))
+  (superseded by 0016).
+- [0016](0016-revert-steering-history-to-paper-literal.md) — Revert default
+  `steering_history` to paper-literal 5.0 after clean legacy-ladder A/B (+0.43
+  m/s @ 18M).
