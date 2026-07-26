@@ -214,10 +214,10 @@ def test_distribution_regression_panel():
         # Close-spawn 1v1 under the canonical wall-contact treatment: car contact
         # still dominates the left tail; progress stays in the upper quantiles.
         assert -20.0 < float(q[0]) < -5.0
-        assert -2.0 < float(q[1]) < 0.5
+        assert -8.0 < float(q[1]) < -4.0
         assert 0.0 < float(q[2]) < 3.0
         assert float(q[3]) < 8.0
-        assert -8.0 < float(flat.mean()) < -2.0
+        assert -8.0 < float(flat.mean()) < -4.0
     finally:
         env.close()
 

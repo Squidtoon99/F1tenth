@@ -100,8 +100,11 @@ class ScriptedCenterlineOpponent(OpponentController):
         heading_err = yaw - track_angle
         heading_err = torch.atan2(torch.sin(heading_err), torch.cos(heading_err))
 
-        delta_max = max(self.delta_max, 1e-6)
-        steer = -(self.kp_ey * (ey - offset) + self.kh_heading * heading_err) / delta_max
+        speed_denom = speed.abs().add(0.5).clamp_min(0.5)
+        cross_track = torch.atan(self.kp_ey * (ey - offset) / speed_denom)
+        steer_target = -(self.kh_heading * heading_err + cross_track)
+        max_steer = max(self.delta_max, 1e-6)
+        steer = steer_target / max_steer
         steer = torch.clamp(steer, -1.0, 1.0)
 
         # Speed-tracking P-controller maps into force/brake effort: positive

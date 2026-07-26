@@ -1055,16 +1055,18 @@ def scripted_opponent_action(
 ) -> wp.vec2f:
     heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading_error = wrap_angle(opponent.yaw - heading)
-    steering_target = -(
+    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
+    ey_corr = frenet.ey - env.opponent_lateral_offset[env_id]
+    cross_track = wp.atan(
         params.kp_lateral
-        * (frenet.ey - env.opponent_lateral_offset[env_id])
-        + params.kp_heading * heading_error
+        * ey_corr
+        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steering = steering_target / wp.max(sim.max_steer, 1.0e-6)
+    steer_scale = sim.steering_delta_max / wp.max(sim.max_steer, 1.0e-6)
+    steering_target = -(params.kp_heading * heading_error + cross_track) * steer_scale
     steering = (steering_target - opponent.steer) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
     throttle = params.kp_speed * (
         env.opponent_target_speed[env_id] - track_speed
     )
@@ -1085,16 +1087,18 @@ def scripted_physics_opponent_action(
 ) -> wp.vec2f:
     heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading_error = wrap_angle(opponent.yaw - heading)
-    steering_target = -(
+    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
+    ey_corr = frenet.ey - buffers.opponent_lateral_offset[env_id]
+    cross_track = wp.atan(
         params.kp_lateral
-        * (frenet.ey - buffers.opponent_lateral_offset[env_id])
-        + params.kp_heading * heading_error
+        * ey_corr
+        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steering = steering_target / wp.max(sim.max_steer, 1.0e-6)
+    steer_scale = sim.steering_delta_max / wp.max(sim.max_steer, 1.0e-6)
+    steering_target = -(params.kp_heading * heading_error + cross_track) * steer_scale
     steering = (steering_target - opponent.steer) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
     throttle = params.kp_speed * (
         buffers.opponent_target_speed[env_id] - track_speed
     )
