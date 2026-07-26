@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# Fill idle GPU time by launching queued training runs when no trainer is active
+# and utilization stays low across several consecutive checks. Never preempts a
+# healthy job; uses a lockfile so it cannot race existing launch watchers.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gpu-idle-supervisor"
+LOG="$STATE_DIR/supervisor.log"
+IDLE_COUNT_FILE="$STATE_DIR/idle_count"
+COMPLETED_FILE="$STATE_DIR/completed.txt"
+LOCK_FILE="$STATE_DIR/launch.lock"
+QUEUE="$REPO/tools/gpu_idle_queue.json"
+PY="$REPO/.venv/bin/python"
+TRAINING="$REPO/training"
+CHAMPION_CKPT="$TRAINING/outputs/runs/642a7a80/checkpoints/policy_199680000.pt"
+
+IDLE_GPU_UTIL_MAX="${IDLE_GPU_UTIL_MAX:-15}"
+IDLE_CHECKS_TO_LAUNCH="${IDLE_CHECKS_TO_LAUNCH:-3}"
+LAUNCH_VERIFY_SEC="${LAUNCH_VERIFY_SEC:-45}"
+DRY_RUN=0
+SIMULATE_IDLE=0
+
+usage() {
+  echo "usage: $(basename "$0") [--dry-run] [--simulate-idle]" >&2
+  exit 2
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --simulate-idle) SIMULATE_IDLE=1; shift ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+
+mkdir -p "$STATE_DIR"
+touch "$COMPLETED_FILE"
+
+log() {
+  echo "[$(date -Is)] $*" >>"$LOG"
+}
+
+trainer_count() {
+  if [ "$SIMULATE_IDLE" -eq 1 ]; then
+    echo 0
+    return
+  fi
+  pgrep -cf '[.]venv/bin/python.*standalone_trainer\.py' 2>/dev/null \
+    || pgrep -cf 'python.*[s]tandalone_trainer\.py' 2>/dev/null \
+    || echo 0
+}
+
+gpu_util_pct() {
+  if [ "$SIMULATE_IDLE" -eq 1 ]; then
+    echo 0
+    return
+  fi
+  nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+    | head -1 | tr -dc '0-9' || echo 100
+}
+
+reset_idle_count() {
+  echo 0 >"$IDLE_COUNT_FILE"
+}
+
+read_idle_count() {
+  cat "$IDLE_COUNT_FILE" 2>/dev/null || echo 0
+}
+
+is_completed() {
+  local run_id="$1"
+  grep -qx "$run_id" "$COMPLETED_FILE" 2>/dev/null
+}
+
+mark_completed() {
+  local run_id="$1"
+  grep -qx "$run_id" "$COMPLETED_FILE" 2>/dev/null || echo "$run_id" >>"$COMPLETED_FILE"
+}
+
+latest_transitions() {
+  local log_file="$1"
+  grep -oP 'standalone_trainer INFO: ticks=\d+ transitions=\K\d+' "$log_file" 2>/dev/null | tail -1 || true
+}
+
+run_finished() {
+  local log_file="$1"
+  [ -f "$log_file" ] && grep -q "Training finished" "$log_file" 2>/dev/null
+}
+
+highest_checkpoint() {
+  local ckpt_dir="$1"
+  ls "$ckpt_dir"/policy_*.pt 2>/dev/null | while read -r f; do
+    step=$(basename "$f" .pt | sed 's/policy_//')
+    echo "$step $f"
+  done | sort -n | tail -1 | cut -d' ' -f2-
+}
+
+validate_config() {
+  local config_path="$1"
+  local requires_selfplay="${2:-false}"
+  if [ ! -f "$config_path" ]; then
+    log "validate: missing config $config_path"
+    return 1
+  fi
+  if [ ! -f "$CHAMPION_CKPT" ]; then
+    log "validate: missing champion checkpoint $CHAMPION_CKPT"
+    return 1
+  fi
+  if [ "$requires_selfplay" = "true" ]; then
+    log "validate: self-play not supported on this branch; skipping"
+    return 1
+  fi
+  if grep -q '"selfplay"' "$config_path" 2>/dev/null; then
+    log "validate: config contains selfplay block but trainer has no self-play"
+    return 1
+  fi
+  return 0
+}
+
+queue_next_job() {
+  "$PY" - "$QUEUE" "$COMPLETED_FILE" "$REPO" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+queue_path, completed_path, repo = sys.argv[1:4]
+completed = {
+    line.strip()
+    for line in Path(completed_path).read_text().splitlines()
+    if line.strip()
+}
+data = json.loads(Path(queue_path).read_text())
+runs_root = Path(repo) / "training/outputs/runs"
+jobs = sorted(data.get("jobs", []), key=lambda j: j.get("priority", 999))
+for job in jobs:
+    run_id = job["run_id"]
+    if run_id in completed:
+        continue
+    log_file = runs_root / run_id / "run.log"
+    if log_file.exists():
+        text = log_file.read_text(errors="replace")
+        if "Training finished" in text:
+            continue
+    job = dict(job)
+    job["config"] = str(Path(repo) / job["config"])
+    print(json.dumps(job))
+    break
+PY
+}
+
+find_incomplete_2b() {
+  "$PY" - "$QUEUE" "$REPO" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+queue_path, repo = sys.argv[1:3]
+data = json.loads(Path(queue_path).read_text())
+recovery = data.get("recovery_2b", {})
+horizon = int(recovery.get("horizon", 2_000_000_000))
+runs_root = Path(repo) / "training/outputs/runs"
+
+
+def highest(ckpt_dir: Path) -> str | None:
+    best = None
+    best_step = -1
+    if not ckpt_dir.is_dir():
+        return None
+    for path in ckpt_dir.glob("policy_*.pt"):
+        step = int(path.stem.split("_", 1)[1])
+        if step > best_step:
+            best_step = step
+            best = str(path)
+    return best
+
+
+def latest_transitions(log_path: Path) -> int | None:
+    if not log_path.exists():
+        return None
+    vals = re.findall(
+        r"standalone_trainer INFO: ticks=\d+ transitions=(\d+)",
+        log_path.read_text(errors="replace"),
+    )
+    return int(vals[-1]) if vals else None
+
+
+for run_id in recovery.get("run_ids", []):
+    run_dir = runs_root / run_id
+    log_file = run_dir / "run.log"
+    if not log_file.exists():
+        continue
+    if "Training finished" in log_file.read_text(errors="replace"):
+        continue
+    trans = latest_transitions(log_file)
+    if trans is None:
+        continue
+    if trans >= horizon:
+        continue
+    meta = recovery.get("config_by_run_id", {}).get(run_id)
+    if not meta:
+        continue
+    init_ckpt = highest(run_dir / "checkpoints")
+    print(json.dumps({
+        "kind": "recovery_2b",
+        "run_id": run_id,
+        "transitions": trans,
+        "horizon": horizon,
+        "config": str(Path(repo) / meta["config"]),
+        "num_envs": int(meta["num_envs"]),
+        "init_ckpt": init_ckpt,
+    }))
+    break
+PY
+}
+
+launch_trainer() {
+  local run_id="$1"
+  local config="$2"
+  local num_envs="$3"
+  local total_transitions="$4"
+  local init_ckpt="${5:-}"
+
+  local run_dir="$TRAINING/outputs/runs/$run_id"
+  mkdir -p "$run_dir"
+
+  local -a cmd=(
+    "$PY" standalone_trainer.py
+    --config "$config"
+    --num-envs "$num_envs"
+    --total-transitions "$total_transitions"
+    --opponent policy
+    --fixed-opponents
+    --device cuda
+    --seed 42
+    --compile
+    --compile-mode reduce-overhead
+    --run-id "$run_id"
+    --wandb
+    --wandb-mode online
+  )
+  if [ -n "$init_ckpt" ] && [ -f "$init_ckpt" ]; then
+    cmd+=(--init-ckpt "$init_ckpt")
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY-RUN would launch run_id=$run_id num_envs=$num_envs transitions=$total_transitions config=$config init_ckpt=${init_ckpt:-none}"
+    return 0
+  fi
+
+  export WANDB_MODE=online
+  (
+    cd "$TRAINING"
+    setsid nohup "${cmd[@]}" < /dev/null >> "${run_dir}/launch.out" 2>&1 &
+    echo $! > "${run_dir}/supervisor_launch.pid"
+  )
+  log "launched run_id=$run_id pid=$(cat "${run_dir}/supervisor_launch.pid" 2>/dev/null || echo unknown)"
+
+  sleep "$LAUNCH_VERIFY_SEC"
+  if ! pgrep -f "standalone_trainer.*${run_id}" >/dev/null 2>&1; then
+    log "ERROR: run_id=$run_id died within ${LAUNCH_VERIFY_SEC}s — see ${run_dir}/launch.out"
+    tail -20 "${run_dir}/launch.out" >>"$LOG" 2>/dev/null || true
+    return 1
+  fi
+  local trainer_pid gpu_info
+  trainer_pid=$(pgrep -f "standalone_trainer.*${run_id}" | head -1)
+  gpu_info=$(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F', ' '{printf "%s%% util, %s MiB", $1, $2}')
+  log "verified @${LAUNCH_VERIFY_SEC}s: run_id=$run_id trainer_pid=$trainer_pid gpu=$gpu_info"
+  return 0
+}
+
+pick_job() {
+  local job=""
+  job=$(find_incomplete_2b 2>/dev/null || true)
+  if [ -n "$job" ]; then
+    echo "$job"
+    return
+  fi
+  queue_next_job 2>/dev/null || true
+}
+
+main() {
+  local procs util idle idle_target job
+  procs=$(trainer_count)
+  util=$(gpu_util_pct)
+
+  if [ "$DRY_RUN" -eq 0 ] && [ "$SIMULATE_IDLE" -eq 0 ]; then
+    if [ "${procs:-0}" -gt 0 ]; then
+      reset_idle_count
+      log "busy: $procs trainer proc(s), gpu=${util}%"
+      exit 0
+    fi
+    if [ "${util:-100}" -gt "$IDLE_GPU_UTIL_MAX" ]; then
+      reset_idle_count
+      log "busy: gpu=${util}% (> ${IDLE_GPU_UTIL_MAX}%), no trainer match"
+      exit 0
+    fi
+  fi
+
+  idle=$(read_idle_count)
+  idle=$((idle + 1))
+  echo "$idle" >"$IDLE_COUNT_FILE"
+  log "idle check ${idle}/${IDLE_CHECKS_TO_LAUNCH}: trainers=${procs:-0} gpu=${util}%"
+
+  if [ "$idle" -lt "$IDLE_CHECKS_TO_LAUNCH" ]; then
+    exit 0
+  fi
+
+  reset_idle_count
+
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    log "lock held, skipping launch"
+    exit 0
+  fi
+
+  procs=$(trainer_count)
+  util=$(gpu_util_pct)
+  if [ "$SIMULATE_IDLE" -eq 0 ] && { [ "${procs:-0}" -gt 0 ] || [ "${util:-100}" -gt "$IDLE_GPU_UTIL_MAX" ]; }; then
+    log "idle threshold met but GPU no longer idle (trainers=${procs:-0} gpu=${util}%), aborting launch"
+    exit 0
+  fi
+
+  job=$(pick_job)
+  if [ -z "$job" ]; then
+    log "idle threshold met but queue empty / all jobs complete"
+    exit 0
+  fi
+
+  while [ -n "$job" ]; do
+    kind=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1]).get("kind","queue"))' "$job")
+    run_id=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["run_id"])' "$job")
+    config=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["config"])' "$job")
+    num_envs=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["num_envs"])' "$job")
+
+    if [ "$kind" = "recovery_2b" ]; then
+      total_transitions=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["horizon"])' "$job")
+      init_ckpt=$("$PY" -c 'import json,sys; v=json.loads(sys.argv[1]).get("init_ckpt"); print(v or "")' "$job")
+      trans=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1]).get("transitions",0))' "$job")
+      recovery_run_id="${run_id}-r$(date +%s)"
+      log "2B recovery: ${run_id} stopped @${trans}; relaunching as ${recovery_run_id} init_ckpt=${init_ckpt:-none} (warm-start only, not full resume)"
+      if ! validate_config "$config" false; then
+        log "2B recovery config invalid, skipping"
+        exit 1
+      fi
+      launch_trainer "$recovery_run_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
+      exit 0
+    fi
+
+    total_transitions=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["total_transitions"])' "$job")
+    requires_selfplay=$("$PY" -c 'import json,sys; print("true" if json.loads(sys.argv[1]).get("requires_selfplay") else "false")' "$job")
+    init_ckpt=""
+
+    if ! validate_config "$config" "$requires_selfplay"; then
+      mark_completed "$run_id"
+      log "skipped invalid/disabled job $run_id, trying next queue item"
+      job=$(queue_next_job 2>/dev/null || true)
+      continue
+    fi
+
+    if pgrep -f "standalone_trainer.*${run_id}" >/dev/null 2>&1; then
+      log "run_id=$run_id already running"
+      exit 0
+    fi
+
+    local run_dir="$TRAINING/outputs/runs/$run_id"
+    local run_log="$run_dir/run.log"
+    local launch_id="$run_id"
+    if [ -f "$run_log" ] && ! run_finished "$run_log"; then
+      init_ckpt=$(highest_checkpoint "$run_dir/checkpoints")
+      launch_id="${run_id}-r$(date +%s)"
+      log "recovering partial queue run ${run_id} as ${launch_id} init_ckpt=${init_ckpt:-none}"
+    fi
+
+    log "launching queue job run_id=$launch_id"
+    launch_trainer "$launch_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
+    exit 0
+  done
+
+  log "no launchable queue jobs remain"
+}
+
+main "$@"
