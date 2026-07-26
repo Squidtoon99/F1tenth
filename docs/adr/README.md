@@ -44,3 +44,5 @@ trade-off. Routine work is captured by the PR instead (see
 - [0016](0016-revert-steering-history-to-paper-literal.md) — Revert default
   `steering_history` to paper-literal 5.0 after clean legacy-ladder A/B (+0.43
   m/s @ 18M).
+- [0017](0017-tightened-opponent-spawn-gaps.md) — Tighten default opponent spawn
+  gap ceiling 80 → 35 m for sustained 1v1 presence at 5–6 m/s ego speed.

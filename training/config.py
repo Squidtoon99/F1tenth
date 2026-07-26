@@ -89,7 +89,7 @@ DEFAULT_CONFIG = {
         "opponent_target_speed_range": [2.0, 4.0],
         "opponent_lateral_offset_m": 0.5,
         "opponent_spawn_gap_min_m": 3.0,
-        "opponent_spawn_gap_max_m": 80.0,
+        "opponent_spawn_gap_max_m": 35.0,
         "opponent_spawn_behind_prob": 0.3,
         "opponent_reset_speed_min_mps": 1.0,
         "opponent_reset_speed_max_mps": 4.0,
