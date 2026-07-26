@@ -8,12 +8,14 @@ on:
     paths:
       - "training/**"
       - "libs/**"
+      - "tools/**"
       - ".flake8"
       - ".github/workflows/training.yml"
   pull_request:
     paths:
       - "training/**"
       - "libs/**"
+      - "tools/**"
       - ".flake8"
       - ".github/workflows/training.yml"
 
@@ -35,7 +37,12 @@ jobs:
           pip install -e libs/f1tenth_contract
 
       - name: Lint
-        run: flake8 training libs/f1tenth_contract
+        run: |
+          flake8 training libs/f1tenth_contract
+          bash tools/check_shell.sh
 
       - name: Test (contract)
         run: pytest -q libs/f1tenth_contract
+
+      - name: Test (training)
+        run: pytest -q training/tests

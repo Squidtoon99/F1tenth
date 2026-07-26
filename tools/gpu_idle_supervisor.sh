@@ -38,8 +38,27 @@ done
 mkdir -p "$STATE_DIR"
 touch "$COMPLETED_FILE"
 
+NVIDIA_SMI=""
+
 log() {
   echo "[$(date -Is)] $*" >>"$LOG"
+}
+
+resolve_nvidia_smi() {
+  if [ -n "$NVIDIA_SMI" ]; then
+    return 0
+  fi
+  local candidate
+  for candidate in \
+    "$(command -v nvidia-smi 2>/dev/null || true)" \
+    /usr/lib/wsl/lib/nvidia-smi \
+    /usr/bin/nvidia-smi \
+    /usr/local/bin/nvidia-smi; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    NVIDIA_SMI="$candidate"
+    return 0
+  done
+  return 1
 }
 
 trainer_count() {
@@ -47,18 +66,35 @@ trainer_count() {
     echo 0
     return
   fi
-  pgrep -cf '[.]venv/bin/python.*standalone_trainer\.py' 2>/dev/null \
-    || pgrep -cf 'python.*[s]tandalone_trainer\.py' 2>/dev/null \
-    || echo 0
+  local count
+  count=$(pgrep -cf '[.]venv/bin/python.*standalone_trainer\.py' 2>/dev/null || true)
+  if [ "${count:-0}" -eq 0 ]; then
+    count=$(pgrep -cf 'python.*[s]tandalone_trainer\.py' 2>/dev/null || true)
+  fi
+  echo "${count:-0}"
 }
 
 gpu_util_pct() {
   if [ "$SIMULATE_IDLE" -eq 1 ]; then
     echo 0
-    return
+    return 0
   fi
-  nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
-    | head -1 | tr -dc '0-9' || echo 100
+  if ! resolve_nvidia_smi; then
+    log "ERROR: nvidia-smi not found (PATH and /usr/lib/wsl/lib/nvidia-smi); refusing idle launch"
+    return 1
+  fi
+  local raw util
+  raw=$("$NVIDIA_SMI" --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1) || {
+    log "ERROR: nvidia-smi query failed ($NVIDIA_SMI); refusing idle launch"
+    return 1
+  }
+  util=$(printf '%s' "$raw" | tr -dc '0-9')
+  if [ -z "$util" ]; then
+    log "ERROR: nvidia-smi returned unreadable utilization (raw=${raw:-empty}); refusing idle launch"
+    return 1
+  fi
+  echo "$util"
+  return 0
 }
 
 reset_idle_count() {
@@ -266,8 +302,11 @@ launch_trainer() {
   fi
   local trainer_pid gpu_info
   trainer_pid=$(pgrep -f "standalone_trainer.*${run_id}" | head -1)
-  gpu_info=$(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F', ' '{printf "%s%% util, %s MiB", $1, $2}')
+  gpu_info="unknown"
+  if resolve_nvidia_smi; then
+    gpu_info=$("$NVIDIA_SMI" --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null \
+      | awk -F', ' '{printf "%s%% util, %s MiB", $1, $2}')
+  fi
   log "verified @${LAUNCH_VERIFY_SEC}s: run_id=$run_id trainer_pid=$trainer_pid gpu=$gpu_info"
   return 0
 }
@@ -283,11 +322,16 @@ pick_job() {
 }
 
 main() {
-  local procs util idle idle_target job
+  local procs util idle idle_target job gpu_ok=1
   procs=$(trainer_count)
-  util=$(gpu_util_pct)
+  util=$(gpu_util_pct) || gpu_ok=0
 
   if [ "$DRY_RUN" -eq 0 ] && [ "$SIMULATE_IDLE" -eq 0 ]; then
+    if [ "$gpu_ok" -eq 0 ]; then
+      reset_idle_count
+      log "abort: GPU utilization unreadable — not launching (see ERROR above)"
+      exit 0
+    fi
     if [ "${procs:-0}" -gt 0 ]; then
       reset_idle_count
       log "busy: $procs trainer proc(s), gpu=${util}%"
@@ -303,7 +347,11 @@ main() {
   idle=$(read_idle_count)
   idle=$((idle + 1))
   echo "$idle" >"$IDLE_COUNT_FILE"
-  log "idle check ${idle}/${IDLE_CHECKS_TO_LAUNCH}: trainers=${procs:-0} gpu=${util}%"
+  if [ "$gpu_ok" -eq 0 ]; then
+    log "idle check ${idle}/${IDLE_CHECKS_TO_LAUNCH}: trainers=${procs:-0} gpu=unreadable"
+  else
+    log "idle check ${idle}/${IDLE_CHECKS_TO_LAUNCH}: trainers=${procs:-0} gpu=${util}%"
+  fi
 
   if [ "$idle" -lt "$IDLE_CHECKS_TO_LAUNCH" ]; then
     exit 0
@@ -318,9 +366,13 @@ main() {
   fi
 
   procs=$(trainer_count)
-  util=$(gpu_util_pct)
-  if [ "$SIMULATE_IDLE" -eq 0 ] && { [ "${procs:-0}" -gt 0 ] || [ "${util:-100}" -gt "$IDLE_GPU_UTIL_MAX" ]; }; then
-    log "idle threshold met but GPU no longer idle (trainers=${procs:-0} gpu=${util}%), aborting launch"
+  util=$(gpu_util_pct) || gpu_ok=0
+  if [ "$SIMULATE_IDLE" -eq 0 ] && { [ "$gpu_ok" -eq 0 ] || [ "${procs:-0}" -gt 0 ] || [ "${util:-100}" -gt "$IDLE_GPU_UTIL_MAX" ]; }; then
+    if [ "$gpu_ok" -eq 0 ]; then
+      log "idle threshold met but GPU utilization unreadable, aborting launch"
+    else
+      log "idle threshold met but GPU no longer idle (trainers=${procs:-0} gpu=${util}%), aborting launch"
+    fi
     exit 0
   fi
 

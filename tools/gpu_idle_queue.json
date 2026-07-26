@@ -8,43 +8,28 @@
       "num_envs": 1024,
       "total_transitions": 100000000,
       "gpu_hours": 0.8,
-      "note": "Replay capacity 10M vs 3M on mainline ladder (rank 7)"
+      "note": "Replay capacity 10M vs 3M on mainline ladder"
     },
     {
       "priority": 20,
-      "kind": "queue",
-      "run_id": "mainline-selfplay300-a001",
-      "config": "training/outputs/experiments/mainline-selfplay/mainline-selfplay300.json",
-      "num_envs": 4096,
-      "total_transitions": 300000000,
-      "gpu_hours": 2.4,
-      "requires_selfplay": true,
-      "note": "Self-play opponent dynamics (rank 6); skipped while branch lacks self-play"
-    },
-    {
-      "priority": 30,
       "kind": "queue",
       "run_id": "oobhalf-d2-600-a001",
       "config": "tools/gpu_idle_configs/oobhalf-d2-600-a001.json",
       "num_envs": 4096,
       "total_transitions": 600000000,
       "gpu_hours": 4.8,
-      "note": "Halved OOB penalty on D2 fixed champion (rank 8)"
+      "note": "Halved OOB penalty on D2 fixed champion"
     }
   ],
   "recovery_2b": {
-    "run_ids": ["numenv4096-2b-a001", "numenv8192-deep4m-2b-a001"],
+    "run_ids": ["ladder2b-a001"],
     "horizon": 2000000000,
     "gpu_hours": 16.0,
     "launch_script": "training/outputs/experiments/long-horizon-2b-sensors/launch-2b.sh",
     "config_by_run_id": {
-      "numenv4096-2b-a001": {
+      "ladder2b-a001": {
         "config": "training/outputs/experiments/long-horizon-2b-sensors/mainline-ladder2b.json",
-        "num_envs": 4096
-      },
-      "numenv8192-deep4m-2b-a001": {
-        "config": "training/outputs/experiments/long-horizon-2b-sensors/numenv8192-deep4m-2b.json",
-        "num_envs": 8192
+        "num_envs": 1024
       }
     }
   }
