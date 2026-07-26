@@ -373,3 +373,25 @@ seed 42, 300M) to fill the aborted `d2fx300` gap — not true self-play despite
 the name; config `fixed_opponents.entries` activates fixed champion even without
 `--fixed-opponents`.
 
+## `mainline-ladder600` preregistration (2026-07-25 ~09:01 PDT)
+
+Cluster torn down; local RTX 4080 Super. Extends `mainline-ladder300` to 600M
+to test whether the shippable mainline path recovers like `d2fx600`/`pcplus600`
+on extended horizon.
+
+| Field | Value |
+| --- | --- |
+| Run id | `mainline-ladder600` |
+| Host | local 4080 Super |
+| Config | `mainline-ladder600.json` |
+| Seed | 42 |
+
+**Success:** 200M+ mean ≥ 4.5 m/s AND terminal-40M mean ≥ 5.0 m/s (matching
+`d2fx600`/`pcplus600` sustained band).
+**Refutation:** 200M+ mean ≤ 4.0 m/s OR no recovery from the 100→200M dip
+(sustained sub-band like `mainline-ladder300` at 3.772 m/s).
+
+Abort only on genuine pathology (sustained sub-band well past 60M plus
+corroborating not-moving fraction climb, nonfinite states, or collapsing
+lifespan). The 26–56M dip to 3.1–3.6 is expected and never grounds for abort.
+

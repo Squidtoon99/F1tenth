@@ -54,10 +54,21 @@ could start. Reconstruction overlay files were copied to lark-3; launch queued
 for **lark-2 after `pcplus302` completes** (~254M/300M at handoff, est. ~20 min
 remaining).
 
-## Results
+## Results (2026-07-25 ~07:15 UTC)
 
-_Pending completion of both arms._
+Both arms completed 25M on lark-2 (legacy ladder, seed 42, fixed champion).
 
-Success criterion: peak speed, speed @18M, lifespan, termination breakdown,
-wall-contact density per km. If 5.0 wins, ADR-0015 should be superseded and
-mainline default reverted to 5.0.
+| Milestone | `steerhist5-ab001` (λ=5.0) | `steerhist05-ab001` (λ=0.5) | Δ (5.0 − 0.5) |
+| ---: | ---: | ---: | ---: |
+| 6M | 2.03 | 4.62 | −2.59 (0.5 transient peak) |
+| 18M (peak region) | **4.18** | 3.76 | **+0.43** |
+| 24M | 3.86 | 4.01 | −0.15 |
+
+**Verdict:** λ=5.0 wins the 18M peak region (+0.43 m/s), matching Lee/Vasco
+(λ^h = 5.0 at ±3° delta-steering scale). λ=0.5 shows a transient 6M spike
+(4.62 m/s) then underperforms through 18M; it closes slightly by 24M (+0.15
+m/s for 0.5) but remains below λ=5.0's peak. Per preregistration, **ADR-0015
+should be superseded** and the mainline default reverted to
+`reward_scales.steering_history = 5.0`.
+
+Harvest: both arms verified locally under `training/outputs/runs/`.

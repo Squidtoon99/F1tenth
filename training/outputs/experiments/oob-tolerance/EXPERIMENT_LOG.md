@@ -106,3 +106,35 @@ tolerance on the D2 cell that reached 5.17-5.25 @600M without oob halving).
 shift vs `d2fx600` @150M.
 
 Early telemetry @~0M: `oob_frac=0.212`, champion-like from step zero.
+
+## Final results (`oobhalf-d2-*`, harvested 2026-07-25 ~08:56 PDT)
+
+Both arms stopped ~242M (lark-1) and ~276M (lark-2) when cluster budget
+expired. Full archives harvested+verified (lark-1: 47 ckpts sha256 match;
+lark-2: 59 ckpts). lark-1 `run.log` was zeroed by trainer SIGTERM; restored
+from wandb `output.log` (8.5 MB, same precedent as `oobhalf300`).
+
+| Arm | Seed | Max trans | 150M speed | 150M oob_frac | 200M+ mean speed | 200M+ oob_frac | 200–230M speed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `oobhalf-d2-600` | 7 | 242M | 4.38 | 0.034 | **4.64** | 0.022 | — |
+| `oobhalf-d2-300` | 42 | 276M | 2.87 | **0.115** | 4.23 | **0.102** | **5.03** |
+| `d2fx600` (ref) | 7 | 600M | — | — | ~5.2 | — | — |
+| `oobhalf300` (ref) | 42 | 300M | 4.58 | 0.155 | 4.82 | — | — |
+
+**`oobhalf-d2-600` (seed 7): REFUTED.** No oob_frac shift at 150M (0.034 vs
+champion 0.177); 200M+ speed 4.64 m/s is in the D2 band but does not beat
+`d2fx600` and shows conservative boundary avoidance, not champion tolerance.
+Mirrors `oobhalf301` seed fragility.
+
+**`oobhalf-d2-300` (seed 42): PARTIAL.** Behavioral shift confirmed
+(`oob_frac` 0.10–0.12 at 150M+). At the evaluation window (200–230M) speed
+**5.03 m/s** with oob_frac 0.115 — near champion band — but the run degraded
+after ~230M (200M+ all-in mean 4.23). Halving `oob_penalty` on D2 seed 42
+produces champion-like tolerance but does not reliably sustain the speed gain
+that plain D2 fixed-champion (`d2fx600`, 5.17–5.25 @600M) achieves without
+oob halving.
+
+**Verdict:** Halving `oob_penalty` is not promoted to canonical default.
+Seed-42 self-play benefit (`oobhalf300` +0.56 m/s) does not replicate on the
+D2 fixed-champion cell; seed 7 fails on both cells. The champion's tolerance
+profile remains unexplained by this lever alone.
