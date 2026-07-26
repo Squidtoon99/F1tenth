@@ -56,7 +56,7 @@ def test_distributed_spawn_batch():
     gap_max = float(DEFAULT_CONFIG["env"]["opponent_spawn_gap_max_m"])
     behind_prob = float(DEFAULT_CONFIG["env"]["opponent_spawn_behind_prob"])
     assert gap_min == 3.0
-    assert gap_max == 35.0
+    assert gap_max == 58.0
     assert behind_prob == 0.3
     ahead_gate = float(DEFAULT_CONFIG["obs"]["opp_obs_ahead_m"])
     behind_gate = float(DEFAULT_CONFIG["obs"]["opp_obs_behind_m"])
@@ -130,8 +130,9 @@ def test_distributed_spawn_batch():
     # Both initial visibility classes under the 40 m ahead / 20 m behind gate.
     initially_visible = (gap_m <= ahead_gate) & (gap_m >= -behind_gate)
     vis_frac = float(initially_visible.float().mean().item())
-    assert vis_frac > 0.85
-    assert bool(initially_visible.all())
+    assert 0.45 < vis_frac < 0.75
+    assert bool(initially_visible.any())
+    assert bool((~initially_visible).any())
 
     # Wraparound: a behind spawn near s≈0 places the opponent near track end.
     near_start = metrics["s"] < 5.0
