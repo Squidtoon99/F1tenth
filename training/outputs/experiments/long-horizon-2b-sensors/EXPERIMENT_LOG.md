@@ -534,3 +534,37 @@ have zero post-cleanup reproduction proofs.
   from benchmark; not isolated in a clean A/B on this branch.
 - `numenv4096-600m-a001` (4096 envs, self-play?, 3–80 m) final 600M number may
   calibrate how much env count alone explains vs opponent mode.
+
+## pool600-a001 — per-episode opponent pool (2026-07-27)
+
+**Hypothesis:** a weighted pool spanning measured solo speeds fixes the single
+frozen-champion decoupling that collapsed `opp_presence` on `ladder2b-a002`
+(~0.08–0.15 after 122M) without restoring self-play ([ADR
+0019](../../../docs/adr/0019-per-episode-opponent-pool.md)).
+
+**Measured solo speeds** (deterministic GRU, Austin, DR on, mainline-ladder2b env
+stack; backfilled `steering_action_mode=delta` on legacy checkpoints):
+
+| Checkpoint | transitions | solo m/s |
+| ---: | ---: | ---: |
+| pool-policy_10240000 | 10M | 2.23 |
+| pool-policy_51200000 | 51M | 4.07 |
+| pool-policy_256000000 | 256M | 4.27 |
+| pool-policy_409600000 | 409M | 5.02 |
+| pool-policy_512000000 | 512M | 5.20 |
+| pool-policy_600000512 | 600M | 5.34 |
+
+Pool weights (total 20): 1 / 2 / 2 / 4 / 5 / 6 → expected sample fractions
+~5% / 10% / 10% / 20% / 25% / 30%.
+
+**Short validation (`pool-validate-a001`, 5.24M transitions, 512 envs):**
+`opp_presence` held **0.32–0.39** (final tick 0.324); `passing` term mean
+−0.13…−0.25 (non-zero throughout); pool assignment fractions tracked configured
+weights within ~2 pp. Throughput @1024 envs: **~21.3k transitions/s** vs
+**~28.7k** single champion (−26%, six policies loaded).
+
+**600M gate run:** `pool600-a001` — config
+`pool600m-a001.json` (else matched to `mainline-ladder2b.json`), systemd user
+unit `f1tenth-pool600-a001.service` (enabled, reboot-durable). Success criteria
+unchanged vs `pcplus600` milestones; additionally require `opp_presence ≥ 0.25`
+past 300M.

@@ -14,7 +14,7 @@ from f1tenth_policy import (
     make_actor,
 )
 from f1tenth_policy.normalizer import ObsNormalizer
-from fixed_opponents import FixedChampionManager, select_champion
+from fixed_opponents import ChampionEntry, FixedChampionManager, select_champion
 
 
 def _write_artifact(path, seed: int = 0):
@@ -77,7 +77,16 @@ def test_select_champion_is_deterministic(tmp_path):
         expected_steering_delta_max_rad=STEERING_DELTA_MAX_RAD,
     )
     # Different seed may pick a different entry; metadata stays immutable.
-    mgr = FixedChampionManager(a)
+    entry = ChampionEntry(
+        checkpoint=a.checkpoint,
+        weight=a.weight,
+        transitions=a.transitions,
+        actor=a.actor,
+        mean=a.mean,
+        var=a.var,
+        actor_architecture=a.actor_architecture,
+    )
+    mgr = FixedChampionManager([entry], torch.tensor([a.weight]), seed=42)
     meta = mgr.metadata()
     assert meta["checkpoint"] == a.checkpoint
     assert meta["transitions"] == a.transitions

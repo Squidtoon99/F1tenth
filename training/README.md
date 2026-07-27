@@ -45,8 +45,8 @@ pip install -r requirements-gpu.txt \
 Default config is the sole Lee sensor path (delta steering, termination at the
 first mapped-wall intersection of the projected footprint, and one
 `-20 * speed_mps` contact-event reward, with 10% stationary resets).
-Fixed opponents use `fixed_opponents.entries` with a once-at-startup weighted
-champion and a 50/50 centerline/champion episode mix.
+Fixed opponents use `fixed_opponents.entries`; every entry loads at startup and each
+env samples a weighted opponent on every episode reset.
 
 ## Run
 

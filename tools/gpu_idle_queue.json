@@ -22,13 +22,13 @@
     }
   ],
   "recovery_2b": {
-    "run_ids": ["ladder2b-a001"],
+    "run_ids": ["pool600-a001"],
     "horizon": 2000000000,
     "gpu_hours": 16.0,
     "launch_script": "training/outputs/experiments/long-horizon-2b-sensors/launch-2b.sh",
     "config_by_run_id": {
-      "ladder2b-a001": {
-        "config": "training/outputs/experiments/long-horizon-2b-sensors/mainline-ladder2b.json",
+      "pool600-a001": {
+        "config": "training/outputs/experiments/long-horizon-2b-sensors/pool600m-a001.json",
         "num_envs": 1024
       }
     }

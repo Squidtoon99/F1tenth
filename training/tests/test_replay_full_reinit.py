@@ -11,7 +11,7 @@ import torch.nn as nn
 from config import DEFAULT_CONFIG
 from f1tenth_env.sensors import ACTOR_OBS_DIM
 from f1tenth_policy import ObsNormalizer
-from fixed_opponents import ChampionSelection, FixedChampionManager
+from fixed_opponents import ChampionEntry, FixedChampionManager
 from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
 from qrsac.replay import TrajectoryReplayBuffer
 from standalone_trainer import (
@@ -124,7 +124,7 @@ def test_maybe_replay_full_reinit_preserves_champion_and_replay(tmp_path):
         )
     replay_actor_before = buffer.actor_obs.clone()
 
-    selection = ChampionSelection(
+    entry = ChampionEntry(
         checkpoint="/tmp/champ.pt",
         weight=1.0,
         transitions=999,
@@ -133,18 +133,24 @@ def test_maybe_replay_full_reinit_preserves_champion_and_replay(tmp_path):
         var=actor_norm.var.detach().cpu().clone(),
         actor_architecture=dict(models.actor.actor_architecture),
     )
-    mgr = FixedChampionManager(selection)
+    mgr = FixedChampionManager([entry], torch.tensor([1.0]), seed=42)
 
     class _Env:
-        def __init__(self):
+        def __init__(self, n_envs: int):
+            self.num_envs = n_envs
             self.refreshes = 0
-            self.last_transitions = None
+            self.device = torch.device("cpu")
 
-        def refresh_opponent_policy(self, actor, mean, var, actor_architecture=None):
+        def refresh_opponent_pool(self, entries):
             self.refreshes += 1
-            self.last_transitions = selection.transitions
 
-    env = _Env()
+        def set_opponent_resample_callback(self, _cb):
+            return None
+
+        def assign_opponent_policies(self, _mask, _indices):
+            return None
+
+    env = _Env(num_envs)
     learner_hidden = torch.randn(num_envs, HIDDEN_DIM)
     protocol = initial_training_protocol_state()
     did = maybe_replay_full_reinit(
@@ -164,7 +170,6 @@ def test_maybe_replay_full_reinit_preserves_champion_and_replay(tmp_path):
     assert protocol["replay_full_reinit_done"] is True
     assert torch.count_nonzero(learner_hidden).item() == 0
     assert env.refreshes == 1
-    assert env.last_transitions == 999  # champion unchanged
     assert torch.equal(buffer.actor_obs, replay_actor_before)
     assert torch.equal(actor_norm.mean, mean_a)
 

@@ -111,9 +111,9 @@ class _EnvironmentStorage:
     _FLOAT_FIELDS = (
         "reward",
         "reward_progress",
-        "reward_wall_contact",
-        "reward_boundary_contact",
+        "reward_oob",
         "reward_oob_impact",
+        "reward_boundary_contact",
         "reward_steering_change",
         "reward_steering_history",
         "reward_passing",
@@ -150,6 +150,7 @@ class _EnvironmentStorage:
         "terminal_y",
         "terminal_s",
         "metric_progress",
+        "metric_oob",
         "metric_wall",
         "metric_boundary",
         "metric_lateral",
@@ -167,9 +168,10 @@ class _EnvironmentStorage:
         "lap_count",
         "ego_segment",
         "opponent_segment",
-        "prev_wall_contact",
+        "prev_off_track",
         "prev_opponent_ahead",
         "prev_opponent_in_window",
+        "oob_streak",
         "stopped_streak",
         "action_head",
         "action_latency",
@@ -517,6 +519,7 @@ class WarpF1tenthEnv:
         elif isinstance(self.opponent_ctrl, MixedOpponentController):
             self._policy_opponent = self.opponent_ctrl.policy
             self.opponent_ctrl.mode_buf = self._env.tensor["opponent_mode"]
+        self._opponent_resample_cb = None
 
         self.extras = self._build_extras()
         self.reset()
@@ -594,15 +597,16 @@ class WarpF1tenthEnv:
         params.progress_max_lateral = float(
             self.reward_cfg.get("progress_max_lateral_m", 1.0)
         )
-        params.wall_contact_coefficient = float(
-            self.reward_cfg["wall_contact_coefficient"]
+        params.oob = (
+            float(scales.get("oob_penalty", 0.0)) * self.control_dt * (3.6 * 3.6)
         )
-        params.control_dt = self.control_dt
-        params.boundary_contact_coefficient = float(
-            self.reward_cfg.get("boundary_contact_coefficient", 0.0)
-        )
-        params.oob_impact_coefficient = float(
-            self.reward_cfg.get("oob_impact_coefficient", 0.0)
+        params.oob_impact = float(scales.get("oob_impact", 0.0))
+        params.oob_margin = 0.0
+        params.boundary_contact = float(
+            self.reward_cfg.get("boundary_contact_penalty", 0.0)
+        ) * float(scales.get("boundary_contact", 1.0))
+        params.terminal_oob_skip_seconds = float(
+            self.reward_cfg.get("terminal_oob_skip_seconds", 10.0)
         )
         params.steering_change = float(scales.get("steering_change", 0.0))
         params.steering_history = float(scales.get("steering_history", 0.0))
@@ -631,17 +635,12 @@ class WarpF1tenthEnv:
         params.global_scale = float(
             self.reward_cfg.get("global_reward_scale", 1.0)
         )
-        wall_cost_mode = self.reward_cfg.get("wall_cost_mode", "one_shot")
-        params.wall_cost_mode = {
-            "one_shot": 0,
-            "continuous": 1,
-            "continuous_quadratic": 2,
-        }[wall_cost_mode]
         return params
 
     def _build_termination_params(self):
         params = TerminationParams()
         params.maximum_episode_steps = self.max_episode_steps
+        params.maximum_oob_steps = 0
         params.maximum_stopped_steps = int(
             round(
                 float(self.env_cfg.get("term_not_moving_time_s", 2.0))
@@ -669,10 +668,8 @@ class WarpF1tenthEnv:
         params.terminate_on_collision = int(
             self.env_cfg.get("term_on_collision", True)
         )
-        params.recoverable_boundary = int(
-            self.env_cfg.get("boundary_mode", "first_contact_terminal")
-            == "recoverable_full_car_out"
-        )
+        params.oob_margin = 0.0
+        params.full_car_out = 1
         return params
 
     def _build_reset_params(self):
@@ -844,9 +841,9 @@ class WarpF1tenthEnv:
                 "total": tensors["reward"],
                 "terms": {
                     "progress": tensors["reward_progress"],
-                    "wall_contact": tensors["reward_wall_contact"],
-                    "boundary_contact": tensors["reward_boundary_contact"],
+                    "oob_penalty": tensors["reward_oob"],
                     "oob_impact": tensors["reward_oob_impact"],
+                    "boundary_contact": tensors["reward_boundary_contact"],
                     "steering_change": tensors["reward_steering_change"],
                     "steering_history": tensors["reward_steering_history"],
                     "passing": tensors["reward_passing"],
@@ -865,6 +862,7 @@ class WarpF1tenthEnv:
             "metrics": {
                 "progress_ds": tensors["metric_progress"],
                 "s": tensors["prev_s"],
+                "oob_mask": tensors["metric_oob"],
                 "wall_contact": tensors["metric_wall"],
                 "boundary_dist": tensors["metric_boundary"],
                 "lateral_error": tensors["metric_lateral"],
@@ -962,7 +960,8 @@ class WarpF1tenthEnv:
         self._policy_sensors_event.record(torch.cuda.current_stream(self.device))
         self._policy_stream.wait_event(self._policy_sensors_event)
         with torch.cuda.stream(self._policy_stream):
-            if self._policy_opponent._actor_compiled:
+            opp = self._policy_opponent
+            if opp._pool is not None or opp._actor_compiled:
                 torch.compiler.cudagraph_mark_step_begin()
             self._policy_opponent_actions.copy_(
                 self._policy_opponent.act_observation(observation)
@@ -1122,6 +1121,8 @@ class WarpF1tenthEnv:
         self.extras["observations"]["critic"] = self.obs_buf
         if self._policy_opponent is not None:
             self._policy_opponent.reset(self._reset_mask)
+            if self._opponent_resample_cb is not None:
+                self._opponent_resample_cb(self, self._reset_mask)
         if with_sensors:
             self._render_actor_observations(self._active_obs)
             self.actor_obs_buf = self._actor_obs[self._active_obs]
@@ -1225,6 +1226,8 @@ class WarpF1tenthEnv:
         self.extras["observations"]["critic"] = self.obs_buf
         if self._policy_opponent is not None:
             self._policy_opponent.reset(self._reset_mask)
+            if self._opponent_resample_cb is not None:
+                self._opponent_resample_cb(self, self._reset_mask)
         if with_sensors:
             self._render_actor_observations(self._active_obs)
             self.actor_obs_buf = self._actor_obs[self._active_obs]
@@ -1318,6 +1321,8 @@ class WarpF1tenthEnv:
             # Auto-reset rows keep done=True this tick; zero their GRU before
             # acting on the post-reset opponent sensor observation.
             self._policy_opponent.reset(self.reset_buf)
+            if self._opponent_resample_cb is not None:
+                self._opponent_resample_cb(self, self.reset_buf)
             self._schedule_policy_prefetch(self._opponent_actor_obs[inactive])
         wp.launch(
             observation_stage_kernel,
@@ -1356,6 +1361,24 @@ class WarpF1tenthEnv:
                 self.extras,
             )
         return self.obs_buf, self.reward_buf, self.reset_buf, self.extras
+
+    def refresh_opponent_pool(self, entries) -> None:
+        if self._policy_opponent is None:
+            raise RuntimeError("Environment has no policy opponent")
+        self._wait_policy_prefetch()
+        self._policy_opponent.load_opponent_pool(entries)
+
+    def set_opponent_resample_callback(self, callback) -> None:
+        self._opponent_resample_cb = callback
+
+    def assign_opponent_policies(
+        self,
+        mask: torch.Tensor,
+        policy_indices: torch.Tensor,
+    ) -> None:
+        if self._policy_opponent is None:
+            raise RuntimeError("Environment has no policy opponent")
+        self._policy_opponent.assign_policies(mask, policy_indices)
 
     def refresh_opponent_policy(
         self, state_dict, obs_mean, obs_var, actor_architecture=None

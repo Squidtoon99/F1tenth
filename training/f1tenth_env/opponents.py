@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+import torch.nn as nn
 
 from . import runtime as rt
 from .geom import quat_to_xyz
@@ -113,6 +114,14 @@ class ScriptedCenterlineOpponent(OpponentController):
         return torch.stack([throttle, steer], dim=-1)
 
 
+@dataclass
+class _PoolMember:
+    actor: nn.Module
+    obs_mean: torch.Tensor
+    inv_std: torch.Tensor
+    actor_compiled: bool = False
+
+
 def _actor_is_recurrent(actor: torch.nn.Module) -> bool:
     raw = getattr(actor, "_orig_mod", actor)
     return (
@@ -150,6 +159,8 @@ class PolicyOpponent(OpponentController):
         self._actor_compiled = False
         self._hidden: torch.Tensor | None = None
         self._recurrent = _actor_is_recurrent(actor)
+        self._pool: list[_PoolMember] | None = None
+        self._env_policy_idx: torch.Tensor | None = None
         self._set_norm_stats(self.obs_mean, self.obs_var)
         self.actor.eval()
 
@@ -193,12 +204,34 @@ class PolicyOpponent(OpponentController):
         self.actor = torch.compile(self._raw_actor(), mode="reduce-overhead")
         self._actor_compiled = True
 
+    def _maybe_compile_pool_member(self, member: _PoolMember) -> None:
+        if member.actor_compiled or self.device.type != "cuda":
+            return
+        raw = getattr(member.actor, "_orig_mod", member.actor)
+        member.actor = torch.compile(raw, mode="reduce-overhead")
+        member.actor_compiled = True
+
+    @property
+    def pool_size(self) -> int:
+        return len(self._pool) if self._pool is not None else 1
+
     def _normalize(self, obs: torch.Tensor) -> torch.Tensor:
         if self.obs_mean is None or self._inv_std is None:
             return obs
+        return self._normalize_with(self.obs_mean, self._inv_std, obs)
+
+    def _normalize_with(
+        self,
+        mean: torch.Tensor,
+        inv_std: torch.Tensor,
+        obs: torch.Tensor,
+    ) -> torch.Tensor:
         return torch.clamp(
-            (obs - self.obs_mean) * self._inv_std, -self.norm_clip, self.norm_clip
+            (obs - mean) * inv_std, -self.norm_clip, self.norm_clip
         )
+
+    def _member_inv_std(self, var: torch.Tensor) -> torch.Tensor:
+        return torch.rsqrt(var.to(self.device, dtype=torch.float32) + self.norm_eps)
 
     def _reject_incompatible_snapshot(
         self,
@@ -263,6 +296,85 @@ class PolicyOpponent(OpponentController):
         if self._hidden is not None:
             self._hidden.zero_()
 
+    def load_opponent_pool(
+        self,
+        entries: list[Any],
+    ) -> None:
+        from f1tenth_policy import actor_from_architecture
+
+        if not entries:
+            raise ValueError("Opponent pool must contain at least one entry")
+        first_arch = dict(entries[0].actor_architecture)
+        for entry in entries[1:]:
+            if dict(entry.actor_architecture) != first_arch:
+                raise ValueError(
+                    "Opponent pool actor_architecture mismatch across entries"
+                )
+        if dict(first_arch) != self.actor_architecture:
+            raise ValueError(
+                "Opponent pool architecture does not match env actor template"
+            )
+        members: list[_PoolMember] = []
+        for entry in entries:
+            actor = actor_from_architecture(first_arch).to(
+                device=self.device, dtype=torch.float32
+            )
+            actor.load_state_dict(entry.actor, strict=True)
+            actor.eval()
+            mean = entry.mean.to(self.device, dtype=torch.float32).reshape(-1)
+            var = entry.var.to(self.device, dtype=torch.float32).reshape(-1)
+            if mean.numel() != self.obs_dim or var.numel() != self.obs_dim:
+                raise ValueError(
+                    f"Pool entry normalizer dim mean={mean.numel()} var={var.numel()}; "
+                    f"expected actor obs dim {self.obs_dim}."
+                )
+            members.append(
+                _PoolMember(
+                    actor=actor,
+                    obs_mean=mean,
+                    inv_std=self._member_inv_std(var),
+                )
+            )
+        self._pool = members
+        self._env_policy_idx = None
+        self._recurrent = _actor_is_recurrent(members[0].actor)
+        for member in members:
+            self._maybe_compile_pool_member(member)
+        if self._hidden is not None:
+            self._hidden.zero_()
+
+    def assign_policies(
+        self,
+        mask: torch.Tensor,
+        policy_indices: torch.Tensor,
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("assign_policies requires a loaded opponent pool")
+        if self._env_policy_idx is None:
+            self._env_policy_idx = torch.zeros(
+                int(mask.shape[0]), dtype=torch.long, device=self.device
+            )
+        mask_b = mask.to(device=self.device, dtype=torch.bool)
+        idx = policy_indices.to(device=self.device, dtype=torch.long).reshape(-1)
+        if idx.numel() != int(mask_b.sum().item()):
+            raise ValueError(
+                f"assign_policies got {idx.numel()} indices for "
+                f"{int(mask_b.sum().item())} reset envs"
+            )
+        if idx.min().item() < 0 or idx.max().item() >= len(self._pool):
+            raise ValueError(
+                f"assign_policies index out of range [0, {len(self._pool)})"
+            )
+        self._env_policy_idx[mask_b] = idx
+
+    def policy_assignment_counts(self) -> torch.Tensor | None:
+        if self._pool is None or self._env_policy_idx is None:
+            return None
+        return torch.bincount(
+            self._env_policy_idx.cpu(),
+            minlength=len(self._pool),
+        )
+
     def act(self, ctx: OpponentContext) -> torch.Tensor:
         if ctx.opp_obs is None:
             raise ValueError(
@@ -277,19 +389,19 @@ class PolicyOpponent(OpponentController):
                 f"PolicyOpponent observation dim={observation.shape[-1]}; "
                 f"expected sensor actor dim {self.obs_dim}."
             )
-        # Use no_grad, not inference_mode: torch.compile(mode="reduce-overhead")
-        # under inference_mode records CUDA-graph inference tensors that later
-        # break QRSAC reduce-overhead captures in the same process
-        # (Inplace update to inference tensor outside InferenceMode).
-        with torch.no_grad():
-            model_obs = self._normalize(
-                observation.to(device=self.device, dtype=torch.float32)
+        if not self._recurrent:
+            raise ValueError(
+                "PolicyOpponent requires a recurrent lidar_cnn_gru actor"
             )
-            if not self._recurrent:
-                raise ValueError(
-                    "PolicyOpponent requires a recurrent lidar_cnn_gru actor"
-                )
-            hidden = self._ensure_hidden(model_obs.shape[0])
+        obs = observation.to(device=self.device, dtype=torch.float32)
+        if self._pool is None:
+            return self._act_single_policy(obs)
+        return self._act_pooled_policies(obs)
+
+    def _act_single_policy(self, observation: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            model_obs = self._normalize(observation)
+            hidden = self._ensure_hidden(observation.shape[0])
             action, _, next_hidden = self.actor.step(
                 model_obs,
                 hidden,
@@ -299,6 +411,38 @@ class PolicyOpponent(OpponentController):
             )
             self._hidden = next_hidden
             return torch.clamp(action, -self.act_clip, self.act_clip)
+
+    def _act_pooled_policies(self, observation: torch.Tensor) -> torch.Tensor:
+        assert self._pool is not None
+        if self._env_policy_idx is None:
+            raise RuntimeError("Opponent pool is loaded but env assignments are unset")
+        num_envs = observation.shape[0]
+        hidden = self._ensure_hidden(num_envs)
+        actions = torch.empty(
+            num_envs, self.act_dim, device=self.device, dtype=torch.float32
+        )
+        with torch.no_grad():
+            for policy_idx, member in enumerate(self._pool):
+                env_mask = self._env_policy_idx == policy_idx
+                if not bool(env_mask.any()):
+                    continue
+                env_ids = env_mask.nonzero(as_tuple=True)[0]
+                model_obs = self._normalize_with(
+                    member.obs_mean,
+                    member.inv_std,
+                    observation[env_ids],
+                )
+                action, _, next_hidden = member.actor.step(
+                    model_obs,
+                    hidden[env_ids],
+                    reset_mask=None,
+                    deterministic=True,
+                    with_logprob=False,
+                )
+                actions[env_ids] = action
+                hidden[env_ids] = next_hidden
+        self._hidden = hidden
+        return torch.clamp(actions, -self.act_clip, self.act_clip)
 
 
 class MixedOpponentController(OpponentController):

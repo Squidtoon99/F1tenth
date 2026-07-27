@@ -44,7 +44,7 @@ from f1tenth_env import runtime as rt
 from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
-from fixed_opponents import FixedChampionManager, select_champion
+from fixed_opponents import FixedChampionManager, load_opponent_pool
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
 from qrsac.replay import (
@@ -520,7 +520,7 @@ def accumulate_step_diagnostics(
     for name in (
         "speed_xy",
         "lateral_error",
-        "wall_contact",
+        "oob_mask",
         "progress_ds",
         "lap_count",
         "laps_completed",
@@ -536,33 +536,33 @@ def accumulate_step_diagnostics(
             else:
                 diag.add_mean(f"metric/{name}", value)
 
-    wall_contact = terms.get("wall_contact")
-    wall_contact_metric = metrics.get("wall_contact")
-    if isinstance(wall_contact, torch.Tensor) and isinstance(
-        wall_contact_metric, torch.Tensor
-    ):
-        wall_contact_events = wall_contact_metric > 0
+    oob_mask = metrics.get("oob_mask")
+    oob_penalty = terms.get("oob_penalty")
+    if isinstance(oob_mask, torch.Tensor) and isinstance(oob_penalty, torch.Tensor):
+        diag.add_event_mean(
+            "reward_term/oob_penalty_when_oob", oob_penalty, oob_mask > 0
+        )
+    oob_impact = terms.get("oob_impact")
+    if isinstance(oob_impact, torch.Tensor):
+        oob_impact_events = oob_impact != 0
         diag.add_total(
-            "metric/wall_contact_events",
-            wall_contact_events.to(wall_contact_metric.dtype),
+            "metric/oob_impact_events", oob_impact_events.to(oob_impact.dtype)
         )
         diag.add_event_mean(
-            "reward_term/wall_contact_when_event",
-            wall_contact,
-            wall_contact_events,
+            "reward_term/oob_impact_when_event", oob_impact, oob_impact_events
         )
-
-    for term_name in ("boundary_contact", "oob_impact"):
-        term_value = terms.get(term_name)
-        if isinstance(term_value, torch.Tensor):
-            fired = term_value != 0
-            diag.add_total(
-                f"metric/{term_name}_events",
-                fired.to(term_value.dtype),
-            )
-            diag.add_event_mean(
-                f"reward_term/{term_name}_when_event", term_value, fired
-            )
+    boundary = terms.get("boundary_contact")
+    if isinstance(boundary, torch.Tensor):
+        boundary_events = boundary != 0
+        diag.add_total(
+            "metric/boundary_contact_events",
+            boundary_events.to(boundary.dtype),
+        )
+        diag.add_event_mean(
+            "reward_term/boundary_contact_when_event",
+            boundary,
+            boundary_events,
+        )
 
     for name, value in extras.get("termination", {}).items():
         if isinstance(value, torch.Tensor):
@@ -660,7 +660,7 @@ def maybe_replay_full_reinit(
         learner_hidden.zero_()
     # Fixed champion must not change on replay-full reinit.
     if env is not None and champion_mgr is not None:
-        champion_mgr.bootstrap_opponent(env)
+        champion_mgr.bootstrap_opponent(env, resample=True)
     protocol_state["replay_full_reinit_done"] = True
     protocol_state["replay_full_reinit_count"] = (
         int(protocol_state.get("replay_full_reinit_count", 0)) + 1
@@ -893,19 +893,6 @@ def build_run_snapshot(
         "args": {k: v for k, v in vars(args).items() if v is not None},
         "config": cfg,
         "config_provenance": provenance,
-        "effective_wall_contact": {
-            "geometry": "first projected footprint edge intersects mapped wall",
-            "car_length_m": float(cfg["env"]["car_length"]),
-            "car_width_m": float(cfg["env"]["car_width"]),
-            "coefficient_per_m": float(
-                cfg["reward"]["wall_contact_coefficient"]
-            ),
-            "control_dt_s": (
-                float(cfg["env"]["sim_dt"])
-                * int(cfg["env"]["control_interval"])
-            ),
-            "formula": "-coefficient * speed_mps",
-        },
     }
 
 
@@ -976,19 +963,16 @@ def build_config(
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
 
-    steering_mode = str(cfg["env"].get("steering_action_mode", "delta"))
-    if steering_mode not in ("absolute", "delta"):
-        raise ValueError(
-            "env.steering_action_mode must be 'absolute' or 'delta', got "
-            f"{steering_mode!r}"
-        )
-    cfg["env"]["steering_action_mode"] = steering_mode
-    if steering_mode == "delta":
-        if float(cfg["env"].get("steering_delta_max_rad", 0.0)) <= 0.0:
-            raise ValueError("env.steering_delta_max_rad must be positive")
+    # Canonical Lee / ADR-0011 path only.
+    cfg["env"]["steering_action_mode"] = "delta"
+    if float(cfg["env"].get("steering_delta_max_rad", 0.0)) <= 0.0:
+        raise ValueError("env.steering_delta_max_rad must be positive")
+    cfg["env"]["term_oob_mode"] = "full_car_out"
     if "reset_stationary_probability" not in patch_env:
         cfg["env"]["reset_stationary_probability"] = 0.10
     scales = cfg["reward"]["reward_scales"]
+    scales["oob_penalty"] = float(scales.get("oob_penalty", 0.02))
+    scales["oob_impact"] = float(scales.get("oob_impact", scales["oob_penalty"]))
     for dead in (
         "wall_penalty",
         "wall_impact",
@@ -998,6 +982,10 @@ def build_config(
         "overtake",
     ):
         scales.pop(dead, None)
+    cfg["reward"]["oob_margin_m"] = 0.0
+    cfg["reward"]["terminal_oob_skip_seconds"] = float(
+        cfg["reward"].get("terminal_oob_skip_seconds", 10.0)
+    )
     cfg["reward"]["rear_end_gate"] = "any_contact"
     validate_model_architecture(cfg)
 
@@ -1408,20 +1396,19 @@ def main():
     config_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
     log.info("Wrote config snapshot to %s", config_path)
     log.info("Using device: %s", device)
+    scales = reward_cfg["reward_scales"]
     log.info(
         "Effective experiment: steering_action_mode=%s steering_delta_max_rad=%.12f "
-        "control_hz=%.1f total_transitions=%d wall_contact_geometry=%s "
-        "footprint_m=%.3fx%.3f wall_contact_coefficient=%.1f/m "
-        "wall_contact_formula='-coefficient*speed_mps' "
-        "replay=%d compile=%s compile_mode=%s",
+        "control_hz=%.1f total_transitions=%d oob=-%.6f*dt*speed_kph^2 "
+        "boundary_contact=-%.3f term_oob_mode=%s replay=%d compile=%s "
+        "compile_mode=%s",
         env_cfg.get("steering_action_mode", "delta"),
         float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
         1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
         int(args.total_transitions),
-        "first_projected_footprint_edge_intersects_mapped_wall",
-        float(env_cfg["car_length"]),
-        float(env_cfg["car_width"]),
-        float(reward_cfg["wall_contact_coefficient"]),
+        float(scales.get("oob_penalty", 0.0)),
+        float(reward_cfg.get("boundary_contact_penalty", 0.0)),
+        env_cfg.get("term_oob_mode", "full_car_out"),
         int(model_cfg["replay_buffer_limit"]),
         bool(args.compile),
         args.compile_mode,
@@ -1502,9 +1489,8 @@ def main():
             raise ValueError(
                 "--fixed-opponents requires config fixed_opponents.entries"
             )
-        selection = select_champion(
+        selection = load_opponent_pool(
             fixed_entries,
-            seed=int(getattr(args, "seed", 0) or 0),
             expected_architecture=actor_architecture_from_module(models.actor),
             expected_actor_obs_dim=actor_obs_dim,
             expected_action_dim=int(cfg["env"]["num_actions"]),
@@ -1519,7 +1505,13 @@ def main():
             device=device,
             log=log,
         )
-        champion_mgr = FixedChampionManager(selection, log=log)
+        entries, weights = selection
+        champion_mgr = FixedChampionManager(
+            entries,
+            weights,
+            seed=int(getattr(args, "seed", 0) or 0),
+            log=log,
+        )
 
     use_1v1 = champion_mgr is not None or args.opponent != "none"
     continuous = bool(getattr(args, "continuous", False))
@@ -1557,12 +1549,12 @@ def main():
             init_kwargs["entity"] = entity
         wandb_run = wandb.init(**init_kwargs)
 
+    if champion_mgr is not None:
+        champion_mgr.bootstrap_opponent(env)
     raw_obs, _ = env.reset(with_sensors=True)
     actor_obs, critic_obs = unpack_sensor_observations(raw_obs)
     actor_normalizer.update(actor_obs)
     critic_normalizer.update(critic_obs)
-    if champion_mgr is not None:
-        champion_mgr.bootstrap_opponent(env)
     vector_ticks = 0
     env_transitions = 0
     replay_inserts = torch.zeros((), device=device, dtype=torch.long)
@@ -1876,51 +1868,49 @@ def main():
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
                         "progress=%.4f passing=%.4f collision=%.4f "
-                        "wall_contact=%.4f steer_chg=%.4f steer_hist=%.4f",
+                        "oob_penalty=%.4f steer_chg=%.4f steer_hist=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
                         diag.mean("reward_term/progress"),
                         diag.mean("reward_term/passing"),
                         diag.mean("reward_term/collision"),
-                        diag.mean("reward_term/wall_contact"),
+                        diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/steering_change"),
                         diag.mean("reward_term/steering_history"),
                     )
                 else:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                        "progress=%.4f wall_contact=%.4f "
+                        "progress=%.4f oob_penalty=%.4f "
                         "steer_chg=%.4f steer_hist=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
                         diag.mean("reward_term/progress"),
-                        diag.mean("reward_term/wall_contact"),
+                        diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/steering_change"),
                         diag.mean("reward_term/steering_history"),
                     )
                 log.info(
-                    "  reward_events: wall_contact_when=%.4f wall_contact_events=%d "
-                    "boundary_contact_when=%.4f boundary_contact_events=%d "
-                    "oob_impact_when=%.4f oob_impact_events=%d",
-                    diag.mean("reward_term/wall_contact_when_event"),
-                    int(diag.total("metric/wall_contact_events")),
-                    diag.mean("reward_term/boundary_contact_when_event"),
-                    int(diag.total("metric/boundary_contact_events")),
+                    "  reward_events: oob_when=%.4f oob_impact_when=%.4f "
+                    "boundary_when=%.4f oob_impact_events=%d "
+                    "boundary_events=%d",
+                    diag.mean("reward_term/oob_penalty_when_oob"),
                     diag.mean("reward_term/oob_impact_when_event"),
+                    diag.mean("reward_term/boundary_contact_when_event"),
                     int(diag.total("metric/oob_impact_events")),
+                    int(diag.total("metric/boundary_contact_events")),
                 )
                 log.info(
-                    "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f "
-                    "wall_contact_frac=%.3f "
+                    "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
                     "progress_ds=%.4f laps_completed=%d | "
                     "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f "
                     "norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/opp_speed"),
                     diag.mean("metric/lateral_error"),
-                    diag.mean("metric/wall_contact"),
+                    diag.mean("metric/oob_mask"),
                     diag.mean("metric/progress_ds"),
                     int(diag.total("metric/laps_completed")),
                     diag.vmin("action/throttle"),
@@ -1950,11 +1940,25 @@ def main():
                     )
                     if champion_mgr is not None:
                         meta = champion_mgr.metadata()
-                        log.info(
-                            "  fixed_champion: ckpt=%s transitions=%d",
-                            meta["checkpoint"],
-                            meta["transitions"],
-                        )
+                        if champion_mgr.pool_size > 1:
+                            log.info(
+                                "  fixed_opponent_pool: size=%d assignments=%s",
+                                meta["pool_size"],
+                                [
+                                    (
+                                        entry["checkpoint"].rsplit("/", 1)[-1],
+                                        f"w={entry['weight']:.2f}",
+                                        f"p={entry['sampled_fraction']:.3f}",
+                                    )
+                                    for entry in meta["entries"]
+                                ],
+                            )
+                        else:
+                            log.info(
+                                "  fixed_champion: ckpt=%s transitions=%d",
+                                meta["checkpoint"],
+                                meta["transitions"],
+                            )
                 else:
                     log.info(
                         "  terminations: time_out=%d oob=%d "
@@ -1994,23 +1998,17 @@ def main():
                             "reward/collision": diag.mean(
                                 "reward_term/collision"
                             ),
-                            "reward/wall_contact": diag.mean(
-                                "reward_term/wall_contact"
+                            "reward/oob_penalty": diag.mean(
+                                "reward_term/oob_penalty"
                             ),
-                            "reward/wall_contact_when_event": diag.mean(
-                                "reward_term/wall_contact_when_event"
-                            ),
-                            "reward/boundary_contact": diag.mean(
-                                "reward_term/boundary_contact"
-                            ),
-                            "reward/boundary_contact_events": diag.total(
-                                "metric/boundary_contact_events"
+                            "reward/oob_penalty_when_oob": diag.mean(
+                                "reward_term/oob_penalty_when_oob"
                             ),
                             "reward/oob_impact": diag.mean(
                                 "reward_term/oob_impact"
                             ),
-                            "reward/oob_impact_events": diag.total(
-                                "metric/oob_impact_events"
+                            "reward/oob_impact_when_event": diag.mean(
+                                "reward_term/oob_impact_when_event"
                             ),
                             "reward/steering_change": diag.mean(
                                 "reward_term/steering_change"
@@ -2020,11 +2018,9 @@ def main():
                             ),
                             "env/speed_xy": diag.mean("metric/speed_xy"),
                             "env/lateral_error": diag.mean("metric/lateral_error"),
-                            "env/wall_contact_frac": diag.mean(
-                                "metric/wall_contact"
-                            ),
-                            "env/wall_contact_events": diag.total(
-                                "metric/wall_contact_events"
+                            "env/oob_frac": diag.mean("metric/oob_mask"),
+                            "env/oob_impact_events": diag.total(
+                                "metric/oob_impact_events"
                             ),
                             "env/progress_ds": diag.mean("metric/progress_ds"),
                             "env/lap_count": diag.mean("metric/lap_count"),
