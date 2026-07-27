@@ -647,3 +647,40 @@ from an early 4.55 m/s peak @20M to 2.36 m/s @150M — the opposite of `pcplus60
 actor (5.34 m/s solo) to test whether the ~100M from-noise phase is the bottleneck
 or whether the reward stack destroys a known-good policy ([ADR
 0020](../../../docs/adr/0020-warm-start-actor-freeze.md)).
+
+## Warm-start plateau probes (2026-07-27)
+
+All arms: `--init-ckpt` pcplus600 @600M, `replay_full_reinit: false`,
+`actor_freeze_transitions: 5_000_000`, `alpha: 0.001`, 1024 envs, batch 1024,
+3M replay, seed 42, legacy ladder boundary coefficients (0.1296 / 4.0 / 0.1296),
+50M horizon. Metrics below: mean `env: speed` over 35–45M transitions window
+(deduped log lines; probe run had 2× duplicate logging — see logging fix below).
+
+| Run | Hypothesis / delta | speed @35–45M | lifespan @40M | Verdict |
+| --- | --- | ---: | ---: | --- |
+| `warmstart-probe-a001` | baseline warm-start | 5.331 m/s | 304 s | plateau |
+| `warmstart-reward-relax-a001` | `steering_change` 0, `steering_history` 0, wall coeff halved | 5.331 m/s | 304 s | **refuted** — identical to baseline |
+| `warmstart-matched-opp-a001` | pcplus600 @600M champion, tight gaps, 2× passing | 5.330 m/s | 294 s | **refuted** — no pace gain |
+
+Reward-relax runtime confirmed: `steer_chg=0.0000`, `wall_contact` half baseline.
+Three materially different reward/opponent configs produced numerically
+indistinguishable pace — strongest evidence the policy is not responding to
+training signal (exploration freeze hypothesis).
+
+**Logging bug (fixed):** `setup_trainer_logging` wrote to both a `FileHandler` and
+stdout; systemd units append stdout to the same `run.log`, doubling every line.
+Fix: file-only logging when `log_file` is set (`training/standalone_trainer.py`).
+
+## Alpha / exploration probes (2026-07-27)
+
+**Hypothesis:** `alpha: 0.001` (10× below default) plus 5M actor freeze prevents
+the warm-started policy from exploring faster actions; critic-only updates for
+the first 5M then near-deterministic actor updates hold the init at ~5.33 m/s.
+
+| Run | Delta from baseline | Status |
+| --- | --- | --- |
+| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | in flight |
+| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | queued |
+| `warmstart-alpha005-a001` | `alpha: 0.005`, freeze 5M | preregistered |
+
+Pass threshold: sustained speed **> 5.35 m/s** with lifespan ≥ 200 s and low OOB.
