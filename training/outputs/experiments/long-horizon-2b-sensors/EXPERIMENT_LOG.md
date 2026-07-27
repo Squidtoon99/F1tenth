@@ -677,10 +677,29 @@ Fix: file-only logging when `log_file` is set (`training/standalone_trainer.py`)
 the warm-started policy from exploring faster actions; critic-only updates for
 the first 5M then near-deterministic actor updates hold the init at ~5.33 m/s.
 
-| Run | Delta from baseline | Status |
-| --- | --- | --- |
-| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | **done** — 5.331 m/s @35–45M, life 209s @40M |
-| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | in flight |
-| `warmstart-alpha005-a001` | `alpha: 0.005`, freeze 5M | preregistered |
+Metrics: mean `env: speed` over 35–45M transitions (deduped log lines); lifespan
+from tick line at nearest 40M boundary. Pass threshold: sustained speed **> 5.35
+m/s** with lifespan ≥ 200 s and low OOB.
 
-Pass threshold: sustained speed **> 5.35 m/s** with lifespan ≥ 200 s and low OOB.
+| Run | Delta from baseline | speed @35–45M | lifespan @40M | Verdict |
+| --- | --- | ---: | ---: | --- |
+| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | 5.331 m/s | 314 s | **refuted** — identical to baseline |
+| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | 5.328 m/s @25–35M | — | **refuted** — stopped @30M, same plateau |
+| `warmstart-alpha010-nofreeze-a001` | `alpha: 0.01`, freeze 0 | — | — | **in flight** (systemd enabled) |
+
+**Verdict (2 of 3 alpha arms):** raising `alpha` 10× and shortening actor freeze
+from 5M→1M produced numerically indistinguishable pace (5.328–5.331 m/s). The
+entropy/exploration knob is **not** the binding constraint — or exploration via
+SAC entropy is the wrong mechanism for this delta-steering + throttle action
+space. `warmstart-alpha005-a001` cancelled (would probe below baseline alpha;
+irrelevant given 0.01 already matched 0.001).
+
+**No-freeze arm rationale:** if actor updates from step 0 with default alpha still
+plateau at 5.33 m/s, the warm-start init is a local optimum that gradient steps
+cannot escape — pointing to critic value saturation or a missing reward signal
+rather than exploration rate.
+
+**Logging bug:** confirmed fixed post-`e379bef`. `warmstart-probe-a001` log is 2×
+deduped (27507→13807 lines); post-fix runs (`alpha010-a001`, `freeze1m-a001`) are
+single-count (6884 / 4085 lines). Root cause was `FileHandler` + systemd stdout
+both writing to `run.log`; fix is file-only logging when `log_file` is set.
