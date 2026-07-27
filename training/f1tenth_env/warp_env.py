@@ -111,9 +111,9 @@ class _EnvironmentStorage:
     _FLOAT_FIELDS = (
         "reward",
         "reward_progress",
-        "reward_oob",
-        "reward_oob_impact",
+        "reward_wall_contact",
         "reward_boundary_contact",
+        "reward_oob_impact",
         "reward_steering_change",
         "reward_steering_history",
         "reward_passing",
@@ -150,7 +150,6 @@ class _EnvironmentStorage:
         "terminal_y",
         "terminal_s",
         "metric_progress",
-        "metric_oob",
         "metric_wall",
         "metric_boundary",
         "metric_lateral",
@@ -168,10 +167,9 @@ class _EnvironmentStorage:
         "lap_count",
         "ego_segment",
         "opponent_segment",
-        "prev_off_track",
+        "prev_wall_contact",
         "prev_opponent_ahead",
         "prev_opponent_in_window",
-        "oob_streak",
         "stopped_streak",
         "action_head",
         "action_latency",
@@ -597,16 +595,15 @@ class WarpF1tenthEnv:
         params.progress_max_lateral = float(
             self.reward_cfg.get("progress_max_lateral_m", 1.0)
         )
-        params.oob = (
-            float(scales.get("oob_penalty", 0.0)) * self.control_dt * (3.6 * 3.6)
+        params.wall_contact_coefficient = float(
+            self.reward_cfg["wall_contact_coefficient"]
         )
-        params.oob_impact = float(scales.get("oob_impact", 0.0))
-        params.oob_margin = 0.0
-        params.boundary_contact = float(
-            self.reward_cfg.get("boundary_contact_penalty", 0.0)
-        ) * float(scales.get("boundary_contact", 1.0))
-        params.terminal_oob_skip_seconds = float(
-            self.reward_cfg.get("terminal_oob_skip_seconds", 10.0)
+        params.control_dt = self.control_dt
+        params.boundary_contact_coefficient = float(
+            self.reward_cfg.get("boundary_contact_coefficient", 0.0)
+        )
+        params.oob_impact_coefficient = float(
+            self.reward_cfg.get("oob_impact_coefficient", 0.0)
         )
         params.steering_change = float(scales.get("steering_change", 0.0))
         params.steering_history = float(scales.get("steering_history", 0.0))
@@ -635,12 +632,17 @@ class WarpF1tenthEnv:
         params.global_scale = float(
             self.reward_cfg.get("global_reward_scale", 1.0)
         )
+        wall_cost_mode = self.reward_cfg.get("wall_cost_mode", "one_shot")
+        params.wall_cost_mode = {
+            "one_shot": 0,
+            "continuous": 1,
+            "continuous_quadratic": 2,
+        }[wall_cost_mode]
         return params
 
     def _build_termination_params(self):
         params = TerminationParams()
         params.maximum_episode_steps = self.max_episode_steps
-        params.maximum_oob_steps = 0
         params.maximum_stopped_steps = int(
             round(
                 float(self.env_cfg.get("term_not_moving_time_s", 2.0))
@@ -668,8 +670,10 @@ class WarpF1tenthEnv:
         params.terminate_on_collision = int(
             self.env_cfg.get("term_on_collision", True)
         )
-        params.oob_margin = 0.0
-        params.full_car_out = 1
+        params.recoverable_boundary = int(
+            self.env_cfg.get("boundary_mode", "first_contact_terminal")
+            == "recoverable_full_car_out"
+        )
         return params
 
     def _build_reset_params(self):
@@ -841,9 +845,9 @@ class WarpF1tenthEnv:
                 "total": tensors["reward"],
                 "terms": {
                     "progress": tensors["reward_progress"],
-                    "oob_penalty": tensors["reward_oob"],
-                    "oob_impact": tensors["reward_oob_impact"],
+                    "wall_contact": tensors["reward_wall_contact"],
                     "boundary_contact": tensors["reward_boundary_contact"],
+                    "oob_impact": tensors["reward_oob_impact"],
                     "steering_change": tensors["reward_steering_change"],
                     "steering_history": tensors["reward_steering_history"],
                     "passing": tensors["reward_passing"],
@@ -862,7 +866,6 @@ class WarpF1tenthEnv:
             "metrics": {
                 "progress_ds": tensors["metric_progress"],
                 "s": tensors["prev_s"],
-                "oob_mask": tensors["metric_oob"],
                 "wall_contact": tensors["metric_wall"],
                 "boundary_dist": tensors["metric_boundary"],
                 "lateral_error": tensors["metric_lateral"],

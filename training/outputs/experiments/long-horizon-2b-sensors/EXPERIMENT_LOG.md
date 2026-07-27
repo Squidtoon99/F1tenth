@@ -568,3 +568,19 @@ weights within ~2 pp. Throughput @1024 envs: **~21.3k transitions/s** vs
 unit `f1tenth-pool600-a001.service` (enabled, reboot-durable). Success criteria
 unchanged vs `pcplus600` milestones; additionally require `opp_presence ≥ 0.25`
 past 300M.
+
+### 2026-07-27 — champion overlay contamination recovery
+
+Host reboot at 20:58 auto-started disabled `f1tenth-champion-recovery300.service`,
+which applied legacy reproduction overlays onto tracked `kernel.py` / `rewards.py`
+(and left `warp_env.py` / `config.py` / `standalone_trainer.py` aligned to that
+stack). A follow-on commit (`8b8e77b`) landed per-episode opponent pool wiring on
+top of the contaminated tree, silently reverting ADR 0011/0012 boundary semantics
+in `warp_env.py` and legacy `oob` diagnostics in `standalone_trainer.py` /
+`config.py`. Restored mainline kernel/rewards from HEAD; separated pool feature
+from boundary reversion; suite back to **376 passed / 0 failed**. Added
+`training/overlay_launch.sh` (marker file `.overlay-active`, restore on exit) and
+a launch-time guard in `standalone_trainer.py` (refuse dirty `training/` tree,
+record `source_git` in run snapshot). Relaunched **`pool600-a002`** on clean
+mainline ladder stack with the calibrated six-entry pool (same weights as
+`pool600m-a001.json`).
