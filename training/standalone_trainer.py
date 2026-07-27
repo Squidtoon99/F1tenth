@@ -104,16 +104,17 @@ def setup_trainer_logging(
         fmt="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    stdout_handler = FlushingStreamHandler(sys.stdout)
-    stdout_handler.setLevel(level)
-    stdout_handler.setFormatter(fmt)
-    logger.addHandler(stdout_handler)
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(level)
         file_handler.setFormatter(fmt)
         logger.addHandler(file_handler)
+    else:
+        stdout_handler = FlushingStreamHandler(sys.stdout)
+        stdout_handler.setLevel(level)
+        stdout_handler.setFormatter(fmt)
+        logger.addHandler(stdout_handler)
     return logger
 
 
