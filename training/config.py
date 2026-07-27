@@ -175,6 +175,7 @@ DEFAULT_CONFIG = {
         "alpha": 0.01,
         "actor_lr": 2.5e-5,
         "critic_lr": 2.5e-5,
+        "actor_freeze_transitions": 0,
         "replay_buffer_limit": 3_000_000,
         "replay_full_reinit": True,
         "lidar_aug_enabled": True,

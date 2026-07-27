@@ -385,6 +385,7 @@ class QRSACTrainer:
         self.gamma = gamma
         self.n_step = n_step
         self.alpha = alpha
+        self.actor_frozen = False
         self.smooth_factor = smooth_factor
         self.kappa = kappa
         self.critic_params = tuple(self.critic1.parameters()) + tuple(
@@ -469,8 +470,9 @@ class QRSACTrainer:
             discount,
             self.alpha,
         )
-        policy_loss.backward()
-        self.actor_optimizer.step()
+        if not self.actor_frozen:
+            policy_loss.backward()
+            self.actor_optimizer.step()
 
         for p in self.critic_params:
             p.requires_grad = True
@@ -659,8 +661,9 @@ class QRSACTrainer:
             self.act_dim,
             self.critic_obs_dim,
         )
-        policy_loss.backward()
-        self.actor_optimizer.step()
+        if not self.actor_frozen:
+            policy_loss.backward()
+            self.actor_optimizer.step()
 
         for p in self.critic_params:
             p.requires_grad = True

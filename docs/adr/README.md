@@ -46,3 +46,5 @@ trade-off. Routine work is captured by the PR instead (see
   m/s @ 18M).
 - [0017](0017-tightened-opponent-spawn-gaps.md) — Tighten default opponent spawn
   gap ceiling 80 → 58 m for ~70% presence at 5–6 m/s without near-total coupling.
+- [0020](0020-warm-start-actor-freeze.md) — Critic warm-up via
+  `actor_freeze_transitions` for `--init-ckpt` warm-start runs.

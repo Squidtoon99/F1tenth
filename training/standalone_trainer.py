@@ -727,6 +727,12 @@ def validate_model_architecture(cfg: dict) -> None:
             "model.replay_full_reinit must be a bool, got "
             f"{model.get('replay_full_reinit')!r}"
         )
+    freeze = model.get("actor_freeze_transitions", 0)
+    if not isinstance(freeze, int) or freeze < 0:
+        raise ValueError(
+            "model.actor_freeze_transitions must be a non-negative int, got "
+            f"{freeze!r}"
+        )
     if not isinstance(model.get("lidar_aug_enabled"), bool):
         raise ValueError(
             "model.lidar_aug_enabled must be a bool, got "
@@ -1045,6 +1051,7 @@ def build_config(
     args.batch_size = int(cfg["model"]["batch_size"])
     args.buffer_capacity = int(cfg["model"]["replay_buffer_limit"])
     args.alpha = float(cfg["model"]["alpha"])
+    args.actor_freeze_transitions = int(cfg["model"]["actor_freeze_transitions"])
     args.min_train_transitions = int(cfg["model"]["minimum_train_transitions"])
     args.sampled_rows_per_transition = float(
         cfg["model"]["sampled_replay_rows_per_transition"]
@@ -1637,11 +1644,16 @@ def main():
     lidar_aug_enabled = bool(cfg["model"]["lidar_aug_enabled"])
     lidar_aug_max_shift = int(cfg["model"]["lidar_aug_max_shift_beams"])
     replay_full_reinit_enabled = bool(cfg["model"]["replay_full_reinit"])
+    actor_freeze_transitions = int(cfg["model"]["actor_freeze_transitions"])
+    actor_unfreeze_logged = False
     log.info(
-        "Training protocol: actor_lr=%.3e critic_lr=%.3e "
-        "replay_full_reinit=%s lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
+        "Training protocol: actor_lr=%.3e critic_lr=%.3e alpha=%.4f "
+        "actor_freeze_transitions=%d replay_full_reinit=%s "
+        "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
         trainer.actor_lr,
         trainer.critic_lr,
+        args.alpha,
+        actor_freeze_transitions,
         replay_full_reinit_enabled,
         lidar_aug_enabled,
         lidar_aug_max_shift,
@@ -1813,6 +1825,21 @@ def main():
                     batch["bootstrap_critic_obs"] = normalized_critic[
                         :, boot_lo:boot_hi
                     ]
+                    trainer.actor_frozen = (
+                        env_transitions < actor_freeze_transitions
+                    )
+                    if (
+                        not trainer.actor_frozen
+                        and actor_freeze_transitions > 0
+                        and not actor_unfreeze_logged
+                    ):
+                        actor_unfreeze_logged = True
+                        log.info(
+                            "Actor unfreeze at transitions=%d "
+                            "(actor_freeze_transitions=%d)",
+                            env_transitions,
+                            actor_freeze_transitions,
+                        )
                     if recurrent_actor:
                         losses = trainer.update_from_sequences(batch)
                     else:

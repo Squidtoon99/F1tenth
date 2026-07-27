@@ -584,3 +584,66 @@ a launch-time guard in `standalone_trainer.py` (refuse dirty `training/` tree,
 record `source_git` in run snapshot). Relaunched **`pool600-a002`** on clean
 mainline ladder stack with the calibrated six-entry pool (same weights as
 `pool600m-a001.json`).
+
+## pool600-a002 — 150M gate verdict (2026-07-27)
+
+**Decision point:** 150M transitions (systemd stopped/disabled @150.9M, 23:46 PDT).
+
+**Verdict: FAIL on pace; PASS on opponent presence.** The per-episode opponent pool
+fixed the presence-collapse pathology but bought **zero** speed improvement. This
+is evidence *against* opponent coupling being the primary lever for pace, and it
+weakens the earlier claim that opponent mode explained 50–70% of the fixed-champion
+deficit — consistent with Wave-1 causal screens where the reward stack was
+dominant and opponent mode only a secondary amplifier.
+
+### Trajectory (10M bucket means, nearest 51200-tick log)
+
+| Transitions | speed (m/s) | lifespan (s) | opp_presence |
+| ---: | ---: | ---: | ---: |
+| 10M | 3.10 | 1.35 | 0.624 |
+| 20M | 4.55 | 1.85 | 0.644 |
+| 30M | 3.36 | 2.02 | 0.542 |
+| 40M | 2.99 | 2.07 | 0.498 |
+| 50M | 2.99 | 2.13 | 0.492 |
+| 60M | 3.01 | 2.02 | 0.496 |
+| 70M | 2.82 | 2.22 | 0.492 |
+| 80M | 2.86 | 2.17 | 0.481 |
+| 90M | 2.78 | 2.09 | 0.491 |
+| 100M | 2.74 | 2.19 | 0.483 |
+| 110M | 2.56 | 2.02 | 0.502 |
+| 120M | 2.48 | 2.18 | 0.459 |
+| 130M | 2.42 | 2.20 | 0.463 |
+| 140M | 2.52 | 2.16 | 0.475 |
+| 150M | 2.36 | 2.47 | 0.437 |
+
+**Sustained `opp_presence`:** mean **0.506** over 2885 logged ticks (range
+0.278–0.683); no late collapse. Benchmark `pcplus600` at comparable milestones
+held ~0.38 mean presence with intermittent recovery post-300M.
+
+### Comparison to `pcplus600` phase change (same 150M gate)
+
+| Metric | `pcplus600` @150M | `pool600-a002` @150M |
+| --- | ---: | ---: |
+| speed | 4.43 m/s | 2.36 m/s |
+| lifespan | 153 s (@120M breakout from ~2 s) | 2.47 s (pinned) |
+| opp_presence | ~0.38 | 0.47 sustained |
+
+`pool600-a002` never exited the ~2 s lifespan regime. Speed declined monotonically
+from an early 4.55 m/s peak @20M to 2.36 m/s @150M — the opposite of `pcplus600`'s
+110M→150M acceleration (4.19→4.43 m/s with lifespan 42→153 s).
+
+### What the pool did and did not buy
+
+- **Did buy:** stable opponent coupling. Per-episode weighted sampling across six
+  solo-speed checkpoints (2.23–5.34 m/s) held presence ~0.47–0.50 with non-zero
+  passing reward throughout; the single-frozen-champion decoupling that collapsed
+  `ladder2b-a002` to 8–15% presence did not recur.
+- **Did not buy:** any improvement in pace. Terminal speed 2.36 m/s is *below*
+  fixed-champion `ladder2b-a002` at 355M (4.36 m/s) and far below `pcplus600`
+  milestones. Opponent-presence fix alone is insufficient for the convergence-hold
+  question.
+
+**Next:** warm-start probe (`warmstart-probe-a001`) — init from `pcplus600` 600M
+actor (5.34 m/s solo) to test whether the ~100M from-noise phase is the bottleneck
+or whether the reward stack destroys a known-good policy ([ADR
+0020](../../../docs/adr/0020-warm-start-actor-freeze.md)).

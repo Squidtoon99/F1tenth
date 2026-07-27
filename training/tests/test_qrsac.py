@@ -99,3 +99,17 @@ def test_complete_update_has_scalar_losses_and_finite_gradients():
     assert losses.critic_loss.shape == ()
     assert torch.isfinite(losses.policy_loss)
     assert torch.isfinite(losses.critic_loss)
+
+
+def test_actor_freeze_skips_actor_optimizer_step():
+    torch.manual_seed(0)
+    models = _models()
+    trainer = QRSACTrainer(models, torch.device("cpu"), n_step=7)
+    batch = _asymmetric_batch()
+    before = [p.detach().clone() for p in models.actor.parameters()]
+    trainer.actor_frozen = True
+    losses = trainer.update(batch)
+    after = list(models.actor.parameters())
+    for prev, param in zip(before, after):
+        assert torch.equal(prev, param.detach())
+    assert torch.isfinite(losses.critic_loss)
