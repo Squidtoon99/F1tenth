@@ -9,15 +9,19 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gpu-idle-supervisor"
 LOG="$STATE_DIR/supervisor.log"
 IDLE_COUNT_FILE="$STATE_DIR/idle_count"
 COMPLETED_FILE="$STATE_DIR/completed.txt"
+ABANDONED_FILE="$STATE_DIR/abandoned.txt"
+FAILURES_FILE="$STATE_DIR/failures.json"
+PENDING_VERIFY_FILE="$STATE_DIR/pending_verify.json"
 LOCK_FILE="$STATE_DIR/launch.lock"
-QUEUE="$REPO/tools/gpu_idle_queue.json"
+QUEUE="${GPU_IDLE_QUEUE:-$REPO/tools/gpu_idle_queue.json}"
 PY="$REPO/.venv/bin/python"
 TRAINING="$REPO/training"
 CHAMPION_CKPT="$TRAINING/outputs/runs/642a7a80/checkpoints/policy_199680000.pt"
 
 IDLE_GPU_UTIL_MAX="${IDLE_GPU_UTIL_MAX:-15}"
 IDLE_CHECKS_TO_LAUNCH="${IDLE_CHECKS_TO_LAUNCH:-3}"
-LAUNCH_VERIFY_SEC="${LAUNCH_VERIFY_SEC:-45}"
+LAUNCH_VERIFY_SEC="${LAUNCH_VERIFY_SEC:-60}"
+MAX_LAUNCH_FAILURES="${MAX_LAUNCH_FAILURES:-2}"
 DRY_RUN=0
 SIMULATE_IDLE=0
 
@@ -36,7 +40,8 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$STATE_DIR"
-touch "$COMPLETED_FILE"
+touch "$COMPLETED_FILE" "$ABANDONED_FILE"
+[ -f "$FAILURES_FILE" ] || echo '{}' >"$FAILURES_FILE"
 
 NVIDIA_SMI=""
 
@@ -115,9 +120,146 @@ mark_completed() {
   grep -qx "$run_id" "$COMPLETED_FILE" 2>/dev/null || echo "$run_id" >>"$COMPLETED_FILE"
 }
 
-latest_transitions() {
-  local log_file="$1"
-  grep -oP 'standalone_trainer INFO: ticks=\d+ transitions=\K\d+' "$log_file" 2>/dev/null | tail -1 || true
+is_abandoned() {
+  local job_key="$1"
+  grep -qx "$job_key" "$ABANDONED_FILE" 2>/dev/null && return 0
+  "$PY" - "$QUEUE" "$job_key" <<'PY'
+import json, sys
+from pathlib import Path
+queue_path, job_key = sys.argv[1:3]
+data = json.loads(Path(queue_path).read_text())
+if job_key in data.get("abandoned_run_ids", []):
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+mark_abandoned() {
+  local job_key="$1"
+  grep -qx "$job_key" "$ABANDONED_FILE" 2>/dev/null || echo "$job_key" >>"$ABANDONED_FILE"
+}
+
+failure_count() {
+  local job_key="$1"
+  "$PY" - "$FAILURES_FILE" "$job_key" <<'PY'
+import json, sys
+from pathlib import Path
+path, job_key = sys.argv[1:3]
+data = json.loads(Path(path).read_text())
+print(int(data.get(job_key, 0)))
+PY
+}
+
+record_launch_failure() {
+  local job_key="$1"
+  local run_id="$2"
+  local reason="$3"
+  local count
+  count=$("$PY" - "$FAILURES_FILE" "$job_key" <<'PY'
+import json, sys
+from pathlib import Path
+path, job_key = sys.argv[1:3]
+data = json.loads(Path(path).read_text())
+data[job_key] = int(data.get(job_key, 0)) + 1
+Path(path).write_text(json.dumps(data, indent=2) + "\n")
+print(data[job_key])
+PY
+)
+  log "launch failure job_key=$job_key run_id=$run_id count=$count/$MAX_LAUNCH_FAILURES reason=$reason"
+  if [ "$count" -ge "$MAX_LAUNCH_FAILURES" ]; then
+    mark_abandoned "$job_key"
+    log "abandoned job_key=$job_key after $count launch failures"
+  fi
+}
+
+clear_failure_count() {
+  local job_key="$1"
+  "$PY" - "$FAILURES_FILE" "$job_key" <<'PY'
+import json, sys
+from pathlib import Path
+path, job_key = sys.argv[1:3]
+data = json.loads(Path(path).read_text())
+data.pop(job_key, None)
+Path(path).write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+
+write_pending_verify() {
+  local job_key="$1"
+  local run_id="$2"
+  local unit="$3"
+  local launched_at="$4"
+  local verify_after="$5"
+  "$PY" - "$PENDING_VERIFY_FILE" "$job_key" "$run_id" "$unit" "$launched_at" "$verify_after" <<'PY'
+import json, sys
+path, job_key, run_id, unit, launched_at, verify_after = sys.argv[1:7]
+from pathlib import Path
+Path(path).write_text(json.dumps({
+    "job_key": job_key,
+    "run_id": run_id,
+    "unit": unit,
+    "launched_at": int(launched_at),
+    "verify_after": int(verify_after),
+}, indent=2) + "\n")
+PY
+}
+
+clear_pending_verify() {
+  rm -f "$PENDING_VERIFY_FILE"
+}
+
+launch_unit_active() {
+  local unit="$1"
+  systemctl --user is-active --quiet "$unit" 2>/dev/null
+}
+
+run_id_alive() {
+  local run_id="$1"
+  if [ -n "${STAND_IN_CMD:-}" ]; then
+    pgrep -f "gpu-idle-standin-${run_id}" >/dev/null 2>&1
+    return
+  fi
+  pgrep -f "standalone_trainer.*${run_id}" >/dev/null 2>&1
+}
+
+verify_pending_launch() {
+  if [ ! -f "$PENDING_VERIFY_FILE" ]; then
+    return 0
+  fi
+
+  local pending now job_key run_id unit verify_after remaining
+  pending=$("$PY" - "$PENDING_VERIFY_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+print(Path(sys.argv[1]).read_text())
+PY
+)
+  job_key=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["job_key"])' "$pending")
+  run_id=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["run_id"])' "$pending")
+  unit=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["unit"])' "$pending")
+  verify_after=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["verify_after"])' "$pending")
+  now=$(date +%s)
+
+  if [ "$now" -lt "$verify_after" ]; then
+    remaining=$((verify_after - now))
+    log "awaiting post-exit verify for run_id=$run_id (${remaining}s remaining)"
+    return 2
+  fi
+
+  if launch_unit_active "$unit" || run_id_alive "$run_id"; then
+    clear_failure_count "$job_key"
+    clear_pending_verify
+    log "verified post-exit: run_id=$run_id unit=$unit still active"
+    return 0
+  fi
+
+  record_launch_failure "$job_key" "$run_id" "died before post-exit verify"
+  clear_pending_verify
+  if [ -f "$TRAINING/outputs/runs/$run_id/launch.out" ]; then
+    tail -20 "$TRAINING/outputs/runs/$run_id/launch.out" >>"$LOG" 2>/dev/null || true
+  fi
+  journalctl --user -u "$unit" -n 20 --no-pager >>"$LOG" 2>/dev/null || true
+  return 1
 }
 
 run_finished() {
@@ -156,23 +298,29 @@ validate_config() {
 }
 
 queue_next_job() {
-  "$PY" - "$QUEUE" "$COMPLETED_FILE" "$REPO" <<'PY'
+  "$PY" - "$QUEUE" "$COMPLETED_FILE" "$ABANDONED_FILE" "$REPO" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-queue_path, completed_path, repo = sys.argv[1:4]
+queue_path, completed_path, abandoned_path, repo = sys.argv[1:5]
 completed = {
     line.strip()
     for line in Path(completed_path).read_text().splitlines()
     if line.strip()
 }
+abandoned = {
+    line.strip()
+    for line in Path(abandoned_path).read_text().splitlines()
+    if line.strip()
+}
 data = json.loads(Path(queue_path).read_text())
+abandoned.update(data.get("abandoned_run_ids", []))
 runs_root = Path(repo) / "training/outputs/runs"
 jobs = sorted(data.get("jobs", []), key=lambda j: j.get("priority", 999))
 for job in jobs:
     run_id = job["run_id"]
-    if run_id in completed:
+    if run_id in completed or run_id in abandoned:
         continue
     log_file = runs_root / run_id / "run.log"
     if log_file.exists():
@@ -187,15 +335,21 @@ PY
 }
 
 find_incomplete_2b() {
-  "$PY" - "$QUEUE" "$REPO" <<'PY'
+  "$PY" - "$QUEUE" "$ABANDONED_FILE" "$REPO" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-queue_path, repo = sys.argv[1:3]
+queue_path, abandoned_path, repo = sys.argv[1:4]
+abandoned = {
+    line.strip()
+    for line in Path(abandoned_path).read_text().splitlines()
+    if line.strip()
+}
 data = json.loads(Path(queue_path).read_text())
 recovery = data.get("recovery_2b", {})
+abandoned.update(data.get("abandoned_run_ids", []))
 horizon = int(recovery.get("horizon", 2_000_000_000))
 runs_root = Path(repo) / "training/outputs/runs"
 
@@ -224,6 +378,8 @@ def latest_transitions(log_path: Path) -> int | None:
 
 
 for run_id in recovery.get("run_ids", []):
+    if run_id in abandoned:
+        continue
     run_dir = runs_root / run_id
     log_file = run_dir / "run.log"
     if not log_file.exists():
@@ -253,61 +409,65 @@ PY
 }
 
 launch_trainer() {
-  local run_id="$1"
-  local config="$2"
-  local num_envs="$3"
-  local total_transitions="$4"
-  local init_ckpt="${5:-}"
+  local job_key="$1"
+  local run_id="$2"
+  local config="$3"
+  local num_envs="$4"
+  local total_transitions="$5"
+  local init_ckpt="${6:-}"
 
   local run_dir="$TRAINING/outputs/runs/$run_id"
   mkdir -p "$run_dir"
 
-  local -a cmd=(
-    "$PY" standalone_trainer.py
-    --config "$config"
-    --num-envs "$num_envs"
-    --total-transitions "$total_transitions"
-    --opponent policy
-    --fixed-opponents
-    --device cuda
-    --seed 42
-    --compile
-    --compile-mode reduce-overhead
-    --run-id "$run_id"
-    --wandb
-    --wandb-mode online
-  )
-  if [ -n "$init_ckpt" ] && [ -f "$init_ckpt" ]; then
-    cmd+=(--init-ckpt "$init_ckpt")
+  local unit="f1tenth-trainer-${run_id}-$(date +%s).service"
+  local -a run_cmd=()
+
+  if [ -n "${STAND_IN_CMD:-}" ]; then
+    run_cmd=(bash -lc "exec -a gpu-idle-standin-${run_id} ${STAND_IN_CMD}")
+  else
+    local -a cmd=(
+      "$PY" standalone_trainer.py
+      --config "$config"
+      --num-envs "$num_envs"
+      --total-transitions "$total_transitions"
+      --opponent policy
+      --fixed-opponents
+      --device cuda
+      --seed 42
+      --compile
+      --compile-mode reduce-overhead
+      --run-id "$run_id"
+      --wandb
+      --wandb-mode online
+    )
+    if [ -n "$init_ckpt" ] && [ -f "$init_ckpt" ]; then
+      cmd+=(--init-ckpt "$init_ckpt")
+    fi
+    run_cmd=("${cmd[@]}")
   fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "DRY-RUN would launch run_id=$run_id num_envs=$num_envs transitions=$total_transitions config=$config init_ckpt=${init_ckpt:-none}"
+    log "DRY-RUN would launch run_id=$run_id unit=$unit num_envs=$num_envs transitions=$total_transitions config=$config init_ckpt=${init_ckpt:-none}"
     return 0
   fi
 
-  export WANDB_MODE=online
-  (
-    cd "$TRAINING"
-    setsid nohup "${cmd[@]}" < /dev/null >> "${run_dir}/launch.out" 2>&1 &
-    echo $! > "${run_dir}/supervisor_launch.pid"
-  )
-  log "launched run_id=$run_id pid=$(cat "${run_dir}/supervisor_launch.pid" 2>/dev/null || echo unknown)"
-
-  sleep "$LAUNCH_VERIFY_SEC"
-  if ! pgrep -f "standalone_trainer.*${run_id}" >/dev/null 2>&1; then
-    log "ERROR: run_id=$run_id died within ${LAUNCH_VERIFY_SEC}s — see ${run_dir}/launch.out"
-    tail -20 "${run_dir}/launch.out" >>"$LOG" 2>/dev/null || true
+  if ! systemd-run --user \
+    --unit="$unit" \
+    --description="F1TENTH idle GPU trainer ${run_id}" \
+    --working-directory="$TRAINING" \
+    --collect \
+    --setenv=WANDB_MODE=online \
+    -- "${run_cmd[@]}" >>"${run_dir}/launch.out" 2>&1; then
+    log "ERROR: systemd-run failed for run_id=$run_id"
+    record_launch_failure "$job_key" "$run_id" "systemd-run failed"
     return 1
   fi
-  local trainer_pid gpu_info
-  trainer_pid=$(pgrep -f "standalone_trainer.*${run_id}" | head -1)
-  gpu_info="unknown"
-  if resolve_nvidia_smi; then
-    gpu_info=$("$NVIDIA_SMI" --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null \
-      | awk -F', ' '{printf "%s%% util, %s MiB", $1, $2}')
-  fi
-  log "verified @${LAUNCH_VERIFY_SEC}s: run_id=$run_id trainer_pid=$trainer_pid gpu=$gpu_info"
+
+  local now verify_after
+  now=$(date +%s)
+  verify_after=$((now + LAUNCH_VERIFY_SEC))
+  write_pending_verify "$job_key" "$run_id" "$unit" "$now" "$verify_after"
+  log "launched run_id=$run_id unit=$unit; post-exit verify scheduled in ${LAUNCH_VERIFY_SEC}s"
   return 0
 }
 
@@ -322,6 +482,12 @@ pick_job() {
 }
 
 main() {
+  local verify_rc=0
+  verify_pending_launch || verify_rc=$?
+  if [ "$verify_rc" -eq 2 ]; then
+    exit 0
+  fi
+
   local procs util idle idle_target job gpu_ok=1
   procs=$(trainer_count)
   util=$(gpu_util_pct) || gpu_ok=0
@@ -388,6 +554,12 @@ main() {
     config=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["config"])' "$job")
     num_envs=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["num_envs"])' "$job")
 
+    if is_abandoned "$run_id"; then
+      log "skipping abandoned job $run_id"
+      job=$(queue_next_job 2>/dev/null || true)
+      continue
+    fi
+
     if [ "$kind" = "recovery_2b" ]; then
       total_transitions=$("$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["horizon"])' "$job")
       init_ckpt=$("$PY" -c 'import json,sys; v=json.loads(sys.argv[1]).get("init_ckpt"); print(v or "")' "$job")
@@ -398,7 +570,7 @@ main() {
         log "2B recovery config invalid, skipping"
         exit 1
       fi
-      launch_trainer "$recovery_run_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
+      launch_trainer "$run_id" "$recovery_run_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
       exit 0
     fi
 
@@ -428,7 +600,7 @@ main() {
     fi
 
     log "launching queue job run_id=$launch_id"
-    launch_trainer "$launch_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
+    launch_trainer "$run_id" "$launch_id" "$config" "$num_envs" "$total_transitions" "$init_ckpt"
     exit 0
   done
 
