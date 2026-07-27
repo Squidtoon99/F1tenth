@@ -679,8 +679,8 @@ the first 5M then near-deterministic actor updates hold the init at ~5.33 m/s.
 
 | Run | Delta from baseline | Status |
 | --- | --- | --- |
-| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | in flight |
-| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | queued |
+| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | **done** — 5.331 m/s @35–45M, life 209s @40M |
+| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | in flight |
 | `warmstart-alpha005-a001` | `alpha: 0.005`, freeze 5M | preregistered |
 
 Pass threshold: sustained speed **> 5.35 m/s** with lifespan ≥ 200 s and low OOB.
