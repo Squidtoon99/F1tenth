@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import json
 import pytest
 import torch
 
@@ -18,16 +19,20 @@ if str(ANALYSIS_DIR) not in sys.path:
 from tournament import (  # noqa: E402
     SEED_METRIC_MEAN,
     SEED_METRIC_MIN,
+    _tie_resolver_winner,
+    aggregate_telemetry,
     bracket_config_fingerprint,
     decide_match_winner,
     decide_winner,
     hard_collision_fault,
     infer_seed_metric,
+    load_race_base_config,
     load_seed_rows,
     match_id,
     opponent_race_obs_dim,
     pair_avoid_rematch,
     pin_actions,
+    race_config_sha,
     seed_candidates_from_rows,
     seed_sort_key,
     select_bye,
@@ -158,23 +163,119 @@ def test_seed_candidates_from_rows_orders_and_limits(tmp_path):
 
 
 def test_decide_winner_no_car_a_bias_on_progress_tie():
-    winner, reason = decide_winner(
+    winner, reason, tie_unresolved = decide_winner(
         laps_a=3, laps_b=3, prog_a=2.1, prog_b=2.5,
         crashes_a=0, crashes_b=0, collisions_a=0, collisions_b=0,
-        target_laps=10, capped=True, seed_rank_a=0, seed_rank_b=1,
+        target_laps=10, capped=True,
+        model_a="a.pt", model_b="b.pt",
     )
     assert winner == "b"
     assert reason == "tie_break_progress"
+    assert tie_unresolved is False
 
 
-def test_decide_winner_uses_seed_rank_after_penalties():
-    winner, reason = decide_winner(
+def test_decide_winner_uses_hash_tie_after_penalties():
+    winner, reason, tie_unresolved = decide_winner(
         laps_a=4, laps_b=4, prog_a=1.0, prog_b=1.0,
         crashes_a=2, crashes_b=2, collisions_a=1, collisions_b=1,
-        target_laps=10, capped=True, seed_rank_a=3, seed_rank_b=1,
+        target_laps=10, capped=True,
+        model_a="model_a.pt", model_b="model_b.pt",
+        match_id="r001_m001__model_a__vs__model_b",
+        leg=1,
     )
-    assert winner == "b"
-    assert reason == "tie_break_seed"
+    assert winner in ("a", "b")
+    assert reason == "tie_unresolved"
+    assert tie_unresolved is True
+
+
+def test_tie_resolver_seat_independent():
+    mid = "r001_m001__fast__vs__slow"
+    w_ab, _ = _tie_resolver_winner("fast.pt", "slow.pt", mid)
+    w_ba, _ = _tie_resolver_winner("slow.pt", "fast.pt", mid)
+    assert (w_ab == "a") != (w_ba == "a")
+
+
+def test_decide_match_winner_marks_tie_unresolved():
+    leg1 = _leg(
+        winner="a", laps_a=2, laps_b=2, progress_a=1.0, progress_b=1.0,
+        crashes_a=1, crashes_b=1, collisions_a=1, collisions_b=1, leg=1,
+    )
+    leg2 = _leg(
+        winner="b", laps_a=2, laps_b=2, progress_a=1.0, progress_b=1.0,
+        crashes_a=1, crashes_b=1, collisions_a=1, collisions_b=1, leg=2,
+    )
+    winner, reason, tie_unresolved = decide_match_winner(
+        leg1, leg2,
+        model_a="x.pt", model_b="y.pt", match_id="r001_m001__x__vs__y",
+    )
+    assert winner in ("a", "b")
+    assert reason == "tie_unresolved"
+    assert tie_unresolved is True
+
+
+def test_load_race_base_config_prefers_explicit_path(tmp_path):
+    cfg_path = tmp_path / "canonical.json"
+    cfg_path.write_text(json.dumps({"config": {"env": {"track": "X"}, "obs": {}}}))
+    ckpt = tmp_path / "checkpoints" / "policy_1.pt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b"x")
+    cfg, source = load_race_base_config(ckpt, config=str(cfg_path))
+    assert source == str(cfg_path.resolve())
+    assert cfg["env"]["track"] == "X"
+
+
+def test_load_race_base_config_ref_run_dir(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(
+        json.dumps({"config": {"env": {"track": "Ref"}, "obs": {}}}),
+    )
+    ckpt = run_dir / "checkpoints" / "policy_1.pt"
+    ckpt.parent.mkdir()
+    ckpt.write_bytes(b"x")
+    cfg, source = load_race_base_config(ckpt, config_ref=str(run_dir))
+    assert source == str((run_dir / "config.json").resolve())
+    assert cfg["env"]["track"] == "Ref"
+
+
+def test_race_config_sha_stable():
+    cfg = {"env": {"control_interval": 10, "clip_actions": 1.0}, "obs": {"num_obs": 390}}
+    assert race_config_sha(cfg, "Austin") == race_config_sha(cfg, "Austin")
+    assert race_config_sha(cfg, "Austin") != race_config_sha(cfg, "Monaco")
+
+
+def test_aggregate_telemetry_sums_legs():
+    leg1 = {
+        "steps": 100,
+        "passes_completed": 2,
+        "times_passed": 1,
+        "time_ahead_frac": 0.6,
+        "oob_crashes": 1,
+        "collision_crashes": 0,
+        "collisions_caused": 1,
+        "collisions_received": 0,
+        "respawns": 1,
+        "clean_lap_count": 2,
+        "mean_clean_split_s": 10.0,
+        "telemetry_b": {
+            "passes_completed": 1,
+            "times_passed": 2,
+            "time_ahead_frac": 0.4,
+            "oob_crashes": 0,
+            "collision_crashes": 1,
+            "collisions_caused": 0,
+            "collisions_received": 1,
+            "respawns": 1,
+            "clean_lap_count": 1,
+            "mean_clean_split_s": 11.0,
+        },
+    }
+    leg2 = dict(leg1)
+    agg = aggregate_telemetry(leg1, leg2)
+    assert agg["passes_completed_a"] == 4
+    assert agg["times_passed_b"] == 4
+    assert agg["oob_crashes_a"] == 2
+    assert agg["collision_crashes_b"] == 2
 
 
 def _leg(
@@ -214,7 +315,9 @@ def test_decide_match_winner_more_leg_wins():
     leg1 = _leg(winner="a", leg=1, sim_side_positive_a=True)
     leg2 = _leg(winner="a", laps_a=2, laps_b=1, progress_a=2.0, progress_b=1.5,
                 leg=2, sim_side_positive_a=False)
-    winner, reason = decide_match_winner(leg1, leg2, seed_rank_a=0, seed_rank_b=1)
+    winner, reason, _ = decide_match_winner(
+        leg1, leg2, model_a="a.pt", model_b="b.pt",
+    )
     assert winner == "a"
     assert reason == "legs_won"
 
@@ -224,7 +327,9 @@ def test_decide_match_winner_split_breaks_on_aggregate_laps():
                 leg=1, sim_side_positive_a=True)
     leg2 = _leg(winner="b", laps_a=1, laps_b=2, progress_a=1.0, progress_b=2.5,
                 leg=2, sim_side_positive_a=False)
-    winner, reason = decide_match_winner(leg1, leg2, seed_rank_a=0, seed_rank_b=1)
+    winner, reason, _ = decide_match_winner(
+        leg1, leg2, model_a="a.pt", model_b="b.pt",
+    )
     assert winner == "a"
     assert reason == "tie_break_agg_laps"
 
@@ -234,7 +339,9 @@ def test_decide_match_winner_seat_invariant_under_label_swap():
                 leg=1, sim_side_positive_a=True)
     leg2 = _leg(winner="a", laps_a=2, laps_b=1, progress_a=2.0, progress_b=1.7,
                 leg=2, sim_side_positive_a=False)
-    winner_ab, _ = decide_match_winner(leg1, leg2, seed_rank_a=0, seed_rank_b=1)
+    winner_ab, _, _ = decide_match_winner(
+        leg1, leg2, model_a="a.pt", model_b="b.pt",
+    )
 
     swapped1 = {
         **leg1,
@@ -262,8 +369,8 @@ def test_decide_match_winner_seat_invariant_under_label_swap():
         "collisions_b": leg2["collisions_a"],
         "sim_side_positive_a": not leg2["sim_side_positive_a"],
     }
-    winner_ba, _ = decide_match_winner(
-        swapped1, swapped2, seed_rank_a=1, seed_rank_b=0,
+    winner_ba, _, _ = decide_match_winner(
+        swapped1, swapped2, model_a="b.pt", model_b="a.pt",
     )
     assert winner_ab == "a"
     assert winner_ba == "b"

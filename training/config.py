@@ -179,7 +179,7 @@ DEFAULT_CONFIG = {
         # let the episode continue, so the agent learns to recover from light taps
         # instead of resetting on every minor rub. Set to 0.0 to terminate on any
         # overlap (legacy behavior).
-        "collision_term_speed_mps": 2.0,
+        "collision_term_speed_mps": 4.0,
         # Official 68277-4 body envelope (full length x width, metres), used for
         # oriented-box collision, car-car contact, and evaluation rendering.
         "car_length": 0.568,
@@ -269,5 +269,10 @@ DEFAULT_CONFIG = {
         "pool_size": 10,
         "sample_mode": "mixed",
         "mixed_latest_prob": 0.5,
+        # Immutable incumbent anchor: a fixed policy artifact added to the
+        # opponent population and never evicted from the rolling pool. Sampled
+        # with anchor_prob on each refresh/selection; None / 0.0 disables it.
+        "anchor_ckpt": None,
+        "anchor_prob": 0.0,
     },
 }

@@ -16,7 +16,9 @@ changes applied on the car:
 
 - `particle_filter/particle_filter.py` — track-centerline initialization and
   `/pf/relocalize_on_track` subscription (`track_centerline_csv` parameter,
-  `initialize_on_track()`).
+  `initialize_on_track()`); published frame ids changed from ROS 1-style `/map` /
+  `/laser` to ROS 2 `map` / `laser` so the tf tree connects and
+  `localization_preflight` stops warning on the pose frame.
 
 PF parameters and launch live in `f1tenth_localization` (`pf_params.yaml`).
 
