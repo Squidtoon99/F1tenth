@@ -575,6 +575,9 @@ class QRSACTrainer:
             self._sequence_graph_warmed = True
             return losses
 
+        if self.actor_frozen:
+            return self._update_from_sequences_impl(self._sequence_static_batch)
+
         if self._sequence_graph is None:
             self._sequence_graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(self._sequence_graph):

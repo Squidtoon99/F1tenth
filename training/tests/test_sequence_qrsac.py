@@ -528,3 +528,78 @@ def test_cuda_compiled_sequence_update_smoke():
     assert trainer._sequence_graph is not first_graph
     actor_state = trainer.actor_optimizer.state[next(models.actor.parameters())]
     assert int(actor_state["step"].item()) == 3
+
+
+def _actor_l2_delta(models: Models, before: list[torch.Tensor]) -> float:
+    return sum(
+        (p.detach() - b).pow(2).sum().item()
+        for p, b in zip(models.actor.parameters(), before)
+    )
+
+
+def test_sequence_graph_capture_deferred_while_actor_frozen_cpu():
+    """Graph capture must not run while actor_frozen even after warmup."""
+    torch.manual_seed(41)
+    models = _gru_models(41)
+    trainer = _trainer(models, compile=False)
+    trainer._full_sequence_graph = True
+    trainer.actor_frozen = True
+    batch = _sequence_batch(seed=42)
+    actor_before = [p.detach().clone() for p in models.actor.parameters()]
+
+    trainer.update_from_sequences(batch)
+    assert trainer._sequence_graph_warmed
+    assert trainer._sequence_graph is None
+
+    for _ in range(3):
+        trainer.update_from_sequences(batch)
+
+    assert trainer._sequence_graph is None
+    assert _actor_l2_delta(models, actor_before) == 0.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_sequence_graph_actor_updates_after_unfreeze():
+    """CUDA graph capture after actor unfreeze must include actor optimizer steps."""
+    device = torch.device("cuda")
+    torch.manual_seed(43)
+    models = _gru_models(43)
+    models.actor.to(device)
+    models.critic1.to(device)
+    models.critic2.to(device)
+    models.critic1_target.to(device)
+    models.critic2_target.to(device)
+    trainer = QRSACTrainer(
+        models,
+        device,
+        gamma=0.9896,
+        n_step=N_STEP,
+        alpha=0.01,
+        burn_in=BURN_IN,
+        train_len=TRAIN_LEN,
+        compile=True,
+        compile_mode="reduce-overhead",
+    )
+    batch = {
+        key: value.to(device)
+        for key, value in _sequence_batch(num_seq=2, seed=44).items()
+    }
+    trainer.actor_frozen = True
+    actor_before = [p.detach().clone() for p in models.actor.parameters()]
+
+    trainer.update_from_sequences(batch)
+    assert trainer._sequence_graph_warmed
+    for _ in range(2):
+        trainer.update_from_sequences(batch)
+
+    assert trainer._sequence_graph is None
+    assert _actor_l2_delta(models, actor_before) == 0.0
+
+    trainer.actor_frozen = False
+    trainer.update_from_sequences(batch)
+    assert trainer._sequence_graph is not None
+    assert _actor_l2_delta(models, actor_before) > 0.0
+
+    frozen_snapshot = [p.detach().clone() for p in models.actor.parameters()]
+    trainer.update_from_sequences(batch)
+    assert _actor_l2_delta(models, frozen_snapshot) > 0.0
