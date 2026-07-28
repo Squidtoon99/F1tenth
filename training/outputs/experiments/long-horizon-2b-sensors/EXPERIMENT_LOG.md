@@ -703,3 +703,69 @@ rather than exploration rate.
 deduped (27507→13807 lines); post-fix runs (`alpha010-a001`, `freeze1m-a001`) are
 single-count (6884 / 4085 lines). Root cause was `FileHandler` + systemd stdout
 both writing to `run.log`; fix is file-only logging when `log_file` is set.
+
+## pool600-fast2b-a001 — 2B from-noise fast snapshot pool (2026-07-27)
+
+**Hypothesis:** self-play's benefit was racing a rolling history of the learner's
+own snapshots. A **fixed ladder of fast pcplus600 checkpoints** (excluding slow
+members that taught pace-matching in `pool600-a002`) approximates that
+distribution without self-play machinery.
+
+**Deviation from ADR 0019:** dropped 10M (2.23 m/s) and 51M (4.07 m/s); retained
+only checkpoints faster than the learner will be for most of the run. Weights
+rebalanced toward the 600M anchor (45% vs ADR 0019's 30%).
+
+### Pool composition (validated artifacts, measured solo speeds)
+
+| Checkpoint | solo m/s | weight | sample fraction |
+| ---: | ---: | ---: | ---: |
+| pool-policy_600000512 | 5.34 | 5 | 45.5% |
+| pool-policy_512000000 | 5.20 | 2 | 18.2% |
+| pool-policy_409600000 | 5.02 | 2 | 18.2% |
+| pool-policy_256000000 | 4.27 | 2 | 18.2% |
+
+Total weight 11. All four pass `validate_sensor_policy_artifact` (backfilled
+`steering_action_mode=delta` copies under `champions/`).
+
+### Run spec
+
+| Knob | Value |
+| --- | --- |
+| Run id | `pool600-fast2b-a001` |
+| Init | **from noise** (no `--init-ckpt`; `replay_full_reinit` default true) |
+| Opponent mix | 100% policy pool (`scripted_weight=0`, `policy_weight=1`) |
+| Spawn gaps | **3–80 m** (pcplus600 distribution; overrides ADR 0017 default) |
+| Boundary/reward | `recoverable_full_car_out` / `continuous_quadratic`, 0.1296 / 4.0 / 0.1296 |
+| Env/batch/replay | 1024 / 1024 / 3M |
+| `steering_history` | 5.0 |
+| Horizon | 2B, export every 10.24M, seed 42 |
+| Steering | delta, 10 Hz |
+
+**pcplus600 opponent note:** resolved `config.json` shows `opponent_strategy:
+policy` (100% policy rows). The 10% scripted arm in its patch was unused; this
+run omits scripted entirely.
+
+### Decision gates (kill / continue)
+
+Judge against `pcplus600` at matched milestones:
+
+| Gate | Criterion | Action |
+| ---: | --- | --- |
+| **~120M phase change** | pcplus600 broke out of ~2 s lifespan @110M (42 s) and hit 153 s @120M at 4.19 m/s | If still pinned in ~2 s lifespan regime at **150M**, **stop** — repeats `pool600-a002` |
+| 150M | ≥ **4.43 m/s** | continue |
+| 350M | ≥ **4.80 m/s** | continue |
+| 600M | ≥ **5.05 m/s**, lifespan ≥ **250 s** | continue |
+| 2B expectation | 5.4–5.7 m/s honest extrapolation; 6.0 m/s requires re-acceleration beyond pcplus600 |
+
+**Kill criterion (plain):** if mean speed is still in the ~2 s lifespan / ~2–3 m/s
+regime at 150M transitions, stop the run rather than burn ~16 more GPU-hours.
+
+### Infrastructure
+
+- Systemd: `f1tenth-pool600-fast2b-a001.service` (sole enabled f1tenth unit)
+- GPU idle queue: `recovery_2b` target in `tools/gpu_idle_queue.json`
+- Prior enabled unit `f1tenth-warmstart-alpha010-nofreeze-a001.service` disabled
+
+### Launch record
+
+(Filled after launch with measured throughput and early log lines.)
