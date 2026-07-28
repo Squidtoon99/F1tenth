@@ -6,8 +6,8 @@
     "opponent_spawn_gap_min_m": 3.0,
     "opponent_spawn_gap_max_m": 80.0,
     "opponent_mix": {
-      "scripted_weight": 0.0,
-      "policy_weight": 1.0,
+      "scripted_weight": 0.1,
+      "policy_weight": 0.9,
       "policy_speed_cap_prob": 0.5,
       "policy_speed_cap_range": [5.0, 8.0]
     },

@@ -255,8 +255,15 @@ class SelfPlayManager:
         transitions: int,
     ) -> None:
         self.pool.clear()
-        self._last_snapshot_transitions = transitions
-        self._last_refresh_transitions = transitions
+        self.opponent_transitions = None
+        self._last_snapshot_transitions = int(transitions)
+        self._last_refresh_transitions = int(transitions)
         snap = self.make_snapshot(models, normalizer, transitions)
         self.seed_snapshot(snap)
         self.bootstrap_opponent(env)
+        self.log.info(
+            "Self-play pool reset and reseeding after replay-full reinit "
+            "(transitions=%d pool_size=%d)",
+            transitions,
+            len(self.pool),
+        )

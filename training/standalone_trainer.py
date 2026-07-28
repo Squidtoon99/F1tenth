@@ -662,27 +662,35 @@ def maybe_replay_full_reinit(
     trainer.reinitialize_networks()
     if learner_hidden is not None:
         learner_hidden.zero_()
-    if env is not None and champion_mgr is not None:
-        champion_mgr.bootstrap_opponent(env, resample=True)
     if env is not None and selfplay_mgr is not None:
         selfplay_mgr.reseed_after_reinit(
             models, actor_normalizer, env, int(env_transitions)
         )
+    if env is not None and champion_mgr is not None:
+        champion_mgr.bootstrap_opponent(env, resample=True)
     protocol_state["replay_full_reinit_done"] = True
     protocol_state["replay_full_reinit_count"] = (
         int(protocol_state.get("replay_full_reinit_count", 0)) + 1
     )
     protocol_state["replay_full_reinit_transitions"] = int(env_transitions)
     logger = log or logging.getLogger(LOGGER_NAME)
+    if selfplay_mgr is not None:
+        gru_detail = (
+            "live learner/opponent GRU cleared; self-play pool reseeding"
+        )
+    elif champion_mgr is not None:
+        gru_detail = "live GRU cleared; fixed champion unchanged"
+    else:
+        gru_detail = "live GRU cleared"
     logger.info(
         "Replay-full network reinitialization (Lee et al. 2025): "
         "actor/critics/targets/Adam reset at transitions=%d buffer=%d/%d "
-        "reinit_count=%d; replay + obs normalizers retained; live GRU cleared; "
-        "fixed champion unchanged",
+        "reinit_count=%d; replay + obs normalizers retained; %s",
         env_transitions,
         int(buffer.size),
         int(buffer.capacity),
         protocol_state["replay_full_reinit_count"],
+        gru_detail,
     )
     if wandb_run is not None:
         wandb_run.log(
