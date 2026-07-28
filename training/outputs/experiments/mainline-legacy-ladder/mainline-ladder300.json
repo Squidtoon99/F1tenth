@@ -1,0 +1,37 @@
+{
+  "env": {
+    "track": "Austin",
+    "reset_stationary_probability": 0.3,
+    "opponent_mix": {
+      "scripted_weight": 0.1,
+      "policy_weight": 0.9,
+      "policy_speed_cap_prob": 0.5,
+      "policy_speed_cap_range": [5.0, 8.0]
+    },
+    "boundary_mode": "recoverable_full_car_out"
+  },
+  "reward": {
+    "wall_contact_coefficient": 0.1296,
+    "wall_cost_mode": "continuous_quadratic",
+    "boundary_contact_coefficient": 4.0,
+    "oob_impact_coefficient": 0.1296,
+    "reward_scales": {
+      "steering_history": 5.0
+    }
+  },
+  "model": {
+    "batch_size": 1024,
+    "replay_buffer_limit": 3000000
+  },
+  "schedule": {
+    "total_transitions": 300000000
+  },
+  "fixed_opponents": {
+    "entries": [
+      {
+        "checkpoint": "/home/shadeform/F1tenth/training/outputs/runs/642a7a80/checkpoints/policy_199680000.pt",
+        "weight": 1.0
+      }
+    ]
+  }
+}

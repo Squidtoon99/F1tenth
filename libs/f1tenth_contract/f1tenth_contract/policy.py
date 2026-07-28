@@ -7,7 +7,7 @@ from f1tenth_contract.action import CONTROL_HZ
 from f1tenth_contract.observation import NUM_ACTIONS, NUM_OBS
 
 POLICY_FORMAT_VERSION = 2
-OBS_PREPROCESSING_VERSION = 1
+OBS_PREPROCESSING_VERSION = 2
 
 
 def _shape(value: Any) -> tuple[int, ...]:

@@ -20,7 +20,12 @@ from f1tenth_sim.sim_warp import WarpVehicleSim
 
 
 def _sim(mu=0.9, max_speed=8.0, **over):
-    cfg = {"tire_friction": mu, "max_speed": max_speed}
+    # Absolute mode matches kinematic closed-form expectations (steer = a * max_steer).
+    cfg = {
+        "tire_friction": mu,
+        "max_speed": max_speed,
+        "steering_action_mode": "absolute",
+    }
     cfg.update(over)
     p = VehicleParams.from_config(cfg)
     return (

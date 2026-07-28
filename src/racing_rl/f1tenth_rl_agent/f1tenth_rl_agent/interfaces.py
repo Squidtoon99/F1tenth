@@ -33,7 +33,7 @@ FRAME_BASE_LINK = "ego_racecar/base_link"
 
 # --- Dimensions ---------------------------------------------------------------
 NUM_OBS_BASE = 384
-OPPONENT_OBS_DIM = 6
+OPPONENT_OBS_DIM = 8
 NUM_OBS = NUM_OBS_BASE + OPPONENT_OBS_DIM
 NUM_OBS_1V1 = NUM_OBS
 NUM_ACTIONS = 2
@@ -52,7 +52,7 @@ OBS_CONTACT_FLAG = (11, 12)
 OBS_FUTURE_POINTS = (12, 372)
 OBS_TYRE_SLIP = (372, 380)
 OBS_TYRE_LOAD = (380, 384)
-OBS_OPPONENT = (384, 390)
+OBS_OPPONENT = (384, 392)
 
 # Match DEFAULT_CONFIG["obs"]["obs_scales"] and clip_obs in config.py. The trainer
 # now standardizes observations with a running ObsNormalizer, so the env-side fixed
@@ -100,12 +100,14 @@ OBS_DEBUG_OPP_REL_X = 15
 OBS_DEBUG_OPP_REL_Y = 16
 OBS_DEBUG_OPP_REL_VX = 17
 OBS_DEBUG_OPP_REL_VY = 18
-OBS_DEBUG_OPP_GAP_NORM = 19
-OBS_DEBUG_OPP_LATERAL = 20
-OBS_DEBUG_OPP_PRESENT = 21
-OBS_DEBUG_MAX_SLIP_RATIO = 22
-OBS_DEBUG_MAX_SLIP_ANGLE = 23
-OBS_DEBUG_LEN = 24
+OBS_DEBUG_OPP_REL_AX = 19
+OBS_DEBUG_OPP_REL_AY = 20
+OBS_DEBUG_OPP_GAP_NORM = 21
+OBS_DEBUG_OPP_LATERAL = 22
+OBS_DEBUG_OPP_PRESENT = 23
+OBS_DEBUG_MAX_SLIP_RATIO = 24
+OBS_DEBUG_MAX_SLIP_ANGLE = 25
+OBS_DEBUG_LEN = 26
 
 # --- Policy / vehicle constants (DEFAULT_CONFIG in config.py) -----------------
 MAX_SPEED = 15.0
@@ -118,7 +120,7 @@ FUTURE_TRACK_MIN_LOOKAHEAD_M = 5.0
 FUTURE_TRACK_WIDTH = 2.2  # deprecated: corridor edges use CSV w_tr_*_m
 HIDDEN_LAYERS = [512, 512, 512]
 ACT_LIMIT = 1.0
-CONTROL_HZ = 20.0
+CONTROL_HZ = 10.0
 POLICY_FORMAT_VERSION = 2
 LONGITUDINAL_MODE = "force"
 

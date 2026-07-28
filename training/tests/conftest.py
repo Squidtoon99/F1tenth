@@ -72,9 +72,9 @@ def real_modules():
 def obs_cfg() -> dict[str, Any]:
     """Mirror of config.py DEFAULT_CONFIG['obs'] (clip disabled for clean asserts)."""
     return {
-        "num_obs": 390,
+        "num_obs": 392,
         "enable_opponent_obs": True,
-        "opponent_obs_dim": 6,
+        "opponent_obs_dim": 8,
         "obs_scales": {"lin_vel": 1.0, "ang_vel": 1.0, "lin_acc": 1.0},
         "clip_obs": 0.0,
         "norm_clip": 10.0,

@@ -84,7 +84,7 @@ Train policies with the separate batched Warp simulator:
 
 ```bash
 .venv/bin/python training/standalone_trainer.py \
-  --device cuda --precision 32 --num-envs 4096
+  --device cuda --num-envs 1024
 ```
 
 macOS supports small Warp CPU tests, not MPS training. See

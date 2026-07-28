@@ -20,8 +20,8 @@ from dataclasses import dataclass
 
 # --- Dimensions ---------------------------------------------------------------
 NUM_OBS_BASE = 384
-OPPONENT_OBS_DIM = 6
-NUM_OBS = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 390
+OPPONENT_OBS_DIM = 8
+NUM_OBS = NUM_OBS_BASE + OPPONENT_OBS_DIM  # 392
 NUM_OBS_1V1 = NUM_OBS
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4]
@@ -40,7 +40,7 @@ OBS_FUTURE_POINTS = (12, 372)
 OBS_TYRE_SLIP = (372, 380)
 OBS_TYRE_LOAD = (380, 384)
 # Opponent-relative block, appended only when opponent observations are enabled.
-OBS_OPPONENT = (384, 390)
+OBS_OPPONENT = (384, 392)
 
 # Ordered (name, start, stop) table for the base observation. Kept in field order
 # and contiguous from 0 to NUM_OBS_BASE.
@@ -58,7 +58,7 @@ OBS_FIELDS_BASE: tuple[tuple[str, int, int], ...] = (
     ("tyre_load", *OBS_TYRE_LOAD),
 )
 
-# The opponent block, appended for the 1v1 (390-dim) observation.
+# The opponent block, appended for the 1v1 (392-dim) observation.
 OBS_FIELDS_OPPONENT: tuple[tuple[str, int, int], ...] = (
     ("opponent", *OBS_OPPONENT),
 )

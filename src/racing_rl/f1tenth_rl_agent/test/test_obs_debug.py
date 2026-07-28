@@ -94,10 +94,14 @@ def test_decode_scalars_margins_wired_from_future():
 def test_opponent_present_decoded():
     obs = _make_obs(with_opponent=True)
     start, _ = ifc.OBS_OPPONENT
-    obs[start:start + 6] = [2.0, 0.5, -1.0, 0.2, 0.3, -0.1]
+    obs[start:start + 8] = [2.0, 0.5, -1.0, 0.2, 0.4, -0.3, 0.3, -0.1]
     s = viz.decode_scalars(obs, NUM_POINTS)
     assert s[ifc.OBS_DEBUG_OPP_REL_X] == np.float32(2.0)
     assert s[ifc.OBS_DEBUG_OPP_REL_Y] == np.float32(0.5)
+    assert s[ifc.OBS_DEBUG_OPP_REL_AX] == np.float32(0.4)
+    assert s[ifc.OBS_DEBUG_OPP_REL_AY] == np.float32(-0.3)
+    assert s[ifc.OBS_DEBUG_OPP_GAP_NORM] == np.float32(0.3)
+    assert s[ifc.OBS_DEBUG_OPP_LATERAL] == np.float32(-0.1)
     assert s[ifc.OBS_DEBUG_OPP_PRESENT] == np.float32(1.0)
 
 

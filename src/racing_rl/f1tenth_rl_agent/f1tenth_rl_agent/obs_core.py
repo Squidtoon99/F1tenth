@@ -339,13 +339,16 @@ def obs_opponent(
     other_agent: dict[str, torch.Tensor],
     obs_cfg: dict[str, Any],
 ) -> torch.Tensor:
-    """Port of ``f1tenth_env.observations.obs_opponent`` (6-dim opponent block)."""
+    """Port of ``f1tenth_env.observations.obs_opponent`` (8-dim opponent block)."""
     pos_s = self_agent["pos_xy"]
     yaw_s = self_agent["yaw"].reshape(-1)
     vel_s = self_agent["vel_xy"]
+    acc_s = self_agent["acc_xy"]
 
     pos_o = other_agent["pos_xy"]
+    yaw_o = other_agent["yaw"].reshape(-1)
     vel_o = other_agent["vel_xy"]
+    acc_o = other_agent["acc_xy"]
     s_o = other_agent["s"].reshape(-1)
     ey_o = other_agent["ey"].reshape(-1)
 
@@ -357,6 +360,8 @@ def obs_opponent(
 
     cos_y = torch.cos(yaw_s)
     sin_y = torch.sin(yaw_s)
+    cos_o = torch.cos(yaw_o)
+    sin_o = torch.sin(yaw_o)
 
     d = pos_o - pos_s
     rel_x = cos_y * d[:, 0] + sin_y * d[:, 1]
@@ -366,6 +371,15 @@ def obs_opponent(
     rel_vx = cos_y * dv[:, 0] + sin_y * dv[:, 1]
     rel_vy = -sin_y * dv[:, 0] + cos_y * dv[:, 1]
 
+    ax_w_s = cos_y * acc_s[:, 0] - sin_y * acc_s[:, 1]
+    ay_w_s = sin_y * acc_s[:, 0] + cos_y * acc_s[:, 1]
+    ax_w_o = cos_o * acc_o[:, 0] - sin_o * acc_o[:, 1]
+    ay_w_o = sin_o * acc_o[:, 0] + cos_o * acc_o[:, 1]
+    dax = ax_w_o - ax_w_s
+    day = ay_w_o - ay_w_s
+    rel_ax = cos_y * dax + sin_y * day
+    rel_ay = -sin_y * dax + cos_y * day
+
     gap = s_o - s_s
     half = 0.5 * track_len
     gap = torch.where(gap > half, gap - track_len, gap)
@@ -373,7 +387,7 @@ def obs_opponent(
     gap_norm = gap / half.clamp_min(1e-6)
 
     return torch.stack(
-        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o], dim=-1
+        [rel_x, rel_y, rel_vx, rel_vy, rel_ax, rel_ay, gap_norm, ey_o], dim=-1
     )
 
 
@@ -396,7 +410,7 @@ class ObservationBuilder:
         self.device = device or torch.device("cpu")
         self.centerline = np.asarray(centerline, dtype=np.float32)
         self.obs_cfg = obs_cfg or {}
-        self.num_obs = int(self.obs_cfg.get("num_obs", 390))
+        self.num_obs = int(self.obs_cfg.get("num_obs", 392))
         self.base_num_obs = int(self.obs_cfg.get("base_num_obs", self.num_obs))
         self.w_tr_left = torch.as_tensor(w_tr_left, device=self.device, dtype=TC_FLOAT)
         self.w_tr_right = torch.as_tensor(w_tr_right, device=self.device, dtype=TC_FLOAT)
@@ -460,7 +474,7 @@ class ObservationBuilder:
             dim=-1,
         )
 
-        opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 6))
+        opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 8))
         if opponent_block is None or not bool(
             self.obs_cfg.get("enable_opponent_obs", True)
         ):
@@ -486,24 +500,38 @@ class ObservationBuilder:
         ego_vel_world: torch.Tensor,
         opp_pos: torch.Tensor,
         opp_vel_world: torch.Tensor,
+        ego_acc_body: torch.Tensor | None = None,
+        opp_yaw: torch.Tensor | None = None,
+        opp_acc_body: torch.Tensor | None = None,
     ) -> torch.Tensor:
         ego_frenet = frenet_projection(ego_pos, self.geom, self.device)
         ego_boundary = build_boundary_state(ego_frenet, self.w_tr_left, self.w_tr_right)
         opp_frenet = frenet_projection(opp_pos, self.geom, self.device)
         opp_boundary = build_boundary_state(opp_frenet, self.w_tr_left, self.w_tr_right)
 
+        batch = ego_pos.shape[0]
+        if ego_acc_body is None:
+            ego_acc_body = ego_pos.new_zeros((batch, 2))
+        if opp_yaw is None:
+            opp_yaw = ego_yaw
+        if opp_acc_body is None:
+            opp_acc_body = ego_pos.new_zeros((batch, 2))
+
         track_len = ego_frenet["L"]
         self_agent = {
             "pos_xy": ego_pos[:, :2],
             "yaw": ego_yaw.reshape(-1),
             "vel_xy": ego_vel_world[:, :2],
+            "acc_xy": ego_acc_body[:, :2],
             "s": ego_frenet["s"],
             "ey": ego_boundary["ey"],
             "L": track_len,
         }
         other_agent = {
             "pos_xy": opp_pos[:, :2],
+            "yaw": opp_yaw.reshape(-1),
             "vel_xy": opp_vel_world[:, :2],
+            "acc_xy": opp_acc_body[:, :2],
             "s": opp_frenet["s"],
             "ey": opp_boundary["ey"],
             "L": track_len,

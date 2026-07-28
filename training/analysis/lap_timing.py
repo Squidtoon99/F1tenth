@@ -330,18 +330,18 @@ def evaluate_checkpoint(
     import numpy as np
     import torch
 
-    from evaluation import deterministic_rollout
+    from evaluation import deterministic_rollout, load_sensor_actor_bundle
     from f1tenth_env import F1tenthEnv
     from f1tenth_env import runtime as rt
     from standalone_trainer import (
-        ObsNormalizer,
-        build_models,
         episode_length_for_track,
+        migrate_legacy_model_config,
         select_device,
     )
 
     ckpt_path = Path(checkpoint).resolve()
     cfg, config_source = load_lap_timing_config(ckpt_path, config=config)
+    migrate_legacy_model_config(cfg)
 
     cfg["env"]["track"] = track
     cfg["env"]["opponent_strategy"] = None
@@ -381,18 +381,17 @@ def evaluate_checkpoint(
     )
     control_dt = float(env.control_dt)
 
-    models, _ = build_models(cfg, device)
-    normalizer = ObsNormalizer(
-        obs_dim=cfg["obs"]["num_obs"],
-        device=device,
-        eps=float(cfg["obs"].get("norm_eps", 1e-8)),
-        clip=float(cfg["obs"].get("norm_clip", 10.0)),
+    actor, normalizer, _architecture, _payload = load_sensor_actor_bundle(
+        ckpt_path,
+        device,
+        expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
+        expected_action_dim=int(cfg["env"]["num_actions"]),
+        expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
+        norm_eps=float(cfg["obs"].get("norm_eps", 1e-8)),
+        norm_clip=float(cfg["obs"].get("norm_clip", 10.0)),
+        expected_critic_obs_dim=int(cfg["obs"]["num_obs"]),
+        require_obs_norm=True,
     )
-    payload = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-    models.actor.load_state_dict(payload["actor"])
-    if "obs_norm" in payload:
-        normalizer.load_state_dict(payload["obs_norm"])
-    models.actor.eval()
 
     prev_lap = np.zeros(num_envs, dtype=np.int64)
     last_cross_step = np.full(num_envs, -1, dtype=np.int64)
@@ -431,13 +430,14 @@ def evaluate_checkpoint(
 
     deterministic_rollout(
         env,
-        models.actor,
+        actor,
         normalizer.normalize,
         num_steps=steps,
         control_interval=control_interval,
         clip_actions=clip_actions,
         seed=seed,
         callback=on_step,
+        with_sensors=True,
     )
     env.close()
 

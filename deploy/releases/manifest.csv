@@ -1,5 +1,7 @@
 # Release manifest: maps a source commit to the exact image snapshot and the car(s)
 # it was deployed to. Append one row per snapshot/deploy for traceability.
 git_sha,image_sha256,car_id,deployed_at,notes
-# example (remove once real entries exist):
-# a1b2c3d,sha256:0000...,car01,2026-07-07,initial shakedown
+b8218ce,sha256:6b6dbc4a89a71fa3258149505a280e0863dd3d2e0fb1abd984de17dab7bde6f9,car01,2026-07-18T21:46:55Z,sensor_policy context=8b295f7e55201f55 checkpoint=783457307ea12702 dry_run=passed
+b8218ce,sha256:7432fcd71fc16c7e79839c653baa9dfd2cbbb1715811e66233265d80577ba183,car01,2026-07-18T22:06:00Z,sensor_policy context=7be57a6466e9f30e deadman_ordering=passed stage1=passed stage2=stopped_vesc_framing_servo_subscription_cpu_deadlines
+b8218ce,sha256:e98ab89b3b31a0ba23692a0a0cadde102b94c7f27249205e0c05f62d44e014be,car01,2026-07-18T22:47:00Z,sensor_policy context=fa999e403cb11f25 checkpoint=783457307ea12702 cuda_dry_run=passed real_outputs=stopped_jetson_reboot
+587cd1d,sha256:b0acdbf1fee49e5baea35b0df7bf95aabdf116bee7dfb70fe3724fb5be01bde5,car01,2026-07-19T02:30:00Z,sensor_policy context=11d8fe740f6f direct_driver_launch stage1=passed drivers_only=passed cuda_dry_run=passed enable_actuator=false

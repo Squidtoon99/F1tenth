@@ -24,7 +24,7 @@ MAX_STEER = 0.33  # radians at |steer| == 1.0 (real servo hard-clamp; matches tr
 CLIP_ACTIONS = 1.0
 ACT_LIMIT = 1.0
 # Synchronized training + deploy control rate (policy decision period).
-CONTROL_HZ = 20.0
+CONTROL_HZ = 10.0
 # Checkpoint format for current/force longitudinal semantics. Speed-trained
 # checkpoints (policy_format_version < 2) must be rejected at deploy.
 POLICY_FORMAT_VERSION = 2

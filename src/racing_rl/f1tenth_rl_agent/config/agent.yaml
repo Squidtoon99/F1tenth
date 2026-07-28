@@ -26,7 +26,7 @@ policy_inference:
     state_dict_key: "actor"
     device: "cpu"
     deterministic: true
-    # 390-dim 1v1 layout with the opponent block zeroed for solo racing.
+    # 392-dim 1v1 layout with the opponent block zeroed for solo racing.
     enable_opponent_obs: true
     # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads
     # and only reachable with require_checkpoint:=false).

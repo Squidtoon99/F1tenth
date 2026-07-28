@@ -1,0 +1,7 @@
+[Unit]
+Description=Launch queued F1TENTH training when the local GPU is idle
+
+[Service]
+Type=oneshot
+KillMode=process
+ExecStart=/home/ubuntu/projects/F1tenth/tools/gpu_idle_supervisor.sh

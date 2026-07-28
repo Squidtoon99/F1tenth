@@ -9,7 +9,10 @@ Each `carNN/` directory contains:
 - `car.yaml` — the car's identity. Authored on the car; **never overwritten** by a
   deployed image or a config push.
 - `params.yaml` — chassis calibration (VESC gains, servo offsets, wheelbase),
-  safety limits, mux/joy tuning, and RL observation parameters.
+  safety limits, mux/joy tuning, RL observation parameters, and (optional)
+  `sensor_policy` node parameters for the no-localization experiment. The
+  ackermann `vesc_actuator` block remains the legacy race path; sensor-policy
+  first-run current limits are launch args (see `docs/deployment.md`).
 - `maps/` — the occupancy grid + centerline/raceline for the current track:
   - `map.yaml` + `map.pgm` — occupancy grid for map_server / particle filter
   - `centerline.csv` — centerline for PF track-spread relocalize
@@ -20,8 +23,8 @@ To add a car, copy `car01/` to `carNN/` and edit the values.
 ## RL checkpoint note
 
 The on-car policy trained under the legacy 387-dim layout (380 base + 7-dim opponent
-with presence flag) is **not** compatible with the monorepo's 390-dim contract
-(384 base + 6-dim zero-sentinel opponent block). Retrain under the monorepo
+with presence flag) is **not** compatible with the monorepo's 392-dim contract
+(384 base + 8-dim zero-sentinel opponent block). Retrain under the monorepo
 contract before deploying RL from this repository.
 
 ## Vehicle geometry provenance

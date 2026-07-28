@@ -25,11 +25,11 @@ public:
   {
     max_steer_ = declare_parameter<double>("max_steer", 0.33);
     clip_actions_ = declare_parameter<double>("clip_actions", 1.0);
-    // ~3 control cycles at 20 Hz.
-    watchdog_timeout_s_ = declare_parameter<double>("watchdog_timeout_s", 0.15);
+    // ~3 control cycles at 10 Hz.
+    watchdog_timeout_s_ = declare_parameter<double>("watchdog_timeout_s", 0.30);
     enable_output_filter_ = declare_parameter<bool>("enable_output_filter", true);
     t_delta_ = declare_parameter<double>("t_delta", 0.1);
-    control_dt_ = declare_parameter<double>("control_dt", 0.05);
+    control_dt_ = declare_parameter<double>("control_dt", 0.10);
     steer_lag_alpha_ = lagAlpha(control_dt_, t_delta_);
     const std::string action_topic =
       declare_parameter<std::string>("action_topic", "/rl/action");
@@ -103,11 +103,11 @@ private:
 
   double max_steer_ = 0.33;
   double clip_actions_ = 1.0;
-  double watchdog_timeout_s_ = 0.15;
+  double watchdog_timeout_s_ = 0.30;
   std::string frame_id_ = "base_link";
   bool enable_output_filter_ = true;
   double t_delta_ = 0.1;
-  double control_dt_ = 0.05;
+  double control_dt_ = 0.10;
   double steer_lag_alpha_ = 0.5;
   double filtered_steer_ = 0.0;
 

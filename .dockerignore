@@ -10,5 +10,7 @@ log
 deploy/snapshots
 deploy/releases
 docs
+**/test
+**/tests
 **/__pycache__
 **/*.pyc

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Gym validation: compare deployed obs[384:390] to ground-truth opponent block.
+"""Gym validation: compare deployed obs[384:392] to ground-truth opponent block.
 
 Run inside the f1tenth_gym_ros container with the 1v1 sim bridge and agent stack
 (vehicle_obs with enable_opponent_obs) already up. Computes the expected
-6-dim opponent block from /ego_racecar/opp_odom (gym ground truth) and compares
-it to /rl/observation[384:390].
+8-dim opponent block from /ego_racecar/opp_odom (gym ground truth) and compares
+it to /rl/observation[384:392].
 
 Exit 0 when max channel error stays within tolerance for enough samples; non-zero
 otherwise. No mocks — requires live ROS topics from the gym sim.
@@ -50,6 +50,7 @@ class OpponentObsValidator(Node):
         duration_s: float,
         pos_tol: float,
         vel_tol: float,
+        acc_tol: float,
         gap_tol: float,
         ey_tol: float,
         min_present_frac: float,
@@ -65,14 +66,18 @@ class OpponentObsValidator(Node):
         self.duration_s = duration_s
         self.pos_tol = pos_tol
         self.vel_tol = vel_tol
+        self.acc_tol = acc_tol
         self.gap_tol = gap_tol
         self.ey_tol = ey_tol
         self.min_present_frac = min_present_frac
         self.min_samples = min_samples
         self.opp_reference_topic = opp_reference_topic
+        self._dt = 1.0 / float(ifc.CONTROL_HZ)
 
         self._ego: Odometry | None = None
         self._ref_opp: Odometry | None = None
+        self._prev_ego_body_vel: tuple[float, float] | None = None
+        self._prev_opp_world_vel: tuple[float, float] | None = None
         self.errors: list[np.ndarray] = []
         self.present_flags: list[float] = []
 
@@ -105,21 +110,55 @@ class OpponentObsValidator(Node):
             [[opp.pose.pose.position.x, opp.pose.pose.position.y, 0.0]],
             dtype=torch.float32,
         )
-        ego_yaw = torch.tensor([_yaw_from_odom(ego)], dtype=torch.float32)
+        ego_yaw_f = _yaw_from_odom(ego)
+        opp_yaw_f = _yaw_from_odom(opp)
+        ego_yaw = torch.tensor([ego_yaw_f], dtype=torch.float32)
+        opp_yaw = torch.tensor([opp_yaw_f], dtype=torch.float32)
         evx, evy = _vel_xy(ego)
         ovx, ovy = _vel_xy(opp)
-        ego_vel = torch.tensor([[evx, evy, 0.0]], dtype=torch.float32)
-        opp_vel = torch.tensor([[ovx, ovy, 0.0]], dtype=torch.float32)
+        # Gym ego twist is body-frame (matches vehicle_obs body finite-diff).
+        ego_ax = ego_ay = 0.0
+        if self._prev_ego_body_vel is not None:
+            pvx, pvy = self._prev_ego_body_vel
+            ego_ax = (evx - pvx) / self._dt
+            ego_ay = (evy - pvy) / self._dt
+        self._prev_ego_body_vel = (evx, evy)
+        # Opponent twist is world-frame; rotate finite-diff accel into body.
+        opp_ax = opp_ay = 0.0
+        if self._prev_opp_world_vel is not None:
+            pvx, pvy = self._prev_opp_world_vel
+            ax_w = (ovx - pvx) / self._dt
+            ay_w = (ovy - pvy) / self._dt
+            cos_o = math.cos(opp_yaw_f)
+            sin_o = math.sin(opp_yaw_f)
+            opp_ax = cos_o * ax_w + sin_o * ay_w
+            opp_ay = -sin_o * ax_w + cos_o * ay_w
+        self._prev_opp_world_vel = (ovx, ovy)
+
+        cos_e = math.cos(ego_yaw_f)
+        sin_e = math.sin(ego_yaw_f)
+        ego_vel_world = torch.tensor(
+            [[cos_e * evx - sin_e * evy, sin_e * evx + cos_e * evy]],
+            dtype=torch.float32,
+        )
+        opp_vel = torch.tensor([[ovx, ovy]], dtype=torch.float32)
 
         gt_block = (
             self.builder.build_opponent_block(
-                ego_pos, ego_yaw, ego_vel, opp_pos, opp_vel
+                ego_pos,
+                ego_yaw,
+                ego_vel_world,
+                opp_pos,
+                opp_vel,
+                ego_acc_body=torch.tensor([[ego_ax, ego_ay]], dtype=torch.float32),
+                opp_yaw=opp_yaw,
+                opp_acc_body=torch.tensor([[opp_ax, opp_ay]], dtype=torch.float32),
             )
             .detach()
             .cpu()
             .numpy()[0]
         )
-        obs_block = obs[384:390]
+        obs_block = obs[384:392]
         err = np.abs(obs_block - gt_block)
         self.errors.append(err)
         self.present_flags.append(
@@ -141,8 +180,17 @@ class OpponentObsValidator(Node):
         mean_err = err_mat.mean(axis=0)
         present_frac = float(np.mean(np.asarray(self.present_flags) > 0.5))
 
-        labels = ["rel_x", "rel_y", "rel_vx", "rel_vy", "gap_norm", "ey_opp"]
-        print("Opponent obs[384:390] vs gym GT block:")
+        labels = [
+            "rel_x",
+            "rel_y",
+            "rel_vx",
+            "rel_vy",
+            "rel_ax",
+            "rel_ay",
+            "gap_norm",
+            "ey_opp",
+        ]
+        print("Opponent obs[384:392] vs gym GT block:")
         for i, name in enumerate(labels):
             print(
                 f"  {name}: mean={mean_err[i]:.4f} p95={p95_err[i]:.4f} max={max_err[i]:.4f}"
@@ -153,12 +201,14 @@ class OpponentObsValidator(Node):
             self.pos_tol,
             self.vel_tol,
             self.vel_tol,
+            self.acc_tol,
+            self.acc_tol,
             self.gap_tol,
             self.ey_tol,
         ]
         failures = [
             f"{labels[i]} p95={p95_err[i]:.4f} > tol={tols[i]}"
-            for i in range(6)
+            for i in range(8)
             if p95_err[i] > tols[i]
         ]
         if present_frac < self.min_present_frac:
@@ -186,6 +236,7 @@ def main() -> int:
     parser.add_argument("--duration-s", type=float, default=25.0)
     parser.add_argument("--pos-tol", type=float, default=0.75)
     parser.add_argument("--vel-tol", type=float, default=1.0)
+    parser.add_argument("--acc-tol", type=float, default=2.0)
     parser.add_argument("--gap-tol", type=float, default=0.15)
     parser.add_argument("--ey-tol", type=float, default=0.25)
     parser.add_argument("--min-present-frac", type=float, default=0.5)
@@ -204,6 +255,7 @@ def main() -> int:
         duration_s=args.duration_s,
         pos_tol=args.pos_tol,
         vel_tol=args.vel_tol,
+        acc_tol=args.acc_tol,
         gap_tol=args.gap_tol,
         ey_tol=args.ey_tol,
         min_present_frac=args.min_present_frac,

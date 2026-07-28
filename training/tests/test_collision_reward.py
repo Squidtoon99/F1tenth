@@ -67,7 +67,7 @@ def test_collision_penalty_fires_on_contact(warp_runtime):
         assert obs.shape == (num_envs, cfg["obs"]["num_obs"])
 
         collision_terms: list[float] = []
-        # 20 Hz control: allow enough wall-clock for a close spawn to make contact.
+        # Allow enough wall-clock for a close spawn to make contact.
         for _ in range(160):
             actions = torch.zeros(num_envs, 2, device=env.device)
             actions[:, 0] = 1.0

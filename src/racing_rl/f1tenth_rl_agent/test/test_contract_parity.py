@@ -23,10 +23,10 @@ def test_dimensions_match():
     assert contract.NUM_TYRE_LOAD == ifc.NUM_TYRE_LOAD
 
 
-def test_opponent_block_is_six_dims_without_presence():
-    """The 1v1 layout appends a 6-dim opponent block (no presence flag): 384 -> 390."""
-    assert ifc.OPPONENT_OBS_DIM == 6
-    assert ifc.NUM_OBS_1V1 == ifc.NUM_OBS_BASE + 6 == 390
+def test_opponent_block_is_eight_dims_without_presence():
+    """The 1v1 layout appends an 8-dim opponent block (no presence flag): 384 -> 392."""
+    assert ifc.OPPONENT_OBS_DIM == 8
+    assert ifc.NUM_OBS_1V1 == ifc.NUM_OBS_BASE + 8 == 392
     assert tuple(ifc.OBS_OPPONENT) == (ifc.NUM_OBS_BASE, ifc.NUM_OBS_1V1)
 
 
@@ -64,7 +64,7 @@ def test_action_mapping_constants_match():
 
 
 def test_expected_num_obs_matches():
-    assert contract.expected_num_obs() == ifc.expected_num_obs() == 390
+    assert contract.expected_num_obs() == ifc.expected_num_obs() == 392
 
 
 def test_contract_fields_contiguous():

@@ -6,7 +6,7 @@ vehicle_obs:
     # Resolved to the f1tenth_rl_agent share asset by the launch file; override
     # with an absolute path for a different (surveyed) track.
     track_csv: ""
-    control_hz: 20.0
+    control_hz: 10.0
     # Map-frame pose from the particle filter, body twist from the VESC odom.
     pose_topic: "/pf/pose/odom"
     twist_topic: "/odom"
@@ -15,10 +15,10 @@ vehicle_obs:
     # Set true if the twist source reports velocity in the world/map frame.
     twist_in_world_frame: false
     # Observation assembly (match config.py DEFAULT_CONFIG["obs"] and agent.yaml).
-    # The deployed checkpoint uses the 1v1 (390-dim) layout: 384 base fields plus a
-    # 6-dim opponent block at [384:390). Solo racing enables the opponent block and
-    # zeroes it (the absent-opponent sentinel), so num_obs is 390.
-    num_obs: 390
+    # The deployed checkpoint uses the 1v1 (392-dim) layout: 384 base fields plus an
+    # 8-dim opponent block at [384:392). Solo racing enables the opponent block and
+    # zeroes it (the absent-opponent sentinel), so num_obs is 392.
+    num_obs: 392
     future_track_num_points: 60
     future_track_horizon_s: 6.0
     future_track_min_lookahead_m: 5.0
@@ -29,7 +29,7 @@ vehicle_obs:
     ang_vel_scale: 1.0
     lin_acc_scale: 1.0
     coarse_stride: 10
-    # 1v1 checkpoint in 1v0 mode: keep the 390-dim layout but zero [384:390)
+    # 1v1 checkpoint in 1v0 mode: keep the 392-dim layout but zero [384:392)
     # (no LiDAR detector). Set zero_opponent_obs: false when running 1v1.
     enable_opponent_obs: true
     zero_opponent_obs: true
@@ -108,12 +108,12 @@ drive:
     # (real servo hard-clamp; a policy trained at 0.33 must be commanded at 0.33).
     max_steer: 0.33
     clip_actions: 1.0
-    # ~3 control cycles at 20 Hz.
-    watchdog_timeout_s: 0.15
+    # ~3 control cycles at 10 Hz.
+    watchdog_timeout_s: 0.30
     # Match Genesis F1tenthEnv steer lag; tune t_delta after vehicle_calibration/fit.
     enable_output_filter: true
     t_delta: 0.1
-    control_dt: 0.05
+    control_dt: 0.10
     action_topic: "/rl/action"
     # Publishes straight to the f1tenth_stack ackermann_mux autonomous input.
     drive_topic: "/drive"

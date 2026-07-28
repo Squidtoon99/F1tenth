@@ -50,9 +50,16 @@ def _wrapped_gap_m(s_self, s_other, track_len):
 
 def test_distributed_spawn_batch():
     torch.manual_seed(0)
-    gap_min = 3.0
-    gap_max = 20.0
-    behind_prob = 0.3
+    from config import DEFAULT_CONFIG
+
+    gap_min = float(DEFAULT_CONFIG["env"]["opponent_spawn_gap_min_m"])
+    gap_max = float(DEFAULT_CONFIG["env"]["opponent_spawn_gap_max_m"])
+    behind_prob = float(DEFAULT_CONFIG["env"]["opponent_spawn_behind_prob"])
+    assert gap_min == 3.0
+    assert gap_max == 58.0
+    assert behind_prob == 0.3
+    ahead_gate = float(DEFAULT_CONFIG["obs"]["opp_obs_ahead_m"])
+    behind_gate = float(DEFAULT_CONFIG["obs"]["opp_obs_behind_m"])
     num_envs = 1024
     env = _make_1v1_env(
         num_envs=num_envs,
@@ -82,6 +89,7 @@ def test_distributed_spawn_batch():
     gap_mag = gap_m.abs()
     assert bool((gap_mag >= gap_min - 0.5).all())
     assert bool((gap_mag <= gap_max + 0.5).all())
+    assert float((gap_mag > 20.0).float().mean().item()) > 0.2
 
     opponent_projection = brute_force_frenet(
         state["opp_base_pos"][:, :2].cpu().numpy(), env.centerline
@@ -119,6 +127,21 @@ def test_distributed_spawn_batch():
     )
     assert not bool(overlap.any())
 
+    # Both initial visibility classes under the 40 m ahead / 20 m behind gate.
+    initially_visible = (gap_m <= ahead_gate) & (gap_m >= -behind_gate)
+    vis_frac = float(initially_visible.float().mean().item())
+    assert 0.45 < vis_frac < 0.75
+    assert bool(initially_visible.any())
+    assert bool((~initially_visible).any())
+
+    # Wraparound: a behind spawn near s≈0 places the opponent near track end.
+    near_start = metrics["s"] < 5.0
+    if bool(near_start.any()):
+        behind_near_start = near_start & (gap_m < 0.0)
+        if bool(behind_near_start.any()):
+            opp_s = metrics["opponent_s"][behind_near_start]
+            assert bool((opp_s > track_len - gap_max - 1.0).any())
+
 
 def _heading_speed(vel_xy, yaw):
     speed = torch.linalg.norm(vel_xy, dim=-1)
@@ -140,6 +163,7 @@ def test_reset_launch_speeds_ego_and_opponent():
             "opponent_spawn_lateral_independent": False,
             "reset_speed_min_mps": ego_speed,
             "reset_speed_max_mps": ego_speed,
+            "reset_stationary_probability": 0.0,
             "opponent_reset_speed_min_mps": opp_speed,
             "opponent_reset_speed_max_mps": opp_speed,
             "term_on_collision": False,

@@ -20,8 +20,8 @@ struct ObservationLayout
 {
   // Dimensions.
   static constexpr std::size_t kObservationBaseDim = 384;
-  static constexpr std::size_t kOpponentObsDim = 6;
-  static constexpr std::size_t kObservationDim = 390;
+  static constexpr std::size_t kOpponentObsDim = 8;
+  static constexpr std::size_t kObservationDim = 392;
   static constexpr std::size_t kObservationDim1v1 = kObservationDim;
   static constexpr std::size_t kActionDim = 2;              // (throttle, steer)
   static constexpr std::size_t kTyreSlipDim = 8;
@@ -39,7 +39,7 @@ struct ObservationLayout
   static constexpr std::size_t kFuturePointsStart = 12, kFuturePointsStop = 372;
   static constexpr std::size_t kTyreSlipStart = 372, kTyreSlipStop = 380;
   static constexpr std::size_t kTyreLoadStart = 380, kTyreLoadStop = 384;
-  static constexpr std::size_t kOpponentStart = 384, kOpponentStop = 390;
+  static constexpr std::size_t kOpponentStart = 384, kOpponentStop = 392;
 };
 
 }  // namespace f1tenth_common

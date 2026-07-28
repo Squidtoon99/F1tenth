@@ -1,62 +1,81 @@
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions.normal import Normal
+"""QR-SAC actor building blocks — adapter over shared f1tenth_policy."""
+
+from f1tenth_policy.actor import (
+    ALLOWED_LIDAR_POOL_BINS,
+    CNN_CONV_CHANNELS,
+    CNN_KERNELS,
+    CNN_PADDING,
+    CNN_PROJECTION_DIM,
+    CNN_STRIDES,
+    GRU_HIDDEN_DIM,
+    LIDAR_DIM,
+    LOG_STD_MAX,
+    LOG_STD_MIN,
+    LidarCNNEncoder,
+    PROPRIO_DIM,
+    SquashedGaussianLidarGRUActor,
+    _partition_invariant_standard_normal,
+    _squashed_gaussian_forward,
+    make_actor as _make_actor,
+    mlp,
+)
+from f1tenth_policy.layout import ACTOR_ARCHITECTURE_NAME
+
+# Retained name for import compatibility with older test imports that only need
+# the GRU path. flat_mlp / feed-forward lidar_cnn are intentionally gone.
+SquashedGaussianLidarActor = SquashedGaussianLidarGRUActor
 
 
-def mlp(sizes, activation, output_activation=nn.Identity):
-    layers = []
-    for j in range(len(sizes) - 1):
-        act = activation if j < len(sizes) - 2 else output_activation
-        layers += [nn.Linear(sizes[j], sizes[j + 1]), act()]
-    return nn.Sequential(*layers)
+def make_actor(
+    actor_type=ACTOR_ARCHITECTURE_NAME,
+    obs_dim=None,
+    act_dim=None,
+    hidden_sizes=None,
+    activation=None,
+    act_limit=1.0,
+    lidar_pool_bins=32,
+    lidar_dim=LIDAR_DIM,
+    proprio_dim=PROPRIO_DIM,
+    gru_hidden_dim=GRU_HIDDEN_DIM,
+):
+    import torch.nn as nn
+
+    if activation is None:
+        activation = nn.ReLU
+    if obs_dim is None or act_dim is None or hidden_sizes is None:
+        raise ValueError("make_actor requires obs_dim, act_dim, and hidden_sizes")
+    return _make_actor(
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        hidden_sizes=hidden_sizes,
+        activation=activation,
+        act_limit=act_limit,
+        lidar_pool_bins=lidar_pool_bins,
+        lidar_dim=lidar_dim,
+        proprio_dim=proprio_dim,
+        gru_hidden_dim=gru_hidden_dim,
+        actor_type=actor_type,
+    )
 
 
-LOG_STD_MAX = 2
-LOG_STD_MIN = -20
-
-
-class SquashedGaussianMLPActor(nn.Module):
-
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit):
-        super().__init__()
-        self.net = mlp(
-            [obs_dim] + list(hidden_sizes), activation, activation  # type: ignore
-        )
-        self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
-        self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
-        self.act_limit = act_limit
-
-    def forward(self, obs, deterministic=False, with_logprob=True):
-        net_out = self.net(obs)
-        mu = self.mu_layer(net_out)
-        log_std = self.log_std_layer(net_out)
-        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        std = torch.exp(log_std)
-
-        # Pre-squash distribution and sample
-        pi_distribution = Normal(mu, std)
-        if deterministic:
-            # Only used for evaluating policy at test time.
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
-
-        if with_logprob:
-            # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
-            # NOTE: The correction formula is a little bit magic. To get an understanding
-            # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
-            # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
-            # Try deriving it yourself as a (very difficult) exercise. :)
-            logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)  # type: ignore
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
-                axis=1
-            )
-        else:
-            logp_pi = None
-
-        pi_action = torch.tanh(pi_action)
-        pi_action = self.act_limit * pi_action
-
-        return pi_action, logp_pi
+__all__ = [
+    "ALLOWED_LIDAR_POOL_BINS",
+    "ACTOR_ARCHITECTURE_NAME",
+    "CNN_CONV_CHANNELS",
+    "CNN_KERNELS",
+    "CNN_PADDING",
+    "CNN_PROJECTION_DIM",
+    "CNN_STRIDES",
+    "GRU_HIDDEN_DIM",
+    "LIDAR_DIM",
+    "LOG_STD_MAX",
+    "LOG_STD_MIN",
+    "LidarCNNEncoder",
+    "PROPRIO_DIM",
+    "SquashedGaussianLidarActor",
+    "SquashedGaussianLidarGRUActor",
+    "make_actor",
+    "mlp",
+    "_partition_invariant_standard_normal",
+    "_squashed_gaussian_forward",
+]

@@ -1,0 +1,3 @@
+vesc_to_odom_node:
+  ros__parameters:
+    use_servo_cmd_to_calc_angular_velocity: false

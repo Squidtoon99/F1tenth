@@ -9,6 +9,7 @@
 # Shared observation/action contract, installed EDITABLE so obs-space changes need
 # no rebuild/reinstall during training.
 -e ../libs/f1tenth_contract
+-e ../libs/f1tenth_policy
 
 # Core ML stack (arm64 wheels; torch selects the MPS/Metal or CPU backend).
 torch

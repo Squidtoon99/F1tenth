@@ -10,6 +10,7 @@ right-rear, left-front, right-front) to match the observation/reward pipeline.
 
 from __future__ import annotations
 
+import math
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -56,6 +57,8 @@ class SimParams:
     effort_slew_rate: wp.float32
     max_steer: wp.float32
     steer_time_constant: wp.float32
+    steering_action_mode: wp.int32
+    steering_delta_max: wp.float32
     slip_min_lat: wp.float32
     slip_min_active_long: wp.float32
     slip_min_passive_long: wp.float32
@@ -111,6 +114,8 @@ class VehicleParams:
     # --- steering ---
     max_steer: float = 0.33
     t_delta: float = 0.1
+    steering_action_mode: str = "delta"
+    steering_delta_max: float = math.pi / 60.0
 
     # --- tyre slip (modern PhysX denominators, m/s; scaled for the 1/10 car) ---
     slip_min_lat: float = 0.2
@@ -172,6 +177,8 @@ class VehicleParams:
         params.effort_slew_rate = self.longitudinal_slew_rate_per_s
         params.max_steer = self.max_steer
         params.steer_time_constant = self.t_delta
+        params.steering_action_mode = int(self.steering_action_mode == "delta")
+        params.steering_delta_max = self.steering_delta_max
         params.slip_min_lat = self.slip_min_lat
         params.slip_min_active_long = self.slip_min_active_long
         params.slip_min_passive_long = self.slip_min_passive_long
@@ -199,6 +206,19 @@ class VehicleParams:
         self.wheel_radius = float(g("wheel_radius", self.wheel_radius))
         self.max_steer = float(g("delta_max", g("max_steer", self.max_steer)))
         self.t_delta = float(g("t_delta", self.t_delta))
+        self.steering_action_mode = str(
+            g("steering_action_mode", self.steering_action_mode)
+        )
+        if self.steering_action_mode not in ("absolute", "delta"):
+            raise ValueError(
+                "steering_action_mode must be 'absolute' or 'delta', got "
+                f"{self.steering_action_mode!r}"
+            )
+        self.steering_delta_max = float(
+            g("steering_delta_max_rad", self.steering_delta_max)
+        )
+        if self.steering_delta_max <= 0.0:
+            raise ValueError("steering_delta_max_rad must be positive")
         self.slip_min_lat = float(g("slip_min_lat", self.slip_min_lat))
         self.slip_min_active_long = float(
             g("slip_min_active_long", self.slip_min_active_long)

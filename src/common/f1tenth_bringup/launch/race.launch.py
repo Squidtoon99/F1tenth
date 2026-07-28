@@ -41,7 +41,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path", default_value="/policies/policy.pt",
-        description="Trained 390-dim policy .pt (must include obs_norm).",
+        description="Trained 392-dim policy .pt (must include obs_norm).",
     )
     declare_overlay = DeclareLaunchArgument(
         "overlay_params_file", default_value="/config/params.yaml",

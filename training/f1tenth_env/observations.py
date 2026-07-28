@@ -144,15 +144,18 @@ def obs_opponent(
     other_agent: dict[str, torch.Tensor],
     obs_cfg: dict[str, Any],
 ) -> torch.Tensor:
-    """Symmetric opponent-relative observation block (6 dims).
+    """Symmetric opponent-relative observation block (8 dims).
 
     Built from "self"'s ego frame with "other" as the opponent. Components:
 
     0,1  other position relative to self, rotated into self's body frame (m)
     2,3  other velocity relative to self, rotated into self's body frame (m/s)
-    4    signed along-track gap ``s_other - s_self`` wrapped to ``[-L/2, L/2]`` and
+    4,5  other acceleration relative to self, rotated into self's body frame
+         (m/s^2). Body-frame ``ax,ay`` of each vehicle are rotated to world,
+         subtracted, then rotated into self's frame.
+    6    signed along-track gap ``s_other - s_self`` wrapped to ``[-L/2, L/2]`` and
          normalized by ``L/2`` (positive => other ahead)
-    5    other's signed lateral offset from the centerline ``ey_other`` (m)
+    7    other's signed lateral offset from the centerline ``ey_other`` (m)
 
     Masking (range gate in training, detection certainty on deploy) is applied by
     the caller; an all-zero block is the sole "no relevant opponent" sentinel.
@@ -160,10 +163,13 @@ def obs_opponent(
     pos_s = self_agent["pos_xy"]
     yaw_s = self_agent["yaw"].reshape(-1)
     vel_s = self_agent["vel_xy"]
+    acc_s = self_agent["acc_xy"]
     s_s = self_agent["s"].reshape(-1)
 
     pos_o = other_agent["pos_xy"]
+    yaw_o = other_agent["yaw"].reshape(-1)
     vel_o = other_agent["vel_xy"]
+    acc_o = other_agent["acc_xy"]
     s_o = other_agent["s"].reshape(-1)
     ey_o = other_agent["ey"].reshape(-1)
 
@@ -174,6 +180,8 @@ def obs_opponent(
 
     cos_y = torch.cos(yaw_s)
     sin_y = torch.sin(yaw_s)
+    cos_o = torch.cos(yaw_o)
+    sin_o = torch.sin(yaw_o)
 
     d = pos_o - pos_s
     rel_x = cos_y * d[:, 0] + sin_y * d[:, 1]
@@ -183,6 +191,15 @@ def obs_opponent(
     rel_vx = cos_y * dv[:, 0] + sin_y * dv[:, 1]
     rel_vy = -sin_y * dv[:, 0] + cos_y * dv[:, 1]
 
+    ax_w_s = cos_y * acc_s[:, 0] - sin_y * acc_s[:, 1]
+    ay_w_s = sin_y * acc_s[:, 0] + cos_y * acc_s[:, 1]
+    ax_w_o = cos_o * acc_o[:, 0] - sin_o * acc_o[:, 1]
+    ay_w_o = sin_o * acc_o[:, 0] + cos_o * acc_o[:, 1]
+    dax = ax_w_o - ax_w_s
+    day = ay_w_o - ay_w_s
+    rel_ax = cos_y * dax + sin_y * day
+    rel_ay = -sin_y * dax + cos_y * day
+
     gap = s_o - s_s
     half = 0.5 * track_len
     gap = torch.where(gap > half, gap - track_len, gap)
@@ -190,7 +207,7 @@ def obs_opponent(
     gap_norm = gap / half.clamp_min(1e-6)
 
     return torch.stack(
-        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o], dim=-1
+        [rel_x, rel_y, rel_vx, rel_vy, rel_ax, rel_ay, gap_norm, ey_o], dim=-1
     )
 
 
@@ -234,7 +251,7 @@ def build_observation(
         step_state["tyre_load"],
     )
 
-    opp_dim = int(obs_cfg.get("opponent_obs_dim", 6))
+    opp_dim = int(obs_cfg.get("opponent_obs_dim", 8))
     if opponent_block is None or not bool(obs_cfg.get("enable_opponent_obs", True)):
         opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
     components = components + (opponent_block,)
@@ -272,8 +289,5 @@ def build_observation(
     clip_obs = float(obs_cfg.get("clip_obs", 0.0))
     if clip_obs > 0.0:
         obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
-
-    if bool(obs_cfg.get("zero_tyre_slip_obs", False)):
-        obs[:, 372:380] = 0.0
 
     return obs

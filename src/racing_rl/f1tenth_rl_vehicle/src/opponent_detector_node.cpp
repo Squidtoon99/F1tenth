@@ -5,7 +5,7 @@
 // drivable corridor (centerline + width CSV) to reject walls, associates the best
 // candidate across frames, and estimates a smoothed world-frame velocity. The
 // confirmed opponent is published as nav_msgs/Odometry on /rl/opponent/odom for
-// vehicle_obs to fold into the 6-dim opponent block of the 390-dim observation.
+// vehicle_obs to fold into the 8-dim opponent block of the 392-dim observation.
 //
 // Confirmation is persistence-based, so a stationary opponent is still reported
 // (with velocity ~ 0). A static laser-mount offset (lidar_offset_*) is used instead

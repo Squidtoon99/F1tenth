@@ -20,7 +20,8 @@ from f1tenth_sim.sim_warp import WarpVehicleSim
 
 
 def _vp(**over) -> VehicleParams:
-    cfg = {"tire_friction": 0.9}
+    # Absolute mode: unit tests exercise steer_bias DR and absolute action semantics.
+    cfg = {"tire_friction": 0.9, "steering_action_mode": "absolute"}
     cfg.update(over)
     return VehicleParams.from_config(cfg)
 

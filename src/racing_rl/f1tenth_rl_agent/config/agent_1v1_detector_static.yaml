@@ -17,7 +17,7 @@ policy_inference:
 
 scripted_opponent:
   ros__parameters:
-    control_hz: 20.0
+    control_hz: 10.0
     opponent_target_speed: 0.0
     kp_ey: 1.0
     kh_heading: 1.0

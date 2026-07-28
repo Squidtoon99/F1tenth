@@ -1,9 +1,9 @@
 """Pure-torch tests for the GT Sophy any-collision penalty (rewards.reward_collision).
 
 The raw component is ``Rc = -cadence * c`` where ``c`` is the binary car-to-car
-overlap indicator and ``cadence = control_dt / 0.1`` (0.5 at the 20 Hz control
-rate). These tests call ``reward_collision`` directly with a synthetic
-``car_collision`` mask, so no Genesis simulation is needed.
+overlap indicator and ``cadence = control_dt / 0.1``. These tests call
+``reward_collision`` directly with a synthetic ``car_collision`` mask, so no
+Genesis simulation is needed.
 
 ``rewards.py`` uses package-relative imports, so we register a small
 ``f1tenth_env`` package shim pointing the relative ``.car`` / ``.utils`` at the
@@ -68,4 +68,10 @@ def test_cadence_tracks_control_dt(rewards_mod):
     """Boundary: at the Sophy 10 Hz rate (control_dt=0.1) cadence is exactly 1."""
     ss = _step_state([True])
     r = rewards_mod.reward_collision(ss, {"control_dt": 0.1})
+    assert r[0].item() == pytest.approx(-1.0, abs=1e-6)
+
+
+def test_default_cadence_is_sophy_10hz(rewards_mod):
+    ss = _step_state([True])
+    r = rewards_mod.reward_collision(ss, {})
     assert r[0].item() == pytest.approx(-1.0, abs=1e-6)

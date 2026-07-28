@@ -52,13 +52,15 @@ flowchart TD
 
 | Mode | `num_obs` | Opponent block |
 | --- | ---: | --- |
-| Solo (1v0) | 384 | — |
-| 1v1 | 390 | `[384:390)` — 6 dims: `rel_x`, `rel_y`, `rel_vx`, `rel_vy`, `gap_norm`, `ey_o` |
+| Solo (1v0) | 384 base + zero sentinel | `[384:392)` all zeros |
+| 1v1 | 392 | `[384:392)` — 8 dims: `rel_x`, `rel_y`, `rel_vx`, `rel_vy`, `rel_ax`, `rel_ay`, `gap_norm`, `ey_o` |
 
-Block builders emit the 6 relative features with no masking. Callers zero the
-block when the opponent is out of range (training: ±40 m ahead / 20 m behind on
-arc length) or not confidently detected (deploy). An all-zero opponent block is
-the sole “no relevant opponent” signal.
+Block builders emit the 8 relative features with no masking. Relative
+acceleration rotates each vehicle’s body-frame `ax,ay` into world coordinates,
+subtracts, then rotates into the ego frame. Callers zero the block when the
+opponent is out of range (training: ±40 m ahead / 20 m behind on arc length) or
+not confidently detected (deploy). An all-zero opponent block is the sole “no
+relevant opponent” signal.
 
 ## Migration note
 
