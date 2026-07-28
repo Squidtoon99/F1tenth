@@ -1,0 +1,49 @@
+{
+  "env": {
+    "track": "Austin",
+    "reset_stationary_probability": 0.3,
+    "opponent_strategy": "policy",
+    "opponent_spawn_gap_min_m": 3.0,
+    "opponent_spawn_gap_max_m": 80.0,
+    "opponent_mix": {
+      "scripted_weight": 0.0,
+      "policy_weight": 1.0,
+      "policy_speed_cap_prob": 0.5,
+      "policy_speed_cap_range": [5.0, 8.0]
+    },
+    "boundary_mode": "recoverable_full_car_out"
+  },
+  "reward": {
+    "wall_contact_coefficient": 0.1296,
+    "wall_cost_mode": "continuous_quadratic",
+    "boundary_contact_coefficient": 4.0,
+    "oob_impact_coefficient": 0.1296,
+    "reward_scales": {
+      "progress": 1.0,
+      "passing": 3.0,
+      "collision": 6.0,
+      "rear_end": 0.5,
+      "steering_change": 0.5,
+      "steering_history": 5.0
+    }
+  },
+  "model": {
+    "batch_size": 1024,
+    "replay_buffer_limit": 3000000,
+    "replay_full_reinit": true,
+    "actor_freeze_transitions": 0,
+    "alpha": 0.01
+  },
+  "schedule": {
+    "total_transitions": 2000000000,
+    "export_interval_transitions": 10240000
+  },
+  "selfplay": {
+    "snapshot_interval_transitions": 10240000,
+    "refresh_interval_transitions": 2560000,
+    "pool_size": 10,
+    "sample_mode": "mixed",
+    "mixed_latest_prob": 0.25,
+    "anchor_prob": 0.0
+  }
+}

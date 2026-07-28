@@ -195,4 +195,13 @@ DEFAULT_CONFIG = {
     "fixed_opponents": {
         "entries": [],
     },
+    "selfplay": {
+        "snapshot_interval_transitions": 10_240_000,
+        "refresh_interval_transitions": 2_560_000,
+        "pool_size": 10,
+        "sample_mode": "mixed",
+        "mixed_latest_prob": 0.5,
+        "anchor_ckpt": None,
+        "anchor_prob": 0.0,
+    },
 }

@@ -658,14 +658,15 @@ All arms: `--init-ckpt` pcplus600 @600M, `replay_full_reinit: false`,
 
 | Run | Hypothesis / delta | speed @35–45M | lifespan @40M | Verdict |
 | --- | --- | ---: | ---: | --- |
-| `warmstart-probe-a001` | baseline warm-start | 5.331 m/s | 304 s | plateau |
-| `warmstart-reward-relax-a001` | `steering_change` 0, `steering_history` 0, wall coeff halved | 5.331 m/s | 304 s | **refuted** — identical to baseline |
-| `warmstart-matched-opp-a001` | pcplus600 @600M champion, tight gaps, 2× passing | 5.330 m/s | 294 s | **refuted** — no pace gain |
+| `warmstart-probe-a001` | baseline warm-start | 5.331 m/s | 304 s | plateau (invalid post-26330f3 — see alpha annotation) |
+| `warmstart-reward-relax-a001` | `steering_change` 0, `steering_history` 0, wall coeff halved | 5.331 m/s | 304 s | **invalid** — actor never updated |
+| `warmstart-matched-opp-a001` | pcplus600 @600M champion, tight gaps, 2× passing | 5.330 m/s | 294 s | **invalid** — actor never updated |
 
 Reward-relax runtime confirmed: `steer_chg=0.0000`, `wall_contact` half baseline.
 Three materially different reward/opponent configs produced numerically
-indistinguishable pace — strongest evidence the policy is not responding to
-training signal (exploration freeze hypothesis).
+indistinguishable pace — consistent with the policy not responding to
+training signal under the CUDA-graph actor-freeze bug (see alpha sweep
+annotation below); **not** valid evidence against the exploration hypothesis.
 
 **Logging bug (fixed):** `setup_trainer_logging` wrote to both a `FileHandler` and
 stdout; systemd units append stdout to the same `run.log`, doubling every line.
@@ -683,21 +684,29 @@ m/s** with lifespan ≥ 200 s and low OOB.
 
 | Run | Delta from baseline | speed @35–45M | lifespan @40M | Verdict |
 | --- | --- | ---: | ---: | --- |
-| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | 5.331 m/s | 314 s | **refuted** — identical to baseline |
-| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | 5.328 m/s @25–35M | — | **refuted** — stopped @30M, same plateau |
-| `warmstart-alpha010-nofreeze-a001` | `alpha: 0.01`, freeze 0 | — | — | **in flight** (systemd enabled) |
+| `warmstart-probe-a001` | baseline warm-start | 5.331 m/s | 304 s | plateau |
+| `warmstart-reward-relax-a001` | `steering_change` 0, `steering_history` 0, wall coeff halved | 5.331 m/s | 304 s | **invalid** — actor never updated (see below) |
+| `warmstart-matched-opp-a001` | pcplus600 @600M champion, tight gaps, 2× passing | 5.330 m/s | 294 s | **invalid** — actor never updated (see below) |
+| `warmstart-alpha010-a001` | `alpha: 0.01`, freeze 5M | 5.331 m/s | 314 s | **invalid** — actor never updated (see below) |
+| `warmstart-alpha010-freeze1m-a001` | `alpha: 0.01`, freeze 1M | 5.328 m/s @25–35M | — | **invalid** — actor never updated (see below) |
+| `warmstart-alpha010-nofreeze-a001` | `alpha: 0.01`, freeze 0 | — | — | **invalid** — actor never updated (see below) |
 
-**Verdict (2 of 3 alpha arms):** raising `alpha` 10× and shortening actor freeze
-from 5M→1M produced numerically indistinguishable pace (5.328–5.331 m/s). The
-entropy/exploration knob is **not** the binding constraint — or exploration via
-SAC entropy is the wrong mechanism for this delta-steering + throttle action
-space. `warmstart-alpha005-a001` cancelled (would probe below baseline alpha;
-irrelevant given 0.01 already matched 0.001).
+### 2026-07-27 annotation — CUDA graph + actor-freeze bug (`26330f3`)
 
-**No-freeze arm rationale:** if actor updates from step 0 with default alpha still
-plateau at 5.33 m/s, the warm-start init is a local optimum that gradient steps
-cannot escape — pointing to critic value saturation or a missing reward signal
-rather than exploration rate.
+**Prior conclusion retracted:** the alpha sweep did **not** refute the exploration
+hypothesis. With `actor_freeze_transitions > 0` and `--compile-mode reduce-overhead`,
+the CUDA graph was captured while the actor was frozen, so the actor never updated
+for the entire run (actor L2 distance from init was exactly 0.0). The identical
+5.33 m/s plateaus across all warm-start arms are therefore **uninformative** for
+entropy/exploration — the runs never exercised actor gradient steps.
+
+**Affected runs (invalid for exploration/reward/opponent conclusions):**
+`warmstart-probe-a001`, `warmstart-reward-relax-a001`, `warmstart-alpha010-a001`,
+`warmstart-alpha010-freeze1m-a001`, `warmstart-matched-opp-a001`.
+
+**Status:** exploration hypothesis **untested** (not refuted). Re-test requires
+post-`26330f3` trainer with verified actor movement under freeze+compile, or
+`--no-compile` / freeze 0.
 
 **Logging bug:** confirmed fixed post-`e379bef`. `warmstart-probe-a001` log is 2×
 deduped (27507→13807 lines); post-fix runs (`alpha010-a001`, `freeze1m-a001`) are
@@ -776,7 +785,7 @@ regime at 150M transitions, stop the run rather than burn ~16 more GPU-hours.
 | Throughput @1.2M | **~25.0k transitions/s** steady (24.3–25.8k over ticks 800–1350) |
 | vs single champion | −13% vs 28.7k (6-policy pool was −26%) |
 | 2B wall-clock est. | **~22.2 h** @25.0k/s (range 20–23 h if rate holds) |
-| Status | **live** |
+| Status | **abandoned** @111.8M (2026-07-27) — fixed fast pool refuted; repeats ~2 s lifespan stall |
 
 Early log (pool load + first tick @307k):
 
@@ -789,3 +798,61 @@ Fixed opponent pool loaded size=4 total_weight=11.0000
 ticks=300 transitions=307200 ... transitions/s=23790.8 ... opp_presence=0.147
 fixed_opponent_pool: assignments=[600M p=0.453, 512M p=0.182, 409M p=0.183, 256M p=0.182]
 ```
+
+## pcplus2b-a001 — 2B self-play pcplus600 reproduction gate (2026-07-27)
+
+**Hypothesis:** post-cleanup codebase can reproduce `pcplus600`'s self-play growth
+curve when trained from noise for 2B transitions. Fixed-opponent variants
+(`pool600-a002`, `pool600-fast2b-a001`) are refuted; self-play is the only regime
+with evidence of reaching 5.3+ m/s sustained growth.
+
+**Config:** `pcplus2b-a001.json` — mainline ladder boundary/reward
+(`recoverable_full_car_out` / `continuous_quadratic`, 0.1296 / 4.0 / 0.1296;
+equivalence asserted by `test_boundary_ladder_equivalence.py`), 1024 envs, batch
+1024, 3M replay, `replay_full_reinit: true`, `actor_freeze_transitions: 0`,
+`alpha: 0.01`, seed 42, spawn gaps **3–80 m**, policy-only opponents
+(`scripted_weight: 0`), self-play pool size 10, mixed sampling
+(`mixed_latest_prob: 0.25`), `--compile --compile-mode reduce-overhead`.
+
+**Init:** from noise (no `--init-ckpt`).
+
+**Reference yardstick:** measured from `pcplus600/run.log` (nearest 51200-tick lines):
+
+| Transitions | `pcplus600` speed (m/s) | lifespan (s) |
+| ---: | ---: | ---: |
+| 110M | 3.82 | 4.0 (still ~2 s regime) |
+| 120M | 3.91 | 83.6 (breakout begins ~113M, ~42 s bucket) |
+| 150M | 4.45 | 193.9 |
+| 300M | 4.09 | 76.2 |
+| 600M | **5.39** | 294.6 |
+
+### Decision gates (preregistered — kill / continue)
+
+| Gate | `pcplus600` reference | Criterion | Kill | Continue |
+| ---: | --- | --- | --- | --- |
+| **120M phase change** | lifespan breakout ~113M → ~42 s mean; 120M → 83.6 s | If **still pinned in ~2 s lifespan regime** (mean < 15 s) | **STOP** — repeats fixed-pool failure mode | proceed |
+| **150M** | 4.45 m/s / 194 s | speed < **3.5 m/s** OR lifespan < **30 s** | **STOP** — no phase change | proceed |
+| **300M** | 4.09 m/s (dip before re-acceleration) | speed < **3.5 m/s** sustained | **STOP** — trajectory diverging | proceed |
+| **600M reproduction** | **5.39 m/s** / 295 s | speed < **5.05 m/s** OR lifespan < **200 s** | **STOP** — reproduction gate failed | continue toward 2B |
+| **2B stretch** | honest extrapolation ~5.4–5.7 m/s | — | — | target 6.0 m/s if growth re-accelerates |
+
+**Kill criterion (plain):** still in the ~2 s lifespan / ~2–3 m/s regime at **120M**
+transitions — same early falsifier that killed `pool600-a002` and
+`pool600-fast2b-a001`.
+
+**600M pass:** 50M-bucket mean speed ≥ **5.05 m/s** (pcplus600 − 0.15 tolerance)
+with lifespan ≥ **250 s**. Terminal tick 5.385 m/s is the reproduction bar.
+
+### Infrastructure (prepared, not started)
+
+- Config: `training/outputs/experiments/long-horizon-2b-sensors/pcplus2b-a001.json`
+- Systemd: `f1tenth-pcplus2b-a001.service` (enabled; prior `f1tenth-pool600-fast2b-a001` disabled)
+- GPU idle queue: `recovery_2b.run_ids = ["pcplus2b-a001"]`
+- Self-play restored in trainer (`training/selfplay.py` + CLI flags)
+
+### Launch record
+
+| Field | Value |
+| --- | --- |
+| Prepared (PDT) | 2026-07-27 |
+| Status | **pending launch** (awaiting WSL reboot sequencing) |

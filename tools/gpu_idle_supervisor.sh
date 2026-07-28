@@ -287,12 +287,10 @@ validate_config() {
     return 1
   fi
   if [ "$requires_selfplay" = "true" ]; then
-    log "validate: self-play not supported on this branch; skipping"
-    return 1
-  fi
-  if grep -q '"selfplay"' "$config_path" 2>/dev/null; then
-    log "validate: config contains selfplay block but trainer has no self-play"
-    return 1
+    if ! "$PY" -c 'import json,sys; print("selfplay" in json.load(open(sys.argv[1])))' "$config_path"; then
+      log "validate: requires_selfplay but config lacks selfplay block"
+      return 1
+    fi
   fi
   return 0
 }

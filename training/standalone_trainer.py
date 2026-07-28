@@ -46,6 +46,7 @@ from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
+from selfplay import SelfPlayManager
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
 from qrsac.replay import (
@@ -644,15 +645,16 @@ def maybe_replay_full_reinit(
     env_transitions: int,
     learner_hidden: torch.Tensor | None,
     champion_mgr: FixedChampionManager | None = None,
+    selfplay_mgr: SelfPlayManager | None = None,
     env=None,
     log: logging.Logger | None = None,
     wandb_run=None,
 ) -> bool:
     """Trigger Lee et al. 2025 replay-full reinit exactly once when buffer fills.
 
-    The fixed champion is immutable across reinitialization.
+    Fixed champion is immutable across reinitialization; self-play re-seeds
+    the opponent from the reinitialized learner.
     """
-    del actor_normalizer  # norms retained; signature kept for call-site stability
     if not enabled or protocol_state.get("replay_full_reinit_done"):
         return False
     if int(buffer.size) < int(buffer.capacity):
@@ -660,9 +662,12 @@ def maybe_replay_full_reinit(
     trainer.reinitialize_networks()
     if learner_hidden is not None:
         learner_hidden.zero_()
-    # Fixed champion must not change on replay-full reinit.
     if env is not None and champion_mgr is not None:
         champion_mgr.bootstrap_opponent(env, resample=True)
+    if env is not None and selfplay_mgr is not None:
+        selfplay_mgr.reseed_after_reinit(
+            models, actor_normalizer, env, int(env_transitions)
+        )
     protocol_state["replay_full_reinit_done"] = True
     protocol_state["replay_full_reinit_count"] = (
         int(protocol_state.get("replay_full_reinit_count", 0)) + 1
@@ -980,6 +985,17 @@ def build_config(
             cfg[section][key] = getattr(args, dest)
 
     cli_override("total_transitions", "schedule", "total_transitions")
+    cli_override(
+        "selfplay_snapshot_interval", "selfplay", "snapshot_interval_transitions"
+    )
+    cli_override(
+        "selfplay_refresh_interval", "selfplay", "refresh_interval_transitions"
+    )
+    cli_override("selfplay_pool_size", "selfplay", "pool_size")
+    cli_override("selfplay_sample", "selfplay", "sample_mode")
+    cli_override("selfplay_mixed_latest_prob", "selfplay", "mixed_latest_prob")
+    cli_override("selfplay_anchor_ckpt", "selfplay", "anchor_ckpt")
+    cli_override("selfplay_anchor_prob", "selfplay", "anchor_prob")
 
     # Episode horizon: patch value or track-derived default (no CLI duplicate).
     if not (patch and "episode_length" in patch.get("env", {})):
@@ -1006,10 +1022,15 @@ def build_config(
             f"dimensions; got num_actor_obs={actor_dim} num_obs={critic_dim}."
         )
 
+    self_play = getattr(args, "self_play", False) or getattr(
+        args, "mixed_opponents", False
+    )
     use_fixed = bool(getattr(args, "fixed_opponents", False)) or bool(
         cfg.get("fixed_opponents", {}).get("entries")
     )
-    use_1v1 = use_fixed or args.opponent != "none"
+    if self_play and use_fixed:
+        raise ValueError("--self-play and --fixed-opponents are mutually exclusive")
+    use_1v1 = use_fixed or self_play or args.opponent != "none"
     patch_env = (patch or {}).get("env", {})
     if use_1v1:
         if use_fixed:
@@ -1020,6 +1041,11 @@ def build_config(
                 mix["policy_weight"] = 0.5
                 mix["policy_speed_cap_prob"] = 0.5
                 mix["policy_speed_cap_range"] = [5.0, 7.0]
+        elif self_play:
+            if getattr(args, "mixed_opponents", False):
+                cfg["env"]["opponent_strategy"] = "mixed"
+            else:
+                cfg["env"]["opponent_strategy"] = "policy"
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
 
@@ -1211,6 +1237,7 @@ def run_eval_video(
     wandb_run,
     log: logging.Logger,
     champion_mgr: "FixedChampionManager | None" = None,
+    selfplay_mgr: "SelfPlayManager | None" = None,
 ) -> None:
     """Deterministic eval rollout rendered to an mp4 (and optionally live Rerun).
 
@@ -1336,6 +1363,62 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Enable fixed champion pool from config fixed_opponents.entries.",
+    )
+    parser.add_argument(
+        "--self-play",
+        action="store_true",
+        default=False,
+        help="Enable delayed self-play (implies --opponent policy): snapshot the "
+        "learner into a pool and refresh the frozen policy opponent periodically.",
+    )
+    parser.add_argument(
+        "--mixed-opponents",
+        action="store_true",
+        default=False,
+        help="GT Sophy-style mixed opponent population on reset (implies --self-play).",
+    )
+    parser.add_argument(
+        "--selfplay-snapshot-interval",
+        type=int,
+        default=cfg["selfplay"]["snapshot_interval_transitions"],
+        help="Environment transitions between learner snapshots.",
+    )
+    parser.add_argument(
+        "--selfplay-refresh-interval",
+        type=int,
+        default=cfg["selfplay"]["refresh_interval_transitions"],
+        help="Environment transitions between opponent policy refreshes.",
+    )
+    parser.add_argument(
+        "--selfplay-pool-size",
+        type=int,
+        default=cfg["selfplay"]["pool_size"],
+        help="Maximum number of past learner snapshots kept in the opponent pool.",
+    )
+    parser.add_argument(
+        "--selfplay-sample",
+        type=str,
+        default=cfg["selfplay"]["sample_mode"],
+        choices=["latest", "uniform", "mixed"],
+        help="How to sample an opponent snapshot from the pool.",
+    )
+    parser.add_argument(
+        "--selfplay-mixed-latest-prob",
+        type=float,
+        default=cfg["selfplay"]["mixed_latest_prob"],
+        help="When sample=mixed, probability of picking the latest snapshot.",
+    )
+    parser.add_argument(
+        "--selfplay-anchor-ckpt",
+        type=str,
+        default=cfg["selfplay"]["anchor_ckpt"],
+        help="Immutable incumbent policy artifact for the opponent population.",
+    )
+    parser.add_argument(
+        "--selfplay-anchor-prob",
+        type=float,
+        default=cfg["selfplay"]["anchor_prob"],
+        help="Probability of sampling the anchor instead of the rolling pool.",
     )
     parser.add_argument(
         "--device",
@@ -1531,7 +1614,7 @@ def main():
     )
 
     if args.init_ckpt is not None:
-        load_init_ckpt(
+        init_transitions = load_init_ckpt(
             models,
             actor_normalizer,
             args.init_ckpt,
@@ -1545,6 +1628,8 @@ def main():
                 env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
             ),
         )
+    else:
+        init_transitions = 0
 
     champion_mgr: FixedChampionManager | None = None
     fixed_entries = list(cfg.get("fixed_opponents", {}).get("entries") or [])
@@ -1577,7 +1662,45 @@ def main():
             log=log,
         )
 
-    use_1v1 = champion_mgr is not None or args.opponent != "none"
+    selfplay_mgr: SelfPlayManager | None = None
+    if getattr(args, "self_play", False) or getattr(args, "mixed_opponents", False):
+        sp_cfg = cfg["selfplay"]
+        selfplay_mgr = SelfPlayManager(
+            pool_size=int(sp_cfg["pool_size"]),
+            snapshot_interval_transitions=int(
+                sp_cfg["snapshot_interval_transitions"]
+            ),
+            refresh_interval_transitions=int(
+                sp_cfg["refresh_interval_transitions"]
+            ),
+            sample_mode=str(sp_cfg["sample_mode"]),
+            mixed_latest_prob=float(sp_cfg["mixed_latest_prob"]),
+            anchor_prob=float(sp_cfg["anchor_prob"]),
+            expected_architecture=actor_architecture_from_module(models.actor),
+            log=log,
+        )
+        if sp_cfg.get("anchor_ckpt"):
+            selfplay_mgr.load_anchor(
+                str(sp_cfg["anchor_ckpt"]),
+                device,
+                actor_obs_dim,
+                int(cfg["env"]["num_actions"]),
+                expected_layout_version=int(obs_cfg["actor_layout_version"]),
+                expected_architecture=actor_architecture_from_module(models.actor),
+                expected_critic_obs_dim=int(obs_cfg["num_obs"]),
+                expected_steering_action_mode=str(
+                    env_cfg.get("steering_action_mode", STEERING_ACTION_MODE)
+                ),
+                expected_steering_delta_max_rad=float(
+                    env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
+                ),
+            )
+
+    use_1v1 = (
+        champion_mgr is not None
+        or selfplay_mgr is not None
+        or args.opponent != "none"
+    )
     continuous = bool(getattr(args, "continuous", False))
     if continuous:
         log.info(
@@ -1619,6 +1742,13 @@ def main():
     actor_obs, critic_obs = unpack_sensor_observations(raw_obs)
     actor_normalizer.update(actor_obs)
     critic_normalizer.update(critic_obs)
+    if selfplay_mgr is not None:
+        selfplay_mgr.seed_snapshot(
+            SelfPlayManager.make_snapshot(
+                models, actor_normalizer, transitions=init_transitions
+            )
+        )
+        selfplay_mgr.bootstrap_opponent(env)
     vector_ticks = 0
     env_transitions = 0
     replay_inserts = torch.zeros((), device=device, dtype=torch.long)
@@ -1727,6 +1857,11 @@ def main():
             done_f = done.to(episode_rewards.dtype)
             ep_return_sum += (episode_rewards * done_f).sum()
             ep_return_count += done_f.sum()
+            if selfplay_mgr is not None and critic_obs.shape[-1] > OPP_TRACK_GAP_IDX:
+                done_bool = done.bool()
+                if done_bool.any():
+                    ego_minus_opp = -critic_obs[done_bool, OPP_TRACK_GAP_IDX]
+                    selfplay_mgr.record_episode_outcomes(ego_minus_opp)
             episode_rewards = episode_rewards * (1.0 - done_f)
 
             accumulate_step_diagnostics(diag, reward, actions, critic_obs, extras)
@@ -1768,6 +1903,7 @@ def main():
                 env_transitions=env_transitions,
                 learner_hidden=learner_hidden,
                 champion_mgr=champion_mgr,
+                selfplay_mgr=selfplay_mgr,
                 env=env,
                 log=log,
                 wandb_run=wandb_run,
@@ -1873,6 +2009,12 @@ def main():
                     policy_loss_accum += losses.policy_loss
                     critic_loss_accum += losses.critic_loss
                     loss_count += 1
+
+            if selfplay_mgr is not None:
+                selfplay_mgr.maybe_snapshot(
+                    models, actor_normalizer, env_transitions
+                )
+                selfplay_mgr.maybe_refresh(env, env_transitions)
 
             if interval_crossed(
                 previous_transitions,
@@ -2045,6 +2187,22 @@ def main():
                                 meta["checkpoint"],
                                 meta["transitions"],
                             )
+                    elif selfplay_mgr is not None:
+                        opp_age = (
+                            env_transitions - selfplay_mgr.opponent_transitions
+                            if selfplay_mgr.opponent_transitions is not None
+                            else -1
+                        )
+                        log.info(
+                            "  selfplay: pool_size=%d opp_transitions=%s "
+                            "opp_age=%d win_rate=%.3f (n=%d)",
+                            len(selfplay_mgr.pool),
+                            selfplay_mgr.opponent_transitions,
+                            opp_age,
+                            selfplay_mgr.win_rate(),
+                            selfplay_mgr._episode_total,
+                        )
+                        selfplay_mgr.reset_win_stats()
                 else:
                     log.info(
                         "  terminations: time_out=%d oob=%d "
@@ -2190,6 +2348,7 @@ def main():
                         wandb_run=wandb_run,
                         log=log,
                         champion_mgr=champion_mgr,
+                        selfplay_mgr=selfplay_mgr,
                     )
                 except Exception as exc:
                     log.warning("Eval video rollout failed (continuing): %s", exc)
