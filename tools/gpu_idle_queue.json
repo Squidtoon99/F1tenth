@@ -1,25 +1,4 @@
 {
-  "jobs": [
-    {
-      "priority": 10,
-      "kind": "queue",
-      "run_id": "replay10m-mainline-a001",
-      "config": "tools/gpu_idle_configs/replay10m-mainline-a001.json",
-      "num_envs": 1024,
-      "total_transitions": 100000000,
-      "gpu_hours": 0.8,
-      "note": "Replay capacity 10M vs 3M on mainline ladder"
-    },
-    {
-      "priority": 20,
-      "kind": "queue",
-      "run_id": "oobhalf-d2-600-a001",
-      "config": "tools/gpu_idle_configs/oobhalf-d2-600-a001.json",
-      "num_envs": 4096,
-      "total_transitions": 600000000,
-      "gpu_hours": 4.8,
-      "note": "Halved OOB penalty on D2 fixed champion"
-    }
-  ],
+  "jobs": [],
   "abandoned_run_ids": ["pool600-a001"]
 }

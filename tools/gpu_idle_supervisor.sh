@@ -544,7 +544,7 @@ main() {
 
   job=$(pick_job)
   if [ -z "$job" ]; then
-    log "idle threshold met but queue empty / all jobs complete"
+    log "idle GPU but queue empty — nothing to launch"
     exit 0
   fi
 
