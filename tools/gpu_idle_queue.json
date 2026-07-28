@@ -1,6 +1,6 @@
 {
   "jobs": [],
-  "abandoned_run_ids": ["pool600-a001", "pool600-a002"],
+  "abandoned_run_ids": ["pool600-a001", "pool600-a002", "pool600-fast2b-a001"],
   "recovery_2b": {
     "horizon": 2000000000,
     "run_ids": ["pool600-fast2b-a001"],
