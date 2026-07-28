@@ -131,7 +131,7 @@ DEFAULT_CONFIG = {
         },
         "longitudinal_mode": "force",
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
-        "track": "IV_2026_SIM",
+        "track": "ecss_clean",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
         # opponent_strategy: None (1v0 / solo), "scripted" (centerline follower),
         # "policy" (frozen-policy self-play opponent), or "mixed" (per-env mix of
