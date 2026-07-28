@@ -768,4 +768,24 @@ regime at 150M transitions, stop the run rather than burn ~16 more GPU-hours.
 
 ### Launch record
 
-(Filled after launch with measured throughput and early log lines.)
+| Field | Value |
+| --- | --- |
+| Started (PDT) | 2026-07-27 17:09 |
+| PID | 154963 |
+| GPU @60s | 70% util, 10.9 GiB |
+| Throughput @1.2M | **~25.0k transitions/s** steady (24.3–25.8k over ticks 800–1350) |
+| vs single champion | −13% vs 28.7k (6-policy pool was −26%) |
+| 2B wall-clock est. | **~22.2 h** @25.0k/s (range 20–23 h if rate holds) |
+| Status | **live** |
+
+Early log (pool load + first tick @307k):
+
+```
+Fixed opponent pool loaded size=4 total_weight=11.0000
+  pool[0] ... pool-policy_600000512.pt weight=5.0000 transitions=600000512
+  pool[1] ... pool-policy_512000000.pt weight=2.0000 transitions=512000000
+  pool[2] ... pool-policy_409600000.pt weight=2.0000 transitions=409600000
+  pool[3] ... pool-policy_256000000.pt weight=2.0000 transitions=256000000
+ticks=300 transitions=307200 ... transitions/s=23790.8 ... opp_presence=0.147
+fixed_opponent_pool: assignments=[600M p=0.453, 512M p=0.182, 409M p=0.183, 256M p=0.182]
+```
