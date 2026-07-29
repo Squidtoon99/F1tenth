@@ -966,7 +966,7 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 | --- | --- | --- | --- |
 | 1 | 2026-07-28 23:50 | **aborted @~5M** | `replay_full_reinit: true`; Lee reinit @2.998M wiped actor. ~3.6 m/s / 1.2 s. |
 | 2 | 2026-07-28 23:57 | **aborted @~5.7M** | `replay_full_reinit: false` but no actor freeze; ~10.8k actor updates on random critic shredded champion (4.15 m/s / 1.2 s, 4055 OOB/0 timeout). |
-| 3 | (pending) | — | `replay_full_reinit: false`, `actor_freeze_transitions: 20M` both arms |
+| 3 | 2026-07-29 00:04 | **live** | `actor_freeze_transitions: 20M`; @1.43M: 5.53 m/s / 58 s lifespan / 37 OOB per window (vs attempt 2 @5.7M: 4.15 m/s / 1.2 s / 4055 OOB) |
 
 | Field | Value |
 | --- | --- |
