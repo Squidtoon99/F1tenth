@@ -1001,7 +1001,13 @@ Throughput diagnosis: [`progab-throughput-diagnosis.md`](progab-throughput-diagn
 | 3 | 2026-07-29 00:04 | **aborted @20M** | Freeze gate **pass** (5.53 m/s / 172 s / cl~342). Unfreeze OOM + auto-restart; Arm B contaminated from 00:02. |
 | 4 | 2026-07-29 02:56 | **aborted @20M** | Solo freeze OK (5.53/172s/cl~342). Unfreeze OOM — root cause was inductor compiling actor backward *inside* capture stream, not VRAM exhaustion. Fixed in `11f5b13`. |
 | 5 | 2026-07-29 03:31 | **aborted @36M** | Capture fix **pass** (26330f3 live: 13.5k→30.4k trans/s @20M; `policy_20000768.pt` saved). Unfreeze+10M gate **fail**: lifespan **1.5 s** @30M (need ≥100 s); speed **4.4–4.8 m/s**; champion shredded within ~500k post-unfreeze. Arm B not started. |
-| 6 | (see below) | | Actor LR ramp 0→full over 10M post-unfreeze; one warm attempt then mandatory from-noise fallback |
+| 6 | 2026-07-29 04:18 | **warm fail @30M** | LR ramp: unfreeze @20M ok; @30M **2.7 s / 4.1 m/s** (gate fail). Immediate fallback to from-noise. |
+| 7 | (see below) | **from-noise live** | 600M/arm, `PROGAB_MODE=noise`, pcplus600-anchored gates |
+
+| Field | Value |
+| --- | --- |
+| Prepared (PDT) | 2026-07-28 |
+| Status | **attempt 7 from-noise A/B** |
 
 **Unfreeze collapse (attempt 5 — genuine result):** actor-only warm start into a
 fresh critic **does not survive handoff under self-play**. Pre-unfreeze @19.97M:
