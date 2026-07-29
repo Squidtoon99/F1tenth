@@ -948,7 +948,7 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 | Attempt | Started (PDT) | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | 2026-07-28 23:50 | **aborted @~5M** | Inherited `replay_full_reinit: true` from `pcplus2b-a001`; Lee reinit @2.998M destroyed champion weights @23:52:29. Metrics were from-noise (~3.6 m/s / 1.2 s). Run dir wiped; W&B run discarded. |
-| 2 | (pending) | — | Configs fixed: `replay_full_reinit: false` both arms |
+| 2 | 2026-07-28 23:57 | **live** | `replay_full_reinit: false`; no Lee reinit @3M; `OnSuccess` chain restored |
 
 | Field | Value |
 | --- | --- |
