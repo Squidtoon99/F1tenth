@@ -149,6 +149,41 @@ if ! verify_arm_complete "progab-control-a001"; then
   exit 1
 fi
 
+if [ "$PROGAB_MODE" = "noise" ]; then
+  log "noise mode: control validity gate before Arm B"
+  "$REPO/tools/progab_analyze.py" \
+    "$TRAINING/outputs/runs/progab-control-a001/run.log" \
+    --milestone 600000000 --window 5000000 || true
+  ctrl_speed=$(
+    python3 - "$TRAINING/outputs/runs/progab-control-a001/run.log" <<'PY'
+import re, sys
+from pathlib import Path
+rows, cur = [], {}
+for line in Path(sys.argv[1]).read_text(errors="replace").splitlines():
+    m = re.search(r"transitions=(\d+).*episode_lifespan=", line)
+    if m and "ticks=" in line:
+        cur = {"t": int(m.group(1))}
+    sm = re.search(r"env: speed=([\d.]+)", line)
+    if sm and cur:
+        cur["s"] = float(sm.group(1))
+        rows.append(cur)
+w = [r for r in rows if 595_000_000 <= r["t"] <= 600_000_000 and "s" in r]
+print(sum(r["s"] for r in w) / len(w) if w else 0)
+PY
+  )
+  log "control @600M speed_mean=$ctrl_speed (ref=5.38 min=5.05)"
+  if python3 - "$ctrl_speed" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) >= 5.05 else 1)
+PY
+  then
+    log "VALIDITY PASS — starting Arm B"
+  else
+    log "VALIDITY FAIL — skipping Arm B (baseline not reproduced)"
+    exit 2
+  fi
+fi
+
 run_arm \
   "progab-super-a001" \
   "$SUPER_CONFIG" \
