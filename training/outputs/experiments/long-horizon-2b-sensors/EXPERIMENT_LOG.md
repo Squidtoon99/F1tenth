@@ -999,9 +999,19 @@ Throughput diagnosis: [`progab-throughput-diagnosis.md`](progab-throughput-diagn
 | 1 | 2026-07-28 23:50 | **aborted @~5M** | `replay_full_reinit: true`; Lee reinit @2.998M wiped actor. ~3.6 m/s / 1.2 s. |
 | 2 | 2026-07-28 23:57 | **aborted @~5.7M** | `replay_full_reinit: false` but no actor freeze; ~10.8k actor updates on random critic shredded champion (4.15 m/s / 1.2 s, 4055 OOB/0 timeout). |
 | 3 | 2026-07-29 00:04 | **aborted @20M** | Freeze gate **pass** (5.53 m/s / 172 s / cl~342). Unfreeze OOM + auto-restart; Arm B contaminated from 00:02. |
-| 4 | 2026-07-29 02:56 | **live** | Chain unit; solo freeze ~14k trans/s; @3.3M buffer full: 5.54 m/s / 114 s |
+| 4 | 2026-07-29 02:56 | **aborted @20M** | Solo freeze OK (5.53/172s/cl~342). Unfreeze OOM — root cause was inductor compiling actor backward *inside* capture stream, not VRAM exhaustion. Fixed in `11f5b13`. |
+| 5 | (see below) | | Post-fix chain relaunch |
+
+**Capture fix (`11f5b13`):** after actor unfreeze, run one eager update to compile
+policy backward outside CUDAGraph capture, `empty_cache`, log VRAM, then capture.
+Fast repro (`actor_freeze_transitions=400k`) confirms: unfreeze → ~30k trans/s
+(vs ~14k frozen). Attempts 3–4 OOM/capture-invalid errors were misdiagnosed as
+allocator pressure; `expandable_segments` optional (both pass in repro).
+
+**Follow-up (not adopted tonight):** lr=0 actor freeze for single startup graph
+capture (~11 min freeze at full throughput) — see attempt 4 post-mortem.
 
 | Field | Value |
 | --- | --- |
 | Prepared (PDT) | 2026-07-28 |
-| Status | **attempt 4** |
+| Status | **attempt 5** |
