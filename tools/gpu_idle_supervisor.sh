@@ -605,4 +605,6 @@ main() {
   log "no launchable queue jobs remain"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

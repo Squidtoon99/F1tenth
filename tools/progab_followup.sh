@@ -8,12 +8,13 @@ PY="$REPO/.venv/bin/python"
 EXPERIMENT_DIR="$TRAINING/outputs/experiments/long-horizon-2b-sensors"
 FLOG="$TRAINING/outputs/runs/progab-followup.log"
 
-OUTCOME="${1:?usage: progab_followup.sh win|null|harm|void [threshold]}"
-EXTRA="${2:-4.5}"
-
 log() {
   echo "[$(date -Is)] progab-followup: $*" | tee -a "$FLOG"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+OUTCOME="${1:?usage: progab_followup.sh win|null|harm|void [threshold]}"
+EXTRA="${2:-4.5}"
 
 case "$OUTCOME" in
   win)
@@ -98,3 +99,4 @@ systemd-run --user \
   bash -lc "$(printf '%q ' "${CMD[@]}") >> $(printf '%q' "$RUN_DIR/run.log") 2>&1"
 
 log "systemd unit f1tenth-progab-followup.service started"
+fi

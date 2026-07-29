@@ -39,6 +39,7 @@ print(sum(r["s"] for r in w) / len(w) if w else 0)
 PY
 }
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 log "started (poll 5s when trans>=590M; stop chain on fail at Training finished)"
 
 while true; do
@@ -66,3 +67,4 @@ PY
     sleep 60
   fi
 done
+fi

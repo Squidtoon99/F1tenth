@@ -46,6 +46,7 @@ analyze_arm() {
   "$REPO/tools/progab_analyze.py" "$log_file" --milestone 600000000 --window 5000000
 }
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 log "shepherd started (attempt 7 from-noise)"
 
 # --- Phase 1: wait for control 600M ---
@@ -246,3 +247,4 @@ $(case "$VERDICT" in
 esac)"
 
 log "follow-up launched for verdict=$VERDICT ($FOLLOWUP)"
+fi
