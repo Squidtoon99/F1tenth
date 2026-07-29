@@ -371,12 +371,8 @@ class QRSACTrainer:
         self._adam_capturable = bool(
             compile and compile_mode == "reduce-overhead" and device.type == "cuda"
         )
-        self.actor_optimizer = Adam(
-            self.actor.parameters(),
-            lr=self.actor_lr,
-            fused=self._adam_fused,
-            capturable=self._adam_capturable,
-        )
+        self._actor_lr_tensor = None
+        self.actor_optimizer = self._build_actor_optimizer()
         self.critic_optimizer = Adam(
             list(self.critic1.parameters()) + list(self.critic2.parameters()),
             lr=self.critic_lr,
@@ -502,6 +498,34 @@ class QRSACTrainer:
             critic_loss=critic_loss.detach(),
         )
 
+    def _build_actor_optimizer(self) -> Adam:
+        if self._adam_capturable:
+            if self._actor_lr_tensor is None:
+                self._actor_lr_tensor = torch.tensor(
+                    [self.actor_lr], device=self.device, dtype=torch.float32
+                )
+            return Adam(
+                self.actor.parameters(),
+                lr=self._actor_lr_tensor,
+                fused=self._adam_fused,
+                capturable=True,
+            )
+        self._actor_lr_tensor = None
+        return Adam(
+            self.actor.parameters(),
+            lr=self.actor_lr,
+            fused=self._adam_fused,
+            capturable=False,
+        )
+
+    def set_actor_learning_rate(self, lr: float) -> None:
+        lr = float(lr)
+        if self._actor_lr_tensor is not None:
+            self._actor_lr_tensor.fill_(lr)
+            return
+        for group in self.actor_optimizer.param_groups:
+            group["lr"] = lr
+
     def _polyak_update(self) -> None:
         with torch.no_grad():
             torch._foreach_mul_(self._c1_target_params, 1.0 - self.smooth_factor)
@@ -524,12 +548,7 @@ class QRSACTrainer:
         self.critic2.apply(_reset_module_parameters)
         self.critic1_target.load_state_dict(self.critic1.state_dict())
         self.critic2_target.load_state_dict(self.critic2.state_dict())
-        self.actor_optimizer = Adam(
-            self.actor.parameters(),
-            lr=self.actor_lr,
-            fused=self._adam_fused,
-            capturable=self._adam_capturable,
-        )
+        self.actor_optimizer = self._build_actor_optimizer()
         self.critic_optimizer = Adam(
             list(self.critic1.parameters()) + list(self.critic2.parameters()),
             lr=self.critic_lr,

@@ -1001,28 +1001,43 @@ Throughput diagnosis: [`progab-throughput-diagnosis.md`](progab-throughput-diagn
 | 3 | 2026-07-29 00:04 | **aborted @20M** | Freeze gate **pass** (5.53 m/s / 172 s / cl~342). Unfreeze OOM + auto-restart; Arm B contaminated from 00:02. |
 | 4 | 2026-07-29 02:56 | **aborted @20M** | Solo freeze OK (5.53/172s/cl~342). Unfreeze OOM — root cause was inductor compiling actor backward *inside* capture stream, not VRAM exhaustion. Fixed in `11f5b13`. |
 | 5 | 2026-07-29 03:31 | **aborted @36M** | Capture fix **pass** (26330f3 live: 13.5k→30.4k trans/s @20M; `policy_20000768.pt` saved). Unfreeze+10M gate **fail**: lifespan **1.5 s** @30M (need ≥100 s); speed **4.4–4.8 m/s**; champion shredded within ~500k post-unfreeze. Arm B not started. |
-| 6 | — | **blocked** | A/B void until critic warm-up duration/strategy resolved (20M insufficient under self-play). |
+| 6 | (see below) | | Actor LR ramp 0→full over 10M post-unfreeze; one warm attempt then mandatory from-noise fallback |
 
-**Capture fix (`11f5b13` + logging in follow-up commit):** after actor unfreeze,
-run one eager update to compile policy backward outside CUDAGraph capture,
-`empty_cache`, log VRAM via `qrsac` logger, then capture on the next step.
-Fast repro (`tools/scratch_capture_repro.sh`, freeze=500k) completes unfreeze
-without OOM in ~5 min. Root cause of attempts 3–4: inductor compiling actor
-backward *inside* the capture stream — not long-run fragmentation alone (short
-freeze repro also needed the two-step deferral). `expandable_segments:True`
-neither required nor sufficient; attempt 5 captured successfully with it on.
+**Unfreeze collapse (attempt 5 — genuine result):** actor-only warm start into a
+fresh critic **does not survive handoff under self-play**. Pre-unfreeze @19.97M:
+**5.53 m/s / 172 s / critic_loss ~342** (never approached warmstart-probe's ~109 on
+fixed opponent). Within **0.5M transitions** (~950 actor updates) of step unfreeze
+to full `actor_lr=2.5e-05`: lifespan **172 s → 5.5 s**; by 30M **1.4–1.6 s**
+(all-OOB); `policy_loss` **−76.5 → +3.0**; speed **5.5 → 4.3 m/s**. Shock
+discontinuity + off-distribution critic exploitation, not capture plumbing.
 
-**Attempt 5 post-unfreeze collapse:** identical failure mode to attempt 2 but
-delayed by 20M freeze. Pre-unfreeze: 5.53 m/s / 172 s / cl~342. Within 500k
-transitions of unfreeze: lifespan 205 s → 5 s; by 30M pinned at **1.4–1.6 s**
-(all-OOB episodes). Actor gradients active (`policy_loss` −76 → +3). Conclusion:
-**20M critic warm-up is insufficient under self-play** — freeze preserves the
-champion; unfreeze immediately destroys it.
+**Attempt 6 — softened handoff:** linear `actor_lr` ramp over **10M transitions**
+post-unfreeze (`actor_lr_ramp_transitions=10_000_000`). Chosen because attempt 5
+collapsed in **500k** at full LR; 10M spreads ~950 destructive updates across
+~20× longer at 29k trans/s (~6 min ramp), without changing graph structure
+(capturable Adam uses a CUDA LR tensor updated outside replay — tested in
+`test_sequence_graph_survives_actor_lr_tensor_updates`).
 
-**Follow-up (not adopted):** lr=0 actor freeze for single startup graph capture
-(~11 min freeze at full throughput); longer freeze; or critic checkpoint restore.
+**Mandatory fallback (attempt 6 warm gate fail → immediate from-noise chain):**
+`PROGAB_MODE=noise`, no `--init-ckpt`, `replay_full_reinit: true`,
+`actor_freeze_transitions: 0`, **600M transitions/arm** (~5.7 h/arm @29k trans/s,
+~11.5 h total). Gates re-anchored to `pcplus600` (**5.38 m/s @600M**), not
+champion 5.67. Treatment interpretability: time above 5 m/s + `reward/progress`
+mean vs control **0.510** — if progress terms do not diverge, comparison is void.
+
+| Gate | Warm-start (300M) | From-noise (600M) |
+| --- | --- | --- |
+| Unfreeze + 10M | speed ≥5.2, lifespan ≥100 s | N/A |
+| @600M reference | — | speed ≥ **5.05 m/s** (pcplus600−0.15), lifespan ≥250 s |
+| A/B @horizon | preregistered 300M win/null/harm | same criteria @600M bucket means |
+| Void if | treatment progress ≈ control 0.510 | policy rarely above 5 m/s threshold |
+
+**Future work (not implemented):** full train-state checkpointing (critics,
+targets, optimizers, normalizers) — would make warm starts sound and provide
+crash resume (needed three times tonight: OnSuccess contamination, OOM restart,
+gate stop).
 
 | Field | Value |
 | --- | --- |
 | Prepared (PDT) | 2026-07-28 |
-| Status | **A/B blocked** — plumbing fixed, warm-start freeze validated, post-unfreeze gate failed |
+| Status | **attempt 6 warm launching** |

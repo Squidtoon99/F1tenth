@@ -651,3 +651,44 @@ def test_sequence_graph_capture_after_long_actor_freeze():
     before_replay = [p.detach().clone() for p in models.actor.parameters()]
     trainer.update_from_sequences(batch)
     assert _actor_l2_delta(models, before_replay) > 0.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_sequence_graph_survives_actor_lr_tensor_updates():
+    device = torch.device("cuda")
+    torch.manual_seed(47)
+    models = _gru_models(47)
+    models.actor.to(device)
+    models.critic1.to(device)
+    models.critic2.to(device)
+    models.critic1_target.to(device)
+    models.critic2_target.to(device)
+    trainer = QRSACTrainer(
+        models,
+        device,
+        gamma=0.9896,
+        n_step=N_STEP,
+        alpha=0.01,
+        burn_in=BURN_IN,
+        train_len=TRAIN_LEN,
+        compile=True,
+        compile_mode="reduce-overhead",
+    )
+    batch = {
+        key: value.to(device)
+        for key, value in _sequence_batch(num_seq=2, seed=48).items()
+    }
+    trainer.actor_frozen = True
+    trainer.update_from_sequences(batch)
+    for _ in range(2):
+        trainer.update_from_sequences(batch)
+    trainer.actor_frozen = False
+    trainer.set_actor_learning_rate(0.0)
+    trainer.update_from_sequences(batch)
+    trainer.set_actor_learning_rate(trainer.actor_lr * 0.25)
+    trainer.update_from_sequences(batch)
+    assert trainer._sequence_graph is not None
+    trainer.set_actor_learning_rate(trainer.actor_lr)
+    before = [p.detach().clone() for p in models.actor.parameters()]
+    trainer.update_from_sequences(batch)
+    assert _actor_l2_delta(models, before) > 0.0

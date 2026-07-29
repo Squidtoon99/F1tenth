@@ -29,6 +29,7 @@ from standalone_trainer import (
     REPLAY_TRAIN_LEN,
     ObsNormalizer,
     estimate_dual_replay_bytes,
+    effective_actor_learning_rate,
     interval_crossed,
     learner_updates_for_transitions,
     make_dual_replay_buffer,
@@ -525,6 +526,22 @@ def test_update_budget_is_independent_of_vector_width():
     assert collect(64) == collect(512) == (8, 0.0)
     assert not interval_crossed(499, 500, 1000)
     assert interval_crossed(999, 1001, 1000)
+
+
+def test_effective_actor_learning_rate_ramps_after_freeze():
+    base = 2.5e-5
+    freeze = 20_000_000
+    ramp = 10_000_000
+    assert effective_actor_learning_rate(0, freeze, ramp, base) == 0.0
+    assert effective_actor_learning_rate(freeze - 1, freeze, ramp, base) == 0.0
+    assert effective_actor_learning_rate(freeze, freeze, ramp, base) == 0.0
+    mid = freeze + ramp // 2
+    assert effective_actor_learning_rate(mid, freeze, ramp, base) == pytest.approx(
+        base * 0.5
+    )
+    assert effective_actor_learning_rate(freeze + ramp, freeze, ramp, base) == base
+    assert effective_actor_learning_rate(freeze + ramp + 1, freeze, ramp, base) == base
+    assert effective_actor_learning_rate(freeze + 1, freeze, 0, base) == base
 
 
 def test_transition_cadences_are_independent_of_vector_width():
