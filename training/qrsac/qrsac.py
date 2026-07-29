@@ -334,6 +334,8 @@ class QRSACTrainer:
         assert_bootstrap_alignment: bool = False,
         actor_lr: float = 2.5e-5,
         critic_lr: float = 2.5e-5,
+        actor_freeze_transitions: int = 0,
+        actor_lr_ramp_transitions: int = 0,
     ):
         self.device = device
         self.actor = models.actor
@@ -370,6 +372,9 @@ class QRSACTrainer:
         self._adam_fused = bool(compile and device.type == "cuda")
         self._adam_capturable = bool(
             compile and compile_mode == "reduce-overhead" and device.type == "cuda"
+        )
+        self._actor_lr_schedule_active = (
+            int(actor_freeze_transitions) > 0 or int(actor_lr_ramp_transitions) > 0
         )
         self._actor_lr_tensor = None
         self.actor_optimizer = self._build_actor_optimizer()
@@ -499,7 +504,7 @@ class QRSACTrainer:
         )
 
     def _build_actor_optimizer(self) -> Adam:
-        if self._adam_capturable:
+        if self._adam_capturable and self._actor_lr_schedule_active:
             if self._actor_lr_tensor is None:
                 self._actor_lr_tensor = torch.tensor(
                     [self.actor_lr], device=self.device, dtype=torch.float32
@@ -515,7 +520,7 @@ class QRSACTrainer:
             self.actor.parameters(),
             lr=self.actor_lr,
             fused=self._adam_fused,
-            capturable=False,
+            capturable=self._adam_capturable,
         )
 
     def set_actor_learning_rate(self, lr: float) -> None:

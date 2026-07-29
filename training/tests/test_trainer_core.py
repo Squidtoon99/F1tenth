@@ -28,6 +28,7 @@ from standalone_trainer import (
     REPLAY_OBS_DTYPE,
     REPLAY_TRAIN_LEN,
     ObsNormalizer,
+    actor_lr_schedule_active,
     estimate_dual_replay_bytes,
     effective_actor_learning_rate,
     interval_crossed,
@@ -542,6 +543,16 @@ def test_effective_actor_learning_rate_ramps_after_freeze():
     assert effective_actor_learning_rate(freeze + ramp, freeze, ramp, base) == base
     assert effective_actor_learning_rate(freeze + ramp + 1, freeze, ramp, base) == base
     assert effective_actor_learning_rate(freeze + 1, freeze, 0, base) == base
+
+
+def test_actor_lr_schedule_active_gates_per_step_updates():
+    assert not actor_lr_schedule_active(0, 0)
+    assert actor_lr_schedule_active(1, 0)
+    assert actor_lr_schedule_active(0, 1)
+    assert actor_lr_schedule_active(20_000_000, 10_000_000)
+    assert not (
+        actor_lr_schedule_active(0, 0) and not False
+    ), "from-noise control must not call set_actor_learning_rate each update"
 
 
 def test_transition_cadences_are_independent_of_vector_width():

@@ -673,6 +673,7 @@ def test_sequence_graph_survives_actor_lr_tensor_updates():
         train_len=TRAIN_LEN,
         compile=True,
         compile_mode="reduce-overhead",
+        actor_lr_ramp_transitions=10_000_000,
     )
     batch = {
         key: value.to(device)
@@ -692,3 +693,82 @@ def test_sequence_graph_survives_actor_lr_tensor_updates():
     before = [p.detach().clone() for p in models.actor.parameters()]
     trainer.update_from_sequences(batch)
     assert _actor_l2_delta(models, before) > 0.0
+
+
+def _scalar_actor_lr(trainer: QRSACTrainer) -> float:
+    lr = trainer.actor_optimizer.param_groups[0]["lr"]
+    assert isinstance(lr, float)
+    return lr
+
+
+@pytest.mark.parametrize(
+    ("compile", "compile_mode"),
+    [
+        (False, "default"),
+        (True, "default"),
+        pytest.param(
+            True,
+            "reduce-overhead",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA unavailable"
+            ),
+        ),
+    ],
+)
+def test_actor_optimizer_scalar_lr_when_schedule_disabled(compile, compile_mode):
+    device = (
+        torch.device("cuda")
+        if compile and compile_mode == "reduce-overhead"
+        else torch.device("cpu")
+    )
+    models = _gru_models(91)
+    if device.type == "cuda":
+        models.actor.to(device)
+        models.critic1.to(device)
+        models.critic2.to(device)
+        models.critic1_target.to(device)
+        models.critic2_target.to(device)
+    trainer = QRSACTrainer(
+        models,
+        device,
+        gamma=0.9896,
+        n_step=N_STEP,
+        alpha=0.01,
+        burn_in=BURN_IN,
+        train_len=TRAIN_LEN,
+        compile=compile,
+        compile_mode=compile_mode,
+        actor_freeze_transitions=0,
+        actor_lr_ramp_transitions=0,
+    )
+    assert not trainer._actor_lr_schedule_active
+    assert trainer._actor_lr_tensor is None
+    assert _scalar_actor_lr(trainer) == pytest.approx(trainer.actor_lr)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_actor_optimizer_tensor_lr_when_schedule_enabled():
+    device = torch.device("cuda")
+    models = _gru_models(92)
+    models.actor.to(device)
+    models.critic1.to(device)
+    models.critic2.to(device)
+    models.critic1_target.to(device)
+    models.critic2_target.to(device)
+    trainer = QRSACTrainer(
+        models,
+        device,
+        gamma=0.9896,
+        n_step=N_STEP,
+        alpha=0.01,
+        burn_in=BURN_IN,
+        train_len=TRAIN_LEN,
+        compile=True,
+        compile_mode="reduce-overhead",
+        actor_lr_ramp_transitions=10_000_000,
+    )
+    assert trainer._actor_lr_schedule_active
+    assert trainer._actor_lr_tensor is not None
+    lr = trainer.actor_optimizer.param_groups[0]["lr"]
+    assert isinstance(lr, torch.Tensor)
+    assert lr.device.type == "cuda"

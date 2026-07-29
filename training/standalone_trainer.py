@@ -443,6 +443,13 @@ def interval_crossed(previous: int, current: int, interval: int) -> bool:
     return interval > 0 and current // interval > previous // interval
 
 
+def actor_lr_schedule_active(
+    actor_freeze_transitions: int,
+    actor_lr_ramp_transitions: int,
+) -> bool:
+    return actor_freeze_transitions > 0 or actor_lr_ramp_transitions > 0
+
+
 def effective_actor_learning_rate(
     env_transitions: int,
     actor_freeze_transitions: int,
@@ -1170,6 +1177,8 @@ def build_models(
         compile_mode=compile_mode,
         actor_lr=float(cfg["model"]["actor_lr"]),
         critic_lr=float(cfg["model"]["critic_lr"]),
+        actor_freeze_transitions=int(cfg["model"]["actor_freeze_transitions"]),
+        actor_lr_ramp_transitions=int(cfg["model"]["actor_lr_ramp_transitions"]),
     )
     return models, trainer
 
@@ -2008,7 +2017,9 @@ def main():
                     trainer.actor_frozen = (
                         env_transitions < actor_freeze_transitions
                     )
-                    if not trainer.actor_frozen:
+                    if actor_lr_schedule_active(
+                        actor_freeze_transitions, actor_lr_ramp_transitions
+                    ) and not trainer.actor_frozen:
                         trainer.set_actor_learning_rate(
                             effective_actor_learning_rate(
                                 env_transitions,
