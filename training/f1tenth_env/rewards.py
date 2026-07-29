@@ -230,11 +230,31 @@ def reward_rear_end(
     return -_cadence(reward_cfg) * fire * closing_sq
 
 
+def _shape_forward_progress_ds(
+    ds: torch.Tensor, reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    control_dt = float(reward_cfg.get("control_dt", 0.1))
+    ds_thr = float(reward_cfg.get("progress_speed_threshold_mps", 0.0)) * control_dt
+    multiplier = float(reward_cfg.get("progress_high_speed_multiplier", 1.0))
+    saturation_mps = float(reward_cfg.get("progress_speed_saturation_mps", 0.0))
+    ds_sat = saturation_mps * control_dt
+    forward = torch.clamp(ds, min=0.0)
+    if saturation_mps > 0.0:
+        boosted = ds_thr + multiplier * (forward - ds_thr)
+        saturated = ds_thr + multiplier * (ds_sat - ds_thr) + (forward - ds_sat)
+        return torch.where(
+            forward <= ds_thr,
+            forward,
+            torch.where(forward > ds_sat, saturated, boosted),
+        )
+    boosted = ds_thr + multiplier * (forward - ds_thr)
+    return torch.where(forward <= ds_thr, forward, boosted)
+
+
 def reward_progress(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
-    del reward_cfg
-    return step_state["progress_ds"]
+    return _shape_forward_progress_ds(step_state["progress_ds"], reward_cfg)
 
 
 def reward_wall_contact(

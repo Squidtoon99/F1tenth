@@ -592,6 +592,17 @@ class WarpF1tenthEnv:
         progress_scale = float(scales.get("progress", 0.0))
         params.progress_forward = progress_scale
         params.progress_backward = progress_scale
+        saturation_mps = float(
+            self.reward_cfg.get("progress_speed_saturation_mps", 0.0)
+        )
+        params.progress_speed_threshold_ds = float(
+            self.reward_cfg.get("progress_speed_threshold_mps", 0.0)
+        ) * self.control_dt
+        params.progress_high_speed_multiplier = float(
+            self.reward_cfg.get("progress_high_speed_multiplier", 1.0)
+        )
+        params.progress_speed_saturation_enabled = 1 if saturation_mps > 0.0 else 0
+        params.progress_speed_saturation_ds = saturation_mps * self.control_dt
         params.progress_max_lateral = float(
             self.reward_cfg.get("progress_max_lateral_m", 1.0)
         )

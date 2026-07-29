@@ -143,6 +143,9 @@ DEFAULT_CONFIG = {
         "lidar_offset_yaw": 0.0,
     },
     "reward": {
+        "progress_speed_threshold_mps": 0.0,
+        "progress_high_speed_multiplier": 1.0,
+        "progress_speed_saturation_mps": 0.0,
         "progress_max_lateral_m": 1.0,
         "wall_contact_coefficient": 20.0,
         "wall_cost_mode": "one_shot",

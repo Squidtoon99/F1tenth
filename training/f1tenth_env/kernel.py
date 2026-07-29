@@ -294,6 +294,10 @@ class CorridorDistanceField:
 class RewardParams:
     progress_forward: wp.float32
     progress_backward: wp.float32
+    progress_speed_threshold_ds: wp.float32
+    progress_high_speed_multiplier: wp.float32
+    progress_speed_saturation_ds: wp.float32
+    progress_speed_saturation_enabled: wp.int32
     progress_max_lateral: wp.float32
     wall_contact_coefficient: wp.float32
     control_dt: wp.float32
@@ -1109,6 +1113,22 @@ def scripted_physics_opponent_action(
 
 
 @wp.func
+def shape_forward_progress(
+    ds: wp.float32,
+    ds_thr: wp.float32,
+    ds_sat: wp.float32,
+    multiplier: wp.float32,
+    saturation_enabled: wp.int32,
+) -> wp.float32:
+    if ds <= ds_thr:
+        return ds
+    boosted = ds_thr + multiplier * (ds - ds_thr)
+    if saturation_enabled != 0 and ds > ds_sat:
+        return ds_thr + multiplier * (ds_sat - ds_thr) + (ds - ds_sat)
+    return boosted
+
+
+@wp.func
 def compute_reward_and_done(
     env_id: wp.int32,
     ego: VehicleLocal,
@@ -1166,8 +1186,16 @@ def compute_reward_and_done(
     if boundary_event:
         progress_ds = 0.0
 
+    forward_ds = wp.max(progress_ds, 0.0)
+    shaped_forward = shape_forward_progress(
+        forward_ds,
+        reward.progress_speed_threshold_ds,
+        reward.progress_speed_saturation_ds,
+        reward.progress_high_speed_multiplier,
+        reward.progress_speed_saturation_enabled,
+    )
     out.progress = (
-        reward.progress_forward * wp.max(progress_ds, 0.0)
+        reward.progress_forward * shaped_forward
         + reward.progress_backward * wp.min(progress_ds, 0.0)
     )
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy

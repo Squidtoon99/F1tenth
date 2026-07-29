@@ -856,3 +856,80 @@ with lifespan ≥ **250 s**. Terminal tick 5.385 m/s is the reproduction bar.
 | --- | --- |
 | Prepared (PDT) | 2026-07-27 |
 | Status | **pending launch** (awaiting WSL reboot sequencing) |
+
+---
+
+## progab-a001 — piecewise high-speed progress A/B (2026-07-28)
+
+**Question:** does a superlinear forward-progress bonus above 5 m/s widen the
+risk budget enough for the policy to exceed the ~5 m/s durability plateau seen
+in `pcplus2b-a001`, without sacrificing lifespan?
+
+**Reward shape (forward arc-length `ds` per control step, `dt = control_dt`):**
+
+Let `ds_thr = progress_speed_threshold_mps × dt`,
+`ds_sat = progress_speed_saturation_mps × dt`,
+`m = progress_high_speed_multiplier`. Shaped forward component `f(ds)`:
+
+| Region | Condition | `f(ds)` |
+| --- | --- | --- |
+| baseline | `ds ≤ ds_thr` | `ds` |
+| boosted | `ds_thr < ds ≤ ds_sat` | `ds_thr + m × (ds − ds_thr)` |
+| saturated | `ds > ds_sat` | `ds_thr + m × (ds_sat − ds_thr) + (ds − ds_sat)` |
+
+Total progress term: `progress_scale × f(max(progress_ds, 0))` plus unchanged
+backward term on `min(progress_ds, 0)`. Zeroed on boundary events. Defaults
+(`threshold=0`, `multiplier=1`, `saturation=0`) recover linear `ds` exactly.
+
+**Champion warm-start:** `pcplus2b-a001/checkpoints/policy_1443840000.pt`
+(nearest export to the 1.4466B peak tick @1446604800: **5.672 m/s / 237.0 s**
+lifespan; alternates 1433600000 @5.454 m/s / 40 s and 1454080000 @5.451 m/s /
+143 s are strictly worse on the speed×durability objective).
+
+**Arms (300M transitions each, sequential on single GPU, seed 42):**
+
+| Arm | Run id | Config | Progress delta |
+| --- | --- | --- | --- |
+| A (control) | `progab-control-a001` | `progab-control-a001.json` | disabled defaults |
+| B (treatment) | `progab-super-a001` | `progab-super-a001.json` | threshold 5.0, mult 3.0, sat 8.0 |
+
+Both: `--init-ckpt` champion, `actor_freeze_transitions: 0`, self-play as
+`pcplus2b-a001`, 1024 envs, 3M replay, `replay_full_reinit: true`,
+`alpha: 0.01`, compile reduce-overhead.
+
+**Warm-start anchor (do not compare to zero):** champion metrics at init —
+**5.67 m/s / ~237 s** lifespan, timeout-dominated terminations.
+
+### Preregistered gates
+
+Compare **speed at comparable lifespan**, not speed alone. A treatment arm that
+gains +0.3 m/s while lifespan falls below 120 s is **not** a win.
+
+**Early check @50M:** log 50M-bucket mean speed and lifespan for both arms.
+Continue unless an arm drops below **5.0 m/s with lifespan < 100 s** (clear
+harm vs warm-start).
+
+| Outcome | Criterion @300M (50M bucket means) |
+| --- | --- |
+| **Treatment wins** | B mean speed ≥ **5.85 m/s** with lifespan ≥ **200 s**, AND B speed ≥ A speed + **0.10 m/s** at matched lifespan (±15 s window) OR B lifespan ≥ A lifespan + **30 s** at matched speed (±0.05 m/s). Timeout share ≥ 60% for both. |
+| **No effect** | \|B − A\| speed < **0.10 m/s** AND \|B − A\| lifespan < **30 s** — reward shape insufficient to shift operating point. |
+| **Harm** | Either arm mean speed < **5.20 m/s** OR lifespan < **120 s** with OOB terminations > 40% of episodes; OR B speed > A but B lifespan < **150 s** while A ≥ **180 s** (speed-for-durability trade rejected). |
+
+**Control arm secondary question:** does A reproduce the late `pcplus2b-a001`
+collapse from the champion (lifespan decay toward OOB-dominated terminations)?
+If A holds ≥ **200 s** lifespan through 300M, the collapse was training-state
+specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
+
+### Infrastructure
+
+- Systemd: `f1tenth-progab-control-a001.service` → `OnSuccess=` chain to
+  `f1tenth-progab-super-a001.service`
+- GPU idle queue: `pcplus2b-a001` marked complete/abandoned; progab arms queued
+- Run dirs pre-created under `training/outputs/runs/`
+
+### Launch record
+
+| Field | Value |
+| --- | --- |
+| Prepared (PDT) | 2026-07-28 |
+| Status | **pending launch** |
