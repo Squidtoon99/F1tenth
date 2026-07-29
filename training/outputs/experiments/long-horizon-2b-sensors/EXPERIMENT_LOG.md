@@ -894,11 +894,27 @@ lifespan; alternates 1433600000 @5.454 m/s / 40 s and 1454080000 @5.451 m/s /
 | B (treatment) | `progab-super-a001` | `progab-super-a001.json` | threshold 5.0, mult 3.0, sat 8.0 |
 
 Both: `--init-ckpt` champion, `actor_freeze_transitions: 0`, self-play as
-`pcplus2b-a001`, 1024 envs, 3M replay, `replay_full_reinit: true`,
-`alpha: 0.01`, compile reduce-overhead.
+`pcplus2b-a001`, 1024 envs, 3M replay, **`replay_full_reinit: false`**
+(warm-start continuation — `true` is from-noise only and resets actor weights
+when the buffer first fills), `alpha: 0.01`, compile reduce-overhead.
+
+**Self-play pool @ warm-start:** seed from champion snapshot at
+`init_transitions` (trainer default); do **not** rely on `reseed_after_reinit`
+(that path only runs when `replay_full_reinit` fires). Pool begins with the
+loaded champion policy, then grows via normal snapshot/refresh intervals.
+
+**Learning rates:** keep default `actor_lr=critic_lr=2.5e-05` — same as
+`pcplus2b-a001` and prior warm-start probes; appropriate for fine-tuning a
+converged policy, not a from-scratch cold start.
 
 **Warm-start anchor (do not compare to zero):** champion metrics at init —
 **5.67 m/s / ~237 s** lifespan, timeout-dominated terminations.
+
+**Relaunch gate @15M:** if Arm A is still **< 4.0 m/s** with lifespan **< 20 s**,
+stop — warm-start is broken. After fix, expect recovery toward ~5.3–5.7 m/s
+within ~10–20M (replay buffer refills with on-policy data but actor weights
+persist). Verify **no** `Replay-full network reinitialization` log line when
+buffer hits ~3M.
 
 ### Preregistered gates
 
@@ -929,7 +945,12 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 
 ### Launch record
 
+| Attempt | Started (PDT) | Status | Notes |
+| --- | --- | --- | --- |
+| 1 | 2026-07-28 23:50 | **aborted @~5M** | Inherited `replay_full_reinit: true` from `pcplus2b-a001`; Lee reinit @2.998M destroyed champion weights @23:52:29. Metrics were from-noise (~3.6 m/s / 1.2 s). Run dir wiped; W&B run discarded. |
+| 2 | (pending) | — | Configs fixed: `replay_full_reinit: false` both arms |
+
 | Field | Value |
 | --- | --- |
 | Prepared (PDT) | 2026-07-28 |
-| Status | **pending launch** |
+| Status | **relaunch pending** |
