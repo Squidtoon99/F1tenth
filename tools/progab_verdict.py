@@ -6,6 +6,10 @@ import re
 import sys
 from pathlib import Path
 
+_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO / "training"))
+from run_log_tools import filter_log_text, filter_parsed_rows  # noqa: E402
+
 PCPLUS600_600M = 5.38
 PCPLUS600_MIN = 5.05
 CONTROL_PROGRESS_BASELINE = 0.510
@@ -13,7 +17,7 @@ THR_MPS = 5.0
 
 
 def parse_log(path: Path) -> list[dict]:
-    text = path.read_text(errors="replace")
+    text = filter_log_text(path.read_text(errors="replace"), path)
     lines = text.splitlines()
     rows: list[dict] = []
     for i, line in enumerate(lines):
@@ -43,7 +47,7 @@ def parse_log(path: Path) -> list[dict]:
             if pm and "rewards:" in lines[j]:
                 row["progress"] = float(pm.group(1))
         rows.append(row)
-    return rows
+    return filter_parsed_rows(rows, path, trans_key="t")
 
 
 def nearest(rows: list[dict], target: int) -> dict | None:

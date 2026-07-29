@@ -24,3 +24,7 @@ def run_log_path(run_dir: Path) -> Path:
 
 def config_snapshot_path(run_dir: Path) -> Path:
     return run_dir / "config.json"
+
+
+def run_lock_path(run_dir: Path) -> Path:
+    return run_dir / "run.lock"

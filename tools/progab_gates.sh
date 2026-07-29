@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Sourceable progab milestone gates (400M interim, 1B validity). No side effects.
 
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # pcplus2b-a001 anchors (from-noise self-play reproduction run)
 PCPLUS2B_400M_SPEED=4.91
 PCPLUS2B_400M_LIFE=54.6
@@ -13,18 +15,23 @@ PCPLUS2B_1B_LIFE_MIN=200.0
 
 latest_transitions() {
   local log_file="$1"
-  python3 - "$log_file" <<'PY'
+  REPO="$REPO" python3 - "$log_file" <<'PY'
+import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.environ["REPO"], "training"))
+from run_log_tools import filter_log_text
 
 path = Path(sys.argv[1])
 if not path.is_file():
     print(0)
     raise SystemExit(0)
+text = filter_log_text(path.read_text(errors="replace"), path)
 vals = re.findall(
     r"standalone_trainer INFO: ticks=\d+ transitions=(\d+)",
-    path.read_text(errors="replace"),
+    text,
 )
 print(int(vals[-1]) if vals else 0)
 PY
@@ -32,19 +39,23 @@ PY
 
 check_interim_400m_gate() {
   local log_file="$1"
-  python3 - "$log_file" \
+  REPO="$REPO" python3 - "$log_file" \
     "$PCPLUS2B_400M_SPEED" "$PCPLUS2B_400M_LIFE" \
     "$PCPLUS2B_400M_SPEED_MIN" "$PCPLUS2B_400M_LIFE_MIN" <<'PY'
+import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.environ["REPO"], "training"))
+from run_log_tools import filter_log_text, filter_parsed_rows
 
 path = Path(sys.argv[1])
 ref_speed, ref_life = float(sys.argv[2]), float(sys.argv[3])
 min_speed, min_life = float(sys.argv[4]), float(sys.argv[5])
 rows = []
 cur = {}
-for line in path.read_text(errors="replace").splitlines():
+for line in filter_log_text(path.read_text(errors="replace"), path).splitlines():
     m = re.search(r"transitions=(\d+).*episode_lifespan=([\d.]+)s", line)
     if m and "ticks=" in line:
         cur = {"t": int(m.group(1)), "life": float(m.group(2))}
@@ -52,6 +63,7 @@ for line in path.read_text(errors="replace").splitlines():
     if sm and cur:
         cur["s"] = float(sm.group(1))
         rows.append(dict(cur))
+rows = filter_parsed_rows(rows, path, trans_key="t")
 life_band = (ref_life - 10.0, ref_life + 10.0)
 w = [
     r for r in rows
@@ -75,19 +87,23 @@ PY
 
 check_validity_1b_gate() {
   local log_file="$1"
-  python3 - "$log_file" \
+  REPO="$REPO" python3 - "$log_file" \
     "$PCPLUS2B_1B_SPEED" "$PCPLUS2B_1B_LIFE" \
     "$PCPLUS2B_1B_SPEED_MIN" "$PCPLUS2B_1B_LIFE_MIN" <<'PY'
+import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.environ["REPO"], "training"))
+from run_log_tools import filter_log_text, filter_parsed_rows
 
 path = Path(sys.argv[1])
 ref_speed, ref_life = float(sys.argv[2]), float(sys.argv[3])
 min_speed, min_life = float(sys.argv[4]), float(sys.argv[5])
 rows = []
 cur = {}
-for line in path.read_text(errors="replace").splitlines():
+for line in filter_log_text(path.read_text(errors="replace"), path).splitlines():
     m = re.search(r"transitions=(\d+).*episode_lifespan=([\d.]+)s", line)
     if m and "ticks=" in line:
         cur = {"t": int(m.group(1)), "life": float(m.group(2))}
@@ -95,6 +111,7 @@ for line in path.read_text(errors="replace").splitlines():
     if sm and cur:
         cur["s"] = float(sm.group(1))
         rows.append(dict(cur))
+rows = filter_parsed_rows(rows, path, trans_key="t")
 speed_w = [r for r in rows if 950_000_000 <= r["t"] <= 1_000_000_000 and "s" in r]
 life_w = [r for r in rows if 950_000_000 <= r["t"] <= 1_000_000_000]
 if not speed_w or not life_w:

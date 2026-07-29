@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +48,13 @@ from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
 from selfplay import SelfPlayManager
-from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
+from run_layout import (
+    checkpoint_dir,
+    config_snapshot_path,
+    default_run_dir,
+    run_lock_path,
+    run_log_path,
+)
 from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
 from qrsac.replay import (
     REPLAY_BURN_IN,
@@ -947,6 +954,23 @@ def training_source_git_state(training_root: Path) -> dict:
             f"Training source overlay is active ({overlay_marker}). "
             "Stop the overlay launcher so tracked files are restored."
         )
+    if os.environ.get("TRAINING_SKIP_DIRTY_TREE_GUARD") == "1":
+        head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        branch = subprocess.run(
+            ["git", "-C", str(repo_root), "symbolic-ref", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        return {
+            "git_head": head,
+            "git_branch": branch.stdout.strip() if branch.returncode == 0 else None,
+            "training_tree_clean": False,
+        }
     status = subprocess.run(
         ["git", "-C", str(repo_root), "status", "--porcelain", "training"],
         capture_output=True,
@@ -1503,6 +1527,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run artifact directory (default: outputs/runs/<run-id>/).",
     )
     parser.add_argument(
+        "--reuse-run-dir",
+        action="store_true",
+        help=(
+            "Allow attaching to a run directory whose config.json belongs to a "
+            "different run (manual cleanup required; default is refuse)."
+        ),
+    )
+    parser.add_argument(
         "--wandb",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1528,6 +1560,116 @@ def _explicit_cli_dests(argv: list[str] | None = None) -> set[str]:
     for action in sentinel._actions:
         action.default = argparse.SUPPRESS
     return set(vars(sentinel.parse_args(argv)).keys())
+
+
+def run_identity_fingerprint(args: argparse.Namespace) -> dict:
+    return {
+        "config": str(Path(args.config).resolve()) if args.config else None,
+        "total_transitions": int(args.total_transitions),
+        "init_ckpt": (
+            str(Path(args.init_ckpt).resolve())
+            if getattr(args, "init_ckpt", None)
+            else None
+        ),
+        "seed": int(args.seed),
+        "num_envs": int(args.num_envs),
+    }
+
+
+def fingerprint_from_snapshot(snapshot: dict) -> dict:
+    args = snapshot.get("args", {})
+    return {
+        "config": args.get("config"),
+        "total_transitions": int(args.get("total_transitions", 0)),
+        "init_ckpt": args.get("init_ckpt"),
+        "seed": int(args.get("seed", 0)),
+        "num_envs": int(args.get("num_envs", 0)),
+    }
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _run_attach_error(message: str) -> None:
+    print(f"ERROR: {message}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def assert_run_dir_exclusive(run_dir: Path, args: argparse.Namespace) -> None:
+    """Refuse to attach when run_dir already belongs to another live or completed run."""
+    fingerprint = run_identity_fingerprint(args)
+    config_path = config_snapshot_path(run_dir)
+    log_path = run_log_path(run_dir)
+    lock_path = run_lock_path(run_dir)
+
+    if log_path.is_file():
+        log_text = log_path.read_text(errors="replace")
+        if "Training finished" in log_text:
+            _run_attach_error(
+                f"{run_dir} already contains a completed run (Training finished in run.log). "
+                "Pick a new --run-id or archive the directory before restarting."
+            )
+
+    if config_path.is_file():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            _run_attach_error(
+                f"{run_dir}/config.json exists but is unreadable ({exc}). "
+                "Refusing to overwrite an ambiguous run directory."
+            )
+        existing_fp = fingerprint_from_snapshot(existing)
+        if existing_fp != fingerprint and not getattr(args, "reuse_run_dir", False):
+            _run_attach_error(
+                f"{run_dir} belongs to a different run "
+                f"(existing config={existing_fp.get('config')} "
+                f"total_transitions={existing_fp.get('total_transitions')} "
+                f"init_ckpt={existing_fp.get('init_ckpt')}); "
+                f"refusing to attach "
+                f"(config={fingerprint.get('config')} "
+                f"total_transitions={fingerprint.get('total_transitions')} "
+                f"init_ckpt={fingerprint.get('init_ckpt')})."
+            )
+
+    if lock_path.is_file():
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            _run_attach_error(
+                f"{run_dir}/run.lock exists but is unreadable ({exc}). "
+                "Another trainer may own this directory; resolve manually."
+            )
+        other_pid = lock.get("pid")
+        lock_fp = lock.get("fingerprint")
+        if isinstance(other_pid, int) and other_pid != os.getpid() and _pid_alive(other_pid):
+            _run_attach_error(
+                f"{run_dir} is locked by live trainer pid={other_pid} "
+                f"(started {lock.get('started_at')}). Refusing second attach."
+            )
+        if lock_fp and lock_fp != fingerprint:
+            _run_attach_error(
+                f"{run_dir}/run.lock fingerprint does not match this launch "
+                f"(locked={lock_fp}, requested={fingerprint})."
+            )
+
+
+def write_run_lock(run_dir: Path, args: argparse.Namespace) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "fingerprint": run_identity_fingerprint(args),
+    }
+    run_lock_path(run_dir).write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def parse_args(
@@ -1580,10 +1722,12 @@ def main():
     )
     run_id = args.run_id or uuid.uuid4().hex[:8]
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
+    assert_run_dir_exclusive(run_dir, args)
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = checkpoint_dir(run_dir)
     config_path = config_snapshot_path(run_dir)
     trainer_log_path = run_log_path(run_dir)
+    write_run_lock(run_dir, args)
 
     log = setup_trainer_logging(log_file=trainer_log_path)
     log.info("Run id: %s  run_dir: %s  checkpoints: %s", run_id, run_dir, ckpt_dir)
