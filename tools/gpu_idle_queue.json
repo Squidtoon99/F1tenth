@@ -4,7 +4,9 @@
     "pool600-a001",
     "pool600-a002",
     "pool600-fast2b-a001",
-    "pcplus2b-a001"
+    "pcplus2b-a001",
+    "progab-control-a001",
+    "progab-super-a001"
   ],
   "recovery_2b": {
     "horizon": 2000000000,

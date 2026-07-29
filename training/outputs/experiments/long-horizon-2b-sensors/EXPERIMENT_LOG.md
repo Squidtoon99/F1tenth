@@ -955,10 +955,42 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 
 ### Infrastructure
 
-- Systemd: `f1tenth-progab-control-a001.service` → `OnSuccess=` chain to
-  `f1tenth-progab-super-a001.service`
-- GPU idle queue: `pcplus2b-a001` marked complete/abandoned; progab arms queued
-- Run dirs pre-created under `training/outputs/runs/`
+- **Attempt 4+:** single unit `f1tenth-progab-a001.service` runs
+  `tools/progab_chain.sh` (Arm A → Arm B in one process tree, one GPU tenant).
+  Per-arm units **disabled and masked**; not startable by idle-GPU supervisor
+  (`progab-*` in `abandoned_run_ids`).
+- **`Restart=no`** on the chain unit — no silent re-entry from init checkpoint.
+- **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** on both arms (chain
+  env) to mitigate CUDA-graph capture OOM after long eager freeze.
+- Checkpoint cadence: `export_interval_transitions=10_000_000` (would have
+  preserved the 20M freeze window on attempt 3).
+
+**Banned for this class of run (attempt 3 post-mortem):**
+
+| Pattern | Why |
+| --- | --- |
+| `OnSuccess=` cross-unit chaining | Fires on manual `systemctl stop` (exit 143/0), not only natural completion — attempt 2 stop launched stale Arm B alongside attempt 3. |
+| `Restart=on-failure` | With actor-only init ckpt and no train-state resume, restart silently discards completed freeze work and re-enters from transition 0 (attempt 3 lost 20M @02:45). |
+
+### Attempt 3 outcome (2026-07-29) — warm-start validated, A/B null
+
+**Scientific result:** the 20M actor freeze **works**. Through unfreeze the
+champion held **5.53 m/s** with **172 s** lifespan (timeouts dominating),
+`critic_loss` plateau **335–350** (self-play critic; never approached
+warmstart-probe's ~109 on fixed opponent). This confirms warm-start viability
+under self-play + freeze even though the A/B produced no treatment data.
+
+**Plumbing failures (invalid A/B):**
+
+1. Arm B started via `OnSuccess` on attempt 2 manual stop @00:02 with stale
+   `actor_freeze_transitions=0`; dual GPU tenant ~2.2k trans/s (vs ~29k solo).
+2. No checkpoints written (`export_interval` never crossed before crash; run dir
+   empty).
+3. @20M unfreeze: `Actor unfreeze` logged @20,000,768; first post-unfreeze
+   CUDA graph capture → `CUDNN_STATUS_INTERNAL_ERROR_DEVICE_ALLOCATION_FAILED`;
+   `Restart=on-failure` restarted from init @716k.
+
+Throughput diagnosis: [`progab-throughput-diagnosis.md`](progab-throughput-diagnosis.md).
 
 ### Launch record
 
@@ -966,9 +998,10 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 | --- | --- | --- | --- |
 | 1 | 2026-07-28 23:50 | **aborted @~5M** | `replay_full_reinit: true`; Lee reinit @2.998M wiped actor. ~3.6 m/s / 1.2 s. |
 | 2 | 2026-07-28 23:57 | **aborted @~5.7M** | `replay_full_reinit: false` but no actor freeze; ~10.8k actor updates on random critic shredded champion (4.15 m/s / 1.2 s, 4055 OOB/0 timeout). |
-| 3 | 2026-07-29 00:04 | **live** | `actor_freeze_transitions: 20M`; @1.43M: 5.53 m/s / 58 s lifespan / 37 OOB per window (vs attempt 2 @5.7M: 4.15 m/s / 1.2 s / 4055 OOB) |
+| 3 | 2026-07-29 00:04 | **aborted @20M** | Freeze gate **pass** (5.53 m/s / 172 s / cl~342). Unfreeze OOM + auto-restart; Arm B contaminated from 00:02. |
+| 4 | (see below) | | Chain unit + plumbing fixes |
 
 | Field | Value |
 | --- | --- |
 | Prepared (PDT) | 2026-07-28 |
-| Status | **relaunch pending** |
+| Status | **attempt 4** |

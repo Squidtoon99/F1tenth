@@ -1,0 +1,26 @@
+[Unit]
+Description=F1TENTH progab-a001: sequential progress-shape A/B (control then treatment), 300M each
+After=default.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/projects/F1tenth/training
+Environment=WANDB_MODE=online
+Environment=WANDB_GROUP=long-horizon-2b-sensors
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+Environment=CC=/home/ubuntu/miniconda3/bin/x86_64-conda-linux-gnu-cc
+Environment=CXX=/home/ubuntu/miniconda3/bin/x86_64-conda-linux-gnu-c++
+Environment=PATH=/home/ubuntu/miniconda3/bin:/home/ubuntu/projects/F1tenth/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ubuntu/projects/F1tenth/tools/progab_chain.sh
+Restart=no
+TimeoutStopSec=120
+KillMode=mixed
+StandardOutput=append:/home/ubuntu/projects/F1tenth/training/outputs/runs/progab-a001-chain.log
+StandardError=append:/home/ubuntu/projects/F1tenth/training/outputs/runs/progab-a001-chain.log
+SyslogIdentifier=f1tenth-progab-a001
+
+[Install]
+WantedBy=default.target
