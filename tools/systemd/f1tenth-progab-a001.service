@@ -1,5 +1,5 @@
 [Unit]
-Description=F1TENTH progab-a001: sequential progress-shape A/B (control then treatment), 300M each
+Description=F1TENTH progab-a001: sequential progress-shape A/B (control then treatment), 1B each from-noise
 After=default.target
 StartLimitIntervalSec=300
 StartLimitBurst=3
@@ -10,6 +10,7 @@ WorkingDirectory=/home/ubuntu/projects/F1tenth/training
 Environment=WANDB_MODE=online
 Environment=WANDB_GROUP=long-horizon-2b-sensors
 Environment=PYTHONUNBUFFERED=1
+Environment=PROGAB_MODE=noise
 Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 Environment=CC=/home/ubuntu/miniconda3/bin/x86_64-conda-linux-gnu-cc
 Environment=CXX=/home/ubuntu/miniconda3/bin/x86_64-conda-linux-gnu-c++

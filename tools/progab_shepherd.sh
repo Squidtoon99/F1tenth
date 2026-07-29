@@ -74,7 +74,7 @@ PY
 )
 
 VALID=1
-python3 - "$CTRL_SPEED" <<'PY'
+if ! python3 - "$CTRL_SPEED" <<'PY'
 import sys
 speed = float(sys.argv[1])
 ref, mn = 5.38, 5.05
@@ -82,7 +82,9 @@ ok = speed >= mn
 print(f"validity speed={speed:.3f} ref={ref} min={mn} pass={ok}")
 sys.exit(0 if ok else 1)
 PY
-|| VALID=0
+then
+  VALID=0
+fi
 
 if [ "$VALID" -eq 0 ]; then
   log "VALIDITY FAIL — stopping chain before/during Arm B; GPU better spent diagnosing control"
