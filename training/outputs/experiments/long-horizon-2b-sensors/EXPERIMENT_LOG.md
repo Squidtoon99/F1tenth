@@ -893,10 +893,23 @@ lifespan; alternates 1433600000 @5.454 m/s / 40 s and 1454080000 @5.451 m/s /
 | A (control) | `progab-control-a001` | `progab-control-a001.json` | disabled defaults |
 | B (treatment) | `progab-super-a001` | `progab-super-a001.json` | threshold 5.0, mult 3.0, sat 8.0 |
 
-Both: `--init-ckpt` champion, `actor_freeze_transitions: 0`, self-play as
-`pcplus2b-a001`, 1024 envs, 3M replay, **`replay_full_reinit: false`**
-(warm-start continuation — `true` is from-noise only and resets actor weights
-when the buffer first fills), `alpha: 0.01`, compile reduce-overhead.
+Both: `--init-ckpt` champion, **`actor_freeze_transitions: 20_000_000`**
+(critic-only warm-up — see below), self-play as `pcplus2b-a001`, 1024 envs, 3M
+replay, **`replay_full_reinit: false`**, `alpha: 0.01`, compile reduce-overhead.
+
+**Checkpoint contents (`policy_1443840000.pt`):** actor weights + actor
+`obs_norm` only (`save_policy_artifact` is actor-only by design). No critic,
+target-critic, or optimizer state. `load_init_ckpt` loads actor + actor
+normalizer; critics always start random. No richer train-state checkpoint exists
+in `pcplus2b-a001/checkpoints/` (195 `policy_*.pt` actor artifacts only).
+
+**Critic warm-up:** `actor_freeze_transitions: 20_000_000` (~37.7k critic-only
+gradient updates at ~1.89k updates/M; ~32.1k after the 3M buffer fills). Without
+freeze, ~10.8k actor updates by 5.7M destroyed the champion (lifespan 1.2 s,
+critic_loss still falling). Reference: `warmstart-probe-a001` with 5M freeze +
+fixed opponent reached critic_loss ~109 and lifespan ~239 s at unfreeze; self-play
+needs a longer window. 20M is ~4× ADR-0020's 5M probe default and 6.7% of the
+300M arm horizon.
 
 **Self-play pool @ warm-start:** seed from champion snapshot at
 `init_transitions` (trainer default); do **not** rely on `reseed_after_reinit`
@@ -904,22 +917,26 @@ when the buffer first fills), `alpha: 0.01`, compile reduce-overhead.
 loaded champion policy, then grows via normal snapshot/refresh intervals.
 
 **Learning rates:** keep default `actor_lr=critic_lr=2.5e-05` — same as
-`pcplus2b-a001` and prior warm-start probes; appropriate for fine-tuning a
-converged policy, not a from-scratch cold start.
+`pcplus2b-a001` and prior warm-start probes; appropriate for fine-tuning once
+the critic is warm.
 
 **Warm-start anchor (do not compare to zero):** champion metrics at init —
 **5.67 m/s / ~237 s** lifespan, timeout-dominated terminations.
-
-**Relaunch gate @15M:** if Arm A is still **< 4.0 m/s** with lifespan **< 20 s**,
-stop — warm-start is broken. After fix, expect recovery toward ~5.3–5.7 m/s
-within ~10–20M (replay buffer refills with on-policy data but actor weights
-persist). Verify **no** `Replay-full network reinitialization` log line when
-buffer hits ~3M.
 
 ### Preregistered gates
 
 Compare **speed at comparable lifespan**, not speed alone. A treatment arm that
 gains +0.3 m/s while lifespan falls below 120 s is **not** a win.
+
+**During actor freeze (0–20M):** lifespan must reach **≥ 100 s** and speed
+**≥ 5.2 m/s** once the replay buffer is full (~3M). If still **< 20 s** lifespan
+or **< 4.5 m/s** after 5M transitions, stop — actor not frozen or checkpoint not
+loading. Log must show `actor_freeze_transitions=20000000` and **no** actor
+updates (policy weights unchanged; `Actor unfreeze at transitions=…` only @20M).
+
+**At unfreeze + 10M (~30M total):** speed **≥ 5.2 m/s**, lifespan **≥ 100 s**.
+Modest dip at unfreeze is acceptable; collapse to ~1 s lifespan is not (critic
+warm-up too short).
 
 **Early check @50M:** log 50M-bucket mean speed and lifespan for both arms.
 Continue unless an arm drops below **5.0 m/s with lifespan < 100 s** (clear
@@ -947,8 +964,9 @@ specific; if A decays to < **120 s** by 200M, the champion peak was unstable.
 
 | Attempt | Started (PDT) | Status | Notes |
 | --- | --- | --- | --- |
-| 1 | 2026-07-28 23:50 | **aborted @~5M** | Inherited `replay_full_reinit: true` from `pcplus2b-a001`; Lee reinit @2.998M destroyed champion weights @23:52:29. Metrics were from-noise (~3.6 m/s / 1.2 s). Run dir wiped; W&B run discarded. |
-| 2 | 2026-07-28 23:57 | **live** | `replay_full_reinit: false`; no Lee reinit @3M; `OnSuccess` chain restored |
+| 1 | 2026-07-28 23:50 | **aborted @~5M** | `replay_full_reinit: true`; Lee reinit @2.998M wiped actor. ~3.6 m/s / 1.2 s. |
+| 2 | 2026-07-28 23:57 | **aborted @~5.7M** | `replay_full_reinit: false` but no actor freeze; ~10.8k actor updates on random critic shredded champion (4.15 m/s / 1.2 s, 4055 OOB/0 timeout). |
+| 3 | (pending) | — | `replay_full_reinit: false`, `actor_freeze_transitions: 20M` both arms |
 
 | Field | Value |
 | --- | --- |
