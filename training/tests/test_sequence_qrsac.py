@@ -636,7 +636,7 @@ def test_sequence_graph_capture_after_long_actor_freeze():
     actor_before = [p.detach().clone() for p in models.actor.parameters()]
 
     trainer.update_from_sequences(batch)
-    for _ in range(50):
+    for _ in range(400):
         trainer.update_from_sequences(batch)
 
     assert trainer._sequence_graph is None

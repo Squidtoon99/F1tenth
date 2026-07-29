@@ -1000,18 +1000,29 @@ Throughput diagnosis: [`progab-throughput-diagnosis.md`](progab-throughput-diagn
 | 2 | 2026-07-28 23:57 | **aborted @~5.7M** | `replay_full_reinit: false` but no actor freeze; ~10.8k actor updates on random critic shredded champion (4.15 m/s / 1.2 s, 4055 OOB/0 timeout). |
 | 3 | 2026-07-29 00:04 | **aborted @20M** | Freeze gate **pass** (5.53 m/s / 172 s / cl~342). Unfreeze OOM + auto-restart; Arm B contaminated from 00:02. |
 | 4 | 2026-07-29 02:56 | **aborted @20M** | Solo freeze OK (5.53/172s/cl~342). Unfreeze OOM — root cause was inductor compiling actor backward *inside* capture stream, not VRAM exhaustion. Fixed in `11f5b13`. |
-| 5 | (see below) | | Post-fix chain relaunch |
+| 5 | 2026-07-29 03:31 | **aborted @36M** | Capture fix **pass** (26330f3 live: 13.5k→30.4k trans/s @20M; `policy_20000768.pt` saved). Unfreeze+10M gate **fail**: lifespan **1.5 s** @30M (need ≥100 s); speed **4.4–4.8 m/s**; champion shredded within ~500k post-unfreeze. Arm B not started. |
+| 6 | — | **blocked** | A/B void until critic warm-up duration/strategy resolved (20M insufficient under self-play). |
 
-**Capture fix (`11f5b13`):** after actor unfreeze, run one eager update to compile
-policy backward outside CUDAGraph capture, `empty_cache`, log VRAM, then capture.
-Fast repro (`actor_freeze_transitions=400k`) confirms: unfreeze → ~30k trans/s
-(vs ~14k frozen). Attempts 3–4 OOM/capture-invalid errors were misdiagnosed as
-allocator pressure; `expandable_segments` optional (both pass in repro).
+**Capture fix (`11f5b13` + logging in follow-up commit):** after actor unfreeze,
+run one eager update to compile policy backward outside CUDAGraph capture,
+`empty_cache`, log VRAM via `qrsac` logger, then capture on the next step.
+Fast repro (`tools/scratch_capture_repro.sh`, freeze=500k) completes unfreeze
+without OOM in ~5 min. Root cause of attempts 3–4: inductor compiling actor
+backward *inside* the capture stream — not long-run fragmentation alone (short
+freeze repro also needed the two-step deferral). `expandable_segments:True`
+neither required nor sufficient; attempt 5 captured successfully with it on.
 
-**Follow-up (not adopted tonight):** lr=0 actor freeze for single startup graph
-capture (~11 min freeze at full throughput) — see attempt 4 post-mortem.
+**Attempt 5 post-unfreeze collapse:** identical failure mode to attempt 2 but
+delayed by 20M freeze. Pre-unfreeze: 5.53 m/s / 172 s / cl~342. Within 500k
+transitions of unfreeze: lifespan 205 s → 5 s; by 30M pinned at **1.4–1.6 s**
+(all-OOB episodes). Actor gradients active (`policy_loss` −76 → +3). Conclusion:
+**20M critic warm-up is insufficient under self-play** — freeze preserves the
+champion; unfreeze immediately destroys it.
+
+**Follow-up (not adopted):** lr=0 actor freeze for single startup graph capture
+(~11 min freeze at full throughput); longer freeze; or critic checkpoint restore.
 
 | Field | Value |
 | --- | --- |
 | Prepared (PDT) | 2026-07-28 |
-| Status | **attempt 5** |
+| Status | **A/B blocked** — plumbing fixed, warm-start freeze validated, post-unfreeze gate failed |

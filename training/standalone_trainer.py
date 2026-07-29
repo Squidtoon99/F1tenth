@@ -105,17 +105,26 @@ def setup_trainer_logging(
         fmt="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    handlers: list[logging.Handler] = []
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(level)
         file_handler.setFormatter(fmt)
-        logger.addHandler(file_handler)
+        handlers.append(file_handler)
     else:
         stdout_handler = FlushingStreamHandler(sys.stdout)
         stdout_handler.setLevel(level)
         stdout_handler.setFormatter(fmt)
-        logger.addHandler(stdout_handler)
+        handlers.append(stdout_handler)
+    for name in (LOGGER_NAME, "qrsac"):
+        target = logging.getLogger(name)
+        target.setLevel(level)
+        target.propagate = False
+        for handler in target.handlers[:]:
+            target.removeHandler(handler)
+        for handler in handlers:
+            target.addHandler(handler)
     return logger
 
 
