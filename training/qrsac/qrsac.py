@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn as nn
 from torch.optim import Adam
@@ -404,6 +406,7 @@ class QRSACTrainer:
         self._full_sequence_graph = self._adam_capturable
         self._sequence_graph = None
         self._sequence_graph_warmed = False
+        self._sequence_graph_capture_ready = False
         self._sequence_static_batch = None
         self._sequence_graph_losses = None
         self._policy_phase = _policy_phase
@@ -535,6 +538,7 @@ class QRSACTrainer:
         )
         self._sequence_graph = None
         self._sequence_graph_warmed = False
+        self._sequence_graph_capture_ready = False
         self._sequence_static_batch = None
         self._sequence_graph_losses = None
 
@@ -579,6 +583,27 @@ class QRSACTrainer:
             return self._update_from_sequences_impl(self._sequence_static_batch)
 
         if self._sequence_graph is None:
+            if not self._sequence_graph_capture_ready:
+                self._sequence_graph_capture_ready = True
+                return self._update_from_sequences_impl(self._sequence_static_batch)
+
+            if self.device.type == "cuda":
+                torch.cuda.synchronize()
+                free_before, total = torch.cuda.mem_get_info()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                free_after, _ = torch.cuda.mem_get_info()
+                logging.getLogger(__name__).info(
+                    "Sequence CUDAGraph capture: free_before_empty_cache=%.1f MiB "
+                    "free_after_empty_cache=%.1f MiB total=%.1f MiB "
+                    "allocated=%.1f MiB reserved=%.1f MiB",
+                    free_before / (1024**2),
+                    free_after / (1024**2),
+                    total / (1024**2),
+                    torch.cuda.memory_allocated(self.device) / (1024**2),
+                    torch.cuda.memory_reserved(self.device) / (1024**2),
+                )
+
             self._sequence_graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(self._sequence_graph):
                 self._sequence_graph_losses = self._update_from_sequences_impl(

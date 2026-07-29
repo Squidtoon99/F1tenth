@@ -499,11 +499,11 @@ def test_cuda_compiled_sequence_update_smoke():
     after_capture = None
     captured_losses = None
     captured_policy_value = None
-    for update_idx in range(3):
+    for update_idx in range(4):
         losses = trainer.update_from_sequences(batch)
         assert torch.isfinite(losses.policy_loss)
         assert torch.isfinite(losses.critic_loss)
-        if update_idx == 1:
+        if update_idx == 2:
             after_capture = next(models.actor.parameters()).detach().clone()
             captured_losses = losses
             captured_policy_value = losses.policy_loss.clone()
@@ -511,7 +511,7 @@ def test_cuda_compiled_sequence_update_smoke():
     assert not torch.equal(after_capture, next(models.actor.parameters()))
     assert torch.equal(captured_losses.policy_loss, captured_policy_value)
     actor_state = trainer.actor_optimizer.state[next(models.actor.parameters())]
-    assert int(actor_state["step"].item()) == 3
+    assert int(actor_state["step"].item()) == 4
 
     incomplete = dict(batch)
     incomplete.pop("hidden")
@@ -521,13 +521,13 @@ def test_cuda_compiled_sequence_update_smoke():
     first_graph = trainer._sequence_graph
     trainer.reinitialize_networks()
     assert trainer._sequence_graph is None
-    for _ in range(3):
+    for _ in range(4):
         losses = trainer.update_from_sequences(batch)
         assert torch.isfinite(losses.policy_loss)
         assert torch.isfinite(losses.critic_loss)
     assert trainer._sequence_graph is not first_graph
     actor_state = trainer.actor_optimizer.state[next(models.actor.parameters())]
-    assert int(actor_state["step"].item()) == 3
+    assert int(actor_state["step"].item()) == 4
 
 
 def _actor_l2_delta(models: Models, before: list[torch.Tensor]) -> float:
@@ -597,9 +597,57 @@ def test_sequence_graph_actor_updates_after_unfreeze():
 
     trainer.actor_frozen = False
     trainer.update_from_sequences(batch)
+    trainer.update_from_sequences(batch)
     assert trainer._sequence_graph is not None
     assert _actor_l2_delta(models, actor_before) > 0.0
 
     frozen_snapshot = [p.detach().clone() for p in models.actor.parameters()]
     trainer.update_from_sequences(batch)
     assert _actor_l2_delta(models, frozen_snapshot) > 0.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_sequence_graph_capture_after_long_actor_freeze():
+    """Compile actor backward outside capture after many frozen eager updates."""
+    device = torch.device("cuda")
+    torch.manual_seed(45)
+    models = _gru_models(45)
+    models.actor.to(device)
+    models.critic1.to(device)
+    models.critic2.to(device)
+    models.critic1_target.to(device)
+    models.critic2_target.to(device)
+    trainer = QRSACTrainer(
+        models,
+        device,
+        gamma=0.9896,
+        n_step=N_STEP,
+        alpha=0.01,
+        burn_in=BURN_IN,
+        train_len=TRAIN_LEN,
+        compile=True,
+        compile_mode="reduce-overhead",
+    )
+    batch = {
+        key: value.to(device)
+        for key, value in _sequence_batch(num_seq=16, seed=46).items()
+    }
+    trainer.actor_frozen = True
+    actor_before = [p.detach().clone() for p in models.actor.parameters()]
+
+    trainer.update_from_sequences(batch)
+    for _ in range(50):
+        trainer.update_from_sequences(batch)
+
+    assert trainer._sequence_graph is None
+    assert _actor_l2_delta(models, actor_before) == 0.0
+
+    trainer.actor_frozen = False
+    trainer.update_from_sequences(batch)
+    trainer.update_from_sequences(batch)
+    assert trainer._sequence_graph is not None
+    assert _actor_l2_delta(models, actor_before) > 0.0
+
+    before_replay = [p.detach().clone() for p in models.actor.parameters()]
+    trainer.update_from_sequences(batch)
+    assert _actor_l2_delta(models, before_replay) > 0.0
