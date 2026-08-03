@@ -6,8 +6,8 @@ Per-car calibration is supplied by overriding the vendored config arguments with
 files from the mounted /config overlay. The RL deadman gate runs here so /drive is
 blocked unless R1 or L1 is held.
 
-Always remaps the vendored ackermann_to_vesc motor/servo outputs away and enables
-f1tenth_control/vesc_actuator as the exclusive owner of current, brake, and servo
+Starves the vendored ackermann_to_vesc of its command input so
+f1tenth_control/vesc_actuator is the exclusive owner of current, brake, and servo
 commands (ADR 0006).
 """
 
@@ -49,14 +49,16 @@ def _launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # Divert ERPM/servo from ackermann_to_vesc so vesc_actuator owns them.
+    # Cut the vendored ackermann_to_vesc off at its input. Diverting only its
+    # eRPM/servo *outputs* fails: the same group-scoped remap also renames the
+    # vesc_driver subscription, so converter and driver stay connected on the
+    # renamed topic and the converter keeps commanding eRPM (SetRPM 0 when the
+    # command carries no speed), fighting vesc_actuator's current. The command
+    # publisher and vesc_actuator both live outside this group, so remapping
+    # ackermann_cmd here starves only the converter.
     vendored = GroupAction(
         [
-            SetRemap(src="commands/motor/speed", dst="commands/motor/speed_erpm_unused"),
-            SetRemap(
-                src="commands/servo/position",
-                dst="commands/servo/position_erpm_unused",
-            ),
+            SetRemap(src="ackermann_cmd", dst="ackermann_cmd_disabled"),
             vendored_bringup,
         ]
     )
