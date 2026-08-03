@@ -66,26 +66,26 @@ flowchart LR
      f1tenth-racing:develop
    ```
 
-   **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the slim
-   runtime image does not ship CUDA user-space libraries; the Jetson must inject them.
-   `runc` is the default runtime on the car, so pass `--runtime=nvidia` explicitly:
+   **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the image
+   ships `libcudart.so.12` from the NGC compile stage (~780 KB). Jetson
+   nvidia-container-toolkit does **not** inject user-space CUDA libs on this hardware,
+   so do not rely on `--runtime=nvidia` for `libcudart` resolution. Use the same
+   `docker run` as the CPU path for library loading; add `--runtime=nvidia` only if
+   GPU device access requires it for kernel execution:
 
    ```bash
-   docker run --rm -it --net=host --privileged --runtime=nvidia \
+   docker run --rm -it --net=host --privileged \
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
      f1tenth-racing:develop
    ```
 
-   `--runtime=nvidia` (or `docker run --gpus all` on hosts that support it) is only
-   required for CUDA range_libc images. CPU-only images run without it.
-
-   After a CUDA build, verify the extension loads under GPU injection (the Dockerfile
-   checks `DT_NEEDED` for `libcudart` at build time; this confirms runtime linkage):
+   After a CUDA build, verify the extension imports (build checks `DT_NEEDED` and
+   `ldd` resolution; this confirms numpy ABI + ROS deps at runtime):
 
    ```bash
-   docker run --rm --runtime=nvidia --entrypoint bash f1tenth-racing:develop -lc \
+   docker run --rm --entrypoint bash f1tenth-racing:develop -lc \
      'source /opt/ros/humble/setup.bash && \
       python3 -c "import range_libc; assert hasattr(range_libc, \"PyRayMarchingGPU\"); print(\"CUDA range_libc ok\")"'
    ```

@@ -51,6 +51,7 @@ if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
   RUNTIME_ARGS+=(
     --build-arg "CUDA_ARCH=${CUDA_ARCH}"
     --build-arg "CUDA_BASE_IMAGE=${CUDA_BASE_IMAGE}"
+    --build-arg "RUNTIME_NUMPY=${RUNTIME_NUMPY:-1.21.5}"
   )
 fi
 
@@ -69,7 +70,6 @@ docker buildx build --platform "${ARCH}" --load \
 
 echo "==> Built ${IMAGE}:${GITSHA} (and :develop) for ${ARCH}"
 if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
-  echo "    Run on Jetson with: docker run ... --runtime=nvidia ... ${IMAGE}:develop"
-  echo "    (see docs/deployment.md — CPU-only images omit --runtime=nvidia)"
+  echo "    CUDA image ships libcudart; see docs/deployment.md for verify + run"
 fi
 echo "    Next: deploy/scripts/snapshot.sh to freeze it into a portable artifact."
