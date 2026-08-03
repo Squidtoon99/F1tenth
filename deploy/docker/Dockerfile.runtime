@@ -5,19 +5,33 @@
 #
 # Build from the repo root, e.g. via deploy/scripts/build_image.sh.
 ARG ROS_DISTRO=humble
+ARG RANGE_LIBC_WITH_CUDA=OFF
+ARG CUDA_ARCH=sm_87
 
 # ---- build stage: compile the colcon workspace ----
 FROM f1tenth-base:latest AS build
 ARG ROS_DISTRO
+ARG RANGE_LIBC_WITH_CUDA
+ARG CUDA_ARCH
 SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY src ./src
 COPY libs ./libs
+RUN test -f src/localization/range_libc/pywrapper/setup.py \
+    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1)
 # range_libc is a pip extension (not a colcon package). Ignore the upstream CMake
-# project so colcon does not try to build it with CUDA, then install the CPU
-# pywrapper. On a Jetson with CUDA available, rebuild with WITH_CUDA=ON instead.
+# project so colcon does not try to build it with CUDA, then pip-install the
+# pywrapper. RANGE_LIBC_WITH_CUDA=ON needs nvcc (JetPack /usr/local/cuda on the
+# build host). Default OFF keeps macOS/CI builds on CPU.
 RUN touch src/localization/range_libc/COLCON_IGNORE \
-    && WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
+    && if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then \
+         if [ ! -x /usr/local/cuda/bin/nvcc ] && ! command -v nvcc >/dev/null 2>&1; then \
+           echo "RANGE_LIBC_WITH_CUDA=ON but nvcc not found; build natively on Jetson with JetPack" >&2; \
+           exit 1; \
+         fi; \
+         sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" src/localization/range_libc/pywrapper/setup.py; \
+       fi \
+    && WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && rosdep update \
     && rosdep install --from-paths src libs --ignore-src -y -r || true \
@@ -26,16 +40,24 @@ RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
 # ---- runtime stage: only the built install + entrypoint ----
 FROM f1tenth-base:latest AS runtime
 ARG ROS_DISTRO
+ARG RANGE_LIBC_WITH_CUDA
+ARG CUDA_ARCH
 ENV ROS_DISTRO=${ROS_DISTRO}
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
 
 # range_libc is a pip extension consumed by the particle filter at runtime. The
 # build stage installs it into that stage's site-packages, which is not carried
-# over here, so install it into the runtime image too. WITH_CUDA=OFF builds the
-# CPU raycaster; on a Jetson with CUDA available, rebuild with WITH_CUDA=ON.
+# over here, so install it into the runtime image too.
 COPY src/localization/range_libc ./src/localization/range_libc
-RUN WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
+RUN if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then \
+         if [ ! -x /usr/local/cuda/bin/nvcc ] && ! command -v nvcc >/dev/null 2>&1; then \
+           echo "RANGE_LIBC_WITH_CUDA=ON but nvcc not found; build natively on Jetson with JetPack" >&2; \
+           exit 1; \
+         fi; \
+         sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" src/localization/range_libc/pywrapper/setup.py; \
+       fi \
+    && WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
 
 # CPU-only PyTorch for the on-car RL inference node (policy_inference / the obs
 # builder import torch). The trainer runs on a separate GPU box; the car only runs
