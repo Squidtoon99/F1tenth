@@ -33,17 +33,43 @@ RUN test -f range_libc/pywrapper/setup.py \
     && touch range_libc/COLCON_IGNORE \
     && WITH_CUDA=ON pip3 install --no-cache-dir ./range_libc/pywrapper \
     && python3 - <<'PY'
-import os
-import range_libc
+from importlib.metadata import distribution
 import shutil
+from pathlib import Path
 
-out = "/out/range_libc"
-os.makedirs(out, exist_ok=True)
-src = os.path.dirname(range_libc.__file__)
-for name in os.listdir(src):
-    if name.startswith("range_libc"):
-        shutil.copy2(os.path.join(src, name), os.path.join(out, name))
-print("range_libc artifacts:", sorted(os.listdir(out)))
+dist = distribution("range_libc")
+files = list(dist.files)
+so_entries = [entry for entry in files if str(entry).endswith(".so")]
+if not so_entries:
+    raise SystemExit(f"range_libc install has no .so in RECORD: {[str(f) for f in files]}")
+
+site_root = so_entries[0].locate().parent
+out = Path("/out/range_libc_pkg")
+copied = []
+for entry in files:
+    src = entry.locate()
+    if src is None:
+        raise SystemExit(f"cannot locate installed file: {entry}")
+    rel = Path(str(entry))
+    dest = out / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    copied.append(str(rel))
+
+for meta in site_root.glob("range_libc*.dist-info"):
+    rel = meta.relative_to(site_root)
+    dest = out / rel
+    if meta.is_dir():
+        shutil.copytree(meta, dest, dirs_exist_ok=True)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(meta, dest)
+    copied.append(str(rel))
+
+if not any("range_libc" in name and name.endswith(".so") for name in copied):
+    raise SystemExit(f"range_libc .so not staged; copied {copied}")
+print("staged range_libc from", site_root)
+print("artifacts:", sorted(copied))
 PY
 
 # ---- CUDA runtime: slim f1tenth-base + copied GPU extension ----
@@ -69,8 +95,14 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY --from=build-cuda /ws/install /ws/install
-COPY --from=range_libc_cuda /out/range_libc /tmp/range_libc_built
-RUN cp /tmp/range_libc_built/* "$(python3 -c 'import site; print(site.getsitepackages()[-1])')/" \
+COPY --from=range_libc_cuda /out/range_libc_pkg /tmp/range_libc_pkg
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && python3 -c "from nav_msgs.msg import OccupancyGrid" \
+    && SITE="$(python3 -c 'import site; print([p for p in site.getsitepackages() if \"dist-packages\" in p][0])')" \
+    && test -d /tmp/range_libc_pkg \
+    && test "$(find /tmp/range_libc_pkg -name 'range_libc*.so' | wc -l)" -ge 1 \
+    || { echo "range_libc CUDA artifacts missing from compile stage" >&2; exit 1; } \
+    && cp -a /tmp/range_libc_pkg/. "${SITE}/" \
     && python3 -c "import range_libc; assert hasattr(range_libc, 'PyRayMarchingGPU'), 'CUDA range_libc missing PyRayMarchingGPU'"
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       "torch==2.4.1"
