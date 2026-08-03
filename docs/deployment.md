@@ -30,7 +30,14 @@ flowchart LR
    ```
 
    Uses `docker buildx --platform linux/arm64` (QEMU emulation on x86 hosts) and a
-   multi-stage `Dockerfile.runtime` that colcon-builds the racing packages.
+   multi-stage `Dockerfile.runtime` that colcon-builds the racing packages. On a
+   Jetson with JetPack, `build_image.sh` auto-enables CUDA range_libc
+   (`RANGE_LIBC_WITH_CUDA=ON`, target `runtime-cuda`). Validate Dockerfile syntax
+   before a full build:
+
+   ```bash
+   docker buildx build --check -f deploy/docker/Dockerfile.runtime .
+   ```
 
 2. **Snapshot** it to a portable, SHA-named artifact (no registry needed):
 
@@ -49,6 +56,8 @@ flowchart LR
 
    On the car:
 
+   **CPU range_libc** (default off Jetson, or explicit `RANGE_LIBC_WITH_CUDA=OFF`):
+
    ```bash
    docker run --rm -it --net=host --privileged \
      -v /dev:/dev \
@@ -56,6 +65,21 @@ flowchart LR
      -v /opt/f1tenth/policies:/policies:ro \
      f1tenth-racing:develop
    ```
+
+   **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the slim
+   runtime image does not ship CUDA user-space libraries; the Jetson must inject them.
+   `runc` is the default runtime on the car, so pass `--runtime=nvidia` explicitly:
+
+   ```bash
+   docker run --rm -it --net=host --privileged --runtime=nvidia \
+     -v /dev:/dev \
+     -v /opt/f1tenth/config:/config:ro \
+     -v /opt/f1tenth/policies:/policies:ro \
+     f1tenth-racing:develop
+   ```
+
+   `--runtime=nvidia` (or `docker run --gpus all` on hosts that support it) is only
+   required for CUDA range_libc images. CPU-only images run without it.
 
    `-v /dev:/dev` is required: `--privileged` exposes device *nodes* (e.g.
    `/dev/ttyACM0`) but not the udev *symlinks* the drivers use (`/dev/sensors/vesc`,

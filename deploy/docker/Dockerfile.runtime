@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.4
 # Runtime (car) image: base + a baked colcon install of the racing packages.
 # GENERIC — contains no per-car config and no policy weights. Those are supplied at
 # runtime by mounting a per-car overlay at /config and a policy at /policies.
@@ -8,6 +8,7 @@
 #   RANGE_LIBC_WITH_CUDA=ON — GPU range_libc compiled in an NGC stage, copied into
 #     the slim runtime (target runtime-cuda, ~3.5–4 GB). Requires native linux/arm64;
 #     the NGC compile stage is cached on Jetson but is not shipped in the final image.
+#     Run with --runtime=nvidia (see docs/deployment.md).
 ARG ROS_DISTRO=humble
 ARG CUDA_ARCH=sm_87
 ARG CUDA_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
@@ -19,28 +20,22 @@ SHELL ["/bin/bash", "-lc"]
 WORKDIR /src
 COPY src/localization/range_libc ./range_libc
 RUN test -f range_libc/pywrapper/setup.py \
-    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1) \
-    && bash <<EOF
-set -euo pipefail
-cd range_libc/pywrapper
-SETUP=setup.py
-
-grep -qF 'arch=sm_62' "\${SETUP}" \
-  || { echo "patch: sm_62 token missing in setup.py" >&2; exit 1; }
-sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" "\${SETUP}"
-grep -qF "arch=${CUDA_ARCH}" "\${SETUP}" \
-  || { echo "patch: sm_62 -> ${CUDA_ARCH} substitution failed" >&2; exit 1; }
-
-grep -qF 'gcc-8' "\${SETUP}" \
-  || { echo "patch: gcc-8 lines missing in setup.py" >&2; exit 1; }
-sed -i '/which gcc-8/d; /which g++-8/d' "\${SETUP}"
-grep -qF 'gcc-8' "\${SETUP}" \
-  && { echo "patch: gcc-8 line removal failed" >&2; exit 1; }
-EOF
-    && cd /src \
+    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1)
+RUN cd range_libc/pywrapper \
+    && grep -qF 'arch=sm_62' setup.py \
+    || { echo "patch: sm_62 token missing in setup.py" >&2; exit 1; } \
+    && sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" setup.py \
+    && grep -qF "arch=${CUDA_ARCH}" setup.py \
+    || { echo "patch: sm_62 -> ${CUDA_ARCH} substitution failed" >&2; exit 1; } \
+    && grep -qF 'gcc-8' setup.py \
+    || { echo "patch: gcc-8 lines missing in setup.py" >&2; exit 1; } \
+    && sed -i '/which gcc-8/d; /which g++-8/d' setup.py \
+    && ! grep -qF 'gcc-8' setup.py \
+    || { echo "patch: gcc-8 line removal failed" >&2; exit 1; }
+RUN cd /src \
     && touch range_libc/COLCON_IGNORE \
-    && WITH_CUDA=ON pip3 install --no-cache-dir ./range_libc/pywrapper \
-    && python3 - <<'PY'
+    && WITH_CUDA=ON pip3 install --no-cache-dir ./range_libc/pywrapper
+RUN python3 - <<'PY'
 from importlib.metadata import distribution
 import shutil
 from pathlib import Path
@@ -104,9 +99,9 @@ SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY --from=build-cuda /ws/install /ws/install
 COPY --from=range_libc_cuda /out/range_libc_pkg /tmp/range_libc_pkg
-RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && bash <<'EOF'
+RUN bash <<EOF
 set -euo pipefail
+source /opt/ros/${ROS_DISTRO}/setup.bash
 
 python3 -c "from nav_msgs.msg import OccupancyGrid"
 python3 -c "import transforms3d"
@@ -116,33 +111,35 @@ if [[ ! -d /tmp/range_libc_pkg ]]; then
   exit 1
 fi
 
-so_count="$(find /tmp/range_libc_pkg -name 'range_libc*.so' | wc -l)"
-if [[ "${so_count}" -lt 1 ]]; then
+so_count="\$(find /tmp/range_libc_pkg -name 'range_libc*.so' | wc -l)"
+if [[ "\${so_count}" -lt 1 ]]; then
   echo "no range_libc .so under /tmp/range_libc_pkg" >&2
   exit 1
 fi
 
-SITE="$(python3 -c "import site; print([p for p in site.getsitepackages() if 'dist-packages' in p][0])")"
-if [[ -z "${SITE}" || ! -d "${SITE}" ]]; then
-  echo "could not resolve pip site-packages (got: ${SITE})" >&2
+SITE="\$(python3 -c "import site; print([p for p in site.getsitepackages() if 'dist-packages' in p][0])")"
+if [[ -z "\${SITE}" || ! -d "\${SITE}" ]]; then
+  echo "could not resolve pip site-packages (got: \${SITE})" >&2
   exit 1
 fi
 
-cp -a /tmp/range_libc_pkg/. "${SITE}/"
+cp -a /tmp/range_libc_pkg/. "\${SITE}/"
 
 python3 -c "import range_libc; assert hasattr(range_libc, 'PyRayMarchingGPU'), 'CUDA range_libc missing PyRayMarchingGPU'"
-echo "range_libc CUDA install ok under ${SITE}"
+echo "range_libc CUDA install ok under \${SITE}"
 EOF
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       "torch==2.4.1"
-RUN PF=/ws/install/share/f1tenth_localization/config/pf_params.yaml \
-    && test -f "${PF}" \
-    || { echo "pf_params.yaml not found at ${PF}" >&2; exit 1; } \
-    && grep -qF "range_method: 'rm'" "${PF}" \
-    || { echo "pf_params.yaml missing default range_method: 'rm'" >&2; exit 1; } \
-    && sed -i "s/range_method: 'rm'/range_method: 'rmgpu'/" "${PF}" \
-    && grep -qF "range_method: 'rmgpu'" "${PF}" \
-    || { echo "pf_params.yaml range_method sed to rmgpu failed" >&2; exit 1; }
+RUN bash <<EOF
+set -euo pipefail
+PF=/ws/install/share/f1tenth_localization/config/pf_params.yaml
+test -f "\${PF}" || { echo "pf_params.yaml not found at \${PF}" >&2; exit 1; }
+grep -qF "range_method: 'rm'" "\${PF}" \
+  || { echo "pf_params.yaml missing default range_method: 'rm'" >&2; exit 1; }
+sed -i "s/range_method: 'rm'/range_method: 'rmgpu'/" "\${PF}"
+grep -qF "range_method: 'rmgpu'" "\${PF}" \
+  || { echo "pf_params.yaml range_method sed to rmgpu failed" >&2; exit 1; }
+EOF
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

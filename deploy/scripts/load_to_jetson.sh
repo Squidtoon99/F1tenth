@@ -33,11 +33,24 @@ ssh "${JETSON}" "test -f /opt/f1tenth/config/car.yaml || cp /dev/stdin /opt/f1te
 echo "==> Loading image on ${JETSON}"
 ssh "${JETSON}" 'gunzip -c /tmp/f1tenth-image.tar.gz | docker load'
 
+CUDA_RUN=""
+if [ "${RANGE_LIBC_WITH_CUDA:-}" = "ON" ]; then
+  CUDA_RUN=" --runtime=nvidia"
+fi
+
 cat <<EOF
 
 ==> Done. Run on the car (mount the overlay + policy):
 
+  # CPU range_libc (default): omit --runtime=nvidia
   docker run --rm -it --net=host --privileged \\
+    -v /dev:/dev \\
+    -v /opt/f1tenth/config:/config:ro \\
+    -v /opt/f1tenth/policies:/policies:ro \\
+    ${IMAGE}:develop
+
+  # CUDA range_libc build (RANGE_LIBC_WITH_CUDA=ON): add --runtime=nvidia
+  docker run --rm -it --net=host --privileged${CUDA_RUN} \\
     -v /dev:/dev \\
     -v /opt/f1tenth/config:/config:ro \\
     -v /opt/f1tenth/policies:/policies:ro \\

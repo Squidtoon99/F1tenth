@@ -68,4 +68,8 @@ docker buildx build --platform "${ARCH}" --load \
   -t "${IMAGE}:develop" .
 
 echo "==> Built ${IMAGE}:${GITSHA} (and :develop) for ${ARCH}"
+if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
+  echo "    Run on Jetson with: docker run ... --runtime=nvidia ... ${IMAGE}:develop"
+  echo "    (see docs/deployment.md — CPU-only images omit --runtime=nvidia)"
+fi
 echo "    Next: deploy/scripts/snapshot.sh to freeze it into a portable artifact."
