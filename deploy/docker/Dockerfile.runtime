@@ -3,71 +3,108 @@
 # GENERIC — contains no per-car config and no policy weights. Those are supplied at
 # runtime by mounting a per-car overlay at /config and a policy at /policies.
 #
-# Build from the repo root, e.g. via deploy/scripts/build_image.sh.
+# Build from the repo root via deploy/scripts/build_image.sh.
+#   RANGE_LIBC_WITH_CUDA=OFF (default) — CPU range_libc, target runtime (~3.3 GB).
+#   RANGE_LIBC_WITH_CUDA=ON — GPU range_libc compiled in an NGC stage, copied into
+#     the slim runtime (target runtime-cuda, ~3.5–4 GB). Requires native linux/arm64;
+#     the NGC compile stage is cached on Jetson but is not shipped in the final image.
 ARG ROS_DISTRO=humble
-ARG RANGE_LIBC_WITH_CUDA=OFF
 ARG CUDA_ARCH=sm_87
+ARG CUDA_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
 
-# ---- build stage: compile the colcon workspace ----
+# ---- CUDA range_libc compile (NGC base has nvcc + headers; output is a .so only) ----
+FROM ${CUDA_BASE_IMAGE} AS range_libc_cuda
+ARG CUDA_ARCH
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /src
+COPY src/localization/range_libc ./range_libc
+RUN test -f range_libc/pywrapper/setup.py \
+    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1) \
+    && cd range_libc/pywrapper \
+    && sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" setup.py \
+    && sed -i 's/"-march=native", "-ffast-math", "-fno-math-errno", //' setup.py \
+    && sed -i '/which gcc-8/d; /which g++-8/d' setup.py \
+    && sed -i 's/compiler_flags = \["-w"/compiler_flags = ["-Xcompiler", "-fPIC", "-w"/' setup.py \
+    && cd /src \
+    && touch range_libc/COLCON_IGNORE \
+    && WITH_CUDA=ON pip3 install --no-cache-dir ./range_libc/pywrapper \
+    && python3 - <<'PY'
+import os
+import range_libc
+import shutil
+
+out = "/out/range_libc"
+os.makedirs(out, exist_ok=True)
+src = os.path.dirname(range_libc.__file__)
+for name in os.listdir(src):
+    if name.startswith("range_libc"):
+        shutil.copy2(os.path.join(src, name), os.path.join(out, name))
+print("range_libc artifacts:", sorted(os.listdir(out)))
+PY
+
+# ---- CUDA runtime: slim f1tenth-base + copied GPU extension ----
+FROM f1tenth-base:latest AS build-cuda
+ARG ROS_DISTRO
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /ws
+COPY src ./src
+COPY libs ./libs
+RUN test -f src/localization/range_libc/pywrapper/setup.py \
+    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1) \
+    && touch src/localization/range_libc/COLCON_IGNORE
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && rosdep update \
+    && rosdep install --from-paths src libs --ignore-src -y -r || true \
+    && colcon build --merge-install --packages-ignore range_lib
+
+FROM f1tenth-base:latest AS runtime-cuda
+ARG ROS_DISTRO
+ENV ROS_DISTRO=${ROS_DISTRO}
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /ws
+COPY --from=build-cuda /ws/install /ws/install
+COPY --from=range_libc_cuda /out/range_libc /tmp/range_libc_built
+RUN cp /tmp/range_libc_built/* "$(python3 -c 'import site; print(site.getsitepackages()[-1])')/" \
+    && python3 -c "import range_libc; assert hasattr(range_libc, 'PyRayMarchingGPU'), 'CUDA range_libc missing PyRayMarchingGPU'"
+RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      "torch==2.4.1"
+RUN sed -i "s/range_method: 'rm'/range_method: 'rmgpu'/" \
+      /ws/install/share/f1tenth_localization/config/pf_params.yaml
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "f1tenth_bringup", "race.launch.py"]
+
+# ---- CPU build stage (default path) ----
 FROM f1tenth-base:latest AS build
 ARG ROS_DISTRO
-ARG RANGE_LIBC_WITH_CUDA
-ARG CUDA_ARCH
 SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY src ./src
 COPY libs ./libs
 RUN test -f src/localization/range_libc/pywrapper/setup.py \
     || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1)
-# range_libc is a pip extension (not a colcon package). Ignore the upstream CMake
-# project so colcon does not try to build it with CUDA, then pip-install the
-# pywrapper. RANGE_LIBC_WITH_CUDA=ON needs nvcc (JetPack /usr/local/cuda on the
-# build host). Default OFF keeps macOS/CI builds on CPU.
 RUN touch src/localization/range_libc/COLCON_IGNORE \
-    && if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then \
-         if [ ! -x /usr/local/cuda/bin/nvcc ] && ! command -v nvcc >/dev/null 2>&1; then \
-           echo "RANGE_LIBC_WITH_CUDA=ON but nvcc not found; build natively on Jetson with JetPack" >&2; \
-           exit 1; \
-         fi; \
-         sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" src/localization/range_libc/pywrapper/setup.py; \
-       fi \
-    && WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
+    && WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && rosdep update \
     && rosdep install --from-paths src libs --ignore-src -y -r || true \
     && colcon build --merge-install --packages-ignore range_lib
 
-# ---- runtime stage: only the built install + entrypoint ----
+# ---- CPU runtime stage (default target) ----
 FROM f1tenth-base:latest AS runtime
 ARG ROS_DISTRO
-ARG RANGE_LIBC_WITH_CUDA
-ARG CUDA_ARCH
 ENV ROS_DISTRO=${ROS_DISTRO}
+SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
-
-# range_libc is a pip extension consumed by the particle filter at runtime. The
-# build stage installs it into that stage's site-packages, which is not carried
-# over here, so install it into the runtime image too.
 COPY src/localization/range_libc ./src/localization/range_libc
-RUN if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then \
-         if [ ! -x /usr/local/cuda/bin/nvcc ] && ! command -v nvcc >/dev/null 2>&1; then \
-           echo "RANGE_LIBC_WITH_CUDA=ON but nvcc not found; build natively on Jetson with JetPack" >&2; \
-           exit 1; \
-         fi; \
-         sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" src/localization/range_libc/pywrapper/setup.py; \
-       fi \
-    && WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
-
-# CPU-only PyTorch for the on-car RL inference node (policy_inference / the obs
-# builder import torch). The trainer runs on a separate GPU box; the car only runs
-# inference. On a Jetson, replace this with a wheel matching the JetPack/CUDA
-# version instead of the default CPU index.
+RUN WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       "torch==2.4.1"
-
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
-# Default: bring up racing using the mounted per-car overlay.
 CMD ["ros2", "launch", "f1tenth_bringup", "race.launch.py"]
