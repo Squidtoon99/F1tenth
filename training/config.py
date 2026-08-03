@@ -130,7 +130,7 @@ DEFAULT_CONFIG = {
             "tire_relax_len": 0.0,
         },
         "longitudinal_mode": "force",
-        # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
+        # ECSS building floor (cleaned centerline in training/assets/).
         "track": "ecss_clean",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
         # opponent_strategy: None (1v0 / solo), "scripted" (centerline follower),
