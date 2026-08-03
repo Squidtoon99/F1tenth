@@ -81,6 +81,15 @@ flowchart LR
    `--runtime=nvidia` (or `docker run --gpus all` on hosts that support it) is only
    required for CUDA range_libc images. CPU-only images run without it.
 
+   After a CUDA build, verify the extension loads under GPU injection (the Dockerfile
+   checks `DT_NEEDED` for `libcudart` at build time; this confirms runtime linkage):
+
+   ```bash
+   docker run --rm --runtime=nvidia --entrypoint bash f1tenth-racing:develop -lc \
+     'source /opt/ros/humble/setup.bash && \
+      python3 -c "import range_libc; assert hasattr(range_libc, \"PyRayMarchingGPU\"); print(\"CUDA range_libc ok\")"'
+   ```
+
    `-v /dev:/dev` is required: `--privileged` exposes device *nodes* (e.g.
    `/dev/ttyACM0`) but not the udev *symlinks* the drivers use (`/dev/sensors/vesc`,
    LiDAR, joystick). Mounting host `/dev` brings those stable symlinks into the

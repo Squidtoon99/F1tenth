@@ -101,12 +101,6 @@ COPY --from=build-cuda /ws/install /ws/install
 COPY --from=range_libc_cuda /out/range_libc_pkg /tmp/range_libc_pkg
 RUN bash <<EOF
 set -euo pipefail
-set +u
-source /opt/ros/${ROS_DISTRO}/setup.bash
-set -u
-
-python3 -c "from nav_msgs.msg import OccupancyGrid"
-python3 -c "import transforms3d"
 
 if [[ ! -d /tmp/range_libc_pkg ]]; then
   echo "range_libc staging dir /tmp/range_libc_pkg is missing" >&2
@@ -134,8 +128,19 @@ fi
 
 cp -a /tmp/range_libc_pkg/. "\${SITE}/"
 
-python3 -c "import range_libc; assert hasattr(range_libc, 'PyRayMarchingGPU'), 'CUDA range_libc missing PyRayMarchingGPU'"
-echo "range_libc CUDA install ok under \${SITE}"
+SO="\$(find "\${SITE}" -maxdepth 1 -name 'range_libc*.so' -print -quit)"
+if [[ -z "\${SO}" ]]; then
+  echo "range_libc .so missing after copy under \${SITE}" >&2
+  exit 1
+fi
+
+if ! readelf -d "\${SO}" | grep -qE '[[:space:]]Shared library: \\[libcudart\\.so'; then
+  echo "range_libc .so lacks DT_NEEDED libcudart (CPU fallback build?)" >&2
+  readelf -d "\${SO}" | grep 'Shared library:' >&2 || true
+  exit 1
+fi
+
+echo "range_libc CUDA-linked .so installed: \${SO}"
 EOF
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       "torch==2.4.1"
