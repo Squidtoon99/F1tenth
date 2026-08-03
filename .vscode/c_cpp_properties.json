@@ -1,0 +1,25 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/opt/ros/humble/include/**",
+        "/ws/src/common/f1tenth_common/include/**",
+        "/ws/src/racing_rl/f1tenth_rl_vehicle/include/**",
+        "/ws/src/vehicle/ackermann_mux/include/**",
+        "/ws/src/vehicle/vesc/vesc_ackermann/include/**",
+        "/ws/src/vehicle/vesc/vesc_driver/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
