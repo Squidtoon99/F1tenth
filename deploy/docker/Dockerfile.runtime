@@ -21,10 +21,14 @@ COPY src/localization/range_libc ./range_libc
 RUN test -f range_libc/pywrapper/setup.py \
     || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1) \
     && cd range_libc/pywrapper \
-    && sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" setup.py \
-    && sed -i 's/"-march=native", "-ffast-math", "-fno-math-errno", //' setup.py \
-    && sed -i '/which gcc-8/d; /which g++-8/d' setup.py \
-    && sed -i 's/compiler_flags = \["-w"/compiler_flags = ["-Xcompiler", "-fPIC", "-w"/' setup.py \
+    && SETUP=setup.py \
+    && grep -qF 'arch=sm_62' "$SETUP" \
+    && sed -i "s/-arch=sm_62/-arch=${CUDA_ARCH}/" "$SETUP" \
+    && grep -qF "arch=${CUDA_ARCH}" "$SETUP" \
+    && grep -qF 'gcc-8' "$SETUP" \
+    && sed -i '/which gcc-8/d; /which g++-8/d' "$SETUP" \
+    && ! grep -qF 'gcc-8' "$SETUP" \
+    || { echo "range_libc setup.py CUDA patch failed (unexpected upstream layout?)" >&2; exit 1; } \
     && cd /src \
     && touch range_libc/COLCON_IGNORE \
     && WITH_CUDA=ON pip3 install --no-cache-dir ./range_libc/pywrapper \
