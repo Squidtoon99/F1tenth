@@ -36,6 +36,31 @@ def mlp(sizes, activation, output_activation=nn.Identity):
     return nn.Sequential(*layers)
 
 
+def _squashed_gaussian_distribution(net, mu_layer, log_std_layer, obs):
+    net_out = net(obs)
+    mu = mu_layer(net_out)
+    log_std = torch.clamp(log_std_layer(net_out), LOG_STD_MIN, LOG_STD_MAX)
+    return Normal(mu, torch.exp(log_std))
+
+
+def _squashed_gaussian_log_prob_from_pre_tanh(
+    distribution, pre_tanh, act_limit=1.0
+):
+    logp = distribution.log_prob(pre_tanh).sum(dim=-1)
+    correction = 2 * (np.log(2) - pre_tanh - F.softplus(-2 * pre_tanh))
+    scale_correction = pre_tanh.shape[-1] * np.log(float(act_limit))
+    return logp - correction.sum(dim=-1) - scale_correction
+
+
+def _squashed_gaussian_log_prob(distribution, action, act_limit):
+    scaled_action = action / act_limit
+    eps = torch.finfo(action.dtype).eps
+    pre_tanh = torch.atanh(scaled_action.clamp(-1.0 + eps, 1.0 - eps))
+    return _squashed_gaussian_log_prob_from_pre_tanh(
+        distribution, pre_tanh, act_limit
+    )
+
+
 def _squashed_gaussian_forward(
     net,
     mu_layer,
@@ -45,31 +70,28 @@ def _squashed_gaussian_forward(
     deterministic,
     with_logprob,
     standard_normal=None,
+    return_pre_tanh=False,
 ):
-    net_out = net(obs)
-    mu = mu_layer(net_out)
-    log_std = log_std_layer(net_out)
-    log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-    std = torch.exp(log_std)
-
-    pi_distribution = Normal(mu, std)
+    pi_distribution = _squashed_gaussian_distribution(
+        net, mu_layer, log_std_layer, obs
+    )
     if deterministic:
-        pi_action = mu
+        pre_tanh = pi_distribution.mean
     elif standard_normal is not None:
-        pi_action = mu + std * standard_normal
+        pre_tanh = pi_distribution.mean + pi_distribution.stddev * standard_normal
     else:
-        pi_action = pi_distribution.rsample()
+        pre_tanh = pi_distribution.rsample()
 
-    if with_logprob:
-        logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)  # type: ignore
-        logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
-            axis=1
+    pi_action = act_limit * torch.tanh(pre_tanh)
+    logp_pi = (
+        _squashed_gaussian_log_prob_from_pre_tanh(
+            pi_distribution, pre_tanh, act_limit
         )
-    else:
-        logp_pi = None
-
-    pi_action = torch.tanh(pi_action)
-    pi_action = act_limit * pi_action
+        if with_logprob
+        else None
+    )
+    if return_pre_tanh:
+        return pi_action, logp_pi, pre_tanh
     return pi_action, logp_pi
 
 
@@ -259,6 +281,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         reset_mask=None,
         deterministic=False,
         with_logprob=True,
+        return_pre_tanh=False,
     ):
         if obs.dim() != 2 or obs.shape[-1] != self.obs_dim:
             raise ValueError(
@@ -277,7 +300,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         features, _ = self.encode(obs)
         out, h_n = self.gru(features.unsqueeze(1), hidden.unsqueeze(0).contiguous())
         next_hidden = h_n.squeeze(0)
-        pi_action, logp_pi = _squashed_gaussian_forward(
+        result = _squashed_gaussian_forward(
             self.net,
             self.mu_layer,
             self.log_std_layer,
@@ -292,8 +315,36 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                     out.new_empty(out.shape[0], self.act_dim)
                 )
             ),
+            return_pre_tanh=return_pre_tanh,
         )
+        if return_pre_tanh:
+            pi_action, logp_pi, pre_tanh = result
+            return pi_action, logp_pi, next_hidden, pre_tanh
+        pi_action, logp_pi = result
         return pi_action, logp_pi, next_hidden
+
+    def evaluate_actions_step(
+        self,
+        obs,
+        hidden,
+        actions,
+        reset_mask=None,
+    ):
+        if actions.shape != (obs.shape[0], self.act_dim):
+            raise ValueError(
+                f"actions shape={tuple(actions.shape)}; "
+                f"expected ({obs.shape[0]}, {self.act_dim})"
+            )
+        hidden = self._apply_reset_mask(hidden, reset_mask)
+        features, _ = self.encode(obs)
+        out, h_n = self.gru(features.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+        distribution = _squashed_gaussian_distribution(
+            self.net, self.mu_layer, self.log_std_layer, out.squeeze(1)
+        )
+        logp = _squashed_gaussian_log_prob(
+            distribution, actions, self.act_limit
+        )
+        return logp, h_n.squeeze(0)
 
     def _gru_sequence(self, features, hidden, reset_mask):
         batch, steps, _ = features.shape
@@ -309,16 +360,30 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         h = hidden
         for t in range(steps):
             h = self._apply_reset_mask(h, reset_mask[:, t])
-            h = torch._VF.gru_cell(
-                features[:, t],
-                h,
-                self.gru.weight_ih_l0,
-                self.gru.weight_hh_l0,
-                self.gru.bias_ih_l0,
-                self.gru.bias_hh_l0,
-            )
+            h = self.gru_cell(features[:, t], h)
             outs.append(h)
         return torch.stack(outs, dim=1), h
+
+    def gru_cell(self, features, hidden):
+        return torch._VF.gru_cell(
+            features,
+            hidden,
+            self.gru.weight_ih_l0,
+            self.gru.weight_hh_l0,
+            self.gru.bias_ih_l0,
+            self.gru.bias_hh_l0,
+        )
+
+    def log_prob_from_pre_tanh(self, recurrent_features, pre_tanh_actions):
+        distribution = _squashed_gaussian_distribution(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            recurrent_features,
+        )
+        return _squashed_gaussian_log_prob_from_pre_tanh(
+            distribution, pre_tanh_actions, self.act_limit
+        )
 
     def forward_sequence(
         self,
@@ -384,6 +449,70 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         )
         return stacked_actions, stacked_logp, h
 
+    def evaluate_actions_sequence(
+        self,
+        obs,
+        hidden,
+        actions,
+        reset_mask=None,
+        pre_tanh_actions=None,
+    ):
+        if obs.dim() != 3 or obs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"evaluate_actions_sequence expects obs shape (B, T, "
+                f"{self.obs_dim}), got {tuple(obs.shape)}"
+            )
+        batch, steps, _ = obs.shape
+        if actions.shape != (batch, steps, self.act_dim):
+            raise ValueError(
+                f"actions shape={tuple(actions.shape)}; "
+                f"expected ({batch}, {steps}, {self.act_dim})"
+            )
+        if (
+            pre_tanh_actions is not None
+            and pre_tanh_actions.shape != (batch, steps, self.act_dim)
+        ):
+            raise ValueError(
+                f"pre_tanh_actions shape={tuple(pre_tanh_actions.shape)}; "
+                f"expected ({batch}, {steps}, {self.act_dim})"
+            )
+        if reset_mask is not None and reset_mask.shape != (batch, steps):
+            raise ValueError(
+                f"reset_mask shape={tuple(reset_mask.shape)}; "
+                f"expected ({batch}, {steps})"
+            )
+        if steps == 0:
+            return obs.new_zeros(batch, 0), hidden, obs.new_zeros(batch, 0)
+
+        flat_obs = obs.reshape(batch * steps, self.obs_dim)
+        features, _ = self.encode(flat_obs)
+        features = features.view(batch, steps, -1)
+        gru_out, next_hidden = self._gru_sequence(features, hidden, reset_mask)
+        flat_h = gru_out.transpose(0, 1).reshape(
+            steps * batch, self.gru_hidden_dim
+        )
+        distribution = _squashed_gaussian_distribution(
+            self.net, self.mu_layer, self.log_std_layer, flat_h
+        )
+        if pre_tanh_actions is None:
+            flat_actions = actions.transpose(0, 1).reshape(
+                steps * batch, self.act_dim
+            )
+            logp = _squashed_gaussian_log_prob(
+                distribution, flat_actions, self.act_limit
+            )
+        else:
+            flat_pre_tanh = pre_tanh_actions.transpose(0, 1).reshape(
+                steps * batch, self.act_dim
+            )
+            logp = self.log_prob_from_pre_tanh(flat_h, flat_pre_tanh)
+        entropy = distribution.entropy().sum(dim=-1)
+        return (
+            logp.view(steps, batch).transpose(0, 1),
+            next_hidden,
+            entropy.view(steps, batch).transpose(0, 1),
+        )
+
     def forward(self, obs, deterministic=False, with_logprob=True):
         if obs.dim() != 2:
             raise ValueError(
@@ -411,6 +540,7 @@ def make_actor(
     activation=nn.ReLU,
     act_limit=1.0,
     lidar_pool_bins=32,
+    lidar_projection_dim=CNN_PROJECTION_DIM,
     lidar_dim=LIDAR_DIM,
     proprio_dim=PROPRIO_DIM,
     gru_hidden_dim=GRU_HIDDEN_DIM,
@@ -430,6 +560,7 @@ def make_actor(
         lidar_dim=lidar_dim,
         proprio_dim=proprio_dim,
         pool_bins=lidar_pool_bins,
+        projection_dim=lidar_projection_dim,
         gru_hidden_dim=gru_hidden_dim,
     )
 
@@ -448,6 +579,9 @@ def actor_from_architecture(architecture: Mapping[str, Any]):
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=int(arch.get("pool_bins", 32)),
+        lidar_projection_dim=int(
+            arch.get("projection_dim", CNN_PROJECTION_DIM)
+        ),
         lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
         proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
         gru_hidden_dim=int(arch.get("gru_hidden_dim", GRU_HIDDEN_DIM)),

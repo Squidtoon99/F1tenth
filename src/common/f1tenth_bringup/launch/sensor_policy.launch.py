@@ -203,8 +203,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "checkpoint_path",
-                default_value="/policies/sensor_policy.pt",
-                description="Format-4 1,097-D recurrent sensor-policy checkpoint.",
+                default_value="/policies/e2e_policy.pt",
+                description="Format-4 1,097-D recurrent end-to-end policy checkpoint.",
             ),
             DeclareLaunchArgument(
                 "device",

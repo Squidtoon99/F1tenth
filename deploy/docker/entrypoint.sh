@@ -35,10 +35,10 @@ if [ -f /policies/policy.pt ]; then
 else
   echo "[entrypoint] WARNING: no /policies/policy.pt mounted; the 390-D RL stack will not start."
 fi
-if [ -f /policies/sensor_policy.pt ] || ls /policies/sensor_policy*.pt >/dev/null 2>&1; then
-  echo "[entrypoint] sensor-policy checkpoint present under /policies"
+if [ -f /policies/e2e_policy.pt ] || ls /policies/e2e_policy*.pt >/dev/null 2>&1; then
+  echo "[entrypoint] end-to-end policy checkpoint present under /policies"
 else
-  echo "[entrypoint] NOTE: no sensor_policy*.pt under /policies (ok for race.launch)."
+  echo "[entrypoint] NOTE: no e2e_policy*.pt under /policies (ok for race.launch)."
 fi
 if [ -f /etc/f1tenth/sensor_policy_pins.json ]; then
   echo "[entrypoint] sensor-policy pins: $(tr -d '\n' < /etc/f1tenth/sensor_policy_pins.json)"

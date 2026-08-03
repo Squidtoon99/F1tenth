@@ -18,7 +18,6 @@ from f1tenth_policy.layout import (  # noqa: F401
     THROTTLE_CURRENT as ACTOR_THROTTLE_CURRENT,
     THROTTLE_PRED as ACTOR_THROTTLE_PRED,
     VESC_CURRENT as ACTOR_VESC_CURRENT,
-    VESC_CURRENT_SCALE_A,
     VESC_SPEED as ACTOR_VESC_SPEED,
 )
 from f1tenth_sim.dynamics import VehicleBuffers, VehicleLocal, load_vehicle
@@ -376,7 +375,6 @@ def write_vesc_and_commands(
     reset: ResetParams,
     env_id: wp.int32,
     wheel_radius: wp.float32,
-    current_scale: wp.float32,
     use_opponent_commands: wp.int32,
     view_id: wp.int32,
     output: wp.array2d(dtype=wp.float32),
@@ -384,7 +382,8 @@ def write_vesc_and_commands(
     omega = vehicle.omega[env_id]
     mean_omega = 0.25 * (omega[0] + omega[1] + omega[2] + omega[3])
     speed = mean_omega * wheel_radius
-    current = current_scale * vehicle.applied_effort[env_id]
+    # applied_effort is already the signed directional current-limit fraction.
+    current = vehicle.applied_effort[env_id]
     speed = speed + env.vesc_speed_bias[env_id]
     current = current + env.vesc_current_bias[env_id]
     view_seed = sensor_view_seed(reset.seed, view_id)
@@ -461,7 +460,6 @@ def sensor_actor_solo_kernel(
     reset: ResetParams,
     sim: SimParams,
     wheel_radius: wp.float32,
-    current_scale: wp.float32,
     output: wp.array2d(dtype=wp.float32),
 ):
     env_id, beam_id = wp.tid()
@@ -492,7 +490,6 @@ def sensor_actor_solo_kernel(
             reset,
             env_id,
             wheel_radius,
-            current_scale,
             0,
             VIEW_EGO,
             output,
@@ -510,7 +507,6 @@ def sensor_actor_stage_kernel(
     reset: ResetParams,
     sim: SimParams,
     wheel_radius: wp.float32,
-    current_scale: wp.float32,
     use_opponent_commands: wp.int32,
     view_id: wp.int32,
     output: wp.array2d(dtype=wp.float32),
@@ -543,7 +539,6 @@ def sensor_actor_stage_kernel(
             reset,
             env_id,
             wheel_radius,
-            current_scale,
             use_opponent_commands,
             view_id,
             output,

@@ -15,11 +15,13 @@ for _path in (
     _REPO,
     _REPO / "src/racing_rl/f1tenth_rl_agent",
     _REPO / "libs/f1tenth_contract",
+    _REPO / "libs/f1tenth_policy",
 ):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
 from calibration.bag_io import load_sensor_policy_series  # noqa: E402
+from f1tenth_policy import applied_current_fraction  # noqa: E402
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
 
 from f1tenth_rl_agent.sensor_preprocessing import (  # noqa: E402
@@ -144,7 +146,11 @@ def synchronize_observations(
             previous_applied_long = 0.0
         applied_long = float(applied_row[6])
         applied_steer = float(applied_row[7])
-        vesc_current = float(applied_row[3] - applied_row[4])
+        vesc_current = applied_current_fraction(
+            float(applied_row[3] - applied_row[4]),
+            float(params["i_drive_max_a"]),
+            float(params["i_brake_max_a"]),
+        )
         steer_view = np.array(
             [
                 applied_steer,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-process QRSAC trainer: F1tenthEnv + trajectory replay, no Reverb/Redis/S3."""
+"""Single-process QR-SAC/PPO trainer for the F1TENTH sensor policy."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
+from ppo import PPOTrainer, pure_timeout_mask
 from selfplay import SelfPlayManager
 from run_layout import (
     checkpoint_dir,
@@ -71,6 +73,9 @@ reference_actor_from_architecture = actor_from_architecture
 _REEXPORTS = (architectures_match, SENSOR_POLICY_FORMAT_VERSION)
 
 LOGGER_NAME = "standalone_trainer"
+RESUME_STATE_FILENAME = "resume_state.pt"
+RESUME_FORMAT_VERSION = 1
+DEFAULT_POLICY_ARTIFACT_KEEP = 3
 # Privileged opponent block [384:392): rel_xy, rel_vxy, rel_axy, gap_norm, ey.
 # gap_norm (index +6) is (s_other - s_self) / (0.5 * track_length).
 OPP_OBS_BASE_IDX = 384
@@ -81,6 +86,11 @@ OPP_OBS_END_IDX = OPP_OBS_BASE_IDX + OPP_OBS_DIM
 # Dual-observation replay: only these capacities are chosen automatically.
 REPLAY_CAPACITY_REQUESTED = 2_000_000
 REPLAY_CAPACITY_FALLBACK = 1_000_000
+
+
+@dataclass
+class ActorModels:
+    actor: nn.Module
 
 
 def _tensor_shape(value) -> tuple[int, ...]:
@@ -665,9 +675,10 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return base
 
 
-def initial_training_protocol_state() -> dict:
+def initial_training_protocol_state(algorithm: str = "qrsac") -> dict:
     """Process-local one-shot protocol flags (unset on every cold start)."""
     return {
+        "algorithm": algorithm,
         "replay_full_reinit_done": False,
         "replay_full_reinit_count": 0,
         "replay_full_reinit_transitions": None,
@@ -766,6 +777,12 @@ def validate_model_architecture(cfg: dict) -> None:
             f"model.lidar_pool_bins must be one of "
             f"{sorted(ALLOWED_LIDAR_POOL_BINS)}, got {pool_bins!r}"
         )
+    projection_dim = model.get("lidar_projection_dim")
+    if not isinstance(projection_dim, int) or projection_dim <= 0:
+        raise ValueError(
+            "model.lidar_projection_dim must be a positive int, got "
+            f"{projection_dim!r}"
+        )
     for key in ("actor_hidden_layers", "critic_hidden_layers"):
         layers = model.get(key)
         if not isinstance(layers, (list, tuple)) or not layers:
@@ -811,6 +828,65 @@ def validate_model_architecture(cfg: dict) -> None:
         )
 
 
+def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
+    algorithm = cfg.get("algorithm")
+    if algorithm not in ("qrsac", "ppo"):
+        raise ValueError(
+            f"algorithm must be 'qrsac' or 'ppo', got {algorithm!r}"
+        )
+    if algorithm == "qrsac":
+        return
+    ppo = cfg["ppo"]
+    for key in ("rollout_steps", "epochs", "env_minibatches"):
+        value = ppo.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"ppo.{key} must be a positive int, got {value!r}")
+    env_minibatches = min(num_envs, int(ppo["env_minibatches"]))
+    if num_envs % env_minibatches != 0:
+        raise ValueError(
+            f"num_envs={num_envs} must be divisible by "
+            f"effective ppo.env_minibatches={env_minibatches}"
+        )
+    for key in (
+        "gamma",
+        "gae_lambda",
+        "clip_ratio",
+        "value_clip",
+        "actor_lr",
+        "value_lr",
+        "max_grad_norm",
+        "entropy_coef",
+    ):
+        value = ppo.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(f"ppo.{key} must be a positive finite number, got {value!r}")
+    for key in ("gamma", "gae_lambda"):
+        if float(ppo[key]) > 1.0:
+            raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
+    if not isinstance(ppo.get("advantage_filter_enabled"), bool):
+        raise ValueError(
+            "ppo.advantage_filter_enabled must be a bool, got "
+            f"{ppo.get('advantage_filter_enabled')!r}"
+        )
+    discard_fraction = ppo.get("advantage_filter_discard_fraction")
+    if (
+        not isinstance(discard_fraction, (int, float))
+        or isinstance(discard_fraction, bool)
+        or not math.isfinite(float(discard_fraction))
+        or float(discard_fraction) < 0.0
+        or float(discard_fraction) >= 1.0
+    ):
+        raise ValueError(
+            "ppo.advantage_filter_discard_fraction must be a finite number in "
+            f"[0.0, 1.0), got {discard_fraction!r}"
+        )
+
+
 def make_policy_network(cfg: dict):
     validate_model_architecture(cfg)
     model = cfg["model"]
@@ -822,6 +898,7 @@ def make_policy_network(cfg: dict):
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=model["lidar_pool_bins"],
+        lidar_projection_dim=model["lidar_projection_dim"],
     )
 
 
@@ -860,6 +937,7 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
         "actor_type": model["actor_type"],
         "actor_hidden_layers": list(model["actor_hidden_layers"]),
         "lidar_pool_bins": int(model["lidar_pool_bins"]),
+        "lidar_projection_dim": int(model["lidar_projection_dim"]),
     }
 
 
@@ -954,50 +1032,31 @@ def training_source_git_state(training_root: Path) -> dict:
             f"Training source overlay is active ({overlay_marker}). "
             "Stop the overlay launcher so tracked files are restored."
         )
-    if os.environ.get("TRAINING_SKIP_DIRTY_TREE_GUARD") == "1":
-        head = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        branch = subprocess.run(
-            ["git", "-C", str(repo_root), "symbolic-ref", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        return {
-            "git_head": head,
-            "git_branch": branch.stdout.strip() if branch.returncode == 0 else None,
-            "training_tree_clean": False,
-        }
     status = subprocess.run(
         ["git", "-C", str(repo_root), "status", "--porcelain", "training"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
     dirty = [line for line in status.stdout.splitlines() if line.strip()]
-    if dirty:
-        lines = "\n".join(f"  {line}" for line in dirty)
-        raise RuntimeError(
-            "Refusing to start training with a dirty training/ tree:\n" + lines
-        )
-    head = subprocess.run(
+    head_proc = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout.strip()
+        check=False,
+    )
+    head = head_proc.stdout.strip() if head_proc.returncode == 0 else None
     branch = subprocess.run(
         ["git", "-C", str(repo_root), "symbolic-ref", "--short", "HEAD"],
         capture_output=True,
         text=True,
+        check=False,
     )
     return {
         "git_head": head,
         "git_branch": branch.stdout.strip() if branch.returncode == 0 else None,
-        "training_tree_clean": True,
+        "training_tree_clean": len(dirty) == 0,
+        "training_tree_dirty_files": dirty or None,
     }
 
 
@@ -1056,6 +1115,8 @@ def build_config(
             cfg[section][key] = getattr(args, dest)
 
     cli_override("total_transitions", "schedule", "total_transitions")
+    if "algorithm" in explicit:
+        cfg["algorithm"] = args.algorithm
     cli_override(
         "selfplay_snapshot_interval", "selfplay", "snapshot_interval_transitions"
     )
@@ -1144,6 +1205,8 @@ def build_config(
         scales.pop(dead, None)
     cfg["reward"]["rear_end_gate"] = "any_contact"
     validate_model_architecture(cfg)
+    validate_algorithm_config(cfg, int(args.num_envs))
+    args.algorithm = str(cfg["algorithm"])
 
     # Mirror schedule/model scalars onto args for the training loop.
     args.batch_size = int(cfg["model"]["batch_size"])
@@ -1207,8 +1270,50 @@ def build_models(
     return models, trainer
 
 
+def build_ppo_models(
+    cfg: dict,
+    device: torch.device,
+    actor_normalizer: ObsNormalizer,
+    critic_normalizer: ObsNormalizer,
+    num_envs: int,
+    compile: bool = False,
+    compile_mode: str = "default",
+) -> tuple[ActorModels, PPOTrainer]:
+    ppo_cfg = cfg["ppo"]
+    env_minibatches = min(int(num_envs), int(ppo_cfg["env_minibatches"]))
+    actor = make_policy_network(cfg).to(device=device, dtype=torch.float32)
+    models = ActorModels(actor=actor)
+    trainer = PPOTrainer(
+        actor,
+        int(cfg["obs"]["num_obs"]),
+        actor_normalizer,
+        critic_normalizer,
+        device,
+        value_hidden_sizes=cfg["model"]["critic_hidden_layers"],
+        rollout_steps=int(ppo_cfg["rollout_steps"]),
+        num_epochs=int(ppo_cfg["epochs"]),
+        env_minibatch_size=int(num_envs) // env_minibatches,
+        gamma=float(ppo_cfg["gamma"]),
+        gae_lambda=float(ppo_cfg["gae_lambda"]),
+        clip_ratio=float(ppo_cfg["clip_ratio"]),
+        value_clip=float(ppo_cfg["value_clip"]),
+        actor_lr=float(ppo_cfg["actor_lr"]),
+        value_lr=float(ppo_cfg["value_lr"]),
+        max_grad_norm=float(ppo_cfg["max_grad_norm"]),
+        entropy_coef=float(ppo_cfg["entropy_coef"]),
+        action_clip=float(cfg["env"]["clip_actions"]),
+        compile=compile,
+        compile_mode=compile_mode,
+        advantage_filter_enabled=bool(ppo_cfg["advantage_filter_enabled"]),
+        advantage_filter_discard_fraction=float(
+            ppo_cfg["advantage_filter_discard_fraction"]
+        ),
+    )
+    return models, trainer
+
+
 def save_policy_artifact(
-    models: Models,
+    models,
     env_transitions: int,
     artifact_dir: Path,
     normalizer: ObsNormalizer,
@@ -1258,7 +1363,7 @@ def save_policy_artifact(
 
 
 def load_init_ckpt(
-    models: Models,
+    models,
     normalizer: ObsNormalizer,
     path: str,
     device: torch.device,
@@ -1294,12 +1399,159 @@ def load_init_ckpt(
     return init_transitions
 
 
+def resume_state_path(run_dir: Path) -> Path:
+    return run_dir / RESUME_STATE_FILENAME
+
+
+def build_rng_state(device: torch.device) -> dict:
+    np_state = np.random.get_state()
+    state = {
+        "python": random.getstate(),
+        "numpy": {
+            "name": np_state[0],
+            "keys": np_state[1].tolist(),
+            "pos": int(np_state[2]),
+            "has_gauss": int(np_state[3]),
+            "cached_gaussian": np_state[4],
+        },
+        "torch": torch.get_rng_state(),
+    }
+    if device.type == "cuda":
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: dict, device: torch.device) -> None:
+    random.setstate(state["python"])
+    np_entry = state["numpy"]
+    if isinstance(np_entry, dict):
+        np.random.set_state(
+            (
+                np_entry["name"],
+                np.array(np_entry["keys"], dtype=np.uint32),
+                np_entry["pos"],
+                np_entry["has_gauss"],
+                np_entry["cached_gaussian"],
+            )
+        )
+    else:
+        np.random.set_state(np_entry)
+    torch_state = state["torch"]
+    if not isinstance(torch_state, torch.Tensor):
+        torch_state = torch.as_tensor(torch_state, dtype=torch.uint8)
+    torch.set_rng_state(torch_state.cpu())
+    if device.type == "cuda" and "torch_cuda" in state:
+        cuda_states = state["torch_cuda"]
+        if isinstance(cuda_states, list):
+            cuda_states = [
+                s.cpu() if isinstance(s, torch.Tensor) else torch.as_tensor(s, dtype=torch.uint8)
+                for s in cuda_states
+            ]
+        torch.cuda.set_rng_state_all(cuda_states)
+
+
+def save_resume_state(
+    path: Path,
+    *,
+    algorithm: str,
+    models,
+    trainer,
+    actor_normalizer: ObsNormalizer,
+    critic_normalizer: ObsNormalizer | None,
+    env_transitions: int,
+    gradient_updates: int,
+    vector_ticks: int,
+    sampled_replay_rows: int,
+    device: torch.device,
+) -> None:
+    payload = {
+        "format": "training_resume",
+        "format_version": RESUME_FORMAT_VERSION,
+        "algorithm": algorithm,
+        "env_transitions": int(env_transitions),
+        "gradient_updates": int(gradient_updates),
+        "vector_ticks": int(vector_ticks),
+        "sampled_replay_rows": int(sampled_replay_rows),
+        "actor": models.actor.state_dict(),
+        "actor_obs_norm": actor_normalizer.state_dict(),
+        "rng_state": build_rng_state(device),
+    }
+    if algorithm == "ppo":
+        payload["value_critic"] = trainer.value_critic.state_dict()
+        if critic_normalizer is None:
+            raise ValueError("critic_normalizer is required for PPO resume")
+        payload["critic_obs_norm"] = critic_normalizer.state_dict()
+        payload["actor_optimizer"] = trainer.actor_optimizer.state_dict()
+        payload["value_optimizer"] = trainer.value_optimizer.state_dict()
+    else:
+        raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
+    logging.getLogger(LOGGER_NAME).info("Saved resume state to %s", path)
+
+
+def load_resume_state(
+    path: str,
+    *,
+    algorithm: str,
+    models,
+    trainer,
+    actor_normalizer: ObsNormalizer,
+    critic_normalizer: ObsNormalizer | None,
+    device: torch.device,
+) -> dict:
+    payload = torch.load(path, map_location=device, weights_only=False)
+    if payload.get("format") != "training_resume":
+        raise ValueError(f"Not a training resume checkpoint: {path}")
+    if payload.get("algorithm") != algorithm:
+        raise ValueError(
+            f"Resume checkpoint algorithm={payload.get('algorithm')!r} "
+            f"does not match requested {algorithm!r}"
+        )
+    models.actor.load_state_dict(payload["actor"], strict=True)
+    actor_normalizer.load_state_dict(payload["actor_obs_norm"])
+    if algorithm == "ppo":
+        trainer.value_critic.load_state_dict(payload["value_critic"], strict=True)
+        if critic_normalizer is None:
+            raise ValueError("critic_normalizer is required for PPO resume")
+        critic_normalizer.load_state_dict(payload["critic_obs_norm"])
+        trainer.actor_optimizer.load_state_dict(payload["actor_optimizer"])
+        trainer.value_optimizer.load_state_dict(payload["value_optimizer"])
+    restore_rng_state(payload["rng_state"], device)
+    logging.getLogger(LOGGER_NAME).info(
+        "Resumed from %s (env_transitions=%d gradient_updates=%d)",
+        path,
+        int(payload["env_transitions"]),
+        int(payload["gradient_updates"]),
+    )
+    return {
+        "env_transitions": int(payload["env_transitions"]),
+        "gradient_updates": int(payload["gradient_updates"]),
+        "vector_ticks": int(payload["vector_ticks"]),
+        "sampled_replay_rows": int(payload.get("sampled_replay_rows", 0)),
+    }
+
+
+def prune_policy_artifacts(
+    artifact_dir: Path, *, keep: int = DEFAULT_POLICY_ARTIFACT_KEEP
+) -> None:
+    paths = sorted(
+        artifact_dir.glob("policy_*.pt"),
+        key=lambda p: int(p.stem.split("_", 1)[1]),
+    )
+    for path in paths[:-keep]:
+        path.unlink(missing_ok=True)
+
+
 def run_eval_video(
     eval_state: dict,
     env_cfg: dict,
     obs_cfg: dict,
     reward_cfg: dict,
-    models: Models,
+    models,
     normalizer: "ObsNormalizer",
     control_interval: int,
     clip_actions: float,
@@ -1402,7 +1654,13 @@ def run_eval_video(
 def _build_parser() -> argparse.ArgumentParser:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(
-        description="Standalone QRSAC trainer (Lee/ADR-0011 sensor path)"
+        description="Standalone QR-SAC/PPO trainer (Lee/ADR-0011 sensor path)"
+    )
+    parser.add_argument(
+        "--algorithm",
+        choices=["qrsac", "ppo"],
+        default=cfg["algorithm"],
+        help="Training algorithm; explicitly overrides config.algorithm.",
     )
     parser.add_argument(
         "--config",
@@ -1505,7 +1763,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--compile",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="torch.compile QR-SAC (default on; --no-compile for reference).",
+        help="torch.compile learner updates (default on; --no-compile for reference).",
     )
     parser.add_argument(
         "--compile-mode",
@@ -1518,6 +1776,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Warm-start actor + obs-normalizer from a sensor policy artifact.",
+    )
+    parser.add_argument(
+        "--resume-ckpt",
+        type=str,
+        default=None,
+        help="Resume full optimizer/critic/normalizer state from a rolling checkpoint.",
     )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument(
@@ -1564,6 +1828,7 @@ def _explicit_cli_dests(argv: list[str] | None = None) -> set[str]:
 
 def run_identity_fingerprint(args: argparse.Namespace) -> dict:
     return {
+        "algorithm": str(args.algorithm),
         "config": str(Path(args.config).resolve()) if args.config else None,
         "total_transitions": int(args.total_transitions),
         "init_ckpt": (
@@ -1579,6 +1844,9 @@ def run_identity_fingerprint(args: argparse.Namespace) -> dict:
 def fingerprint_from_snapshot(snapshot: dict) -> dict:
     args = snapshot.get("args", {})
     return {
+        "algorithm": str(
+            args.get("algorithm", snapshot.get("config", {}).get("algorithm", "qrsac"))
+        ),
         "config": args.get("config"),
         "total_transitions": int(args.get("total_transitions", 0)),
         "init_ckpt": args.get("init_ckpt"),
@@ -1687,21 +1955,25 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    # torch.compile / Inductor may emit kernels without a deterministic impl; warn
-    # instead of erroring on the opt-in fast path (numerics caveat is documented).
-    torch.use_deterministic_algorithms(True, warn_only=args.compile)
 
     patch, patch_meta = (None, None)
     if args.config is not None:
         patch, patch_meta = load_config_patch(args.config)
     cfg = build_config(args, patch=patch, explicit=explicit)
+    # Inductor and PPO's adaptive-pooling backward have no deterministic CUDA
+    # implementation; retain deterministic checks but warn on those paths.
+    torch.use_deterministic_algorithms(
+        True, warn_only=args.compile or cfg["algorithm"] == "ppo"
+    )
     training_root = Path(__file__).resolve().parent
     source_git = training_source_git_state(training_root)
     provenance = config_provenance(patch_meta, explicit)
+    provenance["algorithm"] = cfg["algorithm"]
     provenance["source_git"] = source_git
     obs_cfg = cfg["obs"]
     reward_cfg = cfg["reward"]
     model_cfg = cfg["model"]
+    algorithm = cfg["algorithm"]
     env_cfg = build_env_cfg(
         cfg,
         launch_strategy="uniform_jittered",
@@ -1736,24 +2008,44 @@ def main():
     config_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
     log.info("Wrote config snapshot to %s", config_path)
     log.info("Using device: %s", device)
-    log.info(
-        "Effective experiment: steering_action_mode=%s steering_delta_max_rad=%.12f "
-        "control_hz=%.1f total_transitions=%d wall_contact_geometry=%s "
-        "footprint_m=%.3fx%.3f wall_contact_coefficient=%.1f/m "
-        "wall_contact_formula='-coefficient*speed_mps' "
-        "replay=%d compile=%s compile_mode=%s",
-        env_cfg.get("steering_action_mode", "delta"),
-        float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
-        1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
-        int(args.total_transitions),
-        "first_projected_footprint_edge_intersects_mapped_wall",
-        float(env_cfg["car_length"]),
-        float(env_cfg["car_width"]),
-        float(reward_cfg["wall_contact_coefficient"]),
-        int(model_cfg["replay_buffer_limit"]),
-        bool(args.compile),
-        args.compile_mode,
-    )
+    if algorithm == "qrsac":
+        log.info(
+            "Effective experiment: steering_action_mode=%s steering_delta_max_rad=%.12f "
+            "control_hz=%.1f total_transitions=%d wall_contact_geometry=%s "
+            "footprint_m=%.3fx%.3f wall_contact_coefficient=%.1f/m "
+            "wall_contact_formula='-coefficient*speed_mps' "
+            "replay=%d compile=%s compile_mode=%s",
+            env_cfg.get("steering_action_mode", "delta"),
+            float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
+            1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
+            int(args.total_transitions),
+            "first_projected_footprint_edge_intersects_mapped_wall",
+            float(env_cfg["car_length"]),
+            float(env_cfg["car_width"]),
+            float(reward_cfg["wall_contact_coefficient"]),
+            int(model_cfg["replay_buffer_limit"]),
+            bool(args.compile),
+            args.compile_mode,
+        )
+    else:
+        log.info(
+            "Effective experiment: algorithm=ppo steering_action_mode=%s "
+            "steering_delta_max_rad=%.12f control_hz=%.1f total_transitions=%d "
+            "wall_contact_geometry=%s footprint_m=%.3fx%.3f "
+            "wall_contact_coefficient=%.1f/m "
+            "wall_contact_formula='-coefficient*speed_mps' "
+            "compile=%s compile_mode=%s",
+            env_cfg.get("steering_action_mode", "delta"),
+            float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
+            1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
+            int(args.total_transitions),
+            "first_projected_footprint_edge_intersects_mapped_wall",
+            float(env_cfg["car_length"]),
+            float(env_cfg["car_width"]),
+            float(reward_cfg["wall_contact_coefficient"]),
+            bool(args.compile),
+            args.compile_mode,
+        )
 
     env = F1tenthEnv(
         num_envs=args.num_envs,
@@ -1770,30 +2062,9 @@ def main():
         args.track,
     )
 
-    models, trainer = build_models(
-        cfg,
-        device,
-        alpha=args.alpha,
-        compile=args.compile,
-        compile_mode=args.compile_mode,
-    )
     actor_obs_dim = int(obs_cfg["num_actor_obs"])
     critic_obs_dim = int(obs_cfg["num_obs"])
     act_dim = cfg["env"]["num_actions"]
-    buffer, selected_capacity, replay_estimate = make_dual_replay_buffer(
-        capacity=args.buffer_capacity,
-        actor_obs_dim=actor_obs_dim,
-        critic_obs_dim=critic_obs_dim,
-        act_dim=act_dim,
-        n_step=n_step,
-        gamma=model_cfg["rew_gamma"],
-        num_envs=args.num_envs,
-        device=device,
-        batch_size=args.batch_size,
-        log=log,
-        allow_fallback=True,
-    )
-    args.buffer_capacity = selected_capacity
     actor_normalizer = ObsNormalizer(
         obs_dim=actor_obs_dim,
         device=device,
@@ -1806,8 +2077,59 @@ def main():
         eps=float(obs_cfg.get("norm_eps", 1e-8)),
         clip=float(obs_cfg.get("norm_clip", 10.0)),
     )
+    if algorithm == "qrsac":
+        models, trainer = build_models(
+            cfg,
+            device,
+            alpha=args.alpha,
+            compile=args.compile,
+            compile_mode=args.compile_mode,
+        )
+        buffer, selected_capacity, replay_estimate = make_dual_replay_buffer(
+            capacity=args.buffer_capacity,
+            actor_obs_dim=actor_obs_dim,
+            critic_obs_dim=critic_obs_dim,
+            act_dim=act_dim,
+            n_step=n_step,
+            gamma=model_cfg["rew_gamma"],
+            num_envs=args.num_envs,
+            device=device,
+            batch_size=args.batch_size,
+            log=log,
+            allow_fallback=True,
+        )
+        args.buffer_capacity = selected_capacity
+    else:
+        models, trainer = build_ppo_models(
+            cfg,
+            device,
+            actor_normalizer,
+            critic_normalizer,
+            args.num_envs,
+            compile=args.compile,
+            compile_mode=args.compile_mode,
+        )
+        buffer = None
+        selected_capacity = 0
+        replay_estimate = None
 
-    if args.init_ckpt is not None:
+    resume_counters = None
+    if args.resume_ckpt is not None and args.init_ckpt is not None:
+        raise ValueError("Cannot use both --init-ckpt and --resume-ckpt")
+    if args.resume_ckpt is not None:
+        if algorithm != "ppo":
+            raise ValueError("--resume-ckpt is only supported for PPO")
+        resume_counters = load_resume_state(
+            args.resume_ckpt,
+            algorithm=algorithm,
+            models=models,
+            trainer=trainer,
+            actor_normalizer=actor_normalizer,
+            critic_normalizer=critic_normalizer,
+            device=device,
+        )
+        init_transitions = resume_counters["env_transitions"]
+    elif args.init_ckpt is not None:
         init_transitions = load_init_ckpt(
             models,
             actor_normalizer,
@@ -1911,17 +2233,24 @@ def main():
             tags.append("continuous")
         if platform.system() == "Darwin":
             tags.append("mac")
+        tags.append(algorithm)
+        wandb_config = {
+            **cfg,
+            **vars(args),
+            "config_provenance": provenance,
+        }
+        if algorithm == "qrsac":
+            wandb_config.update(
+                {
+                    "replay_capacity_selected": selected_capacity,
+                    "replay_estimate": replay_estimate,
+                }
+            )
         init_kwargs = {
             "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
             "name": f"standalone_{run_id}",
             "id": run_id,
-            "config": {
-                **cfg,
-                **vars(args),
-                "config_provenance": provenance,
-                "replay_capacity_selected": selected_capacity,
-                "replay_estimate": replay_estimate,
-            },
+            "config": wandb_config,
             "mode": os.getenv("WANDB_MODE", args.wandb_mode),
             "dir": str(run_dir),
             "tags": tags,
@@ -1936,6 +2265,8 @@ def main():
     actor_obs, critic_obs = unpack_sensor_observations(raw_obs)
     actor_normalizer.update(actor_obs)
     critic_normalizer.update(critic_obs)
+    if algorithm == "ppo":
+        trainer.initialize(actor_obs, critic_obs)
     if selfplay_mgr is not None:
         selfplay_mgr.seed_snapshot(
             SelfPlayManager.make_snapshot(
@@ -1943,11 +2274,21 @@ def main():
             )
         )
         selfplay_mgr.bootstrap_opponent(env)
-    vector_ticks = 0
-    env_transitions = 0
-    replay_inserts = torch.zeros((), device=device, dtype=torch.long)
-    sampled_replay_rows = 0
-    gradient_updates = 0
+    if resume_counters is not None:
+        vector_ticks = resume_counters["vector_ticks"]
+        env_transitions = resume_counters["env_transitions"]
+        sampled_replay_rows = resume_counters["sampled_replay_rows"]
+        gradient_updates = resume_counters["gradient_updates"]
+    else:
+        vector_ticks = 0
+        env_transitions = 0
+        sampled_replay_rows = 0
+        gradient_updates = 0
+    replay_inserts = (
+        torch.zeros((), device=device, dtype=torch.long)
+        if algorithm == "qrsac"
+        else 0
+    )
     learner_row_budget = 0.0
     episode_rewards = torch.zeros(args.num_envs, device=device, dtype=torch.float32)
     ep_return_sum = torch.zeros((), device=device, dtype=torch.float32)
@@ -1958,33 +2299,48 @@ def main():
     diag = RunningStats()
     t_start = time.perf_counter()
     last_log_time = t_start
-    last_log_transitions = 0
+    last_log_transitions = env_transitions
     last_log_replay_inserts = 0
     last_log_gradient_updates = 0
     last_log_sampled_rows = 0
     eval_state: dict = {}
     num_sequences = max(1, int(args.batch_size) // REPLAY_TRAIN_LEN)
     # Cold-start only: one-shot flags begin unset; systemd restart => new process.
-    protocol_state = initial_training_protocol_state()
+    protocol_state = initial_training_protocol_state(algorithm)
     lidar_aug_enabled = bool(cfg["model"]["lidar_aug_enabled"])
     lidar_aug_max_shift = int(cfg["model"]["lidar_aug_max_shift_beams"])
     replay_full_reinit_enabled = bool(cfg["model"]["replay_full_reinit"])
     actor_freeze_transitions = int(cfg["model"]["actor_freeze_transitions"])
     actor_lr_ramp_transitions = int(cfg["model"]["actor_lr_ramp_transitions"])
     actor_unfreeze_logged = False
-    log.info(
-        "Training protocol: actor_lr=%.3e critic_lr=%.3e alpha=%.4f "
-        "actor_freeze_transitions=%d actor_lr_ramp_transitions=%d "
-        "replay_full_reinit=%s lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
-        trainer.actor_lr,
-        trainer.critic_lr,
-        args.alpha,
-        actor_freeze_transitions,
-        actor_lr_ramp_transitions,
-        replay_full_reinit_enabled,
-        lidar_aug_enabled,
-        lidar_aug_max_shift,
-    )
+    if algorithm == "qrsac":
+        log.info(
+            "Training protocol: actor_lr=%.3e critic_lr=%.3e alpha=%.4f "
+            "actor_freeze_transitions=%d actor_lr_ramp_transitions=%d "
+            "replay_full_reinit=%s lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
+            trainer.actor_lr,
+            trainer.critic_lr,
+            args.alpha,
+            actor_freeze_transitions,
+            actor_lr_ramp_transitions,
+            replay_full_reinit_enabled,
+            lidar_aug_enabled,
+            lidar_aug_max_shift,
+        )
+    else:
+        log.info(
+            "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
+            "env_minibatches=%d env_minibatch_size=%d actor_lr=%.3e value_lr=%.3e "
+            "compile=%s compile_mode=%s",
+            trainer.rollout_steps,
+            trainer.num_epochs,
+            args.num_envs // trainer.env_minibatch_size,
+            trainer.env_minibatch_size,
+            float(cfg["ppo"]["actor_lr"]),
+            float(cfg["ppo"]["value_lr"]),
+            trainer.compile,
+            trainer.compile_mode,
+        )
     # Live GRU carry for the learner: one hidden per env. Checkpoints store the
     # pre-action state; done/reset rows are zeroed after the env step.
     recurrent_actor = actor_is_recurrent(models.actor)
@@ -1992,24 +2348,35 @@ def main():
         models.actor.initial_hidden(
             args.num_envs, device=device, dtype=torch.float32
         )
-        if recurrent_actor
+        if recurrent_actor and algorithm == "qrsac"
         else None
     )
-    collection_actor_step = models.actor.step if recurrent_actor else None
-    if recurrent_actor and args.compile:
+    collection_actor_step = (
+        models.actor.step if recurrent_actor and algorithm == "qrsac" else None
+    )
+    if recurrent_actor and algorithm == "qrsac" and args.compile:
         collection_actor_step = torch.compile(
             collection_actor_step, mode=args.compile_mode
         )
+    ppo_metric_accum: dict[str, float] = {}
 
     try:
-        while training_should_continue(
-            env_transitions, args.total_transitions, continuous
+        while (
+            training_should_continue(
+                env_transitions, args.total_transitions, continuous
+            )
+            or (
+                algorithm == "ppo"
+                and trainer.rollout_position > 0
+            )
         ):
             previous_transitions = env_transitions
             # Pre-action hidden is what trajectory replay checkpoints at boundaries.
             hidden_checkpoint = learner_hidden
 
-            if env_transitions < args.min_train_transitions:
+            if algorithm == "ppo":
+                actions = trainer.act(actor_obs, critic_obs)
+            elif env_transitions < args.min_train_transitions:
                 actions = (
                     torch.rand(
                         args.num_envs, act_dim, device=device, dtype=torch.float32
@@ -2048,6 +2415,33 @@ def main():
             env_transitions += args.num_envs
             next_actor_obs, next_critic_obs = unpack_sensor_observations(next_raw_obs)
             reward = reward.to(torch.float32)
+            ppo_metrics = None
+            if algorithm == "ppo":
+                ppo_timed_out = pure_timeout_mask(extras["termination"])
+                ppo_metrics = trainer.observe(
+                    next_actor_obs,
+                    next_critic_obs,
+                    reward,
+                    done,
+                    timed_out=ppo_timed_out,
+                    timeout_critic_obs=extras["observations"]["terminal_critic"],
+                )
+                if ppo_metrics is not None:
+                    minibatches = int(ppo_metrics["minibatches"])
+                    gradient_updates += int(ppo_metrics["actor_updates"])
+                    gradient_updates += int(ppo_metrics["value_updates"])
+                    sampled_replay_rows += (
+                        minibatches
+                        * trainer.rollout_steps
+                        * trainer.env_minibatch_size
+                    )
+                    policy_loss_accum += float(ppo_metrics["policy_loss"])
+                    critic_loss_accum += float(ppo_metrics["value_loss"])
+                    loss_count += 1
+                    for key, value in ppo_metrics.items():
+                        ppo_metric_accum[key] = ppo_metric_accum.get(key, 0.0) + float(
+                            value
+                        )
 
             episode_rewards += reward
             done_f = done.to(episode_rewards.dtype)
@@ -2077,39 +2471,40 @@ def main():
                 in_range = (opp_block != 0).any(dim=-1).to(critic_obs.dtype)
                 diag.add_mean("metric/opponent_presence", in_range)
 
-            replay_inserts += buffer.add(
-                actor_obs,
-                critic_obs,
-                actions,
-                reward,
-                done,
-                hidden=hidden_checkpoint,
-            )
-            if learner_hidden is not None:
-                done_b = done.bool()
-                if done_b.any():
-                    learner_hidden[done_b] = 0
-            maybe_replay_full_reinit(
-                enabled=replay_full_reinit_enabled,
-                protocol_state=protocol_state,
-                buffer=buffer,
-                trainer=trainer,
-                models=models,
-                actor_normalizer=actor_normalizer,
-                env_transitions=env_transitions,
-                learner_hidden=learner_hidden,
-                champion_mgr=champion_mgr,
-                selfplay_mgr=selfplay_mgr,
-                env=env,
-                log=log,
-                wandb_run=wandb_run,
-            )
-            actor_normalizer.update(next_actor_obs)
-            critic_normalizer.update(next_critic_obs)
+            if algorithm == "qrsac":
+                replay_inserts += buffer.add(
+                    actor_obs,
+                    critic_obs,
+                    actions,
+                    reward,
+                    done,
+                    hidden=hidden_checkpoint,
+                )
+                if learner_hidden is not None:
+                    done_b = done.bool()
+                    if done_b.any():
+                        learner_hidden[done_b] = 0
+                maybe_replay_full_reinit(
+                    enabled=replay_full_reinit_enabled,
+                    protocol_state=protocol_state,
+                    buffer=buffer,
+                    trainer=trainer,
+                    models=models,
+                    actor_normalizer=actor_normalizer,
+                    env_transitions=env_transitions,
+                    learner_hidden=learner_hidden,
+                    champion_mgr=champion_mgr,
+                    selfplay_mgr=selfplay_mgr,
+                    env=env,
+                    log=log,
+                    wandb_run=wandb_run,
+                )
+                actor_normalizer.update(next_actor_obs)
+                critic_normalizer.update(next_critic_obs)
             actor_obs = next_actor_obs
             critic_obs = next_critic_obs
 
-            if env_transitions >= args.min_train_transitions:
+            if algorithm == "qrsac" and env_transitions >= args.min_train_transitions:
                 updates_due, learner_row_budget = learner_updates_for_transitions(
                     args.num_envs,
                     args.batch_size,
@@ -2225,7 +2620,9 @@ def main():
                     critic_loss_accum += losses.critic_loss
                     loss_count += 1
 
-            if selfplay_mgr is not None:
+            if selfplay_mgr is not None and (
+                algorithm == "qrsac" or ppo_metrics is not None
+            ):
                 selfplay_mgr.maybe_snapshot(
                     models, actor_normalizer, env_transitions
                 )
@@ -2239,7 +2636,7 @@ def main():
                 now = time.perf_counter()
                 elapsed = now - last_log_time
                 ri = int(replay_inserts)
-                bsize = int(buffer.size)
+                bsize = int(buffer.size) if buffer is not None else 0
                 window_transitions = env_transitions - last_log_transitions
                 vector_ticks_per_sec = (
                     window_transitions / args.num_envs / max(elapsed, 1e-6)
@@ -2270,32 +2667,77 @@ def main():
                     if loss_count
                     else float("nan")
                 )
-                buffer_fill_pct = 100.0 * bsize / buffer.capacity
-                log.info(
-                    "ticks=%d transitions=%d replay_inserts=%d buffer=%d/%d (%.1f%%) "
-                    "gradient_updates=%d ticks/s=%.1f transitions/s=%.1f "
-                    "inserts/s=%.1f sampled_rows/s=%.1f updates/s=%.2f "
-                    + TRAINING_SUMMARY_REWARD_TAIL,
-                    vector_ticks,
-                    env_transitions,
-                    ri,
-                    bsize,
-                    buffer.capacity,
-                    buffer_fill_pct,
-                    gradient_updates,
-                    vector_ticks_per_sec,
-                    transitions_per_sec,
-                    inserts_per_sec,
-                    sampled_rows_per_sec,
-                    updates_per_sec,
-                    *training_summary_reward_tail_args(
-                        mean_policy_loss=mean_policy_loss,
-                        mean_critic_loss=mean_critic_loss,
-                        mean_ep_reward=mean_ep_reward,
-                        diag=diag,
-                        ep_count=ep_count,
-                    ),
-                )
+                if algorithm == "qrsac":
+                    buffer_fill_pct = 100.0 * bsize / buffer.capacity
+                    log.info(
+                        "ticks=%d transitions=%d replay_inserts=%d "
+                        "buffer=%d/%d (%.1f%%) gradient_updates=%d "
+                        "ticks/s=%.1f transitions/s=%.1f inserts/s=%.1f "
+                        "sampled_rows/s=%.1f updates/s=%.2f "
+                        + TRAINING_SUMMARY_REWARD_TAIL,
+                        vector_ticks,
+                        env_transitions,
+                        ri,
+                        bsize,
+                        buffer.capacity,
+                        buffer_fill_pct,
+                        gradient_updates,
+                        vector_ticks_per_sec,
+                        transitions_per_sec,
+                        inserts_per_sec,
+                        sampled_rows_per_sec,
+                        updates_per_sec,
+                        *training_summary_reward_tail_args(
+                            mean_policy_loss=mean_policy_loss,
+                            mean_critic_loss=mean_critic_loss,
+                            mean_ep_reward=mean_ep_reward,
+                            diag=diag,
+                            ep_count=ep_count,
+                        ),
+                    )
+                else:
+                    log.info(
+                        "ticks=%d transitions=%d optimized_rows=%d "
+                        "gradient_updates=%d ticks/s=%.1f transitions/s=%.1f "
+                        "optimized_rows/s=%.1f updates/s=%.2f "
+                        + TRAINING_SUMMARY_REWARD_TAIL,
+                        vector_ticks,
+                        env_transitions,
+                        sampled_replay_rows,
+                        gradient_updates,
+                        vector_ticks_per_sec,
+                        transitions_per_sec,
+                        sampled_rows_per_sec,
+                        updates_per_sec,
+                        *training_summary_reward_tail_args(
+                            mean_policy_loss=mean_policy_loss,
+                            mean_critic_loss=mean_critic_loss,
+                            mean_ep_reward=mean_ep_reward,
+                            diag=diag,
+                            ep_count=ep_count,
+                        ),
+                    )
+                    if loss_count:
+                        log.info(
+                            "  ppo: value_loss=%.5f neg_logp=%.5f approx_kl=%.5f "
+                            "policy_entropy=%.3f policy_clip_frac=%.3f value_clip_frac=%.3f "
+                            "actor_grad_norm=%.3f value_grad_norm=%.3f "
+                            "epochs=%.2f minibatches=%.2f "
+                            "advantage_filter_discard_rate=%.4f "
+                            "advantage_filter_retained=%.1f",
+                            ppo_metric_accum["value_loss"] / loss_count,
+                            ppo_metric_accum["negative_log_prob"] / loss_count,
+                            ppo_metric_accum["approx_kl"] / loss_count,
+                            ppo_metric_accum["policy_entropy"] / loss_count,
+                            ppo_metric_accum["policy_clip_fraction"] / loss_count,
+                            ppo_metric_accum["value_clip_fraction"] / loss_count,
+                            ppo_metric_accum["actor_grad_norm"] / loss_count,
+                            ppo_metric_accum["value_grad_norm"] / loss_count,
+                            ppo_metric_accum["epochs"] / loss_count,
+                            ppo_metric_accum["minibatches"] / loss_count,
+                            ppo_metric_accum["advantage_filter_discard_rate"] / loss_count,
+                            ppo_metric_accum["advantage_filter_retained"] / loss_count,
+                        )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
                 nf_reward_rate = (
@@ -2429,14 +2871,10 @@ def main():
                     )
 
                 if wandb_run is not None:
-                    wandb_run.log(
-                        {
+                    wandb_metrics = {
                             "env_transitions": env_transitions,
                             "vector_ticks": vector_ticks,
-                            "replay_inserts": ri,
-                            "sampled_replay_rows": sampled_replay_rows,
                             "gradient_updates": gradient_updates,
-                            "buffer/size": bsize,
                             "train/policy_loss": mean_policy_loss,
                             "train/critic_loss": mean_critic_loss,
                             "train/mean_ep_reward": mean_ep_reward,
@@ -2445,8 +2883,6 @@ def main():
                             ),
                             "perf/vector_ticks_per_sec": vector_ticks_per_sec,
                             "perf/env_transitions_per_sec": transitions_per_sec,
-                            "perf/replay_inserts_per_sec": inserts_per_sec,
-                            "perf/sampled_replay_rows_per_sec": sampled_rows_per_sec,
                             "perf/gradient_updates_per_sec": updates_per_sec,
                             "reward/total_mean": diag.mean("reward/step"),
                             "reward/total_min": diag.vmin("reward/step"),
@@ -2502,7 +2938,35 @@ def main():
                             "nonfinite/obs_rate": nf_obs_rate,
                             "nonfinite/reward_rate": nf_reward_rate,
                             "nonfinite/state_rate": nf_state_rate,
-                        },
+                    }
+                    if algorithm == "qrsac":
+                        wandb_metrics.update(
+                            {
+                                "replay_inserts": ri,
+                                "sampled_replay_rows": sampled_replay_rows,
+                                "buffer/size": bsize,
+                                "perf/replay_inserts_per_sec": inserts_per_sec,
+                                "perf/sampled_replay_rows_per_sec": (
+                                    sampled_rows_per_sec
+                                ),
+                            }
+                        )
+                    else:
+                        wandb_metrics.update(
+                            {
+                                "optimized_rows": sampled_replay_rows,
+                                "perf/optimized_rows_per_sec": sampled_rows_per_sec,
+                            }
+                        )
+                        if loss_count:
+                            wandb_metrics.update(
+                                {
+                                    f"ppo/{key}": value / loss_count
+                                    for key, value in ppo_metric_accum.items()
+                                }
+                            )
+                    wandb_run.log(
+                        wandb_metrics,
                         step=env_transitions,
                     )
                 policy_loss_accum.zero_()
@@ -2510,6 +2974,7 @@ def main():
                 ep_return_sum.zero_()
                 ep_return_count.zero_()
                 loss_count = 0
+                ppo_metric_accum.clear()
                 diag.reset()
                 last_log_time = now
                 last_log_transitions = env_transitions
@@ -2530,6 +2995,21 @@ def main():
                     cfg,
                     protocol_state=protocol_state,
                 )
+                prune_policy_artifacts(ckpt_dir)
+                if algorithm == "ppo":
+                    save_resume_state(
+                        resume_state_path(run_dir),
+                        algorithm=algorithm,
+                        models=models,
+                        trainer=trainer,
+                        actor_normalizer=actor_normalizer,
+                        critic_normalizer=critic_normalizer,
+                        env_transitions=env_transitions,
+                        gradient_updates=gradient_updates,
+                        vector_ticks=vector_ticks,
+                        sampled_replay_rows=sampled_replay_rows,
+                        device=device,
+                    )
 
             if (
                 args.eval_interval_transitions > 0
@@ -2576,6 +3056,21 @@ def main():
             cfg,
             protocol_state=protocol_state,
         )
+        prune_policy_artifacts(ckpt_dir)
+        if algorithm == "ppo":
+            save_resume_state(
+                resume_state_path(run_dir),
+                algorithm=algorithm,
+                models=models,
+                trainer=trainer,
+                actor_normalizer=actor_normalizer,
+                critic_normalizer=critic_normalizer,
+                env_transitions=env_transitions,
+                gradient_updates=gradient_updates,
+                vector_ticks=vector_ticks,
+                sampled_replay_rows=sampled_replay_rows,
+                device=device,
+            )
     finally:
         try:
             env.close()

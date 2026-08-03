@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sensor-policy runtime: JetPack 6 iGPU PyTorch + ROS 2 Humble + full src/ workspace.
+# Sensor-policy runtime: JetPack 6 iGPU PyTorch + ROS 2 Humble + sensor_policy graph only.
 #
 # GENERIC — no per-car config and no policy weights. Mount /config and /policies
 # at runtime. Supports device:=cpu and device:=cuda in the same image.
@@ -14,7 +14,8 @@
 #   deploy/docker/smoke_sensor_policy.sh
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
 
-FROM ${BASE_IMAGE} AS ros_base
+# ---- runtime ROS layer (shipped in the car image; no colcon/rosdep/git) ----
+FROM ${BASE_IMAGE} AS ros_runtime
 ARG BASE_IMAGE
 ENV ROS_DISTRO=humble
 ENV F1TENTH_SENSOR_POLICY_BASE=${BASE_IMAGE}
@@ -28,37 +29,20 @@ RUN . /etc/os-release \
          exit 1; \
        fi \
     && apt-get update && apt-get install -y --no-install-recommends \
-      curl gnupg2 lsb-release ca-certificates git \
+      curl gnupg2 ca-certificates \
     && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
       | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
       http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
       > /etc/apt/sources.list.d/ros2.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-      python3-colcon-common-extensions \
-      python3-rosdep \
-      python3-vcstool \
-      python3-pip \
       ros-humble-ros-base \
       ros-humble-ackermann-msgs \
       ros-humble-joy \
       ros-humble-teleop-tools \
       ros-humble-urg-node \
       ros-humble-serial-driver \
-      ros-humble-asio-cmake-module \
-      ros-humble-diagnostic-updater \
-      ros-humble-tf-transformations \
-      ros-humble-slam-toolbox \
-      ros-humble-rosbridge-server \
-      ros-humble-nav2-map-server \
-      ros-humble-nav2-lifecycle-manager \
-      python3-scipy \
-      python3-transforms3d \
-    && (apt-get install -y --no-install-recommends ros-humble-sick-scan-xd \
-        || echo "sick_scan_xd unavailable on this arch; build from source if needed") \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir numpy cython \
-    && rosdep init || true
+    && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /etc/f1tenth \
     && python3 - <<'PY'
@@ -80,34 +64,39 @@ with open("/etc/f1tenth/sensor_policy_pins.json", "w", encoding="utf-8") as fh:
 print(json.dumps(pins, sort_keys=True))
 PY
 
-# ---- build stage: complete colcon workspace (training/ excluded) ----
-FROM ros_base AS build
-ARG RANGE_LIBC_WITH_CUDA=OFF
+# ---- build stage: colcon closure for sensor_policy.launch.py only ----
+FROM ros_runtime AS build
 WORKDIR /ws
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+      python3-rosdep \
+      ros-humble-asio-cmake-module \
+    && rm -rf /var/lib/apt/lists/* \
+    && rosdep init || true
+
 COPY src ./src
 COPY libs ./libs
 
-RUN test -f src/localization/range_libc/pywrapper/setup.py \
-    || (echo "range_libc submodule missing; run: git submodule update --init src/localization/range_libc" >&2 && exit 1)
-
-RUN touch src/localization/range_libc/COLCON_IGNORE \
-    && WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
+RUN mkdir -p src/localization/range_libc \
+    && touch src/localization/range_libc/COLCON_IGNORE
 
 RUN source /opt/ros/humble/setup.bash \
     && rosdep update \
     && (rosdep install --from-paths src libs --ignore-src -y -r || true) \
-    && colcon build --merge-install --packages-ignore range_lib \
+    && colcon build --merge-install --packages-up-to f1tenth_bringup \
+      --packages-ignore \
+        range_lib particle_filter f1tenth_localization \
+        f1tenth_rl_vehicle f1tenth_racing_algo f1tenth_planning \
+        ackermann_mux f1tenth_common f1tenth_mapping f1tenth_perception \
       --cmake-args -DBUILD_TESTING=OFF
 
 # ---- runtime stage ----
-FROM ros_base AS runtime
-ARG RANGE_LIBC_WITH_CUDA=OFF
+FROM ros_runtime AS runtime
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
-COPY src/localization/range_libc ./src/localization/range_libc
-RUN WITH_CUDA=${RANGE_LIBC_WITH_CUDA} pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 COPY deploy/docker/smoke_sensor_policy.sh /usr/local/bin/smoke_sensor_policy.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/smoke_sensor_policy.sh

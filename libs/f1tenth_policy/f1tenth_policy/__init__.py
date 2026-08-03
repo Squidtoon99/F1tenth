@@ -14,6 +14,7 @@ from f1tenth_policy.artifact import (
     load_sensor_artifact,
     validate_sensor_policy_artifact,
 )
+from f1tenth_policy.current import applied_current_fraction
 from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
@@ -29,7 +30,6 @@ from f1tenth_policy.layout import (
     SENSOR_POLICY_FORMAT_VERSION,
     STEERING_ACTION_MODE,
     STEERING_DELTA_MAX_RAD,
-    VESC_CURRENT_SCALE_A,
 )
 from f1tenth_policy.normalizer import ObsNormalizer, load_obs_normalizer
 from f1tenth_policy.steering import (
@@ -54,10 +54,10 @@ __all__ = [
     "SENSOR_POLICY_FORMAT_VERSION",
     "STEERING_ACTION_MODE",
     "STEERING_DELTA_MAX_RAD",
-    "VESC_CURRENT_SCALE_A",
     "SquashedGaussianLidarGRUActor",
     "actor_architecture_from_module",
     "actor_from_architecture",
+    "applied_current_fraction",
     "architectures_match",
     "build_sensor_artifact_payload",
     "integrate_steering_delta",

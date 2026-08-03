@@ -43,6 +43,7 @@ _C_CENTER = (110, 110, 120)
 _C_OPP = (150, 150, 160)
 _C_BG = (18, 18, 22)
 _C_TEXT = (235, 235, 235)
+_C_LIDAR = (80, 235, 235)
 
 
 def yaw_from_quat_wxyz(quat) -> float:
@@ -217,6 +218,7 @@ class RolloutVisualizer:
         opp_xy=None,
         opp_yaw=0.0,
         done=False,
+        lidar_points=None,
         extra_text: str = "",
         step: int | None = None,
     ) -> None:
@@ -230,6 +232,15 @@ class RolloutVisualizer:
         done_arr = np.asarray(done).reshape(-1)
         if done_arr.size == 1:
             done_arr = np.full(k, bool(done_arr.item()))
+        lidar = None
+        if lidar_points is not None:
+            lidar = np.asarray(lidar_points, dtype=np.float64)
+            if lidar.ndim == 2:
+                lidar = lidar[None, :, :]
+            if lidar.ndim != 3 or lidar.shape[0] != k or lidar.shape[2] != 2:
+                raise ValueError(
+                    f"lidar_points must have shape ({k}, beams, 2), got {lidar.shape}"
+                )
 
         for i in range(min(k, self.num_show)):
             if bool(done_arr[i]):
@@ -253,12 +264,14 @@ class RolloutVisualizer:
 
         if self._writer is not None:
             frame_step = self._step if step is None else int(step)
-            self._render_mp4(rects, opp_rects, spd, extra_text, frame_step)
+            self._render_mp4(rects, opp_rects, spd, lidar, extra_text, frame_step)
         if self.live:
-            self._render_rerun(rects, opp_rects, spd)
+            self._render_rerun(rects, opp_rects, spd, lidar)
         self._step = (int(step) + 1) if step is not None else (self._step + 1)
 
-    def _render_mp4(self, rects, opp_rects, spd, extra_text, frame_step) -> None:
+    def _render_mp4(
+        self, rects, opp_rects, spd, lidar, extra_text, frame_step
+    ) -> None:
         import cv2
 
         frame = self._bg.copy()
@@ -266,6 +279,21 @@ class RolloutVisualizer:
             if len(trail) > 1:
                 cv2.polylines(frame, [self._poly_px(np.array(trail))], False,
                               _dim(_car_color(i)), 2, lineType=cv2.LINE_AA)
+        if lidar is not None:
+            for points in lidar:
+                pixels = self._poly_px(points)
+                valid = (
+                    np.isfinite(points).all(axis=1)
+                    & (pixels[:, 0] >= 0)
+                    & (pixels[:, 0] < self._W)
+                    & (pixels[:, 1] >= 0)
+                    & (pixels[:, 1] < self._H)
+                )
+                x = pixels[valid, 0]
+                y = pixels[valid, 1]
+                frame[y, x] = _C_LIDAR
+                frame[np.minimum(y + 1, self._H - 1), x] = _C_LIDAR
+                frame[y, np.minimum(x + 1, self._W - 1)] = _C_LIDAR
         if opp_rects is not None:
             for i, r in enumerate(opp_rects):
                 cv2.fillPoly(frame, [self._poly_px(r)], _opp_color(i))
@@ -279,7 +307,7 @@ class RolloutVisualizer:
                     _C_TEXT, 1, cv2.LINE_AA)
         self._writer.append_data(frame)
 
-    def _render_rerun(self, rects, opp_rects, spd) -> None:
+    def _render_rerun(self, rects, opp_rects, spd, lidar) -> None:
         rr = self._rr
         rr.set_time("step", sequence=self._step)
         strips, colors = [], []
@@ -298,6 +326,11 @@ class RolloutVisualizer:
             opp_strips = [self._rr_pts(np.vstack([r, r[:1]])) for r in opp_rects]
             opp_colors = [_opp_color(i) for i in range(len(opp_rects))]
             rr.log("cars/opp", rr.LineStrips2D(opp_strips, colors=opp_colors))
+        if lidar is not None:
+            rr.log(
+                "sensors/lidar",
+                rr.Points2D(self._rr_pts(lidar.reshape(-1, 2)), colors=[_C_LIDAR]),
+            )
         rr.log("metrics/speed_mean_mps", rr.Scalars(float(spd.mean())))
         rr.log("metrics/speed_max_mps", rr.Scalars(float(spd.max())))
 

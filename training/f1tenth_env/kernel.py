@@ -486,6 +486,8 @@ class EnvBuffers:
     terminal_x: wp.array(dtype=wp.float32)
     terminal_y: wp.array(dtype=wp.float32)
     terminal_s: wp.array(dtype=wp.float32)
+    terminal_critic_obs: wp.array2d(dtype=wp.float32)
+    terminal_raw_obs: wp.array2d(dtype=wp.float32)
     metric_progress: wp.array(dtype=wp.float32)
     metric_wall: wp.array(dtype=wp.float32)
     metric_boundary: wp.array(dtype=wp.float32)
@@ -1499,6 +1501,49 @@ def publish_observation(
 
 
 @wp.func
+def is_pure_timeout(done_flags: wp.int32) -> wp.bool:
+    return (done_flags & 1) != 0 and (done_flags & 30) == 0
+
+
+@wp.func
+def capture_pre_reset_critic_obs(
+    env_id: wp.int32,
+    ego: VehicleLocal,
+    opponent: VehicleLocal,
+    ego_frenet: FrenetState,
+    opponent_frenet: FrenetState,
+    env: EnvBuffers,
+    track: TrackData,
+    obs_params: ObsParams,
+    reset: ResetParams,
+    raw_previous: wp.array2d(dtype=wp.float32),
+    raw_scratch: wp.array2d(dtype=wp.float32),
+    output: wp.array2d(dtype=wp.float32),
+):
+    visible = write_raw_observation(
+        env_id,
+        ego,
+        opponent,
+        ego_frenet,
+        opponent_frenet,
+        env.last_action[env_id],
+        track,
+        obs_params,
+        reset,
+        raw_scratch,
+    )
+    publish_observation(
+        env_id,
+        visible,
+        env,
+        reset,
+        raw_previous,
+        raw_scratch,
+        output,
+    )
+
+
+@wp.func
 def store_reward(
     env_id: wp.int32,
     result: RewardResult,
@@ -1526,12 +1571,25 @@ def store_reward(
         env.completed_episode_steps[env_id] = env.episode_step[env_id]
 
 
+@wp.func
+def apply_ego_speed_cap(
+    vehicle: VehicleLocal,
+    action: wp.vec2f,
+    speed_cap_mps: wp.float32,
+) -> wp.vec2f:
+    if speed_cap_mps > 0.0 and vehicle.vx >= speed_cap_mps:
+        cap_effort = wp.clamp(2.0 * (speed_cap_mps - vehicle.vx), -1.0, 0.0)
+        return wp.vec2f(wp.min(action[0], cap_effort), action[1])
+    return action
+
+
 @wp.kernel(enable_backward=False)
 def physics_solo_kernel(
     actions: wp.array(dtype=wp.vec2f),
     ego_buffers: VehicleBuffers,
     env: PhysicsBuffers,
     sim: SimParams,
+    ego_speed_cap_mps: wp.float32,
     substeps: wp.int32,
 ):
     env_id = wp.tid()
@@ -1540,10 +1598,11 @@ def physics_solo_kernel(
         wp.clamp(actions[env_id][1], -1.0, 1.0),
     )
     execution_action = delayed_physics_action(env_id, action, env)
+    ego = load_vehicle(ego_buffers, env_id)
+    execution_action = apply_ego_speed_cap(ego, execution_action, ego_speed_cap_mps)
     push_executed_longitudinal(
         env.executed_longitudinal_history, env_id, execution_action[0]
     )
-    ego = load_vehicle(ego_buffers, env_id)
     ego = apply_command(
         ego, execution_action, ego_buffers.steer_bias[env_id], sim
     )
@@ -1583,6 +1642,7 @@ def physics_stage_kernel(
     sim: SimParams,
     reset: ResetParams,
     opponent_params: OpponentParams,
+    ego_speed_cap_mps: wp.float32,
     num_envs: wp.int32,
     substeps: wp.int32,
 ):
@@ -1594,10 +1654,13 @@ def physics_stage_kernel(
             wp.clamp(actions[env_id][1], -1.0, 1.0),
         )
         execution_action = delayed_physics_action(env_id, action, env)
+        ego = load_vehicle(ego_buffers, env_id)
+        execution_action = apply_ego_speed_cap(
+            ego, execution_action, ego_speed_cap_mps
+        )
         push_executed_longitudinal(
             env.executed_longitudinal_history, env_id, execution_action[0]
         )
-        ego = load_vehicle(ego_buffers, env_id)
         ego = apply_command(
             ego, execution_action, ego_buffers.steer_bias[env_id], sim
         )
@@ -1701,6 +1764,8 @@ def transaction_stage_kernel(
     termination: TerminationParams,
     reset: ResetParams,
     opponent_params: OpponentParams,
+    obs_params: ObsParams,
+    raw_previous: wp.array2d(dtype=wp.float32),
 ):
     env_id = wp.tid()
     ego = load_vehicle(ego_buffers, env_id)
@@ -1754,6 +1819,24 @@ def transaction_stage_kernel(
         env.terminal_x[env_id] = ego.x
         env.terminal_y[env_id] = ego.y
         env.terminal_s[env_id] = ego_frenet.s
+        if is_pure_timeout(result.done_flags):
+            capture_pre_reset_critic_obs(
+                env_id,
+                ego,
+                opponent,
+                ego_frenet,
+                opponent_frenet,
+                env,
+                track,
+                obs_params,
+                reset,
+                raw_previous,
+                env.terminal_raw_obs,
+                env.terminal_critic_obs,
+            )
+        else:
+            for feature in range(OBS_DIM):
+                env.terminal_critic_obs[env_id, feature] = wp.float32(0.0)
         ego, opponent, ego_frenet, opponent_frenet = reset_pair(
             env_id,
             ego_buffers,

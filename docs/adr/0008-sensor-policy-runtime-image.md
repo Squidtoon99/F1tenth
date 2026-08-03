@@ -1,6 +1,6 @@
 # 0008 — Dedicated sensor-policy CUDA runtime image (full workspace)
 
-- Status: Accepted
+- Status: Accepted (image scope superseded by [0025](0025-sensor-policy-image-no-localization.md))
 - Date: 2026-07-18 (updated 2026-07-19)
 
 ## Context

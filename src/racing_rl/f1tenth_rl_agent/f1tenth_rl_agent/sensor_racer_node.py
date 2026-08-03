@@ -89,6 +89,11 @@ class SensorRacerNode(Node):
         self.twist_vx_sign = float(gp("twist_vx_sign").get_parameter_value().double_value)
         self.i_drive_max_a = float(gp("i_drive_max_a").get_parameter_value().double_value)
         self.i_brake_max_a = float(gp("i_brake_max_a").get_parameter_value().double_value)
+        if self.i_drive_max_a <= 0.0 or self.i_brake_max_a <= 0.0:
+            raise ValueError(
+                "i_drive_max_a and i_brake_max_a must be > 0 "
+                f"(got {self.i_drive_max_a!r}, {self.i_brake_max_a!r})"
+            )
         self.max_steer = float(gp("max_steer").get_parameter_value().double_value)
         self.steering_action_mode = (
             gp("steering_action_mode").get_parameter_value().string_value
@@ -449,8 +454,11 @@ class SensorRacerNode(Node):
         speed = self.twist_vx_sign * float(self._odom.twist.twist.linear.x)
         applied_long = float(self._applied.longitudinal)
         applied_steer = float(self._applied.steering) * self.max_steer
-        vesc_current = float(
+        signed_current_a = float(
             self._applied.drive_current_a - self._applied.brake_current_a
+        )
+        vesc_current = si.applied_current_fraction(
+            signed_current_a, self.i_drive_max_a, self.i_brake_max_a
         )
         raw_obs, actor_imu, raw_imu, finite = self._runtime.pack_observation(
             scan_angle_min=float(self._scan.angle_min),

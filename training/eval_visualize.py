@@ -32,13 +32,16 @@ def build_eval_config(args: argparse.Namespace) -> dict:
         else copy.deepcopy(DEFAULT_CONFIG)
     )
     cfg["env"]["track"] = args.track
-    cfg["env"]["domain_randomization"] = {
-        **cfg["env"]["domain_randomization"],
-        "enabled": False,
-    }
+    if not getattr(args, "preserve_domain_randomization", False):
+        cfg["env"]["domain_randomization"] = {
+            **cfg["env"]["domain_randomization"],
+            "enabled": False,
+        }
     cfg["env"]["opponent_strategy"] = (
         "policy" if args.opponent_ckpt is not None else "none"
     )
+    if args.ego_speed_cap_mps is not None:
+        cfg["env"]["ego_speed_cap_mps"] = args.ego_speed_cap_mps
     cfg["env"]["episode_length"] = episode_length_for_track(
         track=args.track,
         workspace_dir=str(Path(__file__).resolve().parent),
@@ -59,6 +62,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-show", type=int, default=1)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--ego-speed-cap-mps", type=float, default=None)
+    p.add_argument("--preserve-domain-randomization", action="store_true")
+    p.add_argument("--show-lidar", action="store_true")
     p.add_argument("--live", action="store_true")
     p.add_argument("--mp4", type=str, default=None)
     p.add_argument("--fps", type=int, default=10)
@@ -148,6 +154,43 @@ def main() -> None:
             [yaw_from_quat_wxyz(q.tolist()) for q in st["base_quat"][:n]]
         )
         speed = torch.linalg.norm(st["base_lin_vel"][:n, :2], dim=-1).cpu().numpy()
+        lidar_points = None
+        if args.show_lidar:
+            ranges = rollout_env.actor_obs_buf[
+                :n, : rollout_env.num_lidar_beams
+            ].cpu().numpy()
+            extrinsic_x = rollout_env._env.tensor["lidar_extrinsic_x"][:n].cpu().numpy()
+            extrinsic_y = rollout_env._env.tensor["lidar_extrinsic_y"][:n].cpu().numpy()
+            extrinsic_yaw = (
+                rollout_env._env.tensor["lidar_extrinsic_yaw"][:n].cpu().numpy()
+            )
+            angle_bias = rollout_env._env.tensor["lidar_angle_bias"][:n].cpu().numpy()
+            mount_x = float(rollout_env._sensor_params.lidar_offset_x) + extrinsic_x
+            mount_y = float(rollout_env._sensor_params.lidar_offset_y) + extrinsic_y
+            cosine = np.cos(ego_yaw)
+            sine = np.sin(ego_yaw)
+            origins = np.stack(
+                (
+                    ego_xy[:, 0] + cosine * mount_x - sine * mount_y,
+                    ego_xy[:, 1] + sine * mount_x + cosine * mount_y,
+                ),
+                axis=-1,
+            )
+            beam_offsets = (
+                float(rollout_env._sensor_params.angle_min)
+                + np.arange(rollout_env.num_lidar_beams)
+                * float(rollout_env._sensor_params.angle_increment)
+            )
+            angles = (
+                ego_yaw[:, None]
+                + float(rollout_env._sensor_params.lidar_offset_yaw)
+                + extrinsic_yaw[:, None]
+                + angle_bias[:, None]
+                + beam_offsets[None, :]
+            )
+            lidar_points = origins[:, None, :] + ranges[:, :, None] * np.stack(
+                (np.cos(angles), np.sin(angles)), axis=-1
+            )
         opp_xy = opp_yaw = None
         if rollout_env.has_opponent and "opp_base_pos" in st:
             opp_xy = st["opp_base_pos"][:n, :2].cpu().numpy()
@@ -161,6 +204,7 @@ def main() -> None:
             opp_xy=opp_xy,
             opp_yaw=opp_yaw if opp_yaw is not None else 0.0,
             done=done[:n].cpu().numpy(),
+            lidar_points=lidar_points,
         )
 
     deterministic_rollout(

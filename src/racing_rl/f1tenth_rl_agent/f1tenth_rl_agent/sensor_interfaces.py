@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from f1tenth_policy.current import applied_current_fraction  # noqa: F401
 from f1tenth_policy.layout import (  # noqa: F401
     ACTOR_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
@@ -37,7 +38,6 @@ from f1tenth_policy.layout import (  # noqa: F401
     THROTTLE_CURRENT,
     THROTTLE_PRED,
     VESC_CURRENT,
-    VESC_CURRENT_SCALE_A,
     VESC_SPEED,
 )
 

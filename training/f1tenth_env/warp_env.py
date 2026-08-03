@@ -40,7 +40,6 @@ from .sensors import (
     ACTOR_OBS_DIM,
     IMU_DIM,
     NATIVE_NUM_BEAMS,
-    VESC_CURRENT_SCALE_A,
     VIEW_EGO,
     VIEW_OPPONENT,
     sensor_actor_solo_kernel,
@@ -238,6 +237,12 @@ class _EnvironmentStorage:
             device=device,
             dtype=torch.float32,
         )
+        self.tensor["terminal_critic_obs"] = torch.zeros(
+            num_envs, OBS_DIM, device=device, dtype=torch.float32
+        )
+        self.tensor["terminal_raw_obs"] = torch.zeros(
+            num_envs, OBS_DIM, device=device, dtype=torch.float32
+        )
 
         self.buffers = EnvBuffers()
         vector_fields = {
@@ -257,6 +262,8 @@ class _EnvironmentStorage:
                     name,
                     wp.from_torch(tensor, dtype=wp.vec2f),
                 )
+            elif name in {"terminal_critic_obs", "terminal_raw_obs"}:
+                setattr(self.buffers, name, wp.from_torch(tensor))
             else:
                 setattr(self.buffers, name, wp.from_torch(tensor))
         self.physics_buffers = PhysicsBuffers()
@@ -406,14 +413,14 @@ class WarpF1tenthEnv:
         self.num_lidar_beams = int(self._sensor_params.num_beams)
         self.num_imu = IMU_DIM
         self.num_actor_obs = ACTOR_OBS_DIM
-        self._vesc_current_scale = float(
-            self.sensor_cfg.get("vesc_current_scale_a", VESC_CURRENT_SCALE_A)
-        )
 
         self.vehicle_params = VehicleParams.from_config(env_cfg)
         self._sim_params = self.vehicle_params.to_warp(
             sim_dt=self.dt, control_dt=self.control_dt
         )
+        self._ego_speed_cap_mps = float(env_cfg.get("ego_speed_cap_mps", 0.0))
+        if self._ego_speed_cap_mps < 0.0:
+            raise ValueError("ego_speed_cap_mps must be non-negative")
         self._ego = _VehicleStorage(
             self.num_envs, self.device, self.vehicle_params
         )
@@ -851,7 +858,10 @@ class WarpF1tenthEnv:
     def _build_extras(self):
         tensors = self._env.tensor
         return {
-            "observations": {"critic": self.obs_buf},
+            "observations": {
+                "critic": self.obs_buf,
+                "terminal_critic": tensors["terminal_critic_obs"],
+            },
             "rewards": {
                 "total": tensors["reward"],
                 "terms": {
@@ -1003,7 +1013,6 @@ class WarpF1tenthEnv:
     def _launch_ego_sensor_actor(self, output_wp):
         """Fused ego LiDAR + IMU + VESC + causal commands into ``output_wp``."""
         wheel_radius = float(self._sim_params.wheel_radius)
-        current_scale = float(self._vesc_current_scale)
         if self.has_opponent:
             wp.launch(
                 sensor_actor_stage_kernel,
@@ -1018,7 +1027,6 @@ class WarpF1tenthEnv:
                     self._reset_params,
                     self._sim_params,
                     wheel_radius,
-                    current_scale,
                     0,
                     VIEW_EGO,
                     output_wp,
@@ -1039,7 +1047,6 @@ class WarpF1tenthEnv:
                     self._reset_params,
                     self._sim_params,
                     wheel_radius,
-                    current_scale,
                     output_wp,
                 ],
                 device=self.wp_device,
@@ -1061,7 +1068,6 @@ class WarpF1tenthEnv:
                 self._reset_params,
                 self._sim_params,
                 float(self._sim_params.wheel_radius),
-                float(self._vesc_current_scale),
                 1,
                 VIEW_OPPONENT,
                 output_wp,
@@ -1287,6 +1293,7 @@ class WarpF1tenthEnv:
                 self._sim_params,
                 self._reset_params,
                 self._opponent_params,
+                self._ego_speed_cap_mps,
                 self.num_envs,
                 self.control_interval,
             ]
@@ -1297,6 +1304,7 @@ class WarpF1tenthEnv:
                 self._ego.buffers,
                 self._env.physics_buffers,
                 self._sim_params,
+                self._ego_speed_cap_mps,
                 self.control_interval,
             ]
         wp.launch(
@@ -1319,6 +1327,8 @@ class WarpF1tenthEnv:
                 self._termination_params,
                 self._reset_params,
                 self._opponent_params,
+                self._obs_params,
+                self._raw_obs_wp[self._active_obs],
             ],
             device=self.wp_device,
             stream=self._stream(),

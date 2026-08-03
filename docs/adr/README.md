@@ -48,3 +48,15 @@ trade-off. Routine work is captured by the PR instead (see
   gap ceiling 80 → 58 m for ~70% presence at 5–6 m/s without near-total coupling.
 - [0020](0020-warm-start-actor-freeze.md) — Critic warm-up via
   `actor_freeze_transitions` for `--init-ckpt` warm-start runs.
+- [0021](0021-config-swappable-ppo-training.md) — Config-selectable recurrent PPO
+  with on-policy rollouts and unchanged sensor-policy artifacts.
+- [0022](0022-ppo-advantage-filtering.md) — Optional Gigaflow-style PPO advantage
+  filtering with fixed-κ threshold (superseded by 0023).
+- [0023](0023-ppo-advantage-filter-quantile.md) — Per-rollout quantile advantage
+  filter (95% default retention) replacing unstable fixed-κ/EWMA rule.
+- [0024](0024-ppo-kl-removal-entropy-wall-penalty.md) — Remove PPO KL early-stop,
+  add entropy bonus, reduce wall penalty.
+- [0025](0025-sensor-policy-image-no-localization.md) — Sensor-policy image excludes
+  localization and range_libc (supersedes 0008 workspace scope).
+- [0026](0026-normalized-current-observation.md) — Actor `VESC_CURRENT` is signed
+  applied current divided by the configured directional limit; preprocessing v3.

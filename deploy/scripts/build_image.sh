@@ -14,7 +14,6 @@
 #   ROS_DISTRO   default humble
 #   IMAGE        override image name
 #   BASE_IMAGE   sensor_policy only — pin NGC iGPU base (tag or @sha256:)
-#   RANGE_LIBC_WITH_CUDA  OFF (default) | ON — GPU raycast for particle_filter
 #   SMOKE        sensor_policy only — if 1, run smoke_sensor_policy.sh after build
 #   REQUIRE_CUDA smoke only — pass through (default 1)
 #   GITSHA       default: current short HEAD
@@ -36,20 +35,12 @@ case "${TARGET}" in
     IMAGE="${IMAGE:-f1tenth-sensor-policy}"
     DOCKERFILE="deploy/docker/Dockerfile.sensor_policy"
     MOVING_TAG="sensor-policy"
-    RANGE_LIBC_WITH_CUDA="${RANGE_LIBC_WITH_CUDA:-OFF}"
     if [ "${ROS_DISTRO}" != "humble" ]; then
       echo "sensor_policy is locked to ROS_DISTRO=humble" >&2
       exit 1
     fi
     # Ubuntu 22.04 + CUDA 12.6 iGPU base for ROS 2 Humble on JetPack 6.
     BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
-    if [ -z "${RANGE_LIBC_WITH_CUDA:-}" ]; then
-      if [ "$(uname -m)" = "aarch64" ]; then
-        RANGE_LIBC_WITH_CUDA="ON"
-      else
-        RANGE_LIBC_WITH_CUDA="OFF"
-      fi
-    fi
     ;;
   *)
     echo "TARGET must be racing or sensor_policy (got: ${TARGET})" >&2
@@ -67,12 +58,10 @@ fi
 BUILD_ARGS=()
 if [ "${TARGET}" = "sensor_policy" ]; then
   BUILD_ARGS+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
-  BUILD_ARGS+=(--build-arg "RANGE_LIBC_WITH_CUDA=${RANGE_LIBC_WITH_CUDA:-OFF}")
   echo "==> Building sensor-policy runtime ${IMAGE}:${GITSHA}"
   echo "    Dockerfile: ${DOCKERFILE}"
   echo "    Base:       ${BASE_IMAGE}"
   echo "    Platform:   ${ARCH} (igpu base is arm64-only; prefer native arm64)"
-  echo "    range_libc: WITH_CUDA=${RANGE_LIBC_WITH_CUDA:-OFF}"
   if [ "${ARCH}" != "linux/arm64" ]; then
     echo "warning: ARCH=${ARCH} — NGC -igpu base is arm64-only; build will not be certified" >&2
   fi

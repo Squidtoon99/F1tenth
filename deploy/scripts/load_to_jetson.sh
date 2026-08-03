@@ -164,7 +164,7 @@ if [ -n "${CKPT_REMOTE}" ]; then
   echo "==> Staging checkpoint (unique name, leaves policy.pt untouched)"
   scp "${CHECKPOINT}" "${JETSON}:${CKPT_REMOTE}"
   if [ "${TARGET}" = "sensor_policy" ]; then
-    ssh "${JETSON}" "ln -sfn '${CKPT_REMOTE}' /opt/f1tenth/policies/sensor_policy.pt"
+    ssh "${JETSON}" "ln -sfn '$(basename "${CKPT_REMOTE}")' /opt/f1tenth/policies/e2e_policy.pt"
   fi
   ssh "${JETSON}" "printf '%s\n' '${CKPT_REMOTE}' > '${ROLLBACK_DIR}/checkpoint.path'"
 fi
@@ -193,7 +193,7 @@ if [ "${TARGET}" = "sensor_policy" ]; then
   if [ -n "${CKPT_REMOTE}" ]; then
     LAUNCH_CKPT_ARG="checkpoint_path:=/policies/$(basename "${CKPT_REMOTE}")"
   else
-    LAUNCH_CKPT_ARG="checkpoint_path:=/policies/sensor_policy.pt"
+    LAUNCH_CKPT_ARG="checkpoint_path:=/policies/e2e_policy.pt"
   fi
 fi
 

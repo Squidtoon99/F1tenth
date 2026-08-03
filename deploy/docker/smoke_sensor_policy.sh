@@ -4,10 +4,10 @@
 #
 # Usage (inside the running image or via docker run):
 #   smoke_sensor_policy.sh
-#   CHECKPOINT_PATH=/policies/sensor_policy.pt REQUIRE_CUDA=1 smoke_sensor_policy.sh
+#   CHECKPOINT_PATH=/policies/e2e_policy.pt REQUIRE_CUDA=1 smoke_sensor_policy.sh
 #
 # Env:
-#   CHECKPOINT_PATH   format-4 checkpoint (default /policies/sensor_policy.pt)
+#   CHECKPOINT_PATH   format-4 checkpoint (default /policies/e2e_policy.pt)
 #   REQUIRE_CUDA      1 = fail if CUDA unavailable (default 1 on arm64 Jetson)
 #   LAUNCH_TIMEOUT_S  dry-run launch timeout (default 12)
 set -eo pipefail
@@ -16,7 +16,7 @@ source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 source /ws/install/setup.bash
 
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
-CHECKPOINT_PATH="${CHECKPOINT_PATH:-/policies/sensor_policy.pt}"
+CHECKPOINT_PATH="${CHECKPOINT_PATH:-/policies/e2e_policy.pt}"
 LAUNCH_TIMEOUT_S="${LAUNCH_TIMEOUT_S:-12}"
 
 echo "==> Image pins"
@@ -76,16 +76,12 @@ else
   echo "==> No checkpoint at ${CHECKPOINT_PATH} — skipping artifact load"
 fi
 
-echo "==> Expected executables (sensor_policy graph + full workspace)"
+echo "==> Expected executables (sensor_policy.launch.py graph)"
 EXPECTED=(
   "f1tenth_rl_agent sensor_racer"
   "f1tenth_control rl_current_gate"
   "f1tenth_control rl_deadman_gate"
   "f1tenth_control safety"
-  "f1tenth_rl_agent policy_inference"
-  "f1tenth_rl_vehicle vehicle_obs"
-  "f1tenth_rl_vehicle drive"
-  "f1tenth_control vesc_actuator"
   "vesc_driver vesc_driver_node"
   "vesc_ackermann vesc_to_odom_node"
   "urg_node urg_node_driver"
