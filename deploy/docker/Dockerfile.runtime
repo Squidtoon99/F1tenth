@@ -101,7 +101,9 @@ COPY --from=build-cuda /ws/install /ws/install
 COPY --from=range_libc_cuda /out/range_libc_pkg /tmp/range_libc_pkg
 RUN bash <<EOF
 set -euo pipefail
+set +u
 source /opt/ros/${ROS_DISTRO}/setup.bash
+set -u
 
 python3 -c "from nav_msgs.msg import OccupancyGrid"
 python3 -c "import transforms3d"
@@ -117,7 +119,14 @@ if [[ "\${so_count}" -lt 1 ]]; then
   exit 1
 fi
 
-SITE="\$(python3 -c "import site; print([p for p in site.getsitepackages() if 'dist-packages' in p][0])")"
+SITE="\$(python3 - <<'PY'
+import site
+candidates = [p for p in site.getsitepackages() if "dist-packages" in p]
+if not candidates:
+    raise SystemExit("no dist-packages path in site.getsitepackages()")
+print(candidates[0])
+PY
+)"
 if [[ -z "\${SITE}" || ! -d "\${SITE}" ]]; then
   echo "could not resolve pip site-packages (got: \${SITE})" >&2
   exit 1
