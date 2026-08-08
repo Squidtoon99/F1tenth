@@ -1,0 +1,126 @@
+# H100-ready production all-track self-play (next-run scale).
+# 1024 worlds × 8 agents needs ~122 GiB and cannot run on 80 GiB: every
+# agent-step of the rollout pays the LiDAR CNN's live set when the rollout is
+# rescored as one flattened batch. 448 worlds estimates at ~54.2 GiB, including
+# the D1 critic track preview (ego branch 45 -> 145, +0.4 GiB / +0.7% over the
+# pre-D1 estimate — the LiDAR CNN activation term dominates, not the critic).
+# That number comes from the estimator validated on an RTX 4080 and has not
+# been re-measured on an H100; confirm before a long run.
+# Do not hot-swap onto an active training process without explicit approval.
+config_version: 1
+seed: 0
+
+tracks:
+  manifest_path: ~/.cache/gigaflow/tracks/manifest.json
+  num_tracks: 23
+  sampling: stratified_shuffle
+  include_optional_local: false
+
+worlds:
+  num_worlds: 448
+  max_agents_per_world: 8
+  solo_world_fraction: 0.05
+  density_bins: [sparse, medium, dense]
+  device: cuda
+  # Light static-opponent preset (paper's immobile agents): reserved out of
+  # max_agents_per_world, not added on top, so it does not raise VRAM use.
+  static_opponents_per_world: 2
+
+agents:
+  car_length_m: 0.568
+  car_width_m: 0.296
+  control_hz: 10.0
+  sim_dt: 0.005
+  control_interval: 20
+  lidar_dim: 1081
+  proprio_dim: 16
+  sensor_obs_dim: 1097
+  action_dim: 2
+  gru_hidden_dim: 512
+  cnn_projection_dim: 256
+  actor_mlp_sizes: [1024, 1024, 1024]
+  condition_dim: 10
+  target_laps: 3.0
+  reference_speed_mps: 3.5
+  episode_seconds_min: 120.0
+  episode_seconds_max: 360.0
+  async_respawn: true
+
+reward_conditioning:
+  enabled: true
+  x_drive_a: 1.25
+  x_accel_a: 1.5
+  enable_finish_rank: false
+  enable_blocking: false
+  enable_zero_sum: false
+
+ppo:
+  rollout_length: 128
+  gamma: 0.999
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  # Scale-adjusted, not the paper's 5e-4: that rate is tuned for a 256k
+  # feed-forward batch and collapsed this recurrent setup at both 32768 and 2048.
+  learning_rate: 1.0e-4
+  num_epochs: 3
+  # Recurrent transition budget; 32768 fits H100@512 with critic BF16.
+  minibatch_size: 32768
+  adaptive_filter_beta: 0.25
+  adaptive_filter_eta_scale: 0.01
+  adaptive_filter_enabled: true
+  value_clip: false
+  # Critic BF16 autocast; actor logp stays FP32 for collect/evaluate parity.
+  amp: true
+  total_updates: 10000
+  # Paper does not disclose KL early-stop; disable (0) after H100 ablation.
+  target_kl: 0.0
+
+evaluation:
+  sync_no_respawn: true
+  seeds: [0, 1, 2]
+  suite: [solo, head_to_head, dense]
+  conservative_deployment_style: centered_high_collision
+  soak_steps: 2000
+  viz_enabled: true
+  viz_fps: 10
+  viz_max_frames: 240
+  incident_window_steps: 32
+  # Cadenced eval: isolated CPU subprocess (no CUDA). Training worlds stay in
+  # worlds.num_worlds. Optional evaluation.num_worlds may be smaller for CPU
+  # wall-time; null inherits training world count.
+  device: cpu
+  num_worlds: null
+
+ablations:
+  actor_variant: gru
+  frame_stack: 1
+  centralized_critic: true
+  adaptive_filter_enabled: true
+  surprise_braking: false
+  reward_randomization: true
+  condition_to_actor: true
+
+profiling:
+  enabled: true
+  # Soft startup budget; measured next-run peak target is ~60–70 GiB of 80 GiB.
+  estimate_bytes_budget: 75000000000
+  report_interval_updates: 10
+
+# Enable online via CLI for the next corrected production run.
+# Never put API keys in this file.
+wandb:
+  enabled: false
+  mode: online
+  entity: null
+  project: f1tenth-gigaflow
+  group: prod_h100
+  name: null
+  tags: [production, h100, selfplay]
+  notes: null
+  run_id: null
+  resume: allow
+  eval_interval_updates: 100
+  log_artifacts: true
