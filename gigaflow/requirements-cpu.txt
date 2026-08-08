@@ -1,0 +1,18 @@
+# CPU-only install for scaffold/config tests and small Warp CPU kernels.
+# Does not pull CUDA wheels.
+#
+#   pip install -r requirements-cpu.txt
+#   pip install -e .
+
+numpy
+matplotlib
+imageio
+imageio-ffmpeg
+pillow
+pyyaml
+pytest
+flake8
+torch
+warp-lang==1.15.0
+wandb
+websockets

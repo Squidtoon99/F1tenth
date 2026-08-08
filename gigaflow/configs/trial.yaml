@@ -1,0 +1,87 @@
+# Reduced all-track multi-car integration trial (validate-launch gate).
+config_version: 1
+seed: 0
+
+tracks:
+  # Override at launch if cache lives elsewhere.
+  manifest_path: ~/.cache/gigaflow/tracks/manifest.json
+  num_tracks: 23
+  sampling: stratified_shuffle
+  include_optional_local: false
+
+worlds:
+  num_worlds: 23
+  max_agents_per_world: 4
+  solo_world_fraction: 0.1
+  density_bins: [sparse, medium, dense]
+  device: cpu
+
+agents:
+  car_length_m: 0.568
+  car_width_m: 0.296
+  control_hz: 10.0
+  sim_dt: 0.005
+  control_interval: 20
+  lidar_dim: 1081
+  proprio_dim: 16
+  sensor_obs_dim: 1097
+  action_dim: 2
+  gru_hidden_dim: 512
+  cnn_projection_dim: 256
+  actor_mlp_sizes: [1024, 1024, 1024]
+  condition_dim: 10
+  target_laps: 2.0
+  reference_speed_mps: 3.5
+  episode_seconds_min: 60.0
+  episode_seconds_max: 240.0
+  async_respawn: true
+
+reward_conditioning:
+  enabled: true
+  x_drive_a: 1.25
+  x_accel_a: 1.5
+  enable_finish_rank: false
+  enable_blocking: false
+  enable_zero_sum: false
+
+ppo:
+  rollout_length: 64
+  gamma: 0.999
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  learning_rate: 5.0e-4
+  num_epochs: 2
+  minibatch_size: 512
+  adaptive_filter_beta: 0.25
+  adaptive_filter_eta_scale: 0.01
+  adaptive_filter_enabled: true
+  value_clip: false
+  amp: true
+  total_updates: 20
+  target_kl: 0.02
+
+evaluation:
+  sync_no_respawn: true
+  seeds: [0]
+  suite: [solo, head_to_head]
+  conservative_deployment_style: centered_high_collision
+  soak_steps: 200
+  viz_enabled: false
+  incident_window_steps: 16
+
+ablations:
+  actor_variant: gru
+  frame_stack: 1
+  centralized_critic: true
+  adaptive_filter_enabled: true
+  surprise_braking: false
+  reward_randomization: true
+  condition_to_actor: true
+
+profiling:
+  enabled: true
+  estimate_bytes_budget: 10000000000
+  report_interval_updates: 1

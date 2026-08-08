@@ -1,0 +1,22 @@
+# Linux + NVIDIA GPU install for Warp/Torch training.
+# Pin CUDA torch via an extra index matching the host, e.g.:
+#
+#   pip install -r requirements-gpu.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu130
+#   pip install -e .
+
+numpy
+scipy
+matplotlib
+imageio
+imageio-ffmpeg
+pillow
+pyyaml
+pytest
+flake8
+torch==2.10.0
+torchvision==0.25.0
+warp-lang==1.15.0
+tqdm
+wandb
+websockets

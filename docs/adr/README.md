@@ -60,3 +60,5 @@ trade-off. Routine work is captured by the PR instead (see
   localization and range_libc (supersedes 0008 workspace scope).
 - [0026](0026-normalized-current-observation.md) — Actor `VESC_CURRENT` is signed
   applied current divided by the configured directional limit; preprocessing v3.
+- [0027](0027-gigaflow-isolated-selfplay.md) — Root-level isolated `gigaflow/`
+  self-play package, independent of `training/` and `f1tenth_policy`.

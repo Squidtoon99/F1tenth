@@ -28,6 +28,7 @@
 
 # RL training + the shared contract.
 /training/                      @org/team-rl
+/gigaflow/                      @org/team-rl
 /libs/f1tenth_contract/         @org/team-rl @org/team-maintainers
 
 # Simulator integration.

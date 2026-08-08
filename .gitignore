@@ -262,6 +262,15 @@ calibration/results/
 **/maps/*.png
 
 # ---------------------------------------------------------------------------
+# gigaflow self-play caches / run outputs (never commit heavy artifacts)
+# ---------------------------------------------------------------------------
+/gigaflow/.cache/
+/gigaflow/outputs/
+/gigaflow/**/runs/
+/gigaflow/**/*.pt
+/gigaflow/**/tracks_manifest.json
+
+# ---------------------------------------------------------------------------
 # vcstool-imported external sources (pinned via *.repos, not committed)
 # ---------------------------------------------------------------------------
 /sim/f1tenth_gym_ros/

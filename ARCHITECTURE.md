@@ -32,6 +32,7 @@ or HPC, so there is intentionally **no GPU CI**.
 src/         # single colcon workspace (ROS 2 Humble), grouped by domain
 libs/        # cross-language shared libraries (observation/action contract)
 training/    # RL training frameworks (pure Python; not colcon; not in car image)
+gigaflow/    # isolated multi-car self-play stack (pure Python; not colcon)
 sim/         # simulator integration
 deploy/      # images, per-car overlays, deploy scripts
 tools/       # build + dev helpers

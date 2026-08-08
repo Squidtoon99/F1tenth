@@ -35,6 +35,7 @@ randomization. Everything targets ROS 2 Humble and runs in Docker. Full primer:
 | [`src/`](src/) | The single colcon workspace: all ROS 2 packages, grouped by domain |
 | [`libs/`](libs/) | Cross-language shared libraries (the observation/action contract) |
 | [`training/`](training/) | RL training (pure Python; never built by colcon, never in the car image) |
+| [`gigaflow/`](gigaflow/) | Isolated multi-car self-play stack (pure Python; no `training/` imports) |
 | [`sim/`](sim/) | Simulator integration |
 | [`deploy/`](deploy/) | Docker/Apptainer images, per-car config, deploy scripts |
 | [`tools/`](tools/) | Build/dev helper scripts and lint configs |
