@@ -62,3 +62,10 @@ trade-off. Routine work is captured by the PR instead (see
   applied current divided by the configured directional limit; preprocessing v3.
 - [0027](0027-gigaflow-isolated-selfplay.md) — Root-level isolated `gigaflow/`
   self-play package, independent of `training/` and `f1tenth_policy`.
+- [0028](0028-gigaflow-audit-remediation.md) — Gigaflow audit remediation:
+  racing reward redesign, corrected PPO bootstrap, `CONDITION_DIM` 16 → 10, and
+  an asymmetric critic track preview.
+- [0029](0029-gigaflow-transactional-actor-updates.md) — Split PPO optimizers,
+  resume-safe entropy annealing, and transactional actor KL rejection.
+- [0030](0030-gigaflow-safety-gate-recalibration.md) — Recalibrated behavioral
+  feasibility/hysteresis and KL rollback warm-up/stop thresholds.
