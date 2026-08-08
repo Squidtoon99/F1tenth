@@ -1,0 +1,38 @@
+{
+  "repo": "f1tenth/f1tenth_racetracks",
+  "ref": "v1.0.0",
+  "commit": "3f581789c749261ae36fc4fef19a81372acc3ecf",
+  "license": "GPL-3.0",
+  "license_url": "https://raw.githubusercontent.com/f1tenth/f1tenth_racetracks/v1.0.0/LICENSE",
+  "attribution": "Maps derived from TUMFTM racetrack-database / OpenStreetMap; downscaled for F1TENTH. Upstream repository is GPL-3.0 — cached assets must not be vendored into this MIT tree.",
+  "centerline_schema": ["x_m", "y_m", "w_tr_right_m", "w_tr_left_m"],
+  "tracks": {
+    "Austin": "74b5f86d89ca0a276e6b158c923161a0e47ed88404729852b6c13ada05d5af04",
+    "BrandsHatch": "1d6246e6e6db1e065d22c19e102292c70dca71e34ded44968a1d5a4c2a8649c4",
+    "Budapest": "759ff3fa6096a9de5354a177582889425f16c529dc350d3ec3817f3c8b1d14ad",
+    "Catalunya": "f1276de8d59c63f0285cdb79d8626b4ccddad5e97bd69b9bf0b6b1cc13a98365",
+    "Hockenheim": "47c888fe26a5ffa01758b613c57e5eaf8d165b3507c2e9b277b0715031cc9ce9",
+    "IMS": "ca9c4f2926650592f9041b40e323684cb1f8b985c483d24aef5cf9a42ac6ef3d",
+    "Melbourne": "7445a6921dbd468ecc687bd5d00d8520178fc248bfa45b09544aa349c5232197",
+    "MexicoCity": "90af9b2f72ccf8481340ac5c1965bff4f8b2249fe182e947cf389c719566cf3b",
+    "Montreal": "d24aa9a86c7ac93d140a067a19734d1e1cd4c3a6ec40264b5c28a3dda98d8608",
+    "Monza": "198ea1f4d574477415c9f2065352574b34b120949c6ba9889fc26426312d31bf",
+    "MoscowRaceway": "d4db7d3419f17b86564ad447790be8d356f6c6f10235dd5abdc51bf990d959cd",
+    "Nuerburgring": "7b7c2f1d122d92e66fecb1d7510f70901b27cee9ad093bd946e5432590f5eeb2",
+    "Oschersleben": "6d906ee0fde07fd3f80ef4339abe289b596385aa7ff6f5318836b0b9c4012d44",
+    "Sakhir": "910dc96da4e11895d59e4364eb13b7d2d4ea63ad799354718a86f3266efb169a",
+    "SaoPaulo": "648d3dad6242690ccab34078995e85d5c2fb5362b8ab39975df47599b775ae83",
+    "Sepang": "fe92a57c4f51c10a6e216ec1fbbe324df466b0304e7f37e0c695493c1a1d88dd",
+    "Shanghai": "24bf4e88656937e84d11b66c8f06e6a0bb4a8de04674cc843fbfbcf316b61a9f",
+    "Silverstone": "c32b892aadee729368c56ece2064471be09d7b42f464491e2f28675d24d3150a",
+    "Sochi": "af6af0333e42d60e7c033d772b028149da36fa2f760767fccd458b5b0d57b8e8",
+    "Spa": "9febbab07831915f51c297e4b7d9b4b938139157301689d4f36ea6cf050e5189",
+    "Spielberg": "3c690173dda7772bffc36190e6d6f0e11e61be86a65e3910cd78cdd0c098c602",
+    "YasMarina": "317f95f1400a74ac368640a5c54a394690186ca9a8488fad1be1845659ef0c75",
+    "Zandvoort": "7065587bea9f4e53502f6add44b5b5b9da141c4dbedb31eaf6027c2ab7d6fffa"
+  },
+  "optional_local": [
+    "IV_2026_SIM",
+    "ECSS_Floor"
+  ]
+}
