@@ -1,0 +1,360 @@
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  overflow: hidden;
+}
+
+#scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#hud {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#status {
+  color: #e8eef6;
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: pre-line;
+  text-shadow: 0 0 4px #000;
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  pointer-events: auto;
+}
+
+#controls button,
+#controls select,
+#controls input {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #6a7a90;
+  background: #141a22;
+  color: #e8eef6;
+  border-radius: 2px;
+}
+
+#controls label {
+  font-size: 12px;
+  color: #e8eef6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+#controls .check {
+  user-select: none;
+}
+
+#checkpoint-sel {
+  max-width: 260px;
+}
+
+#checkpoint-status {
+  width: 100%;
+  color: #bdcbe0;
+  font-size: 11px;
+  text-shadow: 0 0 4px #000;
+}
+
+#checkpoint-status.error {
+  color: #ff9d8f;
+}
+
+#environment-control input {
+  width: 88px;
+  padding: 0;
+}
+
+#environment-count-value {
+  min-width: 1ch;
+}
+
+#analysis {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: min(310px, 42vw);
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(167 190 218 / 42%) transparent;
+  color: #e8eef6;
+  background: rgb(8 15 24 / 28%);
+  border: 1px solid rgb(180 209 240 / 20%);
+  border-radius: 10px;
+  backdrop-filter: blur(7px) saturate(115%);
+}
+
+#analysis h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  letter-spacing: 0.01em;
+}
+
+#analysis-agent {
+  margin-bottom: 12px;
+  color: #bdcbe0;
+  font-size: 12px;
+}
+
+.analysis-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  background: rgb(7 14 23 / 18%);
+  border: 1px solid rgb(184 211 240 / 13%);
+  border-radius: 7px;
+}
+
+.analysis-stat strong {
+  color: #f5f9ff;
+  font-size: 22px;
+}
+
+#analysis section {
+  margin-bottom: 10px;
+}
+
+#analysis h3 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  color: #d3deed;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.axis-range {
+  color: #9eb0c5;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.chart-panel {
+  padding: 8px 9px 7px;
+  background: rgb(7 14 23 / 16%);
+  border: 1px solid rgb(184 211 240 / 12%);
+  border-radius: 8px;
+}
+
+.chart-panel svg {
+  display: block;
+  width: 100%;
+  height: 76px;
+  overflow: visible;
+  background: rgb(5 11 18 / 12%);
+  border: 1px solid rgb(184 211 240 / 9%);
+  border-radius: 5px;
+}
+
+.chart-grid {
+  fill: none;
+  stroke: rgb(207 224 244 / 14%);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-panel text {
+  fill: #aebed2;
+  font-size: 7px;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transition: d 120ms linear;
+}
+
+.chart-speed .chart-line {
+  stroke: #55b6ff;
+}
+
+.chart-steering .chart-line {
+  stroke: #c083ff;
+}
+
+.chart-throttle .chart-line {
+  stroke: #668dff;
+}
+
+.chart-brake .chart-line {
+  stroke: #9d7cff;
+}
+
+.chart-collisions .chart-line {
+  stroke: #ff7d6e;
+}
+
+.current-controls {
+  margin-top: 14px;
+  padding: 11px;
+  background: rgb(7 14 23 / 19%);
+  border: 1px solid rgb(184 211 240 / 14%);
+  border-radius: 9px;
+}
+
+.control-gauges {
+  display: grid;
+  grid-template-columns: minmax(104px, 1.5fr) repeat(2, minmax(46px, 0.65fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.steering-gauge,
+.pedal-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.gauge-label {
+  color: #d7e2f0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.steering-dial {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin: 5px 0 3px;
+  padding: 7px;
+  background: radial-gradient(circle, rgb(20 37 54 / 44%), rgb(5 12 20 / 13%));
+  border: 1px solid rgb(190 216 245 / 18%);
+  border-radius: 50%;
+}
+
+.neutral-mark {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  left: 50%;
+  width: 2px;
+  height: 9px;
+  background: #eef7ff;
+  border-radius: 1px;
+  transform: translateX(-50%);
+}
+
+.steering-wheel {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: #bd9aff;
+  stroke-width: 6;
+  stroke-linecap: round;
+  transform: rotate(var(--steering-angle, 0deg));
+  transform-origin: center;
+  transition: transform 120ms linear;
+}
+
+.steering-wheel .wheel-index {
+  stroke: #55b6ff;
+  stroke-width: 8;
+}
+
+.steering-gauge output,
+.pedal-gauge output {
+  min-height: 1.25em;
+  color: #f0f6ff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge-limit {
+  color: #9eb0c5;
+  font-size: 8px;
+  line-height: 1;
+}
+
+.vertical-gauge {
+  position: relative;
+  width: 24px;
+  height: 82px;
+  margin: 3px 0;
+  overflow: hidden;
+  background: rgb(3 9 15 / 38%);
+  border: 1px solid rgb(202 222 245 / 24%);
+  border-radius: 6px;
+}
+
+.gauge-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  transform: scaleY(var(--gauge-value, 0));
+  transform-origin: bottom;
+  transition: transform 120ms linear;
+}
+
+.throttle-gauge .gauge-fill {
+  background: linear-gradient(to top, #23c873, #8affbd);
+}
+
+.brake-gauge .gauge-fill {
+  background: linear-gradient(to top, #e74e55, #ff9d7d);
+}
+
+@media (max-width: 720px) {
+  #analysis {
+    top: 74px;
+    right: 6px;
+    bottom: 6px;
+    width: min(310px, calc(100vw - 12px));
+    padding: 13px;
+  }
+}
+
+@media (max-height: 620px) {
+  .chart-panel svg {
+    height: 66px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-line,
+  .steering-wheel,
+  .gauge-fill {
+    transition: none;
+  }
+}

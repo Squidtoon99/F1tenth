@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gigaflow viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div id="hud">
+        <div id="status">connecting…</div>
+        <div id="controls">
+          <button type="button" id="btn-pause">Pause</button>
+          <button type="button" id="btn-reset">Reset</button>
+          <button type="button" id="btn-reset-camera" hidden>Reset camera</button>
+          <label>
+            Stationary obstacles
+            <select id="obstacle-preset">
+              <option value="off">Off</option>
+              <option value="light">Light</option>
+              <option value="heavy">Heavy</option>
+            </select>
+          </label>
+          <button type="button" id="btn-respawn-obstacles" disabled>Respawn obstacles</button>
+          <label>
+            Track
+            <select id="track-sel"></select>
+          </label>
+          <label>
+            Checkpoint
+            <select id="checkpoint-sel"></select>
+          </label>
+          <label>
+            Suite
+            <select id="suite-sel">
+              <option value="solo">solo</option>
+              <option value="head_to_head">head_to_head</option>
+              <option value="dense">dense</option>
+            </select>
+          </label>
+          <label id="environment-control" hidden>
+            Environments
+            <input id="environment-count" type="range" min="1" max="4" step="1" value="1" />
+            <output id="environment-count-value">1</output>
+          </label>
+          <label>
+            Camera
+            <select id="camera-mode">
+              <option value="follow">follow</option>
+              <option value="dynamic">dynamic (free)</option>
+            </select>
+          </label>
+          <label>
+            Follow
+            <select id="follow-car"></select>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="whole-track" />
+            Whole track
+          </label>
+          <label class="check">
+            <input type="checkbox" id="show-analysis" />
+            Show analysis
+          </label>
+          <div id="checkpoint-status" role="status"></div>
+        </div>
+      </div>
+      <aside id="analysis" hidden>
+        <h2>Car analysis</h2>
+        <div id="analysis-agent">No active agent</div>
+        <div class="analysis-stat"><span>Top speed</span><strong id="top-speed">—</strong></div>
+        <div class="analysis-stat"><span>Collision events</span><strong id="collision-count">—</strong></div>
+        <section class="chart-panel chart-speed">
+          <h3>Speed (m/s) <span class="axis-range" id="speed-axis-range"></span></h3>
+          <svg viewBox="0 0 240 72" role="img" aria-labelledby="chart-speed-title">
+            <title id="chart-speed-title">Speed over the last 20 seconds</title>
+            <g class="chart-grid" aria-hidden="true">
+              <path d="M 0 16 H 240 M 0 32 H 240 M 0 48 H 240" />
+            </g>
+            <path class="chart-line" id="chart-speed" />
+            <text x="2" y="69">20s ago</text><text x="238" y="69" text-anchor="end">now</text>
+          </svg>
+        </section>
+        <section class="chart-panel chart-steering">
+          <h3>Steering action <span class="axis-range">−1–1</span></h3>
+          <svg viewBox="0 0 240 72" role="img" aria-labelledby="chart-steering-title">
+            <title id="chart-steering-title">Steering over the last 20 seconds</title>
+            <g class="chart-grid" aria-hidden="true">
+              <path d="M 0 16 H 240 M 0 32 H 240 M 0 48 H 240" />
+            </g>
+            <path class="chart-line" id="chart-steering" />
+            <text x="2" y="69">20s ago</text><text x="238" y="69" text-anchor="end">now</text>
+          </svg>
+        </section>
+        <section class="chart-panel chart-throttle">
+          <h3>Throttle <span class="axis-range">0–1</span></h3>
+          <svg viewBox="0 0 240 72" role="img" aria-labelledby="chart-throttle-title">
+            <title id="chart-throttle-title">Throttle over the last 20 seconds</title>
+            <g class="chart-grid" aria-hidden="true">
+              <path d="M 0 16 H 240 M 0 32 H 240 M 0 48 H 240" />
+            </g>
+            <path class="chart-line" id="chart-throttle" />
+            <text x="2" y="69">20s ago</text><text x="238" y="69" text-anchor="end">now</text>
+          </svg>
+        </section>
+        <section class="chart-panel chart-brake">
+          <h3>Brake <span class="axis-range">0–1</span></h3>
+          <svg viewBox="0 0 240 72" role="img" aria-labelledby="chart-brake-title">
+            <title id="chart-brake-title">Brake over the last 20 seconds</title>
+            <g class="chart-grid" aria-hidden="true">
+              <path d="M 0 16 H 240 M 0 32 H 240 M 0 48 H 240" />
+            </g>
+            <path class="chart-line" id="chart-brake" />
+            <text x="2" y="69">20s ago</text><text x="238" y="69" text-anchor="end">now</text>
+          </svg>
+        </section>
+        <section class="chart-panel chart-collisions">
+          <h3>Cumulative collisions <span class="axis-range">events</span></h3>
+          <svg viewBox="0 0 240 72" role="img" aria-labelledby="chart-collisions-title">
+            <title id="chart-collisions-title">Cumulative collision events over the last 20 seconds</title>
+            <g class="chart-grid" aria-hidden="true">
+              <path d="M 0 16 H 240 M 0 32 H 240 M 0 48 H 240" />
+            </g>
+            <path class="chart-line" id="chart-collisions" />
+            <text x="2" y="69">20s ago</text><text x="238" y="69" text-anchor="end">now</text>
+          </svg>
+        </section>
+        <section class="current-controls" aria-labelledby="current-controls-title">
+          <h3 id="current-controls-title">Current controls</h3>
+          <div class="control-gauges">
+            <div class="steering-gauge">
+              <span class="gauge-label">Steering</span>
+              <div class="steering-dial" aria-hidden="true">
+                <span class="neutral-mark"></span>
+                <svg class="steering-wheel" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="41" />
+                  <circle cx="50" cy="50" r="9" />
+                  <path d="M 50 41 V 10 M 43 56 L 20 78 M 57 56 L 80 78" />
+                  <path class="wheel-index" d="M 50 5 V 17" />
+                </svg>
+              </div>
+              <output id="steering-value" aria-live="off">—</output>
+            </div>
+            <div class="pedal-gauge">
+              <span class="gauge-limit" aria-hidden="true">1</span>
+              <div id="throttle-gauge" class="vertical-gauge throttle-gauge" role="meter"
+                aria-label="Current throttle" aria-valuemin="0" aria-valuemax="1">
+                <span class="gauge-fill"></span>
+              </div>
+              <span class="gauge-limit" aria-hidden="true">0</span>
+              <output id="throttle-value">—</output>
+              <span class="gauge-label">Throttle</span>
+            </div>
+            <div class="pedal-gauge">
+              <span class="gauge-limit" aria-hidden="true">1</span>
+              <div id="brake-gauge" class="vertical-gauge brake-gauge" role="meter"
+                aria-label="Current brake" aria-valuemin="0" aria-valuemax="1">
+                <span class="gauge-fill"></span>
+              </div>
+              <span class="gauge-limit" aria-hidden="true">0</span>
+              <output id="brake-value">—</output>
+              <span class="gauge-label">Brake</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
