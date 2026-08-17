@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -10,6 +11,11 @@ from f1tenth_policy.actor import (
     actor_from_architecture,
     architectures_match,
     normalize_actor_architecture,
+)
+from f1tenth_policy.current import (
+    TRAINING_I_BRAKE_MAX_A,
+    TRAINING_I_DRIVE_MAX_A,
+    TRAINING_I_SLEW_A_PER_S,
 )
 from f1tenth_policy.layout import (
     ACTOR_LAYOUT_VERSION,
@@ -103,6 +109,17 @@ def validate_sensor_policy_artifact(
             "Sensor policy artifact observation_preprocessing_version="
             f"{preprocessing!r}; expected {OBS_PREPROCESSING_VERSION}."
         )
+    for key in ("i_drive_max_a", "i_brake_max_a"):
+        value = payload.get(key)
+        if value is None:
+            raise ValueError(
+                f"Sensor policy artifact is missing {key} (physical current "
+                "scale for normalized effort=1)."
+            )
+        if not math.isfinite(float(value)) or float(value) <= 0.0:
+            raise ValueError(
+                f"Sensor policy artifact {key}={value!r} must be finite and > 0."
+            )
     if "critic_norm" in payload or "critic_obs_norm" in payload:
         raise ValueError(
             "Sensor policy artifact must not include critic normalization."
@@ -214,6 +231,9 @@ def build_sensor_artifact_payload(
     steering_delta_max_rad: float = STEERING_DELTA_MAX_RAD,
     f_drive_max: float = 23.0,
     f_brake_max: float = 5.2,
+    i_drive_max_a: float = TRAINING_I_DRIVE_MAX_A,
+    i_brake_max_a: float = TRAINING_I_BRAKE_MAX_A,
+    i_slew_a_per_s: float = TRAINING_I_SLEW_A_PER_S,
     control_hz: float = CONTROL_HZ,
     simulator_id: str = "f1tenth-torch",
     simulator_version: int = 1,
@@ -238,6 +258,9 @@ def build_sensor_artifact_payload(
         "steering_delta_max_rad": float(steering_delta_max_rad),
         "f_drive_max": float(f_drive_max),
         "f_brake_max": float(f_brake_max),
+        "i_drive_max_a": float(i_drive_max_a),
+        "i_brake_max_a": float(i_brake_max_a),
+        "i_slew_a_per_s": float(i_slew_a_per_s),
         "control_hz": float(control_hz),
         "simulator_id": str(simulator_id),
         "simulator_version": int(simulator_version),

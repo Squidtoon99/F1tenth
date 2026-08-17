@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import math
 
+# Training/sim physical scale for normalized effort=1 (command envelope).
+# Deploy must match these for physical actuation parity; observation v3 still
+# divides by whatever directional limits are configured on the node.
+TRAINING_I_DRIVE_MAX_A = 80.0
+TRAINING_I_BRAKE_MAX_A = 20.0
+TRAINING_I_SLEW_A_PER_S = 200.0
+
 
 def applied_current_fraction(
     signed_applied_current_a: float,

@@ -1,6 +1,7 @@
 {
   "source": "training/f1tenth_env/sensors.py frozen actor layout (v2)",
   "actor_layout_version": 2,
+  "observation_preprocessing_version": 3,
   "num_obs": 1097,
   "proprio_dim": 16,
   "lidar_dim": 1081,
@@ -16,5 +17,9 @@
   "steer_delta0": 1094,
   "steer_delta1": 1095,
   "steer_delta2": 1096,
-  "vesc_current_scale_a": 5.0
+  "vesc_current_semantics": "signed_applied_current_a / configured_directional_current_limit_a",
+  "training_i_drive_max_a": 80.0,
+  "training_i_brake_max_a": 20.0,
+  "training_i_slew_a_per_s": 200.0,
+  "note_current_scale": "Frozen 80 A drive / 20 A brake policy envelope; deploy limits must match artifact metadata."
 }

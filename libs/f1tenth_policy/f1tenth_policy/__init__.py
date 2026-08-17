@@ -14,7 +14,12 @@ from f1tenth_policy.artifact import (
     load_sensor_artifact,
     validate_sensor_policy_artifact,
 )
-from f1tenth_policy.current import applied_current_fraction
+from f1tenth_policy.current import (
+    TRAINING_I_BRAKE_MAX_A,
+    TRAINING_I_DRIVE_MAX_A,
+    TRAINING_I_SLEW_A_PER_S,
+    applied_current_fraction,
+)
 from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
@@ -57,6 +62,9 @@ __all__ = [
     "SquashedGaussianLidarGRUActor",
     "actor_architecture_from_module",
     "actor_from_architecture",
+    "TRAINING_I_BRAKE_MAX_A",
+    "TRAINING_I_DRIVE_MAX_A",
+    "TRAINING_I_SLEW_A_PER_S",
     "applied_current_fraction",
     "architectures_match",
     "build_sensor_artifact_payload",
