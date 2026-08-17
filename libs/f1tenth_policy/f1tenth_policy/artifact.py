@@ -109,7 +109,7 @@ def validate_sensor_policy_artifact(
             "Sensor policy artifact observation_preprocessing_version="
             f"{preprocessing!r}; expected {OBS_PREPROCESSING_VERSION}."
         )
-    for key in ("i_drive_max_a", "i_brake_max_a"):
+    for key in ("i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"):
         value = payload.get(key)
         if value is None:
             raise ValueError(
