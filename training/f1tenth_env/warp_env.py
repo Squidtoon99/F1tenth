@@ -48,6 +48,7 @@ from .sensors import (
 from .utils import (
     build_corridor_distance_field,
     build_warp_track_data,
+    load_occupancy_distance_field,
     load_track_state,
 )
 
@@ -344,6 +345,7 @@ class _CorridorDistanceStorage:
         self.data.distance = self.array["distance"]
         self.data.width = host.width
         self.data.height = host.height
+        self.data.variant_count = host.variant_count
         self.data.origin = wp.vec2f(*host.origin)
         self.data.resolution = host.resolution
 
@@ -399,15 +401,34 @@ class WarpF1tenthEnv:
         self._track_host = build_warp_track_data(self.track_state)
         self.track_length = self._track_host.length
         self._track = _TrackStorage(self._track_host, self.wp_device)
-        self._corridor_host = build_corridor_distance_field(
-            self.centerline,
-            self.w_tr_left,
-            self.w_tr_right,
-        )
+        self.sensor_cfg = self._resolve_sensor_cfg()
+        lidar_map_yaml = self.sensor_cfg.get("lidar_map_yaml")
+        if lidar_map_yaml:
+            lidar_map_yaml = Path(lidar_map_yaml)
+            if not lidar_map_yaml.is_absolute():
+                lidar_map_yaml = Path(workspace) / lidar_map_yaml
+            self._corridor_host = load_occupancy_distance_field(
+                lidar_map_yaml,
+                expected_sha256=self.sensor_cfg.get("lidar_map_sha256"),
+                variant_count=int(
+                    self.sensor_cfg.get("lidar_map_variant_count", 1)
+                ),
+                max_wall_offset_m=float(
+                    self.sensor_cfg.get("lidar_wall_offset_max_m", 0.0)
+                ),
+                variant_seed=int(
+                    self.sensor_cfg.get("lidar_map_variant_seed", 0)
+                ),
+            )
+        else:
+            self._corridor_host = build_corridor_distance_field(
+                self.centerline,
+                self.w_tr_left,
+                self.w_tr_right,
+            )
         self._corridor = _CorridorDistanceStorage(
             self._corridor_host, self.wp_device
         )
-        self.sensor_cfg = self._resolve_sensor_cfg()
         self._validate_native_actor_beams()
         self._sensor_params = self._build_sensor_params()
         self.num_lidar_beams = int(self._sensor_params.num_beams)
@@ -569,6 +590,7 @@ class WarpF1tenthEnv:
         params.lidar_offset_x = float(sensor.get("lidar_offset_x", 0.0))
         params.lidar_offset_y = float(sensor.get("lidar_offset_y", 0.0))
         params.lidar_offset_yaw = float(sensor.get("lidar_offset_yaw", 0.0))
+        params.lidar_dropout_bin_m = float(sensor.get("lidar_dropout_bin_m", 0.0))
         params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
         return params
 

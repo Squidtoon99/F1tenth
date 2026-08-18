@@ -47,6 +47,7 @@ def sample_corridor_distance(
     field: CorridorDistanceField,
     x: wp.float32,
     y: wp.float32,
+    variant_id: wp.int32,
 ) -> wp.float32:
     gx = (x - field.origin[0]) / field.resolution
     gy = (y - field.origin[1]) / field.resolution
@@ -63,14 +64,23 @@ def sample_corridor_distance(
     y1 = y0 + 1
     tx = gx - wp.float32(x0)
     ty = gy - wp.float32(y0)
-    i00 = y0 * field.width + x0
-    i10 = y0 * field.width + x1
-    i01 = y1 * field.width + x0
-    i11 = y1 * field.width + x1
+    offset = variant_id * field.width * field.height
+    i00 = offset + y0 * field.width + x0
+    i10 = offset + y0 * field.width + x1
+    i01 = offset + y1 * field.width + x0
+    i11 = offset + y1 * field.width + x1
     d00 = field.distance[i00]
     d10 = field.distance[i10]
     d01 = field.distance[i01]
     d11 = field.distance[i11]
+    if d00 < 0.0 or d10 < 0.0 or d01 < 0.0 or d11 < 0.0:
+        nearest_x = x0
+        nearest_y = y0
+        if tx >= 0.5:
+            nearest_x = x1
+        if ty >= 0.5:
+            nearest_y = y1
+        return field.distance[offset + nearest_y * field.width + nearest_x]
     return (1.0 - tx) * (1.0 - ty) * d00 + tx * (1.0 - ty) * d10 + (
         1.0 - tx
     ) * ty * d01 + tx * ty * d11
@@ -132,6 +142,7 @@ def sphere_trace_walls(
     origin: wp.vec2f,
     direction: wp.vec2f,
     field: CorridorDistanceField,
+    variant_id: wp.int32,
     range_max: wp.float32,
     max_march_steps: wp.int32,
 ) -> wp.float32:
@@ -146,7 +157,7 @@ def sphere_trace_walls(
             return range_max
         px = origin[0] + traveled * direction[0]
         py = origin[1] + traveled * direction[1]
-        dist = sample_corridor_distance(field, px, py)
+        dist = sample_corridor_distance(field, px, py, variant_id)
         if dist < 0.0:
             return range_max
         if dist <= hit_eps:
@@ -198,8 +209,20 @@ def lidar_beam_range(
     )
     direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
 
+    mixed_variant = (
+        reset.seed
+        ^ (env_id * 73244475)
+        ^ (env.episode_id[env_id] * 295075153)
+    )
+    variant_id = (mixed_variant & 2147483647) % field.variant_count
+
     hit = sphere_trace_walls(
-        origin, direction, field, sensor.range_max, sensor.max_march_steps
+        origin,
+        direction,
+        field,
+        variant_id,
+        sensor.range_max,
+        sensor.max_march_steps,
     )
     if has_opponent != 0:
         half_length = 0.5 * opponent_params.car_length
@@ -238,13 +261,27 @@ def lidar_beam_range(
     if hit > sensor.reliable_range:
         dropout = wp.max(dropout, env.lidar_far_dropout_prob[env_id])
     if dropout > 0.0:
-        mixed = (
-            view_seed
-            ^ (env_id * 73244475)
-            ^ (env.episode_id[env_id] * 295075153)
-            ^ (env.episode_step[env_id] * 104395301)
-            ^ ((beam_id + sensor.num_beams) * 122949829)
-        )
+        bin_m = sensor.lidar_dropout_bin_m
+        if bin_m > 0.0:
+            hx = origin[0] + hit * direction[0]
+            hy = origin[1] + hit * direction[1]
+            bx = wp.int32(wp.floor(hx / bin_m))
+            by = wp.int32(wp.floor(hy / bin_m))
+            mixed = (
+                view_seed
+                ^ (env_id * 73244475)
+                ^ (env.episode_id[env_id] * 295075153)
+                ^ (bx * 104395301)
+                ^ (by * 122949829)
+            )
+        else:
+            mixed = (
+                view_seed
+                ^ (env_id * 73244475)
+                ^ (env.episode_id[env_id] * 295075153)
+                ^ (env.episode_step[env_id] * 104395301)
+                ^ ((beam_id + sensor.num_beams) * 122949829)
+            )
         random = wp.rand_init(mixed & 2147483647)
         if wp.randf(random) < dropout:
             hit = sensor.range_max

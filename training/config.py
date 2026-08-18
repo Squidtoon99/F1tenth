@@ -62,6 +62,10 @@ DEFAULT_CONFIG = {
         "f_drive_max": 23.0,
         "f_brake_max": 5.2,
         "power_max": 320.0,
+        # Physical current envelope for normalized effort=1 (v3 fraction).
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 20.0,
+        "i_slew_a_per_s": 200.0,
         "k_drive_front": 0.5,
         "t_delta": 0.1,
         "c_roll": 0.0,
@@ -75,7 +79,8 @@ DEFAULT_CONFIG = {
         "slip_min_passive_long": 0.4,
         "warp_sim": {
             "roll_stiffness_front": 0.47,
-            "longitudinal_slew_rate_per_s": 4.444444444444445,
+            # 200 A/s gate slew / 80 A full-scale → 2.5 normalized effort/s.
+            "longitudinal_slew_rate_per_s": 2.5,
             "tire_relax_len": 0.0,
         },
         "longitudinal_mode": "force",
@@ -142,6 +147,12 @@ DEFAULT_CONFIG = {
         "lidar_offset_x": 0.27,
         "lidar_offset_y": 0.0,
         "lidar_offset_yaw": 0.0,
+        "lidar_dropout_bin_m": 0.0,
+        "lidar_map_yaml": None,
+        "lidar_map_sha256": None,
+        "lidar_map_variant_count": 1,
+        "lidar_wall_offset_max_m": 0.0,
+        "lidar_map_variant_seed": 0,
     },
     "reward": {
         "progress_speed_threshold_mps": 0.0,

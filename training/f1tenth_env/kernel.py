@@ -278,6 +278,7 @@ class SensorParams:
     lidar_offset_x: wp.float32
     lidar_offset_y: wp.float32
     lidar_offset_yaw: wp.float32
+    lidar_dropout_bin_m: wp.float32
     max_march_steps: wp.int32
 
 
@@ -286,6 +287,7 @@ class CorridorDistanceField:
     distance: wp.array(dtype=wp.float32)
     width: wp.int32
     height: wp.int32
+    variant_count: wp.int32
     origin: wp.vec2f
     resolution: wp.float32
 

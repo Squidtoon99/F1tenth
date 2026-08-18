@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import math
 
+import numpy as np
 import pytest
 import torch
 import warp as wp
@@ -15,7 +16,7 @@ from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.kernel import OpponentParams, ResetParams, SensorParams
 from f1tenth_env.sensors import imu_stage_kernel, lidar_solo_kernel, lidar_stage_kernel
-from f1tenth_env.utils import build_corridor_distance_field
+from f1tenth_env.utils import CorridorDistanceData, build_corridor_distance_field
 from f1tenth_env.warp_env import (
     _CorridorDistanceStorage,
     _EnvironmentStorage,
@@ -56,6 +57,7 @@ def _sensor_params(**overrides) -> SensorParams:
     params.lidar_offset_x = float(sensor["lidar_offset_x"])
     params.lidar_offset_y = float(sensor["lidar_offset_y"])
     params.lidar_offset_yaw = float(sensor["lidar_offset_yaw"])
+    params.lidar_dropout_bin_m = float(sensor.get("lidar_dropout_bin_m", 0.0))
     params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
     for key, value in overrides.items():
         setattr(params, key, value)
@@ -202,6 +204,114 @@ def _make_env(num_envs=4, *, opponent=False, enable_dr=False, sensor_dr=None):
         obs_cfg=cfg["obs"],
         reward_cfg=cfg["reward"],
     )
+
+
+def _variant_wall_range(episode_id: int) -> float:
+    _configure_cpu()
+    width = 12
+    height = 5
+    resolution = 0.5
+    fields = []
+    for wall_column in (4, 8):
+        row = np.abs(np.arange(width, dtype=np.float32) - wall_column) * resolution
+        fields.append(np.repeat(row[None, :], height, axis=0))
+    corridor = _CorridorDistanceStorage(
+        CorridorDistanceData(
+            distance=np.asarray(fields, dtype=np.float32).reshape(-1),
+            width=width,
+            height=height,
+            origin=(0.0, 0.0),
+            resolution=resolution,
+            variant_count=2,
+        ),
+        "cpu",
+    )
+    vehicle = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+    ego = _VehicleStorage(1, torch.device("cpu"), vehicle)
+    env = _EnvironmentStorage(1, torch.device("cpu"))
+    ego.tensor["x"][0] = 0.5
+    ego.tensor["y"][0] = 1.0
+    env.tensor["episode_id"][0] = episode_id
+    ranges = torch.zeros(1, 1, dtype=torch.float32)
+    wp.launch(
+        lidar_solo_kernel,
+        dim=(1, 1),
+        inputs=[
+            ego.buffers,
+            env.buffers,
+            corridor.data,
+            _sensor_params(
+                num_beams=1,
+                angle_min=0.0,
+                angle_increment=0.0,
+                range_min=0.02,
+                range_max=10.0,
+                lidar_offset_x=0.0,
+            ),
+            _opponent_params(),
+            _reset_params(seed=0),
+            wp.from_torch(ranges),
+        ],
+        device="cpu",
+    )
+    wp.synchronize()
+    return float(ranges[0, 0])
+
+
+def test_lidar_map_variant_is_selected_deterministically_per_episode(warp_runtime):
+    del warp_runtime
+    first_episode = _variant_wall_range(0)
+    second_episode = _variant_wall_range(1)
+
+    assert first_episode == pytest.approx(_variant_wall_range(0))
+    assert first_episode == pytest.approx(1.5, abs=0.26)
+    assert second_episode == pytest.approx(3.5, abs=0.26)
+
+
+def test_lidar_unknown_distance_returns_max_range(warp_runtime):
+    del warp_runtime
+    _configure_cpu()
+    distance = np.full((5, 8), 2.0, dtype=np.float32)
+    distance[:, 4:] = -1.0
+    corridor = _CorridorDistanceStorage(
+        CorridorDistanceData(
+            distance=distance.reshape(-1),
+            width=8,
+            height=5,
+            origin=(0.0, 0.0),
+            resolution=0.5,
+        ),
+        "cpu",
+    )
+    vehicle = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+    ego = _VehicleStorage(1, torch.device("cpu"), vehicle)
+    env = _EnvironmentStorage(1, torch.device("cpu"))
+    ego.tensor["x"][0] = 0.5
+    ego.tensor["y"][0] = 1.25
+    ranges = torch.zeros(1, 1, dtype=torch.float32)
+    wp.launch(
+        lidar_solo_kernel,
+        dim=(1, 1),
+        inputs=[
+            ego.buffers,
+            env.buffers,
+            corridor.data,
+            _sensor_params(
+                num_beams=1,
+                angle_min=0.0,
+                angle_increment=0.0,
+                range_min=0.02,
+                range_max=10.0,
+                lidar_offset_x=0.0,
+            ),
+            _opponent_params(),
+            _reset_params(seed=0),
+            wp.from_torch(ranges),
+        ],
+        device="cpu",
+    )
+    wp.synchronize()
+    assert float(ranges[0, 0]) == pytest.approx(10.0)
 
 
 def test_sensor_angle_layout_is_ust10lx(warp_runtime):
@@ -485,6 +595,28 @@ def test_lidar_dropout_fraction_and_far_range(warp_runtime):
     )
     frac = float((noisy[0] >= float(sensor.range_max) - 1e-4).float().mean())
     assert 0.35 <= frac <= 0.65
+
+
+def test_lidar_spatial_dropout_is_shared_across_neighbor_beams(warp_runtime):
+    del warp_runtime
+    _configure_cpu()
+    half = 1.5
+    centerline, width_left, width_right = make_straight_track(
+        length=80.0, n=320, w_left=half, w_right=half
+    )
+    dropped, _, sensor = _launch_lidar(
+        centerline=centerline,
+        width_left=width_left,
+        width_right=width_right,
+        ego_pose=(40.0, 0.0),
+        ego_yaw=0.0,
+        seed=11,
+        sensor=_sensor_params(lidar_dropout_bin_m=50.0),
+        env_overrides={"lidar_dropout_prob": 0.5},
+    )
+    maxed = dropped[0] >= float(sensor.range_max) - 1e-4
+    left = maxed[_LEFT - 20 : _LEFT + 20]
+    assert bool(left.all()) or bool((~left).all())
 
 
 def test_dr_off_lidar_is_deterministic_and_clean(warp_runtime):

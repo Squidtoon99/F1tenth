@@ -1,9 +1,12 @@
 import os
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+import yaml
 
 from . import runtime as rt
 
@@ -319,17 +322,139 @@ class CorridorDistanceData:
     height: int
     origin: tuple[float, float]
     resolution: float
+    variant_count: int = 1
 
 
 def _euclidean_distance_transform(occupied: np.ndarray) -> np.ndarray:
     """Distance in cells from each free cell to the nearest occupied cell."""
+    from scipy.ndimage import distance_transform_edt
+
+    return distance_transform_edt(~occupied).astype(np.float32)
+
+
+def _trinary_occupancy_masks(
+    image: np.ndarray, metadata: dict
+) -> tuple[np.ndarray, np.ndarray]:
+    unique = {int(value) for value in np.unique(image)}
+    if unique <= {0, 205, 254}:
+        if int(metadata.get("negate", 0)) == 0:
+            return image == 0, image == 205
+        return image == 254, image == 205
+    probability = image.astype(np.float32) / 255.0
+    if int(metadata.get("negate", 0)) == 0:
+        probability = 1.0 - probability
+    occupied = probability >= float(metadata["occupied_thresh"])
+    free = probability <= float(metadata.get("free_thresh", 0.0))
+    return occupied, ~occupied & ~free
+
+
+def _stamp_unknown(distance: np.ndarray, unknown: np.ndarray) -> np.ndarray:
+    if unknown.any():
+        distance = distance.copy()
+        distance[unknown] = -1.0
+    return distance
+
+
+def load_occupancy_distance_field(
+    map_yaml: str | Path,
+    expected_sha256: str | None = None,
+    *,
+    variant_count: int = 1,
+    max_wall_offset_m: float = 0.0,
+    variant_seed: int = 0,
+) -> CorridorDistanceData:
+    """Load a ROS trinary occupancy map as a LiDAR distance field."""
     import cv2
 
-    # OpenCV measures distance to the nearest zero pixel.
-    binary = np.where(occupied, 0, 255).astype(np.uint8)
-    return cv2.distanceTransform(
-        binary, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
-    ).astype(np.float32)
+    if variant_count < 1:
+        raise ValueError("variant_count must be positive")
+    if not np.isfinite(max_wall_offset_m) or max_wall_offset_m < 0.0:
+        raise ValueError("max_wall_offset_m must be non-negative")
+
+    yaml_path = Path(map_yaml)
+    metadata = yaml.safe_load(yaml_path.read_text())
+    if metadata.get("mode", "trinary") != "trinary":
+        raise ValueError("LiDAR occupancy maps must use ROS trinary mode")
+    resolution = float(metadata["resolution"])
+    if not np.isfinite(resolution) or resolution <= 0.0:
+        raise ValueError("Occupancy map resolution must be positive")
+    origin = metadata["origin"]
+    if len(origin) != 3 or abs(float(origin[2])) > 1.0e-9:
+        raise ValueError("Rotated occupancy-map origins are not supported")
+
+    image_path = Path(metadata["image"])
+    if not image_path.is_absolute():
+        image_path = yaml_path.parent / image_path
+    image_bytes = image_path.read_bytes()
+    if expected_sha256 is not None:
+        actual_sha256 = hashlib.sha256(image_bytes).hexdigest()
+        if actual_sha256.lower() != str(expected_sha256).lower():
+            raise ValueError(
+                "Occupancy map image SHA-256 mismatch: "
+                f"expected {expected_sha256}, got {actual_sha256}"
+            )
+
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError(f"Could not read occupancy map image: {image_path}")
+    image = np.flipud(image)
+    occupied, unknown = _trinary_occupancy_masks(image, metadata)
+    if not occupied.any():
+        raise ValueError("Occupancy map contains no occupied cells")
+    height, width = occupied.shape
+    distance_fields = [
+        _stamp_unknown(
+            _euclidean_distance_transform(occupied) * resolution, unknown
+        )
+    ]
+    if variant_count > 1:
+        rng = np.random.default_rng(variant_seed)
+        grid_x, grid_y = np.meshgrid(
+            np.arange(width, dtype=np.float32),
+            np.arange(height, dtype=np.float32),
+        )
+        sigma_px = max(2.0, 0.5 / resolution)
+        amplitude_px = max_wall_offset_m / resolution
+        source = occupied.astype(np.uint8)
+        for _ in range(variant_count - 1):
+            displacement_x = cv2.GaussianBlur(
+                rng.standard_normal((height, width)).astype(np.float32),
+                (0, 0),
+                sigmaX=sigma_px,
+                borderType=cv2.BORDER_REFLECT,
+            )
+            displacement_y = cv2.GaussianBlur(
+                rng.standard_normal((height, width)).astype(np.float32),
+                (0, 0),
+                sigmaX=sigma_px,
+                borderType=cv2.BORDER_REFLECT,
+            )
+            magnitude = np.sqrt(displacement_x**2 + displacement_y**2)
+            scale = amplitude_px / max(float(magnitude.max()), 1.0e-12)
+            remapped = cv2.remap(
+                source,
+                grid_x + displacement_x * scale,
+                grid_y + displacement_y * scale,
+                interpolation=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            ).astype(bool)
+            distance_fields.append(
+                _stamp_unknown(
+                    _euclidean_distance_transform(remapped) * resolution,
+                    unknown & ~remapped,
+                )
+            )
+    return CorridorDistanceData(
+        distance=np.ascontiguousarray(
+            np.asarray(distance_fields, dtype=np.float32).reshape(-1)
+        ),
+        width=int(width),
+        height=int(height),
+        origin=(float(origin[0]), float(origin[1])),
+        resolution=resolution,
+        variant_count=variant_count,
+    )
 
 
 def _rasterize_polyline(
