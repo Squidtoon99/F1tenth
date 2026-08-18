@@ -278,7 +278,7 @@ calibration/results/
 .idea/
 
 .scratch_media/
+.worktrees/
 
 # Cursor
 .cursor/mcp.json
-
