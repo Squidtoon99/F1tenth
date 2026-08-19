@@ -19,6 +19,7 @@ from f1tenth_rl_agent.policy_model import (
     load_sensor_obs_norm,
 )
 from f1tenth_rl_agent.sensor_inference_runtime import SensorInferenceRuntime
+from f1tenth_rl_agent.sensor_action import normalized_action_to_physical
 
 
 def _write_sensor_checkpoint(path: str) -> None:
@@ -50,8 +51,33 @@ def _write_sensor_checkpoint(path: str) -> None:
         "steering_action_mode": si.STEERING_ACTION_MODE,
         "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
         "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 20.0,
+        "i_slew_a_per_s": 200.0,
     }
     torch.save(payload, path)
+
+
+@pytest.mark.parametrize(
+    "longitudinal, expected_drive, expected_brake",
+    [(1.0, 80.0, 0.0), (-1.0, 0.0, 20.0), (float("nan"), 0.0, 0.0)],
+)
+def test_runtime_action_mapping_uses_directional_current_envelope(
+    longitudinal, expected_drive, expected_brake
+):
+    drive_a, brake_a, _, _, _ = normalized_action_to_physical(
+        longitudinal,
+        0.0,
+        i_drive_max_a=80.0,
+        i_brake_max_a=20.0,
+        max_steer=0.33,
+        steering_angle_to_servo_gain=-1.2135,
+        steering_angle_to_servo_offset=0.4495,
+    )
+
+    assert drive_a == pytest.approx(expected_drive)
+    assert brake_a == pytest.approx(expected_brake)
+    assert not (drive_a > 0.0 and brake_a > 0.0)
 
 
 def _reference_step(actor, normalizer, obs_np, hidden, device):

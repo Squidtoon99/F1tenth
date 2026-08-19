@@ -42,3 +42,13 @@ the existing `VESC_CURRENT` slot change.
 - Sim2real amplitude mismatch for the current channel is closed for new
   artifacts; bag-era exact action parity remains blocked until a matching
   checkpoint exists.
+- Training records the physical command envelope
+  (`i_drive_max_a` / `i_brake_max_a` / `i_slew_a_per_s`) on the artifact.
+  Simulator `f_drive_max` is the force at effort=1 for that drive envelope
+  (80 A drive / 20 A motor-brake command scale). The corresponding Warp
+  longitudinal slew is 2.5/s (`200 A/s / 80 A`). Deploy refuses to load when
+  node limits disagree with artifact metadata, so a lower first-run/gate limit
+  cannot silently claim physical parity with the policy.
+- The 20 A policy/ROS brake limit is distinct from the manually configured VESC
+  safeguards: 25 A hard motor brake and 4 A battery regen. ROS does not enforce
+  or verify those firmware limits.

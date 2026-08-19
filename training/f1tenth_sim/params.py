@@ -106,8 +106,8 @@ class VehicleParams:
     low_speed_blend: float = 1.0
     c_roll: float = 0.0
     drive_torque_sign: float = 1.0
-    # Normalized effort slew matches 45 A at the deployed 200 A/s current limit.
-    longitudinal_slew_rate_per_s: float = 4.444444444444445
+    # Normalized effort slew: 200 A/s physical / 80 A full-scale command envelope.
+    longitudinal_slew_rate_per_s: float = 2.5
     # Soft accel clamp for the Tier-0 kinematic fallback only.
     kinematic_accel_limit: float = 12.0
 

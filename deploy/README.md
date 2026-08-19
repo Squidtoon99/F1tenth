@@ -11,8 +11,8 @@ images.
     [`tools/dev.sh`](../tools/dev.sh)).
   - `Dockerfile.runtime` — base + a baked colcon install. The **generic racing
     car image** (`f1tenth-racing`).
-  - `Dockerfile.sensor_policy` — JetPack 6 iGPU PyTorch + **full** `src/` colcon
-    workspace (`f1tenth-sensor-policy`). See ADR 0008.
+  - `Dockerfile.sensor_policy` — JetPack 6 iGPU PyTorch + bringup closure, no
+    localization (`f1tenth-sensor-policy`). See ADR 0008 / 0025.
   - `smoke_sensor_policy.sh` — non-powered CUDA/ROS/artifact/launch smoke for the
     sensor-policy image.
   - `entrypoint.sh` — sources ROS + workspace and applies the mounted per-car overlay.
@@ -45,3 +45,18 @@ flowchart LR
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`) whose exact image is
 snapshotted. See [`../docs/deployment.md`](../docs/deployment.md).
+
+## Sensor-policy race staging
+
+The 1097-D sensor-policy artifact, `sensor_racer`, and `rl_current_gate` share an
+80 A drive / 20 A motor-brake command envelope and a 200 A/s physical slew
+(2.5/s normalized Warp slew). Artifact loading fails if the ROS limits do not
+match. The VESC's 25 A hard motor-brake and 4 A battery-regen settings are
+separate firmware safeguards and must be verified manually on the car.
+
+For overnight race preparation, train and run offline validation on the CUDA
+host without building a Docker image. The next morning, build the native arm64
+`f1tenth-sensor-policy` image on the Jetson and run its non-powered
+CUDA/artifact/launch smoke before powered testing. Start with boxed-wheel,
+low-demand commanded-action checks while retaining matching 80/20 ROS limits;
+do not use mismatched 5/5 runtime limits with an 80/20 artifact.

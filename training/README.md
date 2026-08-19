@@ -8,7 +8,7 @@ HPC (there is intentionally **no GPU CI**).
 ## Layout
 
 The modules are top-level (imported as `config`, `run_layout`, `standalone_trainer`,
-`f1tenth_env`, `qrsac`), so run commands from this `training/` directory.
+`f1tenth_env`, `qrsac`, `ppo`), so run commands from this `training/` directory.
 
 - `f1tenth_env/` — the simulation environment used for training (observations,
   rewards, terminations, opponents, and domain randomization).
@@ -16,8 +16,11 @@ The modules are top-level (imported as `config`, `run_layout`, `standalone_train
   wheel-spin, and force drivetrain), batched over environments on CPU or CUDA.
 - `qrsac/` — the RL algorithm: Quantile-Regression Soft Actor-Critic
   (distributional actor-critic) plus the spinning-up MLP building blocks.
-- `standalone_trainer.py` — single-process trainer entry point (F1tenthEnv +
-  in-memory n-step replay; no Reverb/Redis/S3).
+- `ppo/` — recurrent clipped PPO with an asymmetric scalar value critic,
+  on-policy rollout storage, and optional Gigaflow-style advantage filtering
+  (`config.ppo.advantage_filter_*`).
+- `standalone_trainer.py` — single-process trainer entry point for either
+  algorithm; QR-SAC uses in-memory n-step replay.
 - `run_layout.py` — per-run output directory layout (`outputs/runs/<run-id>/`).
 - `config.py` — `DEFAULT_CONFIG` (the single source of the trainer's config).
 - `tests/` — learner, replay, environment, observation, reward, termination,
@@ -53,6 +56,10 @@ env samples a weighted opponent on every episode reset.
 ```bash
 cd training
 python standalone_trainer.py --num-envs 1024 --total-transitions 256000000
+
+# Select recurrent PPO instead of the default QR-SAC trainer.
+python standalone_trainer.py --algorithm ppo --num-envs 1024 \
+    --total-transitions 256000000
 ```
 
 ### Warp physics
@@ -66,18 +73,42 @@ python standalone_trainer.py --device cuda --num-envs 1024 --config my_run.json
 Training domain randomization is always enabled. Evaluation and deterministic
 tests use the nominal profile.
 
-Budgets and all cadences are cumulative environment transitions. Telemetry keeps
-separate counts for vector ticks, environment transitions, replay inserts,
-sampled replay rows, and gradient updates. The default learner budget samples two
-replay rows per collected transition, preserving the former 512-env,
-1024-row-batch update ratio independently of vector width.
+Galaxy sensor-policy runs use the ignored real-track occupancy map configured by
+`sensor.lidar_map_yaml`. Warp keeps the cleaned map as variant zero and selects a
+seeded, smoothly deformed wall-geometry variant per episode. The configured image
+SHA-256 must match before the environment starts. Maps and generated parity reports
+stay under `outputs/sim2real/`; they are never committed.
+
+Budgets and all cadences are cumulative environment transitions. QR-SAC telemetry
+tracks replay inserts and sampled rows; PPO telemetry tracks optimized rollout
+rows and optimizer steps.
 
 Policy exports under `outputs/runs/<id>/checkpoints/` are compact artifacts. They
 retain the required `actor` and `obs_norm` keys plus transition count, dimensions,
-action scaling/semantics, and format version; critic and optimizer state are not
-persisted, and runs do not resume. The Lee sensor experiment uses normalized
-steering deltas of at most `pi/60` rad per 10 Hz decision; replay keeps those
-normalized deltas while sensor history and steering rewards use realized angles.
+action scaling/semantics, format version, and the physical current envelope
+(`i_drive_max_a=80`, `i_brake_max_a=20`, `i_slew_a_per_s=200`) paired with
+`f_drive_max≈23 N` at normalized effort=1. Warp derives a normalized longitudinal
+slew of `2.5/s` (`200 A/s / 80 A`). Critic and optimizer state are not
+persisted, and runs do not resume. Observation preprocessing v3 still packs
+VESC current as a directional-limit fraction. Deploy refuses artifacts whose
+embedded current scale does not match on-car limits. The Lee sensor experiment
+uses normalized steering deltas of at most `pi/60` rad per 10 Hz decision;
+replay keeps those normalized deltas while sensor history and steering rewards
+use realized angles.
+
+For the race-ready cold-start PPO run, use the reviewed configuration and keep
+the 2B-transition ceiling so a healthy run can continue through temporary
+performance regressions:
+
+```bash
+cd training
+../.venv/bin/python standalone_trainer.py \
+  --config configs/ecss_solo_v3_80a_ppo.json --algorithm ppo \
+  --num-envs 4096 --total-transitions 2000000000 --opponent none \
+  --device cuda --seed 55 --run-id race-ready-80a-ppo-s55-a001
+```
+
+This is a cold run: do not supply an initialization or resume checkpoint.
 
 ### Eval visualization (live + mp4)
 

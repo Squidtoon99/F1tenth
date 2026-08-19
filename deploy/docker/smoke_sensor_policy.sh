@@ -68,7 +68,9 @@ with torch.inference_mode():
     action, hidden = actor(obs, deterministic=True, with_logprob=False)
 print(
     f"artifact_ok obs_dim={si.NUM_OBS} layout={si.ACTOR_LAYOUT_VERSION} "
-    f"format={si.POLICY_FORMAT_VERSION} gru_hidden={si.GRU_HIDDEN_DIM} "
+    f"format={si.POLICY_FORMAT_VERSION} "
+    f"preprocessing={si.OBS_PREPROCESSING_VERSION} "
+    f"gru_hidden={si.GRU_HIDDEN_DIM} "
     f"action={tuple(float(x) for x in action.reshape(-1).tolist())}"
 )
 PY

@@ -198,6 +198,7 @@ def test_maybe_replay_full_reinit_preserves_champion_and_replay(tmp_path):
 def test_cold_start_protocol_state_is_unset():
     state = initial_training_protocol_state()
     assert state == {
+        "algorithm": "qrsac",
         "replay_full_reinit_done": False,
         "replay_full_reinit_count": 0,
         "replay_full_reinit_transitions": None,

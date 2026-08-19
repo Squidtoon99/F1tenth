@@ -10,6 +10,7 @@ import tempfile
 import pytest
 import torch
 import torch.nn as nn
+from f1tenth_policy import assert_artifact_current_limits_match
 
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
@@ -56,6 +57,9 @@ def _sensor_payload(actor: SquashedGaussianLidarGRUActor, **extra):
         "steering_action_mode": si.STEERING_ACTION_MODE,
         "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
         "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 20.0,
+        "i_slew_a_per_s": 200.0,
     }
     payload.update(extra)
     return payload
@@ -87,13 +91,29 @@ def test_format4_checkpoint_round_trip():
     assert from_norm.shape == (3, si.NUM_ACTIONS)
 
 
+def test_sensor_policy_current_envelope_matches_runtime():
+    actor = make_sensor_actor(_default_architecture())
+    payload = _sensor_payload(actor)
+
+    assert_artifact_current_limits_match(payload, 80.0, 20.0)
+
+
+def test_sensor_policy_rejects_old_current_envelope():
+    actor = make_sensor_actor(_default_architecture())
+    payload = _sensor_payload(actor, i_drive_max_a=100.0, i_brake_max_a=10.0)
+
+    with pytest.raises(ValueError, match="does not match artifact training scale"):
+        assert_artifact_current_limits_match(payload, 80.0, 20.0)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
         ({"policy_format_version": 3}, "policy_format_version"),
-        ({"observation_preprocessing_version": 1}, "observation_preprocessing_version"),
+        ({"observation_preprocessing_version": 2}, "observation_preprocessing_version"),
         ({"artifact_scope": "deployable"}, "artifact_scope"),
         ({}, "obs_norm"),
+        ({}, "i_drive_max_a"),
     ],
 )
 def test_sensor_loader_rejects_invalid_artifacts(mutation, match):
@@ -101,6 +121,8 @@ def test_sensor_loader_rejects_invalid_artifacts(mutation, match):
     payload = _sensor_payload(actor)
     if match == "obs_norm":
         del payload["obs_norm"]
+    elif match == "i_drive_max_a":
+        del payload["i_drive_max_a"]
     else:
         payload.update(mutation)
     with pytest.raises(ValueError, match=match):

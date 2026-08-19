@@ -135,14 +135,35 @@ def test_sensor_policy_launch_wires_gate_limits_and_topics():
     assert '"gate_config"' in source
 
 
-def test_car_overlay_keeps_sensor_racer_and_gate_at_5a():
+def test_car_overlay_matches_sensor_policy_artifact_envelope():
     racer = _overlay_node_block("sensor_racer")
     gate = _overlay_node_block("rl_current_gate")
 
-    assert "i_drive_max_a: 5.0" in racer
-    assert "i_brake_max_a: 5.0" in racer
-    assert "i_drive_max_a: 5.0" in gate
-    assert "i_brake_max_a: 5.0" in gate
+    assert "i_drive_max_a: 80.0" in racer
+    assert "i_brake_max_a: 20.0" in racer
+    assert "twist_vx_sign: 1.0" in racer
+    assert "i_drive_max_a: 80.0" in gate
+    assert "i_brake_max_a: 20.0" in gate
+
+
+def test_sensor_policy_fallback_defaults_match_artifact_envelope():
+    launch = _launch_source()
+    racer = SENSOR_RACER_NODE.read_text()
+    gate = (
+        Path(__file__).resolve().parents[3]
+        / "control"
+        / "f1tenth_control"
+        / "f1tenth_control"
+        / "rl_current_gate_node.py"
+    ).read_text()
+
+    assert '"i_drive_max_a",\n                default_value="80.0"' in launch
+    assert '"i_brake_max_a",\n                default_value="20.0"' in launch
+    assert 'declare_parameter("i_drive_max_a", 80.0)' in racer
+    assert 'declare_parameter("i_brake_max_a", 20.0)' in racer
+    assert 'declare_parameter("twist_vx_sign", 1.0)' in racer
+    assert 'declare_parameter("i_drive_max_a", 80.0)' in gate
+    assert 'declare_parameter("i_brake_max_a", 20.0)' in gate
 
 
 def test_sensor_racer_node_does_not_publish_vesc_topics():

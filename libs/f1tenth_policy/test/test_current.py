@@ -12,6 +12,7 @@ from f1tenth_policy import (
     TRAINING_I_DRIVE_MAX_A,
     TRAINING_I_SLEW_A_PER_S,
     applied_current_fraction,
+    assert_artifact_current_limits_match,
 )
 
 
@@ -44,3 +45,19 @@ def test_applied_current_fraction_fail_closed_on_invalid_limits():
 def test_applied_current_fraction_nonfinite_amps_map_to_zero():
     assert applied_current_fraction(math.nan, 100.0, 10.0) == 0.0
     assert applied_current_fraction(math.inf, 100.0, 10.0) == 0.0
+
+
+@pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf, 0.0, -1.0])
+def test_artifact_current_match_rejects_invalid_runtime_drive_limit(invalid):
+    payload = {"i_drive_max_a": 80.0, "i_brake_max_a": 20.0}
+
+    with pytest.raises(ValueError, match="Deploy i_drive_max_a"):
+        assert_artifact_current_limits_match(payload, invalid, 20.0)
+
+
+@pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf, 0.0, -1.0])
+def test_artifact_current_match_rejects_invalid_runtime_brake_limit(invalid):
+    payload = {"i_drive_max_a": 80.0, "i_brake_max_a": 20.0}
+
+    with pytest.raises(ValueError, match="Deploy i_brake_max_a"):
+        assert_artifact_current_limits_match(payload, 80.0, invalid)

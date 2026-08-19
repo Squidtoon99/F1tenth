@@ -61,6 +61,9 @@ def _write_sensor_checkpoint(
         "steering_action_mode": steering_action_mode,
         "steering_delta_max_rad": 0.05235987755982988,
         "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 20.0,
+        "i_slew_a_per_s": 200.0,
     }
     torch.save(payload, path)
 
@@ -83,15 +86,47 @@ def _spin_until(nodes, predicate, timeout_s=3.0):
             executor.remove_node(node)
 
 
-def _applied_rl(longitudinal: float = 0.2, steering: float = 0.0) -> ActuatorCommand:
+def _applied_rl(
+    longitudinal: float = 0.2,
+    steering: float = 0.0,
+    *,
+    i_drive_max_a: float = 80.0,
+    i_brake_max_a: float = 20.0,
+) -> ActuatorCommand:
     msg = ActuatorCommand()
     msg.longitudinal = float(longitudinal)
     msg.steering = float(steering)
-    msg.drive_current_a = si.VESC_CURRENT_SCALE_A * max(float(longitudinal), 0.0)
-    msg.brake_current_a = si.VESC_CURRENT_SCALE_A * max(-float(longitudinal), 0.0)
+    msg.drive_current_a = float(i_drive_max_a) * max(float(longitudinal), 0.0)
+    msg.brake_current_a = float(i_brake_max_a) * max(-float(longitudinal), 0.0)
     msg.servo_position = 0.4495
     msg.source = ActuatorCommand.SOURCE_RL
     return msg
+
+
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("i_drive_max_a", float("nan")),
+        ("i_drive_max_a", float("inf")),
+        ("i_brake_max_a", float("nan")),
+        ("i_brake_max_a", float("inf")),
+    ],
+)
+def test_sensor_racer_refuses_nonfinite_current_limits(field, invalid):
+    rclpy.init()
+    node = None
+    try:
+        with pytest.raises(ValueError, match=field):
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, False),
+                    Parameter(field, Parameter.Type.DOUBLE, invalid),
+                ]
+            )
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
 
 
 def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
@@ -110,6 +145,8 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
                     Parameter("publish_raw_observation", Parameter.Type.BOOL, True),
                 ]
             )
+            assert node.i_drive_max_a == pytest.approx(80.0)
+            assert node.i_brake_max_a == pytest.approx(20.0)
         helper = rclpy.create_node("sensor_racer_helper")
         desired = []
         diagnostics = []
@@ -170,9 +207,7 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
         assert abs(cmd.steering) <= si.CLIP_ACTIONS + 1e-5
         assert not (cmd.drive_current_a > 0.0 and cmd.brake_current_a > 0.0)
         assert raw_obs[-1][si.VESC_SPEED] == pytest.approx(-2.0, abs=0.05)
-        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * 0.2, abs=0.05
-        )
+        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(0.2, abs=0.05)
         assert diagnostics[-1][si.DIAG_VALID_TICK] == pytest.approx(1.0)
     finally:
         if helper is not None:
@@ -464,9 +499,7 @@ def test_sensor_racer_post_gate_history_in_observation():
         obs = np.asarray(raw_obs[-1], dtype=np.float32)
         assert obs[si.THROTTLE_CURRENT] == pytest.approx(-0.3, abs=1e-5)
         assert obs[si.THROTTLE_PRED] == pytest.approx(0.4, abs=1e-5)
-        assert obs[si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * -0.3, abs=1e-5
-        )
+        assert obs[si.VESC_CURRENT] == pytest.approx(-0.3, abs=1e-5)
         assert obs[si.STEER_T] == pytest.approx(-0.2 * 0.33, abs=1e-5)
         assert obs[si.STEER_T1] == pytest.approx(0.1 * 0.33, abs=1e-5)
     finally:

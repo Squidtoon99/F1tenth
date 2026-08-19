@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch
+import torch.nn as nn
 
 from config import DEFAULT_CONFIG
+from f1tenth_policy import ObsNormalizer
+from f1tenth_policy.layout import ACTOR_OBS_DIM
+from qrsac import make_actor
 from standalone_trainer import (
     _deep_merge,
     build_config,
@@ -14,11 +21,133 @@ from standalone_trainer import (
     config_provenance,
     load_config_patch,
     parse_args,
+    save_policy_artifact,
     validate_config_patch,
 )
+from f1tenth_env.utils import build_warp_track_data, load_track_state
 
 # Hermetic episode length via patch (CLI no longer duplicates JSON knobs).
 _BASE_PATCH = {"env": {"episode_length": 60}}
+
+
+def test_race_day_80a_ppo_patch():
+    config_path = (
+        Path(__file__).parents[1] / "configs" / "ecss_solo_v3_80a_ppo.json"
+    )
+    patch, _ = load_config_patch(str(config_path))
+
+    assert patch["algorithm"] == "ppo"
+    assert patch["env"]["track"] == "ECSS_Floor"
+    assert patch["env"]["opponent_strategy"] is None
+    assert patch["env"]["domain_randomization"]["enabled"] is True
+    assert patch["env"]["i_drive_max_a"] == pytest.approx(80.0)
+    assert patch["env"]["i_brake_max_a"] == pytest.approx(20.0)
+    assert patch["env"]["i_slew_a_per_s"] == pytest.approx(200.0)
+    assert patch["env"]["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
+        2.5
+    )
+    assert patch["ppo"]["rollout_steps"] == 128
+    assert patch["ppo"]["epochs"] == 4
+    assert patch["ppo"]["env_minibatches"] == 32
+    assert patch["ppo"]["entropy_coef"] == pytest.approx(0.01)
+    assert patch["schedule"]["export_interval_transitions"] == 2_560_000
+
+
+def test_iv26_scripted_80a_ppo_patch():
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "iv26_scripted_v3_80a_ppo.json"
+    )
+    patch, _ = load_config_patch(str(config_path))
+    args, explicit = parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--opponent",
+            "scripted",
+            "--seed",
+            "42",
+            "--total-transitions",
+            "2000000000",
+        ]
+    )
+    cfg = build_config(args, patch=patch, explicit=explicit)
+
+    assert cfg["env"]["track"] == "IV_2026_SIM"
+    assert cfg["env"]["opponent_strategy"] == "scripted"
+    assert cfg["env"]["opponent_target_speed"] == pytest.approx(3.5)
+    assert cfg["env"]["opponent_target_speed_range"] == [2.0, 5.0]
+    assert cfg["env"]["f_drive_max"] == pytest.approx(23.0)
+    assert cfg["env"]["power_max"] == pytest.approx(320.0)
+    assert cfg["env"]["ego_speed_cap_mps"] == pytest.approx(0.0)
+    assert cfg["env"]["i_drive_max_a"] == pytest.approx(80.0)
+    assert cfg["env"]["i_brake_max_a"] == pytest.approx(20.0)
+    assert cfg["env"]["i_slew_a_per_s"] == pytest.approx(200.0)
+    assert cfg["env"]["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
+        2.5
+    )
+    assert cfg["schedule"]["export_interval_transitions"] == 2_560_000
+    assert cfg["schedule"]["total_transitions"] == 2_000_000_000
+
+
+def test_galaxy_1_scripted_80a_ppo_patch_loads_bundled_track():
+    training_dir = Path(__file__).parents[1]
+    config_path = training_dir / "configs" / "galaxy_1_scripted_v3_80a_ppo.json"
+    patch, _ = load_config_patch(str(config_path))
+    args, explicit = parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--opponent",
+            "scripted",
+            "--seed",
+            "42",
+            "--total-transitions",
+            "2000000000",
+        ]
+    )
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    track = load_track_state(cfg["env"]["track"], str(training_dir), torch.device("cpu"))
+    warp_track = build_warp_track_data(track)
+
+    assert cfg["env"]["track"] == "Galaxy_1"
+    assert cfg["env"]["opponent_strategy"] == "scripted"
+    assert cfg["env"]["f_drive_max"] == pytest.approx(23.0)
+    assert cfg["env"]["power_max"] == pytest.approx(320.0)
+    assert cfg["env"]["ego_speed_cap_mps"] == pytest.approx(0.0)
+    assert cfg["env"]["i_drive_max_a"] == pytest.approx(80.0)
+    assert cfg["env"]["i_brake_max_a"] == pytest.approx(20.0)
+    assert cfg["env"]["i_slew_a_per_s"] == pytest.approx(200.0)
+    assert cfg["env"]["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
+        2.5
+    )
+    assert cfg["sensor"]["lidar_map_yaml"] == (
+        "outputs/sim2real/galaxy1/maps/galaxy_1.yaml"
+    )
+    assert cfg["sensor"]["lidar_map_sha256"] == (
+        "c596ab8e074ab18ee69847dffbd61c08cde5867bd3fc7a7353c5be202b2bcb63"
+    )
+    assert cfg["sensor"]["lidar_map_variant_count"] == 8
+    assert cfg["sensor"]["lidar_wall_offset_max_m"] == pytest.approx(0.15)
+    assert cfg["sensor"]["lidar_dropout_bin_m"] == pytest.approx(0.7)
+    assert cfg["env"]["domain_randomization"]["lidar_dropout_prob_range"] == [
+        0.04,
+        0.10,
+    ]
+    assert cfg["env"]["reset_stationary_probability"] == pytest.approx(0.25)
+    assert cfg["env"]["reset_speed_min_mps"] == pytest.approx(0.0)
+    assert cfg["env"]["domain_randomization"]["imu_accel_bias_range"] == [
+        -0.4,
+        0.4,
+    ]
+    assert cfg["env"]["domain_randomization"]["vesc_speed_bias_range"] == [
+        -0.3,
+        0.3,
+    ]
+    assert cfg["schedule"]["total_transitions"] == 2_000_000_000
+    assert warp_track.point.shape == (677, 2)
+    assert warp_track.length == pytest.approx(39.42117, abs=1.0e-4)
 
 
 def _resolve(argv, patch=None):
@@ -90,6 +219,73 @@ def test_training_defaults_use_10hz_1024_envs_and_3m_replay():
     assert control_dt == pytest.approx(0.1)
     assert args.num_envs == 1024
     assert DEFAULT_CONFIG["model"]["replay_buffer_limit"] == 3_000_000
+    assert DEFAULT_CONFIG["algorithm"] == "qrsac"
+
+
+def test_policy_artifact_falls_back_to_shared_current_envelope(tmp_path):
+    cfg = _resolve([])
+    for key in ("i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"):
+        cfg["env"].pop(key)
+    actor = make_actor(
+        obs_dim=ACTOR_OBS_DIM,
+        act_dim=int(cfg["env"]["num_actions"]),
+        hidden_sizes=[16, 16],
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=16,
+    )
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, torch.device("cpu"))
+
+    path = save_policy_artifact(
+        SimpleNamespace(actor=actor), 1, tmp_path, normalizer, cfg
+    )
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+
+    assert payload["i_drive_max_a"] == pytest.approx(80.0)
+    assert payload["i_brake_max_a"] == pytest.approx(20.0)
+    assert payload["i_slew_a_per_s"] == pytest.approx(200.0)
+
+
+def test_algorithm_patch_and_explicit_cli_override():
+    cfg = _resolve([], patch={"algorithm": "ppo"})
+    assert cfg["algorithm"] == "ppo"
+
+    args, explicit = parse_args(["--algorithm", "qrsac"])
+    cfg = build_config(
+        args,
+        patch={**_BASE_PATCH, "algorithm": "ppo"},
+        explicit=explicit,
+    )
+    assert cfg["algorithm"] == "qrsac"
+    assert args.algorithm == "qrsac"
+
+
+def test_ppo_config_validation_rejects_invalid_values():
+    args, explicit = parse_args(["--algorithm", "ppo"])
+    with pytest.raises(ValueError, match="ppo.rollout_steps"):
+        build_config(
+            args,
+            patch={**_BASE_PATCH, "ppo": {"rollout_steps": 0}},
+            explicit=explicit,
+        )
+    with pytest.raises(ValueError, match="must be divisible"):
+        build_config(
+            args,
+            patch={**_BASE_PATCH, "ppo": {"env_minibatches": 7}},
+            explicit=explicit,
+        )
+    with pytest.raises(ValueError, match="algorithm must"):
+        build_config(
+            args,
+            patch={**_BASE_PATCH, "algorithm": "other"},
+            explicit=set(),
+        )
+
+
+def test_qrsac_does_not_require_ppo_minibatch_divisibility():
+    args, explicit = parse_args(["--num-envs", "1"])
+    cfg = build_config(args, patch=_BASE_PATCH, explicit=explicit)
+    assert cfg["algorithm"] == "qrsac"
 
 
 def test_default_steering_reward_scales_and_constants():
@@ -97,7 +293,7 @@ def test_default_steering_reward_scales_and_constants():
     scales = reward["reward_scales"]
     assert scales["steering_change"] == 0.5
     assert scales["steering_history"] == 5.0
-    assert reward["wall_contact_coefficient"] == 20.0
+    assert reward["wall_contact_coefficient"] == 15.0
     assert "oob_penalty" not in scales
     assert "oob_impact" not in scales
     assert "boundary_contact" not in scales
@@ -110,7 +306,7 @@ def test_default_steering_reward_scales_and_constants():
     assert cfg["env"]["steering_action_mode"] == "delta"
     assert "term_oob_mode" not in cfg["env"]
     assert cfg["env"]["reset_stationary_probability"] == 0.10
-    assert cfg["reward"]["wall_contact_coefficient"] == 20.0
+    assert cfg["reward"]["wall_contact_coefficient"] == 15.0
     assert "overtake" not in cfg["reward"]["reward_scales"]
 
 
@@ -225,7 +421,7 @@ def test_snapshot_contains_resolved_config_and_provenance(tmp_path):
     assert snapshot["config"]["schedule"]["total_transitions"] == 42
     contact = snapshot["effective_wall_contact"]
     assert contact["geometry"] == "first projected footprint edge intersects mapped wall"
-    assert contact["coefficient_per_m"] == 20.0
+    assert contact["coefficient_per_m"] == 15.0
     assert contact["control_dt_s"] == pytest.approx(0.1)
     assert contact["formula"] == "-coefficient * speed_mps"
     prov = snapshot["config_provenance"]

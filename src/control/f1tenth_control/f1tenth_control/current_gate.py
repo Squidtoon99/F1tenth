@@ -105,6 +105,23 @@ def is_fresh(received_s: float | None, now_s: float, timeout_s: float) -> bool:
     return (now_s - received_s) <= timeout_s
 
 
+def validate_gate_config(cfg: GateConfig) -> None:
+    for name in ("i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"):
+        value = float(getattr(cfg, name))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and > 0 (got {value!r})")
+    safe_brake = float(cfg.i_brake_safe_a)
+    if (
+        not math.isfinite(safe_brake)
+        or safe_brake < 0.0
+        or safe_brake > cfg.i_brake_max_a
+    ):
+        raise ValueError(
+            "i_brake_safe_a must be finite and within [0, i_brake_max_a] "
+            f"(got {safe_brake!r})"
+        )
+
+
 def rl_rejection_reason(
     cmd: RlInput,
     cfg: GateConfig,
@@ -147,6 +164,10 @@ def validate_rl_command(
     last_accepted_generation: int,
     now_s: float,
 ) -> bool:
+    try:
+        validate_gate_config(cfg)
+    except ValueError:
+        return False
     return (
         rl_rejection_reason(cmd, cfg, last_accepted_generation, now_s)
         == REJECT_NONE

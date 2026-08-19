@@ -180,7 +180,8 @@ IMU sign and filter tuning happens on the ground, not in the gym bridge (which h
 ## Sensor-policy experiment (1097-D recurrent + current gate)
 
 Isolated from the 390-D racing path (ADR 0008). Same per-car `/config` overlay;
-different image name, moving tag, launch, and checkpoint filename.
+different image name, moving tag, launch, and checkpoint filename (`e2e_policy.pt`,
+distinct from classical `policy.pt` and legacy symmetric `sensor_policy.pt`).
 
 ### What it runs
 
@@ -196,10 +197,12 @@ Staged enable flags support non-powered certification:
 - `enable_racer:=false` — no inference node
 - `enable_gate:=false` — no VESC command publisher
 
-First-run current limits default to **5 A** via launch args (`i_drive_max_a`,
-`i_brake_max_a`, `i_brake_safe_a`). The launch passes the same drive/brake limits
+The policy and ROS command envelope is **80 A drive / 20 A motor brake**, with a
+physical slew limit of **200 A/s**. The launch passes the same drive/brake limits
 to both `sensor_racer` and `rl_current_gate`; keep the two node-scoped values equal
-in the per-car overlay.
+in the per-car overlay. The artifact records these limits and preprocessing v3
+normalizes applied drive current by 80 A and applied brake current by 20 A. A
+mismatch is rejected rather than silently changing the actor observation.
 
 Record `/sensor_racer/diagnostics` and `/rl_current_gate/diagnostics` during dry
 runs. They expose applied ownership, consecutive SAFE ticks, GRU reset reasons,
@@ -211,12 +214,6 @@ means the producer and gate limits are not aligned and must remain fail-closed.
 Requires a Docker-capable **linux/arm64** host (Jetson or arm64 builder). The NGC
 `-igpu` base is arm64-only; this amd64 dev host cannot certify the image.
 
-Initialize the range_libc submodule before building:
-
-```bash
-git submodule update --init src/localization/range_libc
-```
-
 ```bash
 # 1) Build (tags f1tenth-sensor-policy:<gitsha> and :sensor-policy)
 TARGET=sensor_policy deploy/scripts/build_image.sh
@@ -226,22 +223,41 @@ TARGET=sensor_policy deploy/scripts/build_image.sh
 
 # 2) Non-powered smoke on the build host (Jetson, after build):
 SMOKE=1 TARGET=sensor_policy deploy/scripts/build_image.sh
-# Optional: CHECKPOINT_PATH=/path/to/policy.pt SMOKE=1 ...
+# Optional: CHECKPOINT_PATH=/path/to/e2e_policy.pt SMOKE=1 ...
 
 # 3) Snapshot
 TARGET=sensor_policy deploy/scripts/snapshot.sh
 # -> deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz
 
-# 4) Inventory + load (never overwrites :develop or policies/policy.pt)
+# 4) Inventory + load (never overwrites :develop, policies/policy.pt, or legacy sensor_policy.pt)
+# Checkpoint must be observation_preprocessing_version=3 (ADR 0026 normalized
+# current). Preprocessing ≤2 artifacts are rejected at load — do not stage
+# ppo-klfix-entropy-4096-20260802 (v2) or other legacy weights.
+# Only stage a checkpoint after offline + ROS + hardware gates pass; the phase-11
+# seed44 investigative artifact is not a deployment candidate.
 TARGET=sensor_policy \
-  CHECKPOINT=training/outputs/runs/7210e365/checkpoints/policy_271360000.pt \
+  CHECKPOINT=/abs/path/to/e2e_policy_preprocessing_v3.pt \
   ACTOR_LAYOUT=2 POLICY_FORMAT=4 JETPACK_L4T=R36.4.7 \
   deploy/scripts/load_to_jetson.sh shereef@f1tenth \
   deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz car01
 ```
 
-Load records the previous `:sensor-policy` tag, checkpoint path, and Torch/CUDA pins
+Load stages the checkpoint as a content-hashed file and symlinks
+`/opt/f1tenth/policies/e2e_policy.pt` (leaves legacy `sensor_policy.pt` and
+classical `policy.pt` untouched). It records the previous `:sensor-policy` tag,
+checkpoint path, and Torch/CUDA pins
 under `/opt/f1tenth/rollback/sensor_policy/` and appends `deploy/releases/manifest.csv`.
+Keep `sensor_racer` and `rl_current_gate` `i_drive_max_a` / `i_brake_max_a`
+equal at 80/20. Under preprocessing v3 those limits scale the actor current
+channel. Training artifacts embed the same physical command envelope and the
+200 A/s slew; Warp uses the derived normalized slew of 2.5/s. `sensor_racer`
+rejects checkpoints whose embedded scale does not match the node limits.
+
+The VESC firmware limits are separate safeguards: verify **80 A drive, 25 A
+hard motor brake, and 4 A battery regen**, plus voltage cutoffs and temperature
+protection, from the live VESC configuration before powered testing. The 20 A
+actor brake denominator is not the 25 A firmware brake ceiling, and ROS neither
+sets nor proves the 4 A battery-regen limit.
 
 ### Run / dry-run / smoke / rollback
 
@@ -271,6 +287,22 @@ deploy/scripts/rollback_jetson.sh shereef@f1tenth sensor_policy
 Logs: container stdout plus on-car `tegrastats` / rosbag as required by the 10 Hz
 gate. Keep racing rollback available via
 `deploy/scripts/rollback_jetson.sh shereef@f1tenth racing`.
+
+### Race-day sensor-policy staging
+
+For the overnight race preparation, do not build a Docker image; keep the GPU
+host dedicated to training and offline validation. The next morning, when the
+Jetson is available, build the exact arm64 sensor-policy image there, run the
+non-powered CUDA/artifact/ROS smoke, and verify the live VESC firmware settings
+above.
+
+Keep the deployed artifact, `sensor_racer`, and `rl_current_gate` at matching
+80/20 limits throughout validation. Begin with boxed wheels and low-demand
+commanded-action tests, then move to low-speed floor testing and incrementally
+increase demanded action only while diagnostics, stopping distance, voltage,
+temperature, and faults remain healthy. Do not substitute 5/5 ROS limits for
+the artifact's 80/20 normalization as a first-motion precaution; that mismatch
+must be rejected.
 
 ## Releases
 

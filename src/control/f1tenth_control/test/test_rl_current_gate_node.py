@@ -89,6 +89,42 @@ def _ack(acceleration, steering=0.0):
     return msg
 
 
+def test_gate_node_defaults_match_sensor_policy_artifact_envelope():
+    rclpy.init()
+    node = None
+    try:
+        node = RlCurrentGateNode()
+        assert node._cfg.i_drive_max_a == pytest.approx(80.0)
+        assert node._cfg.i_brake_max_a == pytest.approx(20.0)
+        assert node._cfg.i_brake_safe_a == pytest.approx(5.0)
+        assert node._cfg.i_slew_a_per_s == pytest.approx(200.0)
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("i_drive_max_a", float("nan")),
+        ("i_drive_max_a", float("inf")),
+        ("i_brake_max_a", float("nan")),
+        ("i_brake_max_a", float("inf")),
+    ],
+)
+def test_gate_node_refuses_nonfinite_current_limits(field, invalid):
+    rclpy.init()
+    node = None
+    try:
+        with pytest.raises(RuntimeError, match=field):
+            node = _make_gate(**{field: invalid})
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_gate_publishes_rl_drive_when_teleop_stale():
     rclpy.init()
     node = helper = None

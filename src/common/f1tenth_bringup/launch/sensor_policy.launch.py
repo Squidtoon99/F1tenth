@@ -243,13 +243,13 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "i_drive_max_a",
-                default_value="5.0",
-                description="Conservative first-run drive current limit (A).",
+                default_value="80.0",
+                description="Sensor-policy drive current limit (A).",
             ),
             DeclareLaunchArgument(
                 "i_brake_max_a",
-                default_value="5.0",
-                description="Conservative first-run brake current limit (A).",
+                default_value="20.0",
+                description="Sensor-policy motor brake current limit (A).",
             ),
             DeclareLaunchArgument(
                 "i_brake_safe_a",

@@ -36,7 +36,7 @@ def actor_is_recurrent(actor) -> bool:
 
 def resolve_actor_architecture_from_payload(payload: dict) -> dict:
     """Return the concrete actor architecture encoded by a sensor artifact."""
-    from standalone_trainer import normalize_actor_architecture
+    from f1tenth_policy import normalize_actor_architecture
 
     arch = payload.get("actor_architecture")
     if isinstance(arch, dict):
@@ -62,11 +62,11 @@ def load_sensor_actor_bundle(
     require_obs_norm: bool = False,
 ):
     """Construct a concrete actor + 1,093-D normalizer from artifact metadata."""
-    from standalone_trainer import (
+    from f1tenth_policy import (
         ObsNormalizer,
+        actor_from_architecture,
         architectures_match,
         normalize_actor_architecture,
-        reference_actor_from_architecture,
         validate_sensor_policy_artifact,
     )
 
@@ -89,7 +89,7 @@ def load_sensor_actor_bundle(
         expected_architecture=architecture,
         expected_critic_obs_dim=expected_critic_obs_dim,
     )
-    actor = reference_actor_from_architecture(architecture).to(
+    actor = actor_from_architecture(architecture).to(
         device=device, dtype=torch.float32
     )
     actor.load_state_dict(payload["actor"], strict=True)

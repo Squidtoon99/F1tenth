@@ -1,0 +1,69 @@
+{
+  "algorithm": "ppo",
+  "config_version": 4,
+  "policy_format_version": 4,
+  "env": {
+    "track": "ECSS_Floor",
+    "opponent_strategy": null,
+    "f_drive_max": 23.0,
+    "f_brake_max": 5.2,
+    "power_max": 320.0,
+    "i_drive_max_a": 80.0,
+    "i_brake_max_a": 20.0,
+    "i_slew_a_per_s": 200.0,
+    "warp_sim": {
+      "longitudinal_slew_rate_per_s": 2.5
+    },
+    "domain_randomization": {
+      "enabled": true,
+      "tire_friction_range": [
+        0.5,
+        1.132
+      ],
+      "imu_accel_bias_range": [
+        -0.15,
+        0.15
+      ],
+      "imu_gyro_bias_range": [
+        -0.006607313505033768,
+        0.006607313505033768
+      ],
+      "imu_accel_noise_std_range": [
+        0.007283811484662825,
+        0.04370286890797695
+      ],
+      "imu_gyro_noise_std_range": [
+        0.0006188990447305095,
+        0.0037133942683830567
+      ],
+      "imu_axis_misalign_range": [
+        0.0,
+        0.02
+      ],
+      "vesc_current_bias_range": [
+        -0.005,
+        0.005
+      ],
+      "vesc_current_noise_std_range": [
+        0.0,
+        0.005
+      ]
+    }
+  },
+  "obs": {
+    "enable_opponent_obs": true
+  },
+  "schedule": {
+    "log_interval_transitions": 512000,
+    "export_interval_transitions": 2560000,
+    "eval_interval_transitions": 0
+  },
+  "ppo": {
+    "rollout_steps": 128,
+    "epochs": 4,
+    "env_minibatches": 32,
+    "entropy_coef": 0.01,
+    "advantage_filter_enabled": true,
+    "advantage_filter_discard_fraction": 0.05
+  }
+}

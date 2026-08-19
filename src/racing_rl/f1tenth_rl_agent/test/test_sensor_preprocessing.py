@@ -116,7 +116,8 @@ def test_actor_layout_offsets_match_training_fixture():
     assert si.STEER_DELTA0 == layout["steer_delta0"]
     assert si.STEER_DELTA1 == layout["steer_delta1"]
     assert si.STEER_DELTA2 == layout["steer_delta2"]
-    assert si.VESC_CURRENT_SCALE_A == layout["vesc_current_scale_a"]
+    assert si.OBS_PREPROCESSING_VERSION == layout["observation_preprocessing_version"]
+    assert layout["vesc_current_semantics"].startswith("signed_applied_current_a")
 
 
 def test_deploy_shaped_scan_replay_matches_training_layout():
@@ -134,7 +135,7 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     assert si.THROTTLE_CURRENT == 1089
     assert si.STEER_T == 1091
     assert si.STEER_DELTA2 == 1096
-    assert si.VESC_CURRENT_SCALE_A == 5.0
+    assert si.OBS_PREPROCESSING_VERSION == 3
     assert si.ACTOR_LAYOUT_VERSION == 2
 
     rng = np.random.default_rng(0)
@@ -164,16 +165,17 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     twist_vx_sign = -1.0
     odom_vx = -1.25
     speed = twist_vx_sign * odom_vx
-    vesc_current_a = 1.75
+    vesc_current_fraction = si.applied_current_fraction(1.75, 10.0, 10.0)
     steer_hist = np.array([-0.1, 0.15, 0.0, 0.0], dtype=np.float32)
     obs = pack_actor_observation(
-        lidar, actor_imu, speed, vesc_current_a, 0.2, -0.05, steer_hist
+        lidar, actor_imu, speed, vesc_current_fraction, 0.2, -0.05, steer_hist
     )
 
     assert obs.shape == (si.NUM_OBS,)
     assert np.isfinite(obs).all()
     assert obs[si.VESC_SPEED] == pytest.approx(1.25)
-    assert obs[si.VESC_CURRENT] == pytest.approx(vesc_current_a)
+    assert obs[si.VESC_CURRENT] == pytest.approx(vesc_current_fraction)
+    assert obs[si.VESC_CURRENT] == pytest.approx(0.175)
     assert obs[si.THROTTLE_CURRENT] == pytest.approx(0.2)
     assert obs[si.THROTTLE_PRED] == pytest.approx(-0.05)
     assert obs[si.STEER_T] == pytest.approx(-0.1)

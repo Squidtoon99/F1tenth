@@ -142,9 +142,11 @@ miss it — reference it explicitly). Use its interpreter directly:
 .venv/bin/python -m flake8 training                      # lint (max line 99)
 ```
 
-It provides `torch`, `genesis`, `wandb`, etc. It is CPU-only on this host (no
-CUDA/MPS), so use `--physics torch` for fast standalone runs and expect long
-wall-clock for large step counts. `f1tenth_contract` is not installed there and
+It provides `torch`, `genesis`, `wandb`, etc. On this host the venv ships
+`torch` with CUDA (RTX 4080, driver 591.86, CUDA 13.1;
+`torch.cuda.is_available()` is true). Use `--physics torch` for fast standalone
+runs; large step counts are update-bound on GPU PPO (~18k transitions/s
+end-to-end at 2048 envs). `f1tenth_contract` is not installed there and
 training does not import it (the contract constants are mirrored in
 `training/config.py`).
 

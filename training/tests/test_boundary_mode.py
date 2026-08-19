@@ -82,7 +82,7 @@ def test_default_config_is_unchanged_first_contact_terminal():
 
 @pytest.mark.parametrize(
     ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -4.0), (5.0, -10.0)],
+    [(1.0, -1.5), (2.0, -3.0), (5.0, -7.5)],
 )
 def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_reward):
     env = _make_env(wall_cost_mode="continuous")
@@ -108,7 +108,7 @@ def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_rewa
 
 @pytest.mark.parametrize(
     ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -8.0), (5.0, -50.0)],
+    [(1.0, -1.5), (2.0, -6.0), (5.0, -37.5)],
 )
 def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed, expected_reward):
     env = _make_env(wall_cost_mode="continuous_quadratic")
@@ -143,7 +143,7 @@ def test_first_contact_does_not_terminate_under_recoverable_boundary():
         assert not bool(done[0])
         terms = extras["rewards"]["terms"]
         assert float(terms["progress"][0]) == 0.0, "recoverable path masks progress on contact"
-        assert float(terms["wall_contact"][0]) == pytest.approx(-40.0, abs=1e-4)
+        assert float(terms["wall_contact"][0]) == pytest.approx(-30.0, abs=1e-4)
     finally:
         env.close()
 

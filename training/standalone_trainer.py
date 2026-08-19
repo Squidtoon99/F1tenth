@@ -29,6 +29,9 @@ import torch.nn.functional as F
 
 from f1tenth_policy import (
     ObsNormalizer,
+    TRAINING_I_BRAKE_MAX_A,
+    TRAINING_I_DRIVE_MAX_A,
+    TRAINING_I_SLEW_A_PER_S,
     actor_architecture_from_module,
     actor_from_architecture,
     architectures_match,
@@ -1342,6 +1345,15 @@ def save_policy_artifact(
         ),
         f_drive_max=float(cfg["env"].get("f_drive_max", 23.0)),
         f_brake_max=float(cfg["env"].get("f_brake_max", 5.2)),
+        i_drive_max_a=float(
+            cfg["env"].get("i_drive_max_a", TRAINING_I_DRIVE_MAX_A)
+        ),
+        i_brake_max_a=float(
+            cfg["env"].get("i_brake_max_a", TRAINING_I_BRAKE_MAX_A)
+        ),
+        i_slew_a_per_s=float(
+            cfg["env"].get("i_slew_a_per_s", TRAINING_I_SLEW_A_PER_S)
+        ),
         control_hz=float(
             1.0
             / (

@@ -26,7 +26,14 @@ from f1tenth_env import F1tenthEnv  # noqa: E402
 from f1tenth_env import runtime as rt  # noqa: E402
 
 
-def _cap_env(*, cap_prob: float, cap_lo: float, cap_hi: float, num_envs: int = 8):
+def _cap_env(
+    *,
+    cap_prob: float,
+    cap_lo: float,
+    cap_hi: float,
+    ego_cap: float = 0.0,
+    num_envs: int = 8,
+):
     rt.configure(
         float_dtype=torch.float32,
         int_dtype=torch.int32,
@@ -52,6 +59,7 @@ def _cap_env(*, cap_prob: float, cap_lo: float, cap_hi: float, num_envs: int = 8
     cfg["env"]["opponent_reset_speed_max_mps"] = 0.0
     cfg["env"]["reset_speed_min_mps"] = 0.0
     cfg["env"]["reset_speed_max_mps"] = 0.0
+    cfg["env"]["ego_speed_cap_mps"] = ego_cap
     # Keep the ego episode from resetting (which would re-roll the opponent).
     cfg["env"]["term_not_moving_time_s"] = 999.0
     cfg["env"]["term_on_collision"] = False
@@ -137,6 +145,32 @@ def test_speed_cap_limits_full_throttle_policy_opponent():
             capped_progress,
             uncapped_progress,
         )
+    finally:
+        capped.close()
+        uncapped.close()
+
+
+def _ego_tail_speed(env, steps=100):
+    env.reset(seed=0)
+    action = torch.zeros(env.num_envs, 2)
+    action[:, 0] = 1.0
+    speeds = []
+    for step in range(steps):
+        env.step(action, n_steps=env.control_interval)
+        if step >= steps // 2:
+            speeds.append(env._ego.tensor["vx"].clone())
+    return float(torch.stack(speeds).mean().item())
+
+
+def test_ego_speed_cap_limits_full_throttle_policy():
+    cap = 2.0
+    capped = _cap_env(cap_prob=0.0, cap_lo=2.0, cap_hi=2.0, ego_cap=cap)
+    uncapped = _cap_env(cap_prob=0.0, cap_lo=2.0, cap_hi=2.0)
+    try:
+        capped_speed = _ego_tail_speed(capped)
+        uncapped_speed = _ego_tail_speed(uncapped)
+        assert capped_speed <= cap + 0.25, capped_speed
+        assert uncapped_speed > cap + 0.5, uncapped_speed
     finally:
         capped.close()
         uncapped.close()

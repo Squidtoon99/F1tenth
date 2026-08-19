@@ -70,7 +70,7 @@ def test_just_inside_footprint_does_not_contact_or_terminate():
 
 @pytest.mark.parametrize(
     ("speed", "expected_reward"),
-    [(1.0, -20.0), (2.0, -40.0), (5.0, -100.0)],
+    [(1.0, -15.0), (2.0, -30.0), (5.0, -75.0)],
 )
 def test_first_footprint_intersection_terminates_with_one_lee_reward(
     speed, expected_reward

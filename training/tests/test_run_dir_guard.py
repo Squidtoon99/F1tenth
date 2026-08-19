@@ -155,10 +155,7 @@ def test_second_trainer_cannot_attach_to_live_run_dir(tmp_path):
         capture_output=True,
         text=True,
         check=False,
-        env={
-            **os.environ,
-            "TRAINING_SKIP_DIRTY_TREE_GUARD": "1",
-        },
+        env=os.environ.copy(),
     )
     assert proc.returncode != 0
     assert "ERROR:" in proc.stderr
@@ -173,3 +170,9 @@ def test_fingerprint_from_snapshot_matches_args():
                          "init_ckpt": args.init_ckpt, "seed": args.seed,
                          "num_envs": args.num_envs}}
     assert fingerprint_from_snapshot(snapshot) == fp_args
+
+
+def test_algorithm_is_part_of_run_identity():
+    qrsac, _ = parse_args([])
+    ppo, _ = parse_args(["--algorithm", "ppo"])
+    assert run_identity_fingerprint(qrsac) != run_identity_fingerprint(ppo)

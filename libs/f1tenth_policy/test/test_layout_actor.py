@@ -10,6 +10,7 @@ from f1tenth_policy import (
     ACTOR_OBS_DIM,
     LIDAR_DIM,
     PROPRIO_DIM,
+    actor_from_architecture,
     make_actor,
     steer_history_angles_and_deltas,
     validate_sensor_policy_artifact,
@@ -92,3 +93,29 @@ def test_artifact_validation_rejects_missing_or_invalid_current_slew():
             invalid,
             expected_architecture=actor.actor_architecture,
         )
+
+
+def test_pool64_projection512_architecture_roundtrip():
+    actor = make_actor(
+        ACTOR_OBS_DIM,
+        2,
+        [1024, 1024, 1024],
+        activation=nn.ReLU,
+        lidar_pool_bins=64,
+        lidar_projection_dim=512,
+        gru_hidden_dim=512,
+    )
+    rebuilt = actor_from_architecture(actor.actor_architecture)
+
+    assert actor.actor_architecture["pool_bins"] == 64
+    assert actor.actor_architecture["projection_dim"] == 512
+    assert actor.actor_architecture["gru_hidden_dim"] == 512
+    assert tuple(actor.state_dict()) == tuple(rebuilt.state_dict())
+    assert all(
+        left.shape == right.shape
+        for left, right in zip(
+            actor.state_dict().values(),
+            rebuilt.state_dict().values(),
+            strict=True,
+        )
+    )

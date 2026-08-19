@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
+import copy
+import json
+
 import numpy as np
 
+from config import DEFAULT_CONFIG
+from eval_visualize import build_eval_config
 from f1tenth_env.eval_viz import _C_OPP, _OPP_EGO_BLEND, _car_color, _opp_color
 from f1tenth_env.eval_viz import RolloutVisualizer
 
@@ -50,6 +56,34 @@ def test_visualizer_writes_finite_rollout_frames(tmp_path):
             speed=np.array([2.0, 1.5], dtype=np.float32),
             opp_xy=np.array([[0.8, 0.0], [0.7, 0.1]], dtype=np.float32),
             opp_yaw=np.array([0.0, 0.1], dtype=np.float32),
+            lidar_points=np.array(
+                [
+                    [[1.2, 0.1], [1.1, -0.1]],
+                    [[0.8, 0.2], [0.8, -0.1]],
+                ],
+                dtype=np.float32,
+            ),
         )
     assert visualizer.close() == str(path)
     assert path.stat().st_size > 0
+
+
+def test_eval_config_can_disable_training_speed_cap(tmp_path):
+    run_dir = tmp_path / "run"
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "policy.pt"
+    checkpoint.touch()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["env"]["ego_speed_cap_mps"] = 4.0
+    (run_dir / "config.json").write_text(json.dumps({"config": config}))
+
+    args = argparse.Namespace(
+        checkpoint=str(checkpoint),
+        track="Austin",
+        opponent_ckpt=None,
+        ego_speed_cap_mps=0.0,
+    )
+    eval_config = build_eval_config(args)
+
+    assert eval_config["env"]["ego_speed_cap_mps"] == 0.0

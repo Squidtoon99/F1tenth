@@ -56,8 +56,8 @@ class SensorInferenceRuntime:
         steering_action_mode: str = "delta",
         steering_delta_max_rad: float = si.STEERING_DELTA_MAX_RAD,
         max_steer: float = si.MAX_STEER_RAD,
-        i_drive_max_a: float = 40.0,
-        i_brake_max_a: float = 40.0,
+        i_drive_max_a: float = 80.0,
+        i_brake_max_a: float = 20.0,
         steering_angle_to_servo_gain: float = 1.0,
         steering_angle_to_servo_offset: float = 0.5,
     ) -> None:

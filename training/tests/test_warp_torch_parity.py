@@ -61,6 +61,10 @@ def _run_warp(ref, meta):
     cfg = dict(meta["config"])
     # Torch reference trajectory was recorded under absolute steering.
     cfg.setdefault("steering_action_mode", "absolute")
+    # The committed Torch reference uses this normalized slew rate.
+    warp_sim = dict(cfg.get("warp_sim") or {})
+    warp_sim.setdefault("longitudinal_slew_rate_per_s", 4.444444444444445)
+    cfg["warp_sim"] = warp_sim
     params = VehicleParams.from_config(cfg)
     num_envs = int(meta["num_envs"])
     sim = WarpVehicleSim(

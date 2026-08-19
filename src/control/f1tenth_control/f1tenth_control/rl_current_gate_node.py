@@ -17,6 +17,7 @@ from f1tenth_control.current_gate import (
     apply_slew,
     arbitrate,
     next_applied_generation,
+    validate_gate_config,
 )
 
 
@@ -25,8 +26,8 @@ class RlCurrentGateNode(Node):
         super().__init__("rl_current_gate", **kwargs)
 
         self._cfg = GateConfig(
-            i_drive_max_a=float(self.declare_parameter("i_drive_max_a", 10.0).value),
-            i_brake_max_a=float(self.declare_parameter("i_brake_max_a", 10.0).value),
+            i_drive_max_a=float(self.declare_parameter("i_drive_max_a", 80.0).value),
+            i_brake_max_a=float(self.declare_parameter("i_brake_max_a", 20.0).value),
             i_brake_safe_a=float(self.declare_parameter("i_brake_safe_a", 5.0).value),
             i_slew_a_per_s=float(
                 self.declare_parameter("i_slew_a_per_s", 200.0).value
@@ -68,10 +69,10 @@ class RlCurrentGateNode(Node):
             ).value
         )
 
-        if self._cfg.i_drive_max_a <= 0.0 or self._cfg.i_brake_max_a <= 0.0:
-            raise RuntimeError(
-                "rl_current_gate: i_drive_max_a and i_brake_max_a must be > 0"
-            )
+        try:
+            validate_gate_config(self._cfg)
+        except ValueError as exc:
+            raise RuntimeError(f"rl_current_gate: {exc}") from exc
 
         self._state = GateState(last_pub_s=self._now_s())
         self._rl: RlInput | None = None

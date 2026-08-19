@@ -86,6 +86,20 @@ def test_default_config_uses_recurrent_actor_schema():
     assert actor.actor_architecture["proprio_dim"] == 16
 
 
+def test_pool64_projection512_policy_factory():
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["model"]["lidar_pool_bins"] = 64
+    cfg["model"]["lidar_projection_dim"] = 512
+
+    validate_model_architecture(cfg)
+    actor = make_policy_network(cfg)
+
+    assert actor.pool_bins == 64
+    assert actor.projection_dim == 512
+    assert actor.gru_hidden_dim == 512
+    assert actor.hidden_sizes == (1024, 1024, 1024)
+
+
 def test_actor_shapes_step_and_sequence():
     actor = _make_gru_actor(1)
     batch, steps = 3, 5
@@ -320,6 +334,8 @@ def test_gradient_flows_cnn_gru_head():
 
 
 def test_artifact_round_trip_and_old_format_rejection(tmp_path):
+    from evaluation import load_sensor_actor_bundle
+
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["model"]["actor_hidden_layers"] = HIDDEN
     cfg["model"]["critic_hidden_layers"] = [16, 16]
@@ -340,11 +356,22 @@ def test_artifact_round_trip_and_old_format_rejection(tmp_path):
 
     path = save_policy_artifact(models, 42, tmp_path, normalizer, cfg)
     payload = torch.load(path, map_location="cpu", weights_only=False)
+    loaded_actor, loaded_normalizer, loaded_arch, _ = load_sensor_actor_bundle(
+        path,
+        torch.device("cpu"),
+        expected_actor_obs_dim=OBS_DIM,
+        expected_action_dim=ACT_DIM,
+        expected_layout_version=2,
+        expected_critic_obs_dim=392,
+        require_obs_norm=True,
+    )
     assert payload["policy_format_version"] == 4
     assert payload["actor_architecture"]["name"] == "lidar_cnn_gru"
     assert payload["actor_architecture"]["gru_hidden_dim"] == 512
     assert payload["actor_obs_dim"] == 1097
     assert "gru.weight_ih_l0" in payload["actor"]
+    assert loaded_actor.actor_architecture == loaded_arch
+    assert loaded_normalizer.count == normalizer.count
 
     arch = actor_architecture_from_module(actor)
     validate_sensor_policy_artifact(
