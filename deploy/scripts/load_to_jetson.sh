@@ -43,5 +43,12 @@ cat <<EOF
     -v /opt/f1tenth/policies:/policies:ro \\
     ${IMAGE}:develop
 
-  CUDA range_libc images ship libcudart; see docs/deployment.md for verify/import.
+  CUDA range_libc images ship L4T libcudart; see docs/deployment.md for verify/import.
+  GPU kernel execution needs the nvidia runtime (libcuda from the host):
+
+  docker run --rm -it --runtime=nvidia --net=host --privileged \\
+    -v /dev:/dev \\
+    -v /opt/f1tenth/config:/config:ro \\
+    -v /opt/f1tenth/policies:/policies:ro \\
+    ${IMAGE}:develop
 EOF
