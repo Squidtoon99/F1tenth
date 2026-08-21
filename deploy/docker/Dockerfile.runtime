@@ -89,8 +89,8 @@ PY
 FROM ${L4T_CUDA_IMAGE} AS l4t_cudart
 SHELL ["/bin/bash", "-lc"]
 RUN mkdir -p /out/cuda_runtime \
-    && so="$(find /usr/local/cuda /usr/local/cuda-* /usr/lib -name 'libcudart.so.12*' \
-         \( -type f -o -type l \) 2>/dev/null | head -n 1)" \
+    && so="$(find /usr/local /usr/lib -name 'libcudart.so.12*' \
+         \( -type f -o -type l \) -print -quit 2>/dev/null)" \
     && test -n "${so}" \
     || { echo "libcudart.so.12 not found in L4T CUDA image" >&2; \
          find /usr/local /usr/lib -name 'libcudart*' >&2 || true; exit 1; } \
