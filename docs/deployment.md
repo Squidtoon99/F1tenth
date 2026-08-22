@@ -67,14 +67,23 @@ flowchart LR
    ```
 
    **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the image
-   ships `libcudart.so.12` from the NGC compile stage (~780 KB). Jetson
-   nvidia-container-toolkit does **not** inject user-space CUDA libs on this hardware,
-   so do not rely on `--runtime=nvidia` for `libcudart` resolution. Use the same
-   `docker run` as the CPU path for library loading; add `--runtime=nvidia` only if
-   GPU device access requires it for kernel execution:
+   ships `libcudart.so.12` from `nvcr.io/nvidia/l4t-cuda:12.6.11-runtime` (JetPack
+   6.1 / L4T r36.4, ~CUDA 12.6.11). That library is built for the Jetson driver
+   (540.x). The NGC compile stage is desktop/SBSA CUDA — copying *its* `libcudart`
+   makes `particle_filter` fail at `PyRayMarchingGPU` with
+   `CUDA driver version is insufficient for CUDA runtime version`.
+
+   Requires JetPack **6.1+** (nvidia-smi CUDA Version ≥ 12.6). For JetPack 6.0
+   (CUDA 12.2), rebuild with
+   `L4T_CUDA_IMAGE=nvcr.io/nvidia/l4t-cuda:12.2.12-runtime`.
+
+   Jetson nvidia-container-toolkit does **not** inject user-space CUDA libs, so
+   do not rely on `--runtime=nvidia` for `libcudart` resolution. Use
+   `--runtime=nvidia` (or the Jetson default nvidia runtime) so **libcuda** (the
+   driver) is visible; `libcudart` still comes from the image:
 
    ```bash
-   docker run --rm -it --net=host --privileged \
+   docker run --rm -it --runtime=nvidia --net=host --privileged \
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \

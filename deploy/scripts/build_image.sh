@@ -7,6 +7,7 @@
 #          RANGE_LIBC_WITH_CUDA  OFF | ON — GPU raycast for particle_filter (auto ON on Jetson)
 #          CUDA_ARCH             default sm_87 (Jetson Orin)
 #          CUDA_BASE_IMAGE       NGC compile stage for CUDA path (arm64, cached on Jetson)
+#          L4T_CUDA_IMAGE        L4T CUDA runtime (source of Jetson-compatible libcudart)
 #
 # Cross-arch builds use buildx + QEMU emulation on non-arm64 hosts. RANGE_LIBC_WITH_CUDA=ON
 # compiles range_libc in an NGC stage (nvcc inside the container) and must run natively on
@@ -21,6 +22,7 @@ IMAGE="${IMAGE:-f1tenth-racing}"
 GITSHA="$(git rev-parse --short HEAD)"
 CUDA_ARCH="${CUDA_ARCH:-sm_87}"
 CUDA_BASE_IMAGE="${CUDA_BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
+L4T_CUDA_IMAGE="${L4T_CUDA_IMAGE:-nvcr.io/nvidia/l4t-cuda:12.6.11-runtime@sha256:49853e9fe2a0305efa51fcbb3426eea1bca658085f2d26bb40347711434849b1}"
 RANGE_LIBC_WITH_CUDA="${RANGE_LIBC_WITH_CUDA:-}"
 
 if [ -z "${RANGE_LIBC_WITH_CUDA}" ]; then
@@ -51,6 +53,7 @@ if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
   RUNTIME_ARGS+=(
     --build-arg "CUDA_ARCH=${CUDA_ARCH}"
     --build-arg "CUDA_BASE_IMAGE=${CUDA_BASE_IMAGE}"
+    --build-arg "L4T_CUDA_IMAGE=${L4T_CUDA_IMAGE}"
     --build-arg "RUNTIME_NUMPY=${RUNTIME_NUMPY:-1.21.5}"
   )
 fi
@@ -60,6 +63,7 @@ echo "    target:     ${RUNTIME_TARGET}"
 echo "    range_libc: WITH_CUDA=${RANGE_LIBC_WITH_CUDA} CUDA_ARCH=${CUDA_ARCH}"
 if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
   echo "    cuda base:  ${CUDA_BASE_IMAGE}"
+  echo "    l4t cudart: ${L4T_CUDA_IMAGE}"
 fi
 docker buildx build --platform "${ARCH}" --load \
   -f deploy/docker/Dockerfile.runtime \
@@ -70,6 +74,6 @@ docker buildx build --platform "${ARCH}" --load \
 
 echo "==> Built ${IMAGE}:${GITSHA} (and :develop) for ${ARCH}"
 if [ "${RANGE_LIBC_WITH_CUDA}" = "ON" ]; then
-  echo "    CUDA image ships libcudart; see docs/deployment.md for verify + run"
+  echo "    CUDA image ships L4T libcudart; see docs/deployment.md for verify + run"
 fi
 echo "    Next: deploy/scripts/snapshot.sh to freeze it into a portable artifact."

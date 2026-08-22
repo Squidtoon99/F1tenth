@@ -6,11 +6,16 @@
 # Build from the repo root via deploy/scripts/build_image.sh.
 #   RANGE_LIBC_WITH_CUDA=OFF (default) — CPU range_libc, target runtime (~3.3 GB).
 #   RANGE_LIBC_WITH_CUDA=ON — GPU range_libc compiled in an NGC stage, copied into
-#     the slim runtime (target runtime-cuda, ~3.5–4 GB). Ships libcudart from the NGC
-#     compile stage; Jetson nvidia-container-toolkit does not inject user-space CUDA.
+#     the slim runtime (target runtime-cuda, ~3.5–4 GB). Ships L4T libcudart (JetPack
+#     6.1 / CUDA 12.6) so the on-car driver accepts the runtime. NGC pytorch is
+#     desktop/SBSA CUDA; copying that libcudart fails particle_filter with
+#     "CUDA driver version is insufficient for CUDA runtime version".
+#     nvidia-container-toolkit still does not inject user-space CUDA on Jetson.
 ARG ROS_DISTRO=humble
 ARG CUDA_ARCH=sm_87
 ARG CUDA_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
+# L4T CUDA 12.6.11 runtime (linux/arm64) — source of Jetson-compatible libcudart.
+ARG L4T_CUDA_IMAGE=nvcr.io/nvidia/l4t-cuda:12.6.11-runtime@sha256:49853e9fe2a0305efa51fcbb3426eea1bca658085f2d26bb40347711434849b1
 # ROS Humble apt numpy; range_libc must compile against the same ABI as f1tenth-base.
 ARG RUNTIME_NUMPY=1.21.5
 
@@ -78,12 +83,25 @@ if not any("range_libc" in name and name.endswith(".so") for name in copied):
 print("staged range_libc from", site_root)
 print("artifacts:", sorted(copied))
 PY
+
+# L4T libcudart matches the Jetson driver. Do not copy libcudart from the NGC
+# compile stage — that library is desktop/SBSA CUDA and rejects L4T driver 540.x.
+FROM ${L4T_CUDA_IMAGE} AS l4t_cudart
+SHELL ["/bin/bash", "-lc"]
 RUN mkdir -p /out/cuda_runtime \
-    && test -f /usr/local/cuda/lib64/libcudart.so.12.6.68 \
-    || { echo "libcudart.so.12.6.68 missing in NGC compile stage" >&2; exit 1; } \
-    && cp -a /usr/local/cuda/lib64/libcudart.so* /out/cuda_runtime/ \
-    && test -f /out/cuda_runtime/libcudart.so.12.6.68 \
-    || { echo "failed to stage CUDA runtime libs" >&2; exit 1; }
+    && so="$(find /usr/local /usr/lib -name 'libcudart.so.12*' \
+         \( -type f -o -type l \) -print -quit 2>/dev/null)" \
+    && test -n "${so}" \
+    || { echo "libcudart.so.12 not found in L4T CUDA image" >&2; \
+         find /usr/local /usr/lib -name 'libcudart*' >&2 || true; exit 1; } \
+    && real="$(readlink -f "${so}")" \
+    && test -f "${real}" \
+    || { echo "libcudart path ${so} did not resolve to a file" >&2; exit 1; } \
+    && cp -a "${real}" /out/cuda_runtime/"$(basename "${real}")" \
+    && ln -sfn "$(basename "${real}")" /out/cuda_runtime/libcudart.so.12 \
+    && ln -sfn libcudart.so.12 /out/cuda_runtime/libcudart.so \
+    && test -e /out/cuda_runtime/libcudart.so.12 \
+    || { echo "failed to stage L4T libcudart" >&2; ls -l /out/cuda_runtime >&2; exit 1; }
 
 # ---- CUDA runtime: slim f1tenth-base + copied GPU extension ----
 FROM f1tenth-base:latest AS build-cuda
@@ -109,7 +127,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 SHELL ["/bin/bash", "-lc"]
 WORKDIR /ws
 COPY --from=build-cuda /ws/install /ws/install
-COPY --from=range_libc_cuda /out/cuda_runtime /usr/local/cuda/lib64
+COPY --from=l4t_cudart /out/cuda_runtime /usr/local/cuda/lib64
 RUN echo /usr/local/cuda/lib64 > /etc/ld.so.conf.d/range-libc-cuda.conf \
     && ldconfig
 COPY --from=range_libc_cuda /out/range_libc_pkg /tmp/range_libc_pkg
