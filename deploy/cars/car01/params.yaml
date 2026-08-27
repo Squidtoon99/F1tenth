@@ -15,15 +15,15 @@ drive:
 # --- Current/brake VESC actuator (ADR 0006) ---
 vesc_actuator:
   ros__parameters:
-    i_drive_max_a: 45.0
-    i_brake_max_a: 10.0
-    i_brake_safe_a: 5.0
+    i_drive_max_a: 60.0
+    i_brake_max_a: 60.0
+    i_brake_safe_a: 15.0
     watchdog_timeout_s: 0.15
     publish_rate_hz: 50.0
     i_slew_a_per_s: 200.0
     publish_servo: true
     steering_angle_to_servo_gain: -1.2135
-    steering_angle_to_servo_offset: 0.4495
+    steering_angle_to_servo_offset: 0.4500
 
 # --- RL policy inference (f1tenth_rl_agent policy_inference node) ---
 policy_inference:

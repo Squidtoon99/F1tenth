@@ -36,7 +36,7 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     declare_stack = DeclareLaunchArgument(
-        "stack", default_value="algo",
+        "stack", default_value="rl",
         description="Which racing stack to run: 'rl' or 'algo'.",
     )
     declare_ckpt = DeclareLaunchArgument(
@@ -125,7 +125,6 @@ def generate_launch_description() -> LaunchDescription:
         condition=is_algo,
         launch_arguments={
             "driver_config": overlay_params_file,
-            "gate_config": overlay_params_file,
         }.items(),
     )
 

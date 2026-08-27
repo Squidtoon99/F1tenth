@@ -58,7 +58,12 @@ def _launch_setup(context, *args, **kwargs):
     # ackermann_cmd here starves only the converter.
     vendored = GroupAction(
         [
-            SetRemap(src="ackermann_cmd", dst="ackermann_cmd_disabled"),
+            # SetRemap(src="ackermann_cmd", dst="ackermann_cmd_disabled"),
+            SetRemap(src="commands/motor/speed", dst="commands/motor/speed_erpm_unused"),
+            SetRemap(
+                src="commands/servo/position",
+                dst="commands/servo/position_erpm_unused",
+            ),
             vendored_bringup,
         ]
     )
