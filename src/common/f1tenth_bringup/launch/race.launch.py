@@ -36,7 +36,7 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     declare_stack = DeclareLaunchArgument(
-        "stack", default_value="rl",
+        "stack", default_value="algo",
         description="Which racing stack to run: 'rl' or 'algo'.",
     )
     declare_ckpt = DeclareLaunchArgument(

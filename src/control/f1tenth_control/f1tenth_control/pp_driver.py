@@ -24,6 +24,8 @@ class PurePursuitNode(Node):
         self.declare_parameter('speed_scale', 1.0)       # scale factor for raceline speeds
         self.declare_parameter('min_speed', 0.8)         # minimum speed m/s
         self.declare_parameter('max_speed', 5.0)         # maximum speed m/s
+        self.declare_parameter('min_accel', -8.0)         # minimum speed m/s/s
+        self.declare_parameter('max_accel', 8.0)         # maximum speed m/s/s
         self.declare_parameter('raceline_path', '/config/maps/raceline.csv')
         self.declare_parameter('use_raceline_speed', True)
         self.declare_parameter('origin_x', 0)
@@ -40,6 +42,8 @@ class PurePursuitNode(Node):
         self.speed_scale       = self.get_parameter('speed_scale').value
         self.min_speed         = self.get_parameter('min_speed').value
         self.max_speed         = self.get_parameter('max_speed').value
+        self.min_accel         = self.get_parameter('min_accel').value
+        self.max_accel         = self.get_parameter('max_accel').value
         self.use_raceline_speed = self.get_parameter('use_raceline_speed').value
         raceline_path          = self.get_parameter('raceline_path').value
         orig_x = self.get_parameter('origin_x').value
@@ -139,6 +143,7 @@ class PurePursuitNode(Node):
         x           = self.raceline['x']
         y           = self.raceline['y']
         vx          = self.raceline['vx']
+        ax          = self.raceline['ax']
 
         for i in range(n):
             idx      = (closest_idx + i) % n
@@ -174,7 +179,7 @@ class PurePursuitNode(Node):
                 return x[next_idx], y[next_idx], float(vx[next_idx])
 
         # fallback
-        return x[closest_idx], y[closest_idx], float(vx[closest_idx])
+        return x[closest_idx], y[closest_idx], float(ax[closest_idx])
 
     def _get_target_speed(self, closest_idx):
         """
@@ -192,11 +197,11 @@ class PurePursuitNode(Node):
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self.car_heading = math.atan2(siny_cosp, cosy_cosp)
 
-        steering, speed = self.compute_pure_pursuit()
-        self.publish_drive(speed, steering)
+        steering, accel = self.compute_pure_pursuit()
+        self.publish_drive(accel, steering)
 
     def compute_pure_pursuit(self):
-        target_x, target_y, target_vx = self._find_lookahead_point()
+        target_x, target_y, target_ax = self._find_lookahead_point()
         self.publish_target_point(target_x, target_y)
         # self.publish_raceline()
 
@@ -222,24 +227,24 @@ class PurePursuitNode(Node):
 
         # speed from raceline or fixed
         if self.use_raceline_speed:
-            speed = float(np.clip(
-                target_vx * self.speed_scale,
-                self.min_speed,
-                self.max_speed
+            accel = float(np.clip(
+                target_ax * self.speed_scale,
+                self.min_accel,
+                self.max_accel
             ))
         else:
-            speed = np.min(self.min_speed, target_vx * self.speed_scale)
+            accel = np.min(self.min_speed, target_ax * self.speed_scale)
 
         self.prev_error = self.curr_error
-        return steering, speed
+        return steering, accel
 
-    def publish_drive(self, speed, steering_angle):
+    def publish_drive(self, accel, steering_angle):
         msg = AckermannDriveStamped()
         msg.header.stamp    = self.get_clock().now().to_msg()
         msg.header.frame_id = 'base_link'
-        msg.drive.speed          = float(speed)
+        msg.drive.speed          = float(0.0)
         msg.drive.steering_angle = float(steering_angle)
-        msg.drive.acceleration
+        msg.drive.acceleration   = float(accel)
         self.pub_drive.publish(msg)
         # self.publish_raceline()
 

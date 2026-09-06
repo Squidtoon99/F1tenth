@@ -69,6 +69,8 @@ class PpDriverPlusNode(PurePursuitNode):
         self.declare_parameter('speed_scale', 0.9)
         self.declare_parameter('min_speed', 1.7)
         self.declare_parameter('max_speed', 8.0)
+        self.declare_parameter('min_accel', -8.0)
+        self.declare_parameter('max_accel', 8.0)
         self.declare_parameter('use_raceline_speed', True)
         self.declare_parameter('max_steering_angle', 0.4)
         self.declare_parameter('origin_x', 0.0)

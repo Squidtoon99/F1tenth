@@ -22,7 +22,7 @@ def generate_launch_description() -> LaunchDescription:
 
     declare_driver = DeclareLaunchArgument(
         'driver',
-        default_value='pp_driver_plus',
+        default_value='pp_driver',
         description='Algorithmic controller executable: pp_driver, pp_driver_plus, '
         'pp_ftg_driver, gap_driver, or pid_driver.',
     )
