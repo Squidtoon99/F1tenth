@@ -37,9 +37,12 @@ def build_eval_config(args: argparse.Namespace) -> dict:
             **cfg["env"]["domain_randomization"],
             "enabled": False,
         }
-    cfg["env"]["opponent_strategy"] = (
-        "policy" if args.opponent_ckpt is not None else "none"
-    )
+    if args.opponent_ckpt is not None:
+        cfg["env"]["opponent_strategy"] = "policy"
+    elif args.opponent_strategy is not None:
+        cfg["env"]["opponent_strategy"] = args.opponent_strategy
+    else:
+        cfg["env"]["opponent_strategy"] = "none"
     if args.ego_speed_cap_mps is not None:
         cfg["env"]["ego_speed_cap_mps"] = args.ego_speed_cap_mps
     cfg["env"]["episode_length"] = episode_length_for_track(
@@ -56,6 +59,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Visualize a trained policy rollout")
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--opponent-ckpt", type=str, default=None)
+    p.add_argument(
+        "--opponent-strategy",
+        type=str,
+        default=None,
+        choices=["none", "scripted", "policy"],
+    )
     p.add_argument("--track", type=str, default=cfg["env"]["track"])
     p.add_argument("--steps", type=int, default=1500)
     p.add_argument("--num-envs", type=int, default=1)

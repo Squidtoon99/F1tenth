@@ -3,7 +3,7 @@
   "config_version": 4,
   "policy_format_version": 4,
   "env": {
-    "track": "Galaxy_1",
+    "track": "courtyard_2",
     "opponent_strategy": "scripted",
     "opponent_target_speed": 3.5,
     "opponent_target_speed_range": [
@@ -35,12 +35,16 @@
       "lidar_far_dropout_prob_range": [
         0.08,
         0.25
+      ],
+      "action_latency_steps_range": [
+        0,
+        0
       ]
     }
   },
   "sensor": {
-    "lidar_map_yaml": "outputs/sim2real/galaxy1/maps/galaxy_1.yaml",
-    "lidar_map_sha256": "c596ab8e074ab18ee69847dffbd61c08cde5867bd3fc7a7353c5be202b2bcb63",
+    "lidar_map_yaml": "assets/courtyard_2.yaml",
+    "lidar_map_sha256": "f4ed4015e404713dc9ccbf07c7744c3ae95a77e35036ef870dac4a440efa3de9",
     "lidar_map_variant_count": 8,
     "lidar_wall_offset_max_m": 0.15,
     "lidar_map_variant_seed": 17,
@@ -54,6 +58,7 @@
     "enable_opponent_obs": true
   },
   "schedule": {
+    "total_transitions": 400000,
     "log_interval_transitions": 512000,
     "export_interval_transitions": 2560000,
     "eval_interval_transitions": 0

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -225,6 +227,17 @@ def test_default_sensor_dr_matches_measured_evidence():
         assert key in dr
         lo, hi = dr[key]
         assert lo == 0.0 and hi == 0.0, key
+
+
+def test_gym_sim_yaml_matches_hokuyo_grid():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "sim" / "f1tenth_gym_ros" / "config" / "sim.yaml").read_text()
+    assert "scan_num_beams: 1081" in text
+    assert "scan_range_min: 0.06" in text
+    assert "scan_range_max: 30.0" in text
+    assert "lidar_noise_std: 0.01" in text
+    assert "scan_angle_min: -135.0" in text
+    assert "scan_angle_max: 135.0" in text
 
 
 def test_sensor_params_struct_matches_config_geometry():
@@ -476,3 +489,101 @@ def test_straight_corridor_distance_field_centerline_is_half_width(real_modules)
     iy = int(np.floor((0.0 - oy) / res))
     assert 0 <= ix < host.width and 0 <= iy < host.height
     assert abs(float(grid[iy, ix]) - half_width) <= res
+
+
+def test_courtyard_2_e2e_ppo_merged_patch_is_80a_drive_40a_brake():
+    root = Path(__file__).resolve().parents[1]
+    patch = json.loads((root / "configs" / "courtyard_2_e2e_ppo.json").read_text())
+    args, explicit = parse_args([])
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    env = cfg["env"]
+    assert env["i_drive_max_a"] == pytest.approx(80.0)
+    assert env["i_brake_max_a"] == pytest.approx(40.0)
+    assert env["f_drive_max"] == pytest.approx(26.5)
+    assert env["f_brake_max"] == pytest.approx(23.1)
+    assert env["i_slew_a_per_s"] == pytest.approx(200.0)
+    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
+        env["i_slew_a_per_s"] / env["i_drive_max_a"]
+    )
+    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(2.5)
+    dr = env["domain_randomization"]
+    assert dr["drive_scale_range"] == [1.0, 1.0]
+    assert dr["tire_friction_range"] == [0.66, 0.85]
+    assert dr["imu_accel_bias_range"] == [-0.15, 0.15]
+    assert dr["imu_accel_bias_range"] != [-0.4, 0.4]
+    assert dr["vesc_speed_bias_range"] != [-0.3, 0.3]
+    assert dr["lidar_dropout_prob_range"] == [0.04, 0.12]
+    assert dr["lidar_far_dropout_prob_range"] == [0.08, 0.25]
+    assert dr["lidar_range_noise_std_range"] == [0.01, 0.04]
+    assert cfg["sensor"]["lidar_dropout_bin_m"] == pytest.approx(0.7)
+    assert cfg["model"]["lidar_aug_enabled"] is True
+    assert cfg["model"]["lidar_aug_max_shift_beams"] == 2
+    patch_dr = patch["env"]["domain_randomization"]
+    for key in (
+        "imu_accel_bias_range",
+        "imu_gyro_bias_range",
+        "imu_accel_noise_std_range",
+        "imu_gyro_noise_std_range",
+        "vesc_speed_bias_range",
+        "vesc_current_bias_range",
+        "tire_friction_range",
+        "drive_scale_range",
+    ):
+        assert key not in patch_dr
+    default_dr = DEFAULT_CONFIG["env"]["domain_randomization"]
+    assert default_dr["lidar_dropout_prob_range"] == [0.0, 0.0]
+    assert default_dr["lidar_far_dropout_prob_range"] == [0.0, 0.0]
+    assert default_dr["lidar_range_noise_std_range"] == [0.0, 0.0]
+
+
+def test_galaxy_1_scripted_inherits_default_sensor_dr():
+    root = Path(__file__).resolve().parents[1]
+    patch = json.loads(
+        (root / "configs" / "galaxy_1_scripted_v3_80a_ppo.json").read_text()
+    )
+    args, explicit = parse_args([])
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    dr = cfg["env"]["domain_randomization"]
+    assert dr["drive_scale_range"] == [1.0, 1.0]
+    assert dr["tire_friction_range"] == [0.66, 0.85]
+    assert dr["imu_accel_bias_range"] == [-0.15, 0.15]
+    assert "imu_accel_bias_range" not in patch["env"]["domain_randomization"]
+    assert dr["lidar_dropout_prob_range"] == [0.04, 0.12]
+    assert dr["lidar_far_dropout_prob_range"] == [0.08, 0.25]
+    assert dr["lidar_range_noise_std_range"] == [0.01, 0.04]
+    assert cfg["model"]["lidar_aug_max_shift_beams"] == 2
+    assert DEFAULT_CONFIG["model"]["lidar_aug_max_shift_beams"] == 4
+
+
+def test_courtyard_2_assets_load_for_occupancy_raycast():
+    root = Path(__file__).resolve().parents[1]
+    patch = json.loads((root / "configs" / "courtyard_2_e2e_ppo.json").read_text())
+    yaml_path = root / patch["sensor"]["lidar_map_yaml"]
+    field = load_occupancy_distance_field(
+        yaml_path, expected_sha256=patch["sensor"]["lidar_map_sha256"]
+    )
+    assert field.resolution == pytest.approx(0.05)
+    assert field.origin == (-5.76, -7.43)
+    assert field.variant_count == 1
+
+    csv = np.genfromtxt(
+        root / "assets" / "courtyard_2_centerline.csv",
+        delimiter=",",
+        names=True,
+        dtype=np.float64,
+    )
+    xy = np.stack([csv["x_m"], csv["y_m"]], axis=1)
+    assert xy.shape[0] >= 3
+    assert np.all(csv["w_tr_left_m"] > 0.0)
+    assert np.all(csv["w_tr_right_m"] > 0.0)
+    segs = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    assert np.all(segs > 1.0e-6)
+
+    pose = (float(xy[0, 0]), float(xy[0, 1]), 0.0)
+    angles = np.linspace(-math.pi, math.pi, 36, endpoint=False)
+    scan = raycast_distance_field(
+        field, pose, angles, range_min=0.06, range_max=30.0
+    )
+    assert scan.shape == (36,)
+    assert np.any(scan < 30.0)
+    assert np.all(scan >= 0.06)

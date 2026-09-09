@@ -22,6 +22,10 @@ os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
 # venv path; disabling it keeps imports fast and robust for these tests.
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
+_TRAINING_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _TRAINING_ROOT not in sys.path:
+    sys.path.insert(0, _TRAINING_ROOT)
+
 import torch  # noqa: E402
 
 from f1tenth_env import runtime as rt  # noqa: E402
