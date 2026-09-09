@@ -237,6 +237,7 @@ log/
 outputs/
 runs/
 wandb/
+artifacts/
 # Model weights / checkpoints
 *.pt
 *.pth
@@ -251,6 +252,15 @@ wandb/
 **/bags/
 # Calibration fit outputs (raw bags stay off-repo)
 calibration/results/
+# Local bag-analysis scripts (not the training or ROS stacks)
+calibration/electrical_fit.py
+calibration/imu_score.py
+calibration/physics_diagnose.py
+calibration/physics_score.py
+calibration/warp_physics_verifier.py
+calibration/warp_replay.py
+calibration/test_electrical_fit.py
+calibration/test_warp_physics_verifier.py
 # Simulator + built container/image snapshots
 *.sif
 *.tar
@@ -265,6 +275,11 @@ calibration/results/
 # vcstool-imported external sources (pinned via *.repos, not committed)
 # ---------------------------------------------------------------------------
 /sim/f1tenth_gym_ros/
+/sim/f1tenth_gym_ros_official/
+/sim/f1tenth_racetracks/
+
+# Local research notes and plots (not the training or ROS stacks)
+docs/research/
 
 # ---------------------------------------------------------------------------
 # Built image snapshots (shared manually; not committed)
