@@ -28,6 +28,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from f1tenth_policy import (
+    TRAINING_I_BRAKE_MAX_A,
+    TRAINING_I_DRIVE_MAX_A,
+    TRAINING_I_SLEW_A_PER_S,
     ObsNormalizer,
     actor_architecture_from_module,
     actor_from_architecture,
@@ -1308,6 +1311,8 @@ def build_ppo_models(
         advantage_filter_discard_fraction=float(
             ppo_cfg["advantage_filter_discard_fraction"]
         ),
+        lidar_aug_enabled=bool(cfg["model"]["lidar_aug_enabled"]),
+        lidar_aug_max_shift_beams=int(cfg["model"]["lidar_aug_max_shift_beams"]),
     )
     return models, trainer
 
@@ -1340,8 +1345,11 @@ def save_policy_artifact(
         steering_delta_max_rad=float(
             cfg["env"].get("steering_delta_max_rad", math.pi / 60.0)
         ),
-        f_drive_max=float(cfg["env"].get("f_drive_max", 23.0)),
-        f_brake_max=float(cfg["env"].get("f_brake_max", 5.2)),
+        f_drive_max=float(cfg["env"].get("f_drive_max", 26.5)),
+        f_brake_max=float(cfg["env"].get("f_brake_max", 23.1)),
+        i_drive_max_a=float(cfg["env"].get("i_drive_max_a", TRAINING_I_DRIVE_MAX_A)),
+        i_brake_max_a=float(cfg["env"].get("i_brake_max_a", TRAINING_I_BRAKE_MAX_A)),
+        i_slew_a_per_s=float(cfg["env"].get("i_slew_a_per_s", TRAINING_I_SLEW_A_PER_S)),
         control_hz=float(
             1.0
             / (
@@ -2331,7 +2339,8 @@ def main():
         log.info(
             "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
             "env_minibatches=%d env_minibatch_size=%d actor_lr=%.3e value_lr=%.3e "
-            "compile=%s compile_mode=%s",
+            "compile=%s compile_mode=%s lidar_aug_enabled=%s "
+            "lidar_aug_max_shift_beams=%d",
             trainer.rollout_steps,
             trainer.num_epochs,
             args.num_envs // trainer.env_minibatch_size,
@@ -2340,6 +2349,8 @@ def main():
             float(cfg["ppo"]["value_lr"]),
             trainer.compile,
             trainer.compile_mode,
+            lidar_aug_enabled,
+            lidar_aug_max_shift,
         )
     # Live GRU carry for the learner: one hidden per env. Checkpoints store the
     # pre-action state; done/reset rows are zeroed after the env step.

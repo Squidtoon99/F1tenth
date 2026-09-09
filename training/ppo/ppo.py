@@ -170,6 +170,8 @@ class PPOTrainer:
         compile_mode="default",
         advantage_filter_enabled=True,
         advantage_filter_discard_fraction=0.05,
+        lidar_aug_enabled=False,
+        lidar_aug_max_shift_beams=0,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -206,6 +208,13 @@ class PPOTrainer:
         self.advantage_filter_discard_fraction = float(
             advantage_filter_discard_fraction
         )
+        self.lidar_aug_enabled = bool(lidar_aug_enabled)
+        self.lidar_aug_max_shift_beams = int(lidar_aug_max_shift_beams)
+        if self.lidar_aug_max_shift_beams < 0:
+            raise ValueError(
+                "lidar_aug_max_shift_beams must be a non-negative int, got "
+                f"{lidar_aug_max_shift_beams!r}"
+            )
         if (
             self.rollout_steps <= 0
             or self.num_epochs <= 0
@@ -487,6 +496,11 @@ class PPOTrainer:
         value_updates = 0
         epochs_completed = 0
 
+        if self.lidar_aug_enabled and self.lidar_aug_max_shift_beams > 0:
+            from standalone_trainer import augment_actor_lidar_beam_shift
+        else:
+            augment_actor_lidar_beam_shift = None
+
         for epoch in range(self.num_epochs):
             permutation = torch.randperm(num_envs, device=self.device)
             for start in range(0, num_envs, self.env_minibatch_size):
@@ -494,6 +508,11 @@ class PPOTrainer:
                     torch.compiler.cudagraph_mark_step_begin()
                 env_index = permutation[start : start + self.env_minibatch_size]
                 actor_raw = rollout.actor_obs[:, env_index]
+                if augment_actor_lidar_beam_shift is not None:
+                    actor_raw = augment_actor_lidar_beam_shift(
+                        actor_raw.transpose(0, 1),
+                        max_shift_beams=self.lidar_aug_max_shift_beams,
+                    ).transpose(0, 1)
                 critic_raw = rollout.critic_obs[:, env_index]
                 actor_seq = self._normalize(
                     self.actor_normalizer, actor_raw

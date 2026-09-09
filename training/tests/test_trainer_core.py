@@ -612,6 +612,20 @@ def test_sensor_policy_artifact_round_trip(tmp_path):
     assert torch.equal(expected, actual)
 
 
+def test_save_policy_artifact_writes_env_current_limits(tmp_path):
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["env"]["i_drive_max_a"] = 65.0
+    cfg["env"]["i_brake_max_a"] = 40.0
+    cfg["env"]["i_slew_a_per_s"] = 200.0
+    models = _sensor_models()
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, torch.device("cpu"))
+    path = save_policy_artifact(models, 100, tmp_path, normalizer, cfg)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert payload["i_drive_max_a"] == pytest.approx(65.0)
+    assert payload["i_brake_max_a"] == pytest.approx(40.0)
+    assert payload["i_slew_a_per_s"] == pytest.approx(200.0)
+
+
 def test_delta_sensor_artifact_metadata_and_legacy_rejection(tmp_path):
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     models = _sensor_models()

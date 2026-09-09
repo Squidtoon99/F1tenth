@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from f1tenth_env.sensors import ACTOR_LIDAR_DIM, ACTOR_OBS_DIM, ACTOR_PROPRIO_DIM
 from qrsac import Models, QRSACTrainer, QuantileCritic, make_actor
 from qrsac.spinningup.core import GRU_HIDDEN_DIM
+from ppo import PPOTrainer
 from standalone_trainer import (
     ObsNormalizer,
     augment_actor_lidar_beam_shift,
@@ -179,3 +180,71 @@ def test_config_validation_rejects_bad_lidar_aug():
 def test_default_config_enables_lidar_aug_with_shift_4():
     assert DEFAULT_CONFIG["model"]["lidar_aug_enabled"] is True
     assert DEFAULT_CONFIG["model"]["lidar_aug_max_shift_beams"] == 4
+
+
+def test_ppo_update_applies_lidar_beam_shift():
+    torch.manual_seed(0)
+    actor = make_actor(
+        actor_type="lidar_cnn_gru",
+        obs_dim=ACTOR_OBS_DIM,
+        act_dim=ACT_DIM,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=16,
+        gru_hidden_dim=GRU_HIDDEN_DIM,
+    )
+    trainer = PPOTrainer(
+        actor,
+        CRITIC_DIM,
+        device="cpu",
+        value_hidden_sizes=(32, 32),
+        rollout_steps=4,
+        num_epochs=1,
+        env_minibatch_size=8,
+        action_clip=1.0,
+        advantage_filter_enabled=False,
+        lidar_aug_enabled=True,
+        lidar_aug_max_shift_beams=2,
+    )
+    num_envs = 8
+    actor_obs = torch.zeros(num_envs, ACTOR_OBS_DIM)
+    actor_obs[:, :ACTOR_LIDAR_DIM] = torch.arange(
+        ACTOR_LIDAR_DIM, dtype=torch.float32
+    )
+    actor_obs[:, ACTOR_LIDAR_DIM:] = 0.25
+    critic_obs = torch.zeros(num_envs, CRITIC_DIM)
+    trainer.initialize(actor_obs, critic_obs)
+    captured = []
+    inner = trainer._evaluate_actions_sequence
+
+    def _capture(obs, *args, **kwargs):
+        captured.append(obs.detach().clone())
+        return inner(obs, *args, **kwargs)
+
+    trainer._evaluate_actions_sequence = _capture
+    reward = torch.zeros(num_envs)
+    done = torch.zeros(num_envs, dtype=torch.bool)
+    metrics = None
+    for _ in range(trainer.rollout_steps):
+        trainer.act(actor_obs, critic_obs)
+        metrics = trainer.observe(actor_obs, critic_obs, reward, done)
+    assert metrics is not None
+    assert captured
+    orig = actor_obs[0, :ACTOR_LIDAR_DIM]
+    lidar = captured[0][..., :ACTOR_LIDAR_DIM]
+    assert lidar.shape[-1] == ACTOR_LIDAR_DIM
+    assert torch.equal(lidar[:, 0], lidar[:, -1])
+    assert any(not torch.equal(lidar[env, 0], orig) for env in range(lidar.shape[0]))
+    allowed = []
+    for shift in range(-2, 3):
+        probe = torch.zeros(1, 1, ACTOR_OBS_DIM)
+        probe[0, 0, :ACTOR_LIDAR_DIM] = orig
+        allowed.append(
+            augment_actor_lidar_beam_shift(
+                probe, max_shift_beams=2, shifts=torch.tensor([shift])
+            )[0, 0, :ACTOR_LIDAR_DIM]
+        )
+    for env in range(lidar.shape[0]):
+        row = lidar[env, 0]
+        assert any(torch.equal(row, candidate) for candidate in allowed)
