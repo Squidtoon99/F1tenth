@@ -240,7 +240,7 @@ def lidar_beam_range(
             hit = opp_hit
 
     if hit < sensor.range_min:
-        hit = sensor.range_min
+        hit = sensor.range_max
     if hit > sensor.range_max:
         hit = sensor.range_max
 

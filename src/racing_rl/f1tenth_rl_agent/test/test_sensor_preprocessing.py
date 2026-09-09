@@ -43,6 +43,20 @@ def test_lidar_packing_clamps_and_maps_no_return():
     assert np.all(packed <= si.LIDAR_RANGE_MAX)
 
 
+def test_lidar_packing_too_close_and_urg_sentinel_are_range_max():
+    scan_min = math.radians(-135.0)
+    inc = math.radians(0.25)
+    ranges = np.full(1081, 1.5, dtype=np.float32)
+    ranges[10] = 0.04
+    ranges[11] = 65.533
+    ranges[12] = 12.0
+    packed = pack_lidar_from_scan(scan_min, inc, ranges, scan_range_min=0.02)
+    assert packed[10] == pytest.approx(si.LIDAR_RANGE_MAX)
+    assert packed[11] == pytest.approx(si.LIDAR_RANGE_MAX)
+    assert packed[12] == pytest.approx(12.0)
+    assert packed[12] != pytest.approx(10.0)
+
+
 def test_imu_conversion_sign_bias_and_frozen_channels():
     cal = ImuCalibration(
         accel_to_ms2=9.81,

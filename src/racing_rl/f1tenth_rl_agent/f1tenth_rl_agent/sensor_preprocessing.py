@@ -98,7 +98,8 @@ def pack_lidar_from_scan(
         right,
     )
     values = ranges[pick]
-    valid = np.isfinite(values) & (values >= float(scan_range_min))
+    floor = max(float(scan_range_min), float(LIDAR_RANGE_MIN))
+    valid = np.isfinite(values) & (values >= floor)
     values = np.where(valid, values, LIDAR_RANGE_MAX)
     values = np.clip(values, LIDAR_RANGE_MIN, LIDAR_RANGE_MAX)
     out[:] = values.astype(np.float32)

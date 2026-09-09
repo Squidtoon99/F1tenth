@@ -415,7 +415,7 @@ def test_lidar_range_min_max_sentinels(warp_runtime):
         radius=radius, n=360, w_left=half, w_right=half
     )
     sensor = _sensor_params()
-    # Near the outer wall, the outward beam clamps up to range_min.
+    # Hits closer than range_min are no-returns (range_max), matching ROS packing.
     near, _, _ = _launch_lidar(
         centerline=centerline,
         width_left=width_left,
@@ -424,7 +424,7 @@ def test_lidar_range_min_max_sentinels(warp_runtime):
         ego_yaw=0.0,
         sensor=sensor,
     )
-    assert float(near[0, _FWD]) == pytest.approx(float(sensor.range_min), abs=1e-5)
+    assert float(near[0, _FWD]) == pytest.approx(float(sensor.range_max), abs=1e-5)
 
     # Cap range_max below the analytic wall distance so the sentinel is hit.
     capped = _sensor_params(range_max=0.5)
