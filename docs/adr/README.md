@@ -60,3 +60,9 @@ trade-off. Routine work is captured by the PR instead (see
   localization and range_libc (supersedes 0008 workspace scope).
 - [0026](0026-normalized-current-observation.md) — Actor `VESC_CURRENT` is signed
   applied current divided by the configured directional limit; preprocessing v3.
+- [0027](0027-current-control-bag-identification.md) — 80/40 current-control bag
+  identification (mass 3.444 kg); Verified in 0028.
+- [0028](0028-promote-80-40-current-plant.md) — Promote the verified 80/40 Warp
+  plant (mass 3.444 kg, 26.5/23.1 N, μ 0.71) into training defaults.
+- [0029](0029-bag-referenced-sensor-dr.md) — Pin `drive_scale`, conservative
+  friction `[0.66, 0.85]`, bag-referenced IMU/VESC DR; scenario JSON inherits.
