@@ -171,12 +171,15 @@ def test_default_env_cfg_keeps_ust10lx_sensor_geometry(warp_runtime):
         env.close()
 
 
-def test_default_current_scale_is_80a_drive_20a_brake_envelope():
+def test_default_current_scale_is_80a_drive_40a_brake_envelope():
     env = DEFAULT_CONFIG["env"]
     assert env["i_drive_max_a"] == pytest.approx(80.0)
-    assert env["i_brake_max_a"] == pytest.approx(20.0)
+    assert env["i_brake_max_a"] == pytest.approx(40.0)
     assert env["i_slew_a_per_s"] == pytest.approx(200.0)
-    assert env["f_drive_max"] == pytest.approx(23.0)
+    assert env["vehicle_mass"] == pytest.approx(3.444)
+    assert env["f_drive_max"] == pytest.approx(26.5)
+    assert env["f_brake_max"] == pytest.approx(23.1)
+    assert env["tire_friction"] == pytest.approx(0.71)
     assert env["power_max"] == pytest.approx(320.0)
     assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(2.5)
     assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
@@ -188,30 +191,35 @@ def test_default_sensor_dr_matches_measured_evidence():
     dr = DEFAULT_CONFIG["env"]["domain_randomization"]
     assert dr["lidar_extrinsic_xy_range"] == [-0.01, 0.01]
     assert dr["lidar_extrinsic_yaw_range"] == [-0.008726646, 0.008726646]
-    assert dr["tire_friction_range"] == [0.5, 1.132]
+    assert dr["tire_friction_range"] == [0.66, 0.85]
+    assert dr["vehicle_mass_range"] == [3.29, 3.60]
+    assert dr["drive_scale_range"] == [1.0, 1.0]
     assert dr["imu_accel_bias_range"] == [-0.15, 0.15]
     assert dr["imu_gyro_bias_range"] == [
         -0.006607313505033768,
         0.006607313505033768,
     ]
     assert dr["imu_accel_noise_std_range"] == [
-        0.007283811484662825,
-        0.04370286890797695,
+        0.07268478585321053,
+        0.14536957170642106,
     ]
     assert dr["imu_gyro_noise_std_range"] == [
-        0.0006188990447305095,
-        0.0037133942683830567,
+        0.01317795169125509,
+        0.02635590338251018,
     ]
     assert dr["imu_axis_misalign_range"] == [0.0, 0.02]
-    assert dr["vesc_current_bias_range"] == [-0.005, 0.005]
-    assert dr["vesc_current_noise_std_range"] == [0.0, 0.005]
+    assert dr["vesc_current_bias_range"] == [-0.05, 0.05]
+    assert dr["vesc_current_noise_std_range"] == [0.0, 0.05]
+    assert dr["vesc_speed_bias_range"] == [
+        -0.03165226619154528,
+        0.03165226619154528,
+    ]
+    assert dr["vesc_speed_noise_std_range"] == [0.0, 0.022474802475579557]
     noop_keys = [
         "lidar_range_noise_std_range",
         "lidar_far_dropout_prob_range",
         "lidar_dropout_prob_range",
         "lidar_angle_bias_range",
-        "vesc_speed_bias_range",
-        "vesc_speed_noise_std_range",
     ]
     for key in noop_keys:
         assert key in dr

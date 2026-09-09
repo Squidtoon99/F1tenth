@@ -62,7 +62,7 @@ def test_artifact_roundtrip_validation():
         expected_architecture=actor.actor_architecture,
     )
     assert payload["i_drive_max_a"] == 80.0
-    assert payload["i_brake_max_a"] == 20.0
+    assert payload["i_brake_max_a"] == 40.0
     assert payload["i_slew_a_per_s"] == 200.0
 
 

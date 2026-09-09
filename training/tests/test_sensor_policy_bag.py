@@ -32,7 +32,7 @@ def _params() -> dict:
     params = {
         "twist_vx_sign": -1.0,
         "i_drive_max_a": 80.0,
-        "i_brake_max_a": 20.0,
+        "i_brake_max_a": 40.0,
         "max_steer": 0.33,
         "imu_accel_to_ms2": 1.0,
         "imu_gyro_to_rads": 1.0,

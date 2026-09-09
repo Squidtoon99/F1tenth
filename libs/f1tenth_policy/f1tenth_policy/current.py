@@ -8,7 +8,7 @@ import math
 # Deploy must match these for physical actuation parity; observation v3 still
 # divides by whatever directional limits are configured on the node.
 TRAINING_I_DRIVE_MAX_A = 80.0
-TRAINING_I_BRAKE_MAX_A = 20.0
+TRAINING_I_BRAKE_MAX_A = 40.0
 TRAINING_I_SLEW_A_PER_S = 200.0
 
 

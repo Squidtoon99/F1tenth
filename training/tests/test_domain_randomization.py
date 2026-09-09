@@ -126,8 +126,8 @@ def test_dr_disabled_matches_baseline(warp_runtime):
             torch.full((num_envs,), base_mass),
         )
         assert torch.all(
-            metrics["dr/action_latency_steps"] == 1.0
-        ), "baseline keeps simulate_action_latency=1 step"
+            metrics["dr/action_latency_steps"] == 0.0
+        ), "baseline keeps simulate_action_latency=0 policy steps"
         assert torch.allclose(metrics["dr/obs_noise_std"], torch.zeros(num_envs))
         for key in _SENSOR_DR_METRICS:
             assert torch.allclose(
