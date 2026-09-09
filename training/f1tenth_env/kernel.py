@@ -6,6 +6,7 @@ from f1tenth_sim.dynamics import (
     VehicleBuffers,
     VehicleLocal,
     apply_command,
+    apply_command_and_integrate,
     integrate_vehicle_substep,
     load_vehicle,
     store_vehicle,
@@ -1070,8 +1071,7 @@ def scripted_opponent_action(
         * ey_corr
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steer_scale = sim.steering_delta_max / wp.max(sim.max_steer, 1.0e-6)
-    steering_target = -(params.kp_heading * heading_error + cross_track) * steer_scale
+    steering_target = -(params.kp_heading * heading_error + cross_track)
     steering = (steering_target - opponent.steer) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
@@ -1102,8 +1102,7 @@ def scripted_physics_opponent_action(
         * ey_corr
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steer_scale = sim.steering_delta_max / wp.max(sim.max_steer, 1.0e-6)
-    steering_target = -(params.kp_heading * heading_error + cross_track) * steer_scale
+    steering_target = -(params.kp_heading * heading_error + cross_track)
     steering = (steering_target - opponent.steer) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
@@ -1605,22 +1604,21 @@ def physics_solo_kernel(
     push_executed_longitudinal(
         env.executed_longitudinal_history, env_id, execution_action[0]
     )
-    ego = apply_command(
-        ego, execution_action, ego_buffers.steer_bias[env_id], sim
+    ego = apply_command_and_integrate(
+        ego,
+        execution_action,
+        ego_buffers.steer_bias[env_id],
+        ego_buffers.mass[env_id],
+        ego_buffers.mu[env_id],
+        ego_buffers.drive_scale[env_id],
+        sim,
+        substeps,
     )
     executed_steer = execution_action[1]
     executed_steer = ego.steer
     push_executed_steer(
         env.executed_steer_history, env_id, executed_steer
     )
-    for _ in range(substeps):
-        ego = integrate_vehicle_substep(
-            ego,
-            ego_buffers.mass[env_id],
-            ego_buffers.mu[env_id],
-            ego_buffers.drive_scale[env_id],
-            sim,
-        )
     env.current_action[env_id] = action
     env.current_opponent_action[env_id] = wp.vec2f(0.0)
     env.contact[env_id] = 0
@@ -1663,22 +1661,21 @@ def physics_stage_kernel(
         push_executed_longitudinal(
             env.executed_longitudinal_history, env_id, execution_action[0]
         )
-        ego = apply_command(
-            ego, execution_action, ego_buffers.steer_bias[env_id], sim
+        ego = apply_command_and_integrate(
+            ego,
+            execution_action,
+            ego_buffers.steer_bias[env_id],
+            ego_buffers.mass[env_id],
+            ego_buffers.mu[env_id],
+            ego_buffers.drive_scale[env_id],
+            sim,
+            substeps,
         )
         executed_steer = execution_action[1]
         executed_steer = ego.steer
         push_executed_steer(
             env.executed_steer_history, env_id, executed_steer
         )
-        for _ in range(substeps):
-            ego = integrate_vehicle_substep(
-                ego,
-                ego_buffers.mass[env_id],
-                ego_buffers.mu[env_id],
-                ego_buffers.drive_scale[env_id],
-                sim,
-            )
         env.current_action[env_id] = action
         env.episode_step[env_id] = env.episode_step[env_id] + 1
         store_vehicle(ego_buffers, env_id, ego)
@@ -1710,11 +1707,15 @@ def physics_stage_kernel(
             env_id,
             opponent_action[0],
         )
-        opponent = apply_command(
+        opponent = apply_command_and_integrate(
             opponent,
             opponent_action,
             opponent_buffers.steer_bias[env_id],
+            opponent_buffers.mass[env_id],
+            opponent_buffers.mu[env_id],
+            opponent_buffers.drive_scale[env_id],
             sim,
+            substeps,
         )
         opponent_executed_steer = opponent_action[1]
         opponent_executed_steer = opponent.steer
@@ -1723,14 +1724,6 @@ def physics_stage_kernel(
             env_id,
             opponent_executed_steer,
         )
-        for _ in range(substeps):
-            opponent = integrate_vehicle_substep(
-                opponent,
-                opponent_buffers.mass[env_id],
-                opponent_buffers.mu[env_id],
-                opponent_buffers.drive_scale[env_id],
-                sim,
-            )
         env.current_opponent_action[env_id] = opponent_action
         store_vehicle(opponent_buffers, env_id, opponent)
 

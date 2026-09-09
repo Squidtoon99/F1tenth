@@ -62,6 +62,7 @@ def _run_warp(ref, meta):
     # Torch reference trajectory was recorded under absolute steering.
     cfg.setdefault("steering_action_mode", "absolute")
     params = VehicleParams.from_config(cfg)
+    params.command_delay_substeps = 0
     num_envs = int(meta["num_envs"])
     sim = WarpVehicleSim(
         params,

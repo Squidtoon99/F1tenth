@@ -172,6 +172,35 @@ def test_longitudinal_effort_slew_matches_deployed_current_ramp():
     assert np.allclose(es, -1.0) and np.allclose(ap, -0.5)
 
 
+def test_command_delay_holds_previous_for_two_substeps():
+    from f1tenth_sim.dynamics import COMMAND_DELAY_SUBSTEPS
+
+    assert COMMAND_DELAY_SUBSTEPS == 2
+    params = _vp(
+        enable_aero_drag=False,
+        c_roll=0.0,
+        t_delta=1e-6,
+        warp_sim={"longitudinal_slew_rate_per_s": 1e6},
+    )
+    delayed = WarpVehicleSim(params, 1, device="cpu", sim_dt=0.005, control_dt=0.02)
+    staged = WarpVehicleSim(params, 1, device="cpu", sim_dt=0.005, control_dt=0.02)
+    _reset(delayed, 1, speed=2.0)
+    _reset(staged, 1, speed=2.0)
+    prev = torch.tensor([[0.0, 0.0]])
+    cmd = torch.tensor([[1.0, 0.4]])
+    delayed.step(cmd, n_steps=4)
+    staged.step(prev, n_steps=1)
+    staged.step(prev, n_steps=1)
+    staged.step(cmd, n_steps=1)
+    staged.step(cmd, n_steps=1)
+    d = delayed.read_state()
+    s = staged.read_state()
+    assert torch.allclose(d["base_lin_vel"], s["base_lin_vel"], atol=1e-5)
+    assert torch.allclose(d["base_ang_vel"], s["base_ang_vel"], atol=1e-5)
+    assert d["base_lin_vel"][0, 0].item() > 2.0
+    assert d["base_ang_vel"][0, 2].item() > 0.0
+
+
 def test_straight_line_no_lateral():
     sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)

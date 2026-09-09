@@ -65,6 +65,7 @@ class SimParams:
     roll_stiffness_front: wp.float32
     drag_coeff: wp.float32
     enable_aero_drag: wp.int32
+    command_delay_substeps: wp.int32
     wheel_x: wp.vec4f
     wheel_y: wp.vec4f
 
@@ -72,7 +73,7 @@ class SimParams:
 @dataclass
 class VehicleParams:
     # --- chassis / geometry ---
-    mass: float = 3.74
+    mass: float = 3.444
     izz: float = 0.13
     wheelbase: float = 0.325
     lf: float = 0.1584
@@ -85,7 +86,7 @@ class VehicleParams:
     wheel_inertia: float = 4.12e-4
 
     # --- tire (Pacejka Magic Formula) ---
-    tire_mu: float = 0.65
+    tire_mu: float = 0.71
     tire_B_long: float = 11.0
     tire_C_long: float = 1.55
     tire_E_long: float = 0.55
@@ -98,16 +99,18 @@ class VehicleParams:
     tire_relax_len: float = 0.0
 
     # --- drivetrain (force/brake effort; ADR 0006) ---
-    f_drive_max: float = 23.0
-    f_brake_max: float = 5.2
+    f_drive_max: float = 26.5
+    f_brake_max: float = 23.1
     power_max: float = 320.0
     k_drive_front: float = 0.5
     v_eps: float = 0.1
     low_speed_blend: float = 1.0
     c_roll: float = 0.0
     drive_torque_sign: float = 1.0
-    # Normalized effort slew matches 45 A at the deployed 200 A/s current limit.
-    longitudinal_slew_rate_per_s: float = 4.444444444444445
+    # Normalized effort slew matches 80 A at the deployed 200 A/s current limit.
+    longitudinal_slew_rate_per_s: float = 2.5
+    # 2 × 5 ms ≈ teleop→VESC p50 (one 50 Hz gate tick).
+    command_delay_substeps: int = 2
     # Soft accel clamp for the Tier-0 kinematic fallback only.
     kinematic_accel_limit: float = 12.0
 
@@ -185,6 +188,7 @@ class VehicleParams:
         params.roll_stiffness_front = self.roll_stiffness_front
         params.drag_coeff = self.dragcoeff
         params.enable_aero_drag = int(self.enable_aero_drag)
+        params.command_delay_substeps = int(self.command_delay_substeps)
         params.wheel_x = wp.vec4f(*(xy[0] for xy in self.wheel_xy))
         params.wheel_y = wp.vec4f(*(xy[1] for xy in self.wheel_xy))
         return params
@@ -234,8 +238,16 @@ class VehicleParams:
         self.c_roll = float(g("c_roll", self.c_roll))
         self.drive_torque_sign = float(g("drive_torque_sign", self.drive_torque_sign))
         self.tire_mu = float(g("tire_friction", self.tire_mu))
+        if g("vehicle_mass") is not None:
+            self.mass = float(g("vehicle_mass"))
+        elif g("mass") is not None:
+            self.mass = float(g("mass"))
         self.enable_aero_drag = bool(g("enable_aero_drag", self.enable_aero_drag))
         self.dragcoeff = float(g("dragcoeff", self.dragcoeff))
+        if "longitudinal_slew_rate_per_s" in env_cfg:
+            self.longitudinal_slew_rate_per_s = float(
+                env_cfg["longitudinal_slew_rate_per_s"]
+            )
         sim = g("warp_sim") or {}
         for key in (
             "izz", "h_cg", "wheel_inertia", "tire_B_long", "tire_C_long",

@@ -5,6 +5,10 @@ from .params import SimParams
 from .suspension import static_wheel_load, warp_quasi_static_loads
 from .tire import combined_pacejka
 
+# Teleop→VESC p50 is ~10 ms (one 50 Hz gate tick). At sim_dt=0.005 that is
+# two substeps, shared by Warp replay and the training env.
+COMMAND_DELAY_SUBSTEPS = 2
+
 
 @wp.struct
 class VehicleLocal:
@@ -291,6 +295,31 @@ def integrate_vehicle_substep(
     vehicle.yaw_rate = yaw_rate_next
     vehicle.ax = ax
     vehicle.ay = ay
+    return vehicle
+
+
+@wp.func
+def apply_command_and_integrate(
+    vehicle: VehicleLocal,
+    action: wp.vec2f,
+    steer_bias: wp.float32,
+    mass: wp.float32,
+    mu: wp.float32,
+    drive_scale: wp.float32,
+    params: SimParams,
+    substeps: wp.int32,
+) -> VehicleLocal:
+    delay = wp.int32(COMMAND_DELAY_SUBSTEPS)
+    if delay >= substeps:
+        delay = wp.int32(0)
+    if delay == 0:
+        vehicle = apply_command(vehicle, action, steer_bias, params)
+    for step in range(substeps):
+        if delay > 0 and step == delay:
+            vehicle = apply_command(vehicle, action, steer_bias, params)
+        vehicle = integrate_vehicle_substep(
+            vehicle, mass, mu, drive_scale, params
+        )
     return vehicle
 
 

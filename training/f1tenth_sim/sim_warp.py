@@ -5,8 +5,7 @@ import warp as wp
 
 from .dynamics import (
     VehicleBuffers,
-    apply_command,
-    integrate_vehicle_substep,
+    apply_command_and_integrate,
     load_vehicle,
     store_vehicle,
 )
@@ -22,17 +21,16 @@ def vehicle_step_kernel(
 ):
     env_id = wp.tid()
     vehicle = load_vehicle(buffers, env_id)
-    vehicle = apply_command(
-        vehicle, actions[env_id], buffers.steer_bias[env_id], params
+    vehicle = apply_command_and_integrate(
+        vehicle,
+        actions[env_id],
+        buffers.steer_bias[env_id],
+        buffers.mass[env_id],
+        buffers.mu[env_id],
+        buffers.drive_scale[env_id],
+        params,
+        substeps,
     )
-    for _ in range(substeps):
-        vehicle = integrate_vehicle_substep(
-            vehicle,
-            buffers.mass[env_id],
-            buffers.mu[env_id],
-            buffers.drive_scale[env_id],
-            params,
-        )
     store_vehicle(buffers, env_id, vehicle)
 
 
