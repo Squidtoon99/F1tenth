@@ -33,6 +33,7 @@ setup(
             "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
             "sensor_racer = f1tenth_rl_agent.sensor_racer_node:main",
             "sensor_policy = f1tenth_rl_agent.sensor_racer_node:main",
+            "gym_sensor_bridge = f1tenth_rl_agent.gym_sensor_bridge_node:main",
         ],
     },
 )

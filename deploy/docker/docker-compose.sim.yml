@@ -45,6 +45,7 @@ services:
     command: >
       "source /opt/ros/humble/setup.bash &&
        cd /sim_ws &&
+       rm -rf build/f1tenth_gym_ros install/f1tenth_gym_ros &&
        colcon build --symlink-install &&
        source install/setup.bash &&
        ros2 launch f1tenth_gym_ros rl_agent_sim_launch.py"

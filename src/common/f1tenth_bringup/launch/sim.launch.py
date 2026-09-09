@@ -4,11 +4,11 @@ The gym bridge (physics + /scan + /ego_racecar/odom + /drive) runs in the separa
 sim container (see sim/ and deploy/docker/docker-compose.sim.yml). This launch runs
 the agent-side ROS graph in the agent container and closes the loop on /drive.
 
-The on-car C++ autonomy graph (vehicle_obs -> policy_inference -> drive) from
-bringup_vehicle.launch.py is pointed at the gym's ground-truth odom in place of the
-particle filter + VESC odom. Solo racing: the opponent detector is off and the
-8-dim opponent block [384:392) is zeroed (the vehicle.yaml sentinel), so the
-392-dim policy runs without a detector.
+`stack:=vehicle` (default) runs the on-car C++ graph (vehicle_obs ->
+policy_inference -> drive) on gym ground-truth odom. Solo racing: the opponent
+detector is off and the 8-dim opponent block [384:392) is zeroed, so the 392-dim
+policy runs without a detector. `stack:=sensor_policy` includes
+sensor_policy_sim.launch.py (1097-D sensor_racer + current gate + gym_sensor_bridge).
 
 The evaluation node (read-only) provides spawn/reset + lap/progress/OOB/stuck metrics;
 it is composed here alongside track_server.
@@ -19,8 +19,9 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -41,16 +42,26 @@ def generate_launch_description() -> LaunchDescription:
     if os.path.isfile(car01_overlay):
         default_overlay = car01_overlay
 
+    stack = LaunchConfiguration("stack")
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     agent_params_file = LaunchConfiguration("agent_params_file")
     overlay_params_file = LaunchConfiguration("overlay_params_file")
     track_csv = LaunchConfiguration("track_csv")
     gym_odom_topic = LaunchConfiguration("gym_odom_topic")
 
+    declare_stack = DeclareLaunchArgument(
+        "stack",
+        default_value="vehicle",
+        description="Agent graph: 'vehicle' (C++ 392-D) or 'sensor_policy' (1097-D).",
+    )
     declare_ckpt = DeclareLaunchArgument(
         "checkpoint_path",
         default_value="/policies/policy.pt",
-        description="Trained 392-dim policy .pt (must include obs_norm).",
+        description="Trained policy .pt (392-D vehicle or 1097-D sensor_policy).",
+    )
+    is_vehicle = IfCondition(PythonExpression(["'", stack, "' == 'vehicle'"]))
+    is_sensor_policy = IfCondition(
+        PythonExpression(["'", stack, "' == 'sensor_policy'"])
     )
     declare_agent_params = DeclareLaunchArgument(
         "agent_params_file",
@@ -77,6 +88,7 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(
             os.path.join(vehicle_share, "launch", "bringup_vehicle.launch.py")
         ),
+        condition=is_vehicle,
         launch_arguments={
             "checkpoint_path": checkpoint_path,
             "agent_params_file": agent_params_file,
@@ -92,6 +104,7 @@ def generate_launch_description() -> LaunchDescription:
         package="f1tenth_rl_agent",
         executable="track_server",
         name="track_server",
+        condition=is_vehicle,
         parameters=[agent_params_file],
         output="screen",
     )
@@ -99,12 +112,26 @@ def generate_launch_description() -> LaunchDescription:
         package="f1tenth_rl_agent",
         executable="evaluation",
         name="evaluation",
+        condition=is_vehicle,
         parameters=[agent_params_file],
         output="screen",
     )
 
+    bringup_share = get_package_share_directory("f1tenth_bringup")
+    sensor_policy_sim = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(bringup_share, "launch", "sensor_policy_sim.launch.py")
+        ),
+        condition=is_sensor_policy,
+        launch_arguments={
+            "checkpoint_path": checkpoint_path,
+            "gym_odom_topic": gym_odom_topic,
+        }.items(),
+    )
+
     return LaunchDescription(
         [
+            declare_stack,
             declare_ckpt,
             declare_agent_params,
             declare_overlay,
@@ -113,5 +140,6 @@ def generate_launch_description() -> LaunchDescription:
             vehicle_bringup,
             vehicle_track_server,
             vehicle_evaluation,
+            sensor_policy_sim,
         ]
     )
