@@ -25,8 +25,8 @@ class RlCurrentGateNode(Node):
         super().__init__("rl_current_gate", **kwargs)
 
         self._cfg = GateConfig(
-            i_drive_max_a=float(self.declare_parameter("i_drive_max_a", 10.0).value),
-            i_brake_max_a=float(self.declare_parameter("i_brake_max_a", 10.0).value),
+            i_drive_max_a=float(self.declare_parameter("i_drive_max_a", 80.0).value),
+            i_brake_max_a=float(self.declare_parameter("i_brake_max_a", 40.0).value),
             i_brake_safe_a=float(self.declare_parameter("i_brake_safe_a", 5.0).value),
             i_slew_a_per_s=float(
                 self.declare_parameter("i_slew_a_per_s", 200.0).value

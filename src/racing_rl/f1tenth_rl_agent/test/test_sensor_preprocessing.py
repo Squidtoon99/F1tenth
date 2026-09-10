@@ -130,7 +130,7 @@ def test_actor_layout_offsets_match_training_fixture():
     assert si.STEER_DELTA0 == layout["steer_delta0"]
     assert si.STEER_DELTA1 == layout["steer_delta1"]
     assert si.STEER_DELTA2 == layout["steer_delta2"]
-    assert si.VESC_CURRENT_SCALE_A == layout["vesc_current_scale_a"]
+    assert si.OBS_PREPROCESSING_VERSION == 3
 
 
 def test_deploy_shaped_scan_replay_matches_training_layout():
@@ -148,7 +148,7 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     assert si.THROTTLE_CURRENT == 1089
     assert si.STEER_T == 1091
     assert si.STEER_DELTA2 == 1096
-    assert si.VESC_CURRENT_SCALE_A == 5.0
+    assert si.OBS_PREPROCESSING_VERSION == 3
     assert si.ACTOR_LAYOUT_VERSION == 2
 
     rng = np.random.default_rng(0)

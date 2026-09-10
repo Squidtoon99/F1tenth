@@ -40,6 +40,7 @@ def _launch_setup(context, *args, **kwargs):
     recording_mode = LaunchConfiguration("recording_mode")
     i_drive_max_a = LaunchConfiguration("i_drive_max_a")
     i_brake_max_a = LaunchConfiguration("i_brake_max_a")
+    i_slew_a_per_s = LaunchConfiguration("i_slew_a_per_s")
     i_brake_safe_a = LaunchConfiguration("i_brake_safe_a")
 
     dry_run_enabled = dry_run.perform(context).lower() in ("true", "1", "yes")
@@ -136,6 +137,7 @@ def _launch_setup(context, *args, **kwargs):
                 "recording_mode": ParameterValue(recording_mode, value_type=bool),
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
     )
@@ -162,6 +164,7 @@ def _launch_setup(context, *args, **kwargs):
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
         remappings=gate_remappings,
@@ -243,13 +246,18 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "i_drive_max_a",
-                default_value="5.0",
-                description="Conservative first-run drive current limit (A).",
+                default_value="80.0",
+                description="Sensor-policy drive current limit (A).",
             ),
             DeclareLaunchArgument(
                 "i_brake_max_a",
-                default_value="5.0",
-                description="Conservative first-run brake current limit (A).",
+                default_value="40.0",
+                description="Sensor-policy motor brake current limit (A).",
+            ),
+            DeclareLaunchArgument(
+                "i_slew_a_per_s",
+                default_value="200.0",
+                description="Sensor-policy current slew limit (A/s).",
             ),
             DeclareLaunchArgument(
                 "i_brake_safe_a",

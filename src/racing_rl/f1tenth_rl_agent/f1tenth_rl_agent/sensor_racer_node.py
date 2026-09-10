@@ -15,6 +15,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Float32MultiArray
 
+from f1tenth_policy import assert_artifact_current_limits_match
+
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
     ObsNormalizer,
@@ -44,8 +46,9 @@ class SensorRacerNode(Node):
         self.declare_parameter("applied_actuator_topic", si.TOPIC_APPLIED_ACTUATOR)
         self.declare_parameter("sensor_max_age_s", 0.15)
         self.declare_parameter("twist_vx_sign", -1.0)
-        self.declare_parameter("i_drive_max_a", 10.0)
-        self.declare_parameter("i_brake_max_a", 10.0)
+        self.declare_parameter("i_drive_max_a", 80.0)
+        self.declare_parameter("i_brake_max_a", 40.0)
+        self.declare_parameter("i_slew_a_per_s", 200.0)
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
         self.declare_parameter("steering_delta_max_rad", math.pi / 60.0)
@@ -89,6 +92,9 @@ class SensorRacerNode(Node):
         self.twist_vx_sign = float(gp("twist_vx_sign").get_parameter_value().double_value)
         self.i_drive_max_a = float(gp("i_drive_max_a").get_parameter_value().double_value)
         self.i_brake_max_a = float(gp("i_brake_max_a").get_parameter_value().double_value)
+        self.i_slew_a_per_s = float(
+            gp("i_slew_a_per_s").get_parameter_value().double_value
+        )
         if self.i_drive_max_a <= 0.0 or self.i_brake_max_a <= 0.0:
             raise ValueError(
                 "i_drive_max_a and i_brake_max_a must be > 0 "
@@ -267,6 +273,15 @@ class SensorRacerNode(Node):
                 clip=self.norm_clip,
                 expected_steering_action_mode=self.steering_action_mode,
                 expected_steering_delta_max_rad=self.steering_delta_max_rad,
+            )
+            payload = torch.load(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+            assert_artifact_current_limits_match(
+                payload,
+                self.i_drive_max_a,
+                self.i_brake_max_a,
+                self.i_slew_a_per_s,
             )
             self.get_logger().info(f"Loaded sensor racer checkpoint: {checkpoint_path}")
             return actor, normalizer
