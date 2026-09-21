@@ -38,4 +38,5 @@ flowchart LR
    and the RL policy at `/policies`.
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`) whose exact image is
-snapshotted. See [`../docs/deployment.md`](../docs/deployment.md).
+snapshotted. CUDA `range_libc` (`RANGE_LIBC_WITH_CUDA=ON`) compiles natively on
+Jetson and ships L4T `libcudart` — see [`../docs/deployment.md`](../docs/deployment.md).

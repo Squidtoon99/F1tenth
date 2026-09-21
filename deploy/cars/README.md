@@ -19,10 +19,10 @@ To add a car, copy `car01/` to `carNN/` and edit the values.
 
 ## RL checkpoint note
 
-The on-car policy trained under the legacy 387-dim layout (380 base + 7-dim opponent
-with presence flag) is **not** compatible with the monorepo's 390-dim contract
-(384 base + 6-dim zero-sentinel opponent block). Retrain under the monorepo
-contract before deploying RL from this repository.
+Policies must be 390-dim (`policy_format_version >= 2`, `longitudinal_mode:
+force`). Legacy 387-dim / speed-mode artifacts will not load. Retrain under this
+repo's contract before deploying RL. Trainer default track is `ecss_clean`; gym
+certification uses `IV_2026_SIM`.
 
 ## Vehicle geometry provenance
 

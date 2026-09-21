@@ -69,37 +69,56 @@ gitGraph
 
 ## Running
 
-- Simulation — evaluate the deployed RL stack in the gym (two containers: the gym
-  bridge in the fork image + our nodes in the dev image, sharing a docker bridge
-  network; noVNC serves RViz, Foxglove serves at `ws://localhost:8765`):
+- **Gym sim** — evaluate the deployed RL stack (two containers: gym bridge + our
+  nodes on a docker bridge network; noVNC for RViz, Foxglove at
+  `ws://localhost:8765`). The graph is the on-car C++ path (`vehicle_obs` →
+  `policy_inference` → `drive`). Gym track is `IV_2026_SIM`.
 
   ```bash
-  # CHECKPOINT_DIR is the host dir holding the trained .pt; CKPT its filename.
+  # CHECKPOINT_DIR is an absolute host dir holding the trained .pt; CKPT its filename.
   CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
-  # ... watch: RViz at http://localhost:8080/vnc.html, or Foxglove -> ws://localhost:8765
+  # RViz: http://localhost:8080/vnc.html   Foxglove: ws://localhost:8765
+  CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
   ./tools/sim.sh down
   ```
 
   `tools/sim.sh` imports the gym (`vcs import sim < sim/f1tenth_gym_ros.repos`),
-  builds the agent workspace, launches the bridge-only sim
-  (`rl_agent_sim_launch.py`) plus our `f1tenth_bringup/sim.launch.py` (on-car C++
-  graph), and drives the car
-  with the trained policy. The `evaluation` node spawns the car forward-facing along
-  the centerline (matching training) and resets it on stuck/out-of-bounds. See
-  [`../sim/README.md`](../sim/README.md).
+  builds the agent workspace, and launches the fork's bridge-only
+  `rl_agent_sim_launch.py` plus our `f1tenth_bringup/sim.launch.py`. The
+  `evaluation` node spawns the car forward-facing along the centerline and resets
+  it on stuck/out-of-bounds.
 
-- On the car: vehicle-only shakedown then full stack:
+  `MODE=dev` (default) uses live source in the dev image. `MODE=release` runs the
+  generic car image with `/config` + `/policies` mounted. `STACK` is `vehicle`
+  only. See [`../sim/README.md`](../sim/README.md).
+
+- **On the car** — vehicle-only shakedown, then a racing stack.
+  `race.launch.py` defaults to `stack:=algo`. Pass `stack:=rl` for the policy
+  graph. `car.launch.py` starves vendored `ackermann_to_vesc` at its
+  `ackermann_cmd` input so `vesc_actuator` owns current/brake/servo (ADR 0006).
 
   ```bash
   ros2 launch f1tenth_bringup car.launch.py
+  ros2 launch f1tenth_bringup race.launch.py stack:=rl
   ros2 launch f1tenth_bringup race.launch.py stack:=algo
   ```
 
 ## RL training
 
-Training is pure Python and never built by colcon. See
-[`../training/README.md`](../training/README.md). The observation contract is
-installed editable, so changing the observation space needs no rebuild.
+Training is pure Python on the host `.venv` (Warp + PyTorch). Never colcon, never
+the ROS container. See [`training.md`](training.md).
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `CHECKPOINT_DIR is unset` / file not found | Path must be **absolute** and contain `CKPT` (default `policy.pt`). |
+| Gym DDS: agent never sees `/scan` | Both containers share `ROS_DOMAIN_ID` (default 42). Do not use host networking on macOS Docker Desktop. |
+| Policy load rejected | Need `policy_format_version >= 2` and `longitudinal_mode: force`. |
+| Car idle / wrong line in gym | Gym is `IV_2026_SIM`. A policy trained on `ecss_clean` (trainer default) will not match. |
+| `rclpy` / `colcon` missing on the host | Build and ROS tests run **inside** `./tools/dev.sh shell`. |
+| Apple Silicon seed image is slow | amd64 Hub images emulate; build natively (`./tools/dev.sh build`). |
+| eRPM fighting current on the car | Do not remap `ackermann_to_vesc` outputs. `car.launch.py` already remaps its **input**. |
 
 ## Conventions
 

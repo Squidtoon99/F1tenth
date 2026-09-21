@@ -32,8 +32,10 @@ flowchart LR
    Uses `docker buildx --platform linux/arm64` (QEMU emulation on x86 hosts) and a
    multi-stage `Dockerfile.runtime` that colcon-builds the racing packages. On a
    Jetson with JetPack, `build_image.sh` auto-enables CUDA range_libc
-   (`RANGE_LIBC_WITH_CUDA=ON`, target `runtime-cuda`). Validate Dockerfile syntax
-   before a full build:
+   (`RANGE_LIBC_WITH_CUDA=ON`, target `runtime-cuda`). That CUDA compile is
+   **native `aarch64` only** — not certified under QEMU, and Apple Silicon
+   (`uname -m=arm64` without `/usr/local/cuda`) keeps CUDA off. Validate
+   Dockerfile syntax before a full build:
 
    ```bash
    docker buildx build --check -f deploy/docker/Dockerfile.runtime .
@@ -118,14 +120,27 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 - `maps/` — occupancy grid + centerline/raceline for the current track (`map.yaml`,
   `centerline.csv`, `raceline.csv`).
 
-The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
-or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
-`race.launch.py` starts vehicle drivers, particle-filter localization
-(`enable_localization:=true`), and a read-only `localization_preflight` health check.
-The RL graph emits no drive command until pose + twist are live.
+The same image runs the algorithmic or RL stack. `race.launch.py` defaults to
+`stack:=algo`; pass `stack:=rl` for the policy graph. The RL policy is mounted
+read-only at `/policies/policy.pt`. `race.launch.py` starts vehicle drivers,
+particle-filter localization (`enable_localization:=true`), and a read-only
+`localization_preflight` health check. The RL graph emits no drive command until
+pose + twist are live.
 
-**Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
-are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
+`car.launch.py` is the exclusive current/brake/servo owner: it remaps vendored
+`ackermann_to_vesc`'s **input** (`ackermann_cmd` → `ackermann_cmd_disabled`) so
+the converter cannot publish eRPM against `vesc_actuator`. Remapping only the
+converter's outputs is not enough (the driver still sees them). See ADR 0006.
+
+Particle-filter pose uses ROS 2 frames `map` / `laser` (not ROS 1 `/map` /
+`/laser`). CUDA `range_libc` (`PyRayMarchingGPU`) needs the L4T `libcudart` in
+the image plus `--runtime=nvidia` so `libcuda` is visible — see the run commands
+above.
+
+**Checkpoint compatibility:** policies must be 390-dim, `policy_format_version >= 2`,
+`longitudinal_mode: force`. Legacy 387-dim / speed-mode artifacts will not load.
+Train on the track you will certify (`IV_2026_SIM` for the gym gate; default
+trainer track is `ecss_clean`). See [`training.md`](training.md).
 
 ## Certification gate (f1tenth_gym)
 
@@ -251,4 +266,4 @@ apptainer run --nv training.sif --num-envs 4096 --total-steps 2000000
 ```
 
 Weights produced there are delivered to the car as the mounted `/policies/policy.pt`
-— they are never baked into the image.
+— they are never baked into the image. Host-side training: [`training.md`](training.md).

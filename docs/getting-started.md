@@ -66,29 +66,35 @@ better off with option A. (`SEED_REGISTRY=<user>` overrides the registry.)
 
 `--symlink-install` means **Python-only edits need no rebuild** — just re-run the node.
 
-### Run the simulator
+### Run the simulator (deployed ROS stack)
 
-Evaluate the RL stack against the f1tenth gym (two containers + noVNC/Foxglove):
+Evaluate the on-car C++ graph against the f1tenth gym (two containers + noVNC /
+Foxglove). `CHECKPOINT_DIR` must be an **absolute** host path. The gym track is
+`IV_2026_SIM` — use a policy trained on that centerline (see
+[`training.md`](training.md)).
 
 ```bash
 CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
 ./tools/sim.sh down
 ```
 
-See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md) for
-details.
+Needs the dev images first (`./tools/dev.sh up` or `pull`). See
+[`../sim/README.md`](../sim/README.md) and [`development.md`](development.md).
 
-Train policies with the separate batched Warp simulator:
+### Train a policy (host `.venv`, not the ROS container)
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r training/requirements-mac.txt    # or requirements-gpu.txt on Linux+NVIDIA
 .venv/bin/python training/standalone_trainer.py \
-  --device cuda --precision 32 --num-envs 4096
+  --device cuda --precision 32 --num-envs 4096 --track IV_2026_SIM
 ```
 
-macOS supports small Warp CPU tests, not MPS training. See
-[`../training/README.md`](../training/README.md).
+macOS supports small Warp CPU tests, not MPS training. Full flags, self-play, and
+checkpoint constraints: [`training.md`](training.md).
 
 ## 3. Contribute a ROS node
 
