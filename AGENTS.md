@@ -142,11 +142,12 @@ miss it — reference it explicitly). Use its interpreter directly:
 .venv/bin/python -m flake8 training                      # lint (max line 99)
 ```
 
-It provides `torch`, `genesis`, `wandb`, etc. It is CPU-only on this host (no
-CUDA/MPS), so use `--physics torch` for fast standalone runs and expect long
-wall-clock for large step counts. `f1tenth_contract` is not installed there and
-training does not import it (the contract constants are mirrored in
-`training/config.py`).
+It provides `torch`, `warp-lang`, `wandb`, etc. It is CPU-only on this host (no
+CUDA/MPS), so use `--device cpu --precision 32` for standalone runs and expect
+long wall-clock for large step counts. The contract is installed editable
+(`pip install -e libs/f1tenth_contract`); the trainer calls
+`validate_policy_artifact` on export. Env-side numbers in `training/config.py`
+must stay in lockstep. See [`docs/training.md`](docs/training.md).
 
 ## Testing philosophy
 

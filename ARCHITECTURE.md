@@ -56,7 +56,7 @@ independently:
   `particle_filter` + `f1tenth_localization` launch/wrappers; `range_libc` submodule.
 - `planning/` — raceline optimization and global planning.
 - `control/` — pure-pursuit, follow-the-gap, PID controllers, safety, deadman gate,
-  and the RL drive-command layer.
+  the RL drive-command layer, and `vesc_actuator` (current/brake; ADR 0006).
 - `racing_rl/` — the on-car RL inference nodes (observation builder, policy
   inference, drive). Loads a trained policy at runtime.
 - `racing_algo/` — composition/bringup of the algorithmic racing stack.
@@ -92,8 +92,8 @@ both worlds without duplication:
   when freezing a car image.
 
 The on-car C++ vehicle node cannot import Python, so `f1tenth_common` holds a C++
-mirror of the layout, kept honest by a parity test. This is a deploy-time concern,
-decoupled from the training loop. See
+mirror of the layout, kept honest by a parity test. Training installs the contract
+editable and validates exported artifacts against it. See
 [`docs/observation_contract.md`](docs/observation_contract.md).
 
 ## Vendored vehicle driver layer
@@ -122,3 +122,4 @@ Three images off one base so dev and car run identical dependencies:
 - `Dockerfile.base` — ROS 2 Humble + all apt/rosdep deps + tooling (changes rarely).
 - `Dockerfile.dev` — base + dev conveniences, mounts live source.
 - `Dockerfile.runtime` — base + a baked colcon install (this is the car image).
+  Target `runtime-cuda` on Jetson adds CUDA `range_libc` + L4T `libcudart`.
