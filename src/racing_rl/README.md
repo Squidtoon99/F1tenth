@@ -14,5 +14,5 @@ supplied at runtime.
 The **training** side lives entirely under top-level [`training/`](../../../training/)
 and is never built by colcon nor included in the car image.
 
-End-to-end bringup: `f1tenth_bringup/race.launch.py` (on-car) and
-`f1tenth_bringup/sim.launch.py` (gym gate).
+End-to-end bringup: `f1tenth_bringup/race.launch.py` (on-car; pass `stack:=rl`)
+and `f1tenth_bringup/sim.launch.py` (gym gate, `IV_2026_SIM`).

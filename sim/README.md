@@ -1,29 +1,33 @@
 # sim/
 
-Simulator integration. Two simulators are used, for different purposes:
+Simulator integration. Two simulators, for different jobs:
 
-- **Gym bridge** (`f1tenth_gym_ros`) — a ROS 2 wrapper around the F1TENTH gym. Used
-  to run and evaluate the *deployed* racing stack (algorithmic or RL) over ROS
-  topics, closest to on-car behavior. Pinned via
-  [`f1tenth_gym_ros.repos`](f1tenth_gym_ros.repos) (the bridge fork + the gym engine
-  it wraps) and imported, not vendored:
+| Task | Simulator |
+| --- | --- |
+| RL training / synthetic data | `training/f1tenth_sim/` (NVIDIA Warp) |
+| Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
 
-  ```bash
-  vcs import sim < sim/f1tenth_gym_ros.repos
-  ```
+## Gym bridge
 
-  The imported clone (`sim/f1tenth_gym_ros/`, with the engine nested at
-  `f1tenth_gym/`) is gitignored. It is a sim-only dependency and is **not** part of
-  the car runtime image.
-
-### Running the RL stack against the gym
-
-Use [`../tools/sim.sh`](../tools/sim.sh) — it stands up a **two-container** stack
-(the gym bridge in the fork's own image, our nodes in the dev image) on a shared
-docker bridge network, plus a noVNC container for RViz:
+A ROS 2 wrapper around the F1TENTH gym. Runs the *deployed* racing stack over ROS
+topics, closest to on-car behavior. Pinned via
+[`f1tenth_gym_ros.repos`](f1tenth_gym_ros.repos) and imported, not vendored:
 
 ```bash
-# Runs the exact on-car C++ graph. The policy is mounted at /policies/${CKPT}.
+vcs import sim < sim/f1tenth_gym_ros.repos
+```
+
+The clone (`sim/f1tenth_gym_ros/`) is gitignored. It is **not** in the car image.
+Gym track assets are **`IV_2026_SIM`**.
+
+### Run the RL stack against the gym
+
+[`../tools/sim.sh`](../tools/sim.sh) stands up a **two-container** stack (gym
+bridge in the fork image, our nodes in the dev image) on a docker bridge network,
+plus noVNC for RViz:
+
+```bash
+# Exact on-car C++ graph. Policy mounted at /policies/${CKPT}.
 CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
@@ -31,25 +35,21 @@ CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
 ./tools/sim.sh down
 ```
 
-It launches the fork's bridge-only `rl_agent_sim_launch.py` (the built-in
-gap/pid/pp drivers are omitted so they don't fight the agent on `/drive`) together
-with our `f1tenth_bringup/sim.launch.py` (on-car C++ graph). The two ROS containers
-discover each other over DDS via a shared `ROS_DOMAIN_ID` (no host networking —
-unreliable on macOS Docker Desktop).
-The `evaluation` node spawns the car forward-facing along the centerline so it
-matches the training distribution. `tools/sim.sh validate` then runs the closed-loop
-acceptance gate; see [`../docs/deployment.md`](../docs/deployment.md) for the full
-certification sequence and acceptance criteria.
+`CHECKPOINT_DIR` must be absolute. `MODE=dev` (default) builds live source;
+`MODE=release` runs the generic car image. `STACK=vehicle` is the only graph
+(the release gate).
 
-- **Training simulator** ([`../training/f1tenth_sim/`](../training/f1tenth_sim/)) —
-  the batched NVIDIA Warp vehicle model used for RL rollouts. It is pure Python,
-  not a ROS package.
+The fork's `rl_agent_sim_launch.py` omits gap/pid/pp drivers so they don't fight
+`/drive`. Our `f1tenth_bringup/sim.launch.py` runs `vehicle_obs` →
+`policy_inference` → `drive`. DDS discovery uses a shared `ROS_DOMAIN_ID`
+(default 42) — no host networking (unreliable on macOS Docker Desktop).
 
-## Which sim, when?
+The `evaluation` node spawns the car forward-facing along the centerline.
+`validate` is the closed-loop acceptance gate; criteria live in
+[`../docs/deployment.md`](../docs/deployment.md).
 
-| Task | Simulator |
-| --- | --- |
-| RL training / synthetic data | `training/f1tenth_sim/` (Warp) |
-| Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
+## Training simulator
 
-See [`docs/development.md`](../docs/development.md) for launch instructions.
+[`../training/f1tenth_sim/`](../training/f1tenth_sim/) — batched Warp vehicle
+model, pure Python. Default train track is `ecss_clean`; pass `--track IV_2026_SIM`
+before gym certification. See [`../docs/training.md`](../docs/training.md).

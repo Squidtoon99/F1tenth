@@ -8,7 +8,4 @@ The single source of truth is the Python package
 vehicle node cannot import Python, this header duplicates the layout and is kept
 honest by a deploy-time parity test (`test/test_obs_parity.cpp`). This duplication
 is intentional and does not affect the training loop, which uses the Python
-contract directly.
-
-Migration note: the existing C++ observation math in
-`F1tenth-Genesis/ros2_deploy/f1tenth_rl_vehicle/src/rl_obs_core.cpp` moves here.
+contract directly. See [`docs/observation_contract.md`](../../../docs/observation_contract.md).

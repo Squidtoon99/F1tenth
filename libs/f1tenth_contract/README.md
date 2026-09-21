@@ -13,7 +13,7 @@ duplication.
 ## Use from training (no rebuild on changes)
 
 ```bash
-pip install -e libs/f1tenth_contract     # one time, wired into environment.yml/dev.sh
+pip install -e libs/f1tenth_contract     # one time; also in training/requirements-*.txt
 ```
 
 Because it is installed editable, editing `observation.py` (e.g. adding a field) is
@@ -35,7 +35,7 @@ concern and does not affect the training loop.
 
 This package is intentionally **format-only and additive**: it encodes the vector
 dimensions (384 solo / 390 with the opponent block) and the `(start, stop)` slice of
-each field, mirroring the deployed `interfaces.py`. It does not reimplement or
-replace the observation math in the training env, the deploy nodes, or the C++
-mirror — those keep their own implementations, guarded by parity tests against these
-values.
+each field. Action is force/current (`policy_format_version` 2, 20 Hz). It does
+not reimplement the observation math in the training env, the deploy nodes, or the
+C++ mirror — those keep their own implementations, guarded by parity tests against
+these values. See [`docs/observation_contract.md`](../../docs/observation_contract.md).
