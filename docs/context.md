@@ -34,15 +34,16 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Hand-designed observation** — car state (velocity, acceleration, yaw rate),
   the track geometry ahead (curvature / boundary distances), and, for wheel-to-
   wheel racing, opponent-relative features. Ours is the single source of truth in
-  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 384-dim base vector
-  plus an optional 6-dim opponent block).
+  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (always 390-dim: a
+  384-dim base plus a 6-dim opponent block that is all zeros when no opponent
+  is relevant).
 - **Reward shaping** — progress along the track, staying within the boundaries,
   and penalties that encourage clean, rule-abiding overtakes rather than
   collisions.
 - **Sim-to-real via domain randomization** — the policy trains in a batched
   NVIDIA Warp environment against randomized physics so it transfers to the real
-  car. The environment is in
-  [`../training/f1tenth_env/`](../training/f1tenth_env/).
+  car. Physics lives in [`../training/f1tenth_sim/`](../training/f1tenth_sim/);
+  the env loop is [`../training/f1tenth_env/`](../training/f1tenth_env/).
 
 The point of the reference is orientation: when you touch the observation, the
 reward, or the trainer, this is *why* it is shaped the way it is.

@@ -31,7 +31,7 @@ or HPC, so there is intentionally **no GPU CI**.
 ```text
 src/         # single colcon workspace (ROS 2 Humble), grouped by domain
 libs/        # cross-language shared libraries (observation/action contract)
-training/    # RL training frameworks (pure Python; not colcon; not in car image)
+training/    # RL training (pure Python Warp + QR-SAC; not colcon; not in car image)
 sim/         # simulator integration
 deploy/      # images, per-car overlays, deploy scripts
 tools/       # build + dev helpers
@@ -56,7 +56,8 @@ independently:
   `particle_filter` + `f1tenth_localization` launch/wrappers; `range_libc` submodule.
 - `planning/` — raceline optimization and global planning.
 - `control/` — pure-pursuit, follow-the-gap, PID controllers, safety, deadman gate,
-  and the RL drive-command layer.
+  the RL drive-command layer, and `vesc_actuator` (current/brake/servo; exclusive
+  owner of VESC commands).
 - `racing_rl/` — the on-car RL inference nodes (observation builder, policy
   inference, drive). Loads a trained policy at runtime.
 - `racing_algo/` — composition/bringup of the algorithmic racing stack.
@@ -81,9 +82,10 @@ flowchart LR
 ## The observation/action contract
 
 The observation and action layout is a single source of truth in
-[`libs/f1tenth_contract`](libs/f1tenth_contract/). It is a dual package: a normal
-Python package (`pyproject.toml`) that also carries a `package.xml`, so it works in
-both worlds without duplication:
+[`libs/f1tenth_contract`](libs/f1tenth_contract/). The policy vector is always
+390-dim (384 base + 6-dim opponent block, zeroed when no opponent). It is a dual
+package: a normal Python package (`pyproject.toml`) that also carries a
+`package.xml`, so it works in both worlds without duplication:
 
 - **Training** installs it editable (`pip install -e libs/f1tenth_contract`), so
   changing the observation space is picked up on the next run with no rebuild.
