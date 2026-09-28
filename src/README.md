@@ -1,26 +1,27 @@
 # `src/` — colcon workspace
 
-This is the single ROS 2 Humble colcon workspace. Build it from the repo root:
+This is the single ROS 2 Humble colcon workspace. Build it from the repo root,
+inside the dev container:
 
 ```bash
-colcon build --symlink-install        # or ./tools/build.sh
+./tools/build.sh                 # whole workspace (--symlink-install)
+./tools/build.sh -t control      # one module group
 ```
 
-Packages are grouped by domain. Each group directory is code-owned by a team (see
-[`../CODEOWNERS`](../CODEOWNERS)) so modules can evolve independently.
+Packages are grouped by domain. Each group directory is code-owned (see
+[`../CODEOWNERS`](../CODEOWNERS)).
 
 | Group | Purpose |
 | --- | --- |
-| `common/` | Shared interfaces, utilities, and top-level bringup |
+| `common/` | Shared interfaces, C++ obs mirror, top-level bringup |
 | `perception/` | Opponent/obstacle detection from sensors |
 | `mapping/` | SLAM-based track mapping (shared) |
 | `localization/` | Particle-filter localization (shared) |
 | `planning/` | Raceline optimization + global planning |
-| `control/` | Pure-pursuit + drive-command layer |
-| `racing_rl/` | On-car RL inference nodes (loads a trained policy) |
+| `control/` | Pure-pursuit, safety, deadman, `vesc_actuator` |
+| `racing_rl/` | On-car RL inference (`vehicle_obs` → policy → `drive`) |
 | `racing_algo/` | Algorithmic racing stack composition/bringup |
 | `vehicle/` | Vendored hardware driver layer (see `vehicle/VENDORED.md`) |
 
-> Scaffold status: packages here are minimal valid placeholders. Node logic is not
-> implemented yet; each package README notes where existing code will be migrated
-> from.
+Launch the composed stack from `f1tenth_bringup`
+(`car.launch.py` / `race.launch.py` / `sim.launch.py`).

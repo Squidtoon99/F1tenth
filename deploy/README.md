@@ -38,4 +38,5 @@ flowchart LR
    and the RL policy at `/policies`.
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`) whose exact image is
-snapshotted. See [`../docs/deployment.md`](../docs/deployment.md).
+snapshotted. `race.launch.py` defaults to `stack:=algo`; pass `stack:=rl` for
+the policy. See [`../docs/deployment.md`](../docs/deployment.md).
