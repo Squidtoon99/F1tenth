@@ -31,7 +31,7 @@ see [`../CODEOWNERS`](../CODEOWNERS).
 
 - **Docker** (Desktop on macOS/Windows, Engine on Linux) with Buildx. You do **not**
   need ROS 2 on your host — it lives in the container.
-- Git. That's it.
+- Git. For training on the host: Python 3.10+.
 
 ```bash
 git clone https://github.com/Squidtoon99/F1tenth.git f1tenth
@@ -66,29 +66,74 @@ better off with option A. (`SEED_REGISTRY=<user>` overrides the registry.)
 
 `--symlink-install` means **Python-only edits need no rebuild** — just re-run the node.
 
-### Run the simulator
+### Training venv (host, not the ROS container)
 
-Evaluate the RL stack against the f1tenth gym (two containers + noVNC/Foxglove):
+RL training is pure Python. It does **not** use the dev container. Put the venv
+at the **repo root** as `.venv` (same path the docs and agents use):
 
 ```bash
-CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
-#   RViz over VNC : http://localhost:8080/vnc.html
-#   Foxglove      : ws://localhost:8765
-./tools/sim.sh down
+python3 -m venv .venv
+# macOS (CPU tests; small num-envs only — no MPS training):
+.venv/bin/pip install -r training/requirements-mac.txt
+# Linux + NVIDIA GPU:
+.venv/bin/pip install -r training/requirements-gpu.txt \
+  --extra-index-url https://download.pytorch.org/whl/cu130
 ```
 
-See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md) for
-details.
+That install is editable `libs/f1tenth_contract` plus torch, Warp 1.15, wandb.
 
-Train policies with the separate batched Warp simulator:
+```bash
+.venv/bin/python training/standalone_trainer.py --help
+.venv/bin/python -m pytest training/tests
+.venv/bin/python -m flake8 training
+```
+
+Solo training (default track `ecss_clean`, force/current actions, 390-dim obs):
 
 ```bash
 .venv/bin/python training/standalone_trainer.py \
   --device cuda --precision 32 --num-envs 4096
 ```
 
-macOS supports small Warp CPU tests, not MPS training. See
+The gym closed-loop gate uses **IV_2026_SIM**. Train for that gate with
+`--track IV_2026_SIM`. Checkpoints land in `outputs/runs/<id>/checkpoints/`
+(`policy_format_version` 2, `longitudinal_mode: force`). See
 [`../training/README.md`](../training/README.md).
+
+### Run the gym (deployed ROS stack)
+
+Evaluate the on-car C++ graph against the f1tenth gym (two containers +
+noVNC/Foxglove). Needs a trained `.pt` and the dev image from above.
+
+```bash
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
+#   RViz over VNC : http://localhost:8080/vnc.html
+#   Foxglove      : ws://localhost:8765
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
+./tools/sim.sh down
+```
+
+See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md).
+
+```mermaid
+flowchart LR
+  train["training/ (Warp, batched)"] --> ckpt["policy.pt"]
+  ckpt --> gym["tools/sim.sh (gym + on-car C++ graph)"]
+  ckpt --> car["Jetson /policies/policy.pt"]
+```
+
+### Common pitfalls
+
+- **Two Pythons.** Host `.venv` has torch/Warp, no `rclpy`. The container has ROS,
+  no training stack. Never `pip install` ROS bits into `.venv`.
+- **Stack default on the car is `algo`.** `race.launch.py` starts the classical
+  stack unless you pass `stack:=rl`.
+- **Speed-trained checkpoints will not load.** Need `policy_format_version >= 2`
+  and `longitudinal_mode: force`.
+- **macOS is CPU Warp only.** No MPS. Keep `--num-envs` small for tests.
+- **Gym vs training track.** Default trainer track is `ecss_clean`; gym cert is
+  `IV_2026_SIM`. Pass `--track IV_2026_SIM` if the checkpoint must run in
+  `tools/sim.sh`.
 
 ## 3. Contribute a ROS node
 

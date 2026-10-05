@@ -49,7 +49,9 @@ Teammates on amd64 can skip building by pulling the prebuilt seed images
 ./tools/build.sh -t racing_algo   # or just one module group
 ```
 
-To bring up the simulator + a racing stack, see [`docs/development.md`](docs/development.md).
+To bring up the gym + racing stack, or to train a policy, see
+[`docs/getting-started.md`](docs/getting-started.md) and
+[`docs/development.md`](docs/development.md).
 
 ## Branching
 

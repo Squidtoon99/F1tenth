@@ -118,11 +118,15 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 - `maps/` — occupancy grid + centerline/raceline for the current track (`map.yaml`,
   `centerline.csv`, `raceline.csv`).
 
-The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
-or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
+The same image runs the algorithmic or RL stack. `race.launch.py` defaults to
+`stack:=algo`; pass `stack:=rl` for the policy. The RL policy is mounted
+read-only at `/policies/policy.pt`.
 `race.launch.py` starts vehicle drivers, particle-filter localization
 (`enable_localization:=true`), and a read-only `localization_preflight` health check.
 The RL graph emits no drive command until pose + twist are live.
+`car.launch.py` remaps vendored `ackermann_to_vesc` off its command input so
+`f1tenth_control/vesc_actuator` is the exclusive owner of current, brake, and
+servo (ADR 0006).
 
 **Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
 are not compatible with the monorepo 390-dim contract; retrain before RL deploy.

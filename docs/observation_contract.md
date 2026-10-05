@@ -11,6 +11,9 @@ observation fields/order/dimensions (`observation.py`) and the action layout
 (`action.py`). It is a **dual pip + ament package**: a normal Python package that
 also carries a `package.xml`.
 
+Training and deploy both consume this package. The policy observation is always
+**390 values**. Solo or hidden-opponent rows publish exact zeros in `[384:390)`.
+
 ## Who consumes it, and why there are no rebuilds
 
 - **Training** (`training/`) installs it editable:
@@ -21,7 +24,8 @@ also carries a `package.xml`.
 
   Editing the observation space is picked up on the next trainer run — no rebuild,
   no reinstall. This is wired into `training/requirements.txt` and
-  `training/environment.yml`.
+  `training/environment.yml`. `standalone_trainer.py` also imports
+  `validate_policy_artifact` from the contract.
 
 - **On-car inference** (`src/racing_rl`) depends on it via
   `<exec_depend>f1tenth_contract</exec_depend>` and the workspace is built with
@@ -39,6 +43,10 @@ This duplication is intentional and isolated: it is validated by a **parity test
 decoupled from the training loop. When the Python contract changes, update the C++
 mirror and the parity test keeps them honest.
 
+Field-building math lives with each consumer (Warp observation kernel, C++
+`rl_obs_core`, Python `obs_core.py` for parity fixtures). The contract is
+format-only.
+
 ```mermaid
 flowchart TD
   contract["libs/f1tenth_contract (Python, source of truth)"]
@@ -50,23 +58,28 @@ flowchart TD
 
 ## Layout summary
 
-| Mode | `num_obs` | Opponent block |
-| --- | ---: | --- |
-| Solo (1v0) | 384 | — |
-| 1v1 | 390 | `[384:390)` — 6 dims: `rel_x`, `rel_y`, `rel_vx`, `rel_vy`, `gap_norm`, `ey_o` |
+| Slice | Contents |
+| --- | --- |
+| `[0:12)` | lin vel, yaw rate, lin acc, last action, track progress, heading/centerline, contact flag |
+| `[12:372)` | 60 future-track samples |
+| `[372:380)` | tyre slip (ratio ×4, angle ×4; order LR, RR, LF, RF) |
+| `[380:384)` | tyre load `Fz / Fz_static` (same wheel order) |
+| `[384:390)` | opponent: `rel_x`, `rel_y`, `rel_vx`, `rel_vy`, `gap_norm`, `ey_o` |
 
 Block builders emit the 6 relative features with no masking. Callers zero the
 block when the opponent is out of range (training: ±40 m ahead / 20 m behind on
 arc length) or not confidently detected (deploy). An all-zero opponent block is
 the sole “no relevant opponent” signal.
 
-## Migration note
+## Action
 
-The observation math is currently duplicated in three places:
+The policy emits `(throttle, steer)` in `[-1, 1]`:
 
-- `F1tenth-Genesis/f1tenth_env/observations.py`
-- `F1tenth-Genesis/ros2_deploy/.../obs_core.py`
-- `F1tenth-Genesis/ros2_deploy/f1tenth_rl_vehicle/src/rl_obs_core.cpp`
+- `throttle > 0` — drive effort (sim force / VESC motor current)
+- `throttle = 0` — coast
+- `throttle < 0` — brake effort (sim brake force / VESC brake current)
+- `steer` — `steering_angle = steer * MAX_STEER` (`MAX_STEER = 0.33` rad)
 
-These collapse into `libs/f1tenth_contract` (Python) + the `f1tenth_common` C++
-mirror during migration.
+Control rate is 20 Hz (`CONTROL_HZ`). Checkpoints must be
+`policy_format_version >= 2` with `longitudinal_mode: force`. Speed-trained
+artifacts are rejected at load. See [adr/0006](adr/0006-current-only-vesc-actuation.md).
