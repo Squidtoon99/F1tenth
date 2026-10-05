@@ -1,10 +1,8 @@
 # planning/
 
-Planning module group (algorithmic stack). Turns a map/centerline into a reference
-trajectory for the controller.
+Planning module group (algorithmic stack). Intended to turn a map/centerline
+into a reference trajectory.
 
-- `f1tenth_planning/` — offline raceline (minimum-curvature/optimal) generation and
-  online global/local planning.
-
-Migration note: the centerline/raceline builders in `F1tenth-Genesis/scripts/` and
-the navigator planning bits in `ros2_mapping/f1tenth_mapping` consolidate here.
+`f1tenth_planning/` is a placeholder package (no nodes yet). Controllers read
+the raceline CSV from the per-car overlay at `/config/maps/raceline.csv`.
+Centerlines come from [`../mapping/`](../mapping/) post-process.
