@@ -3,7 +3,7 @@
 Message/service definitions shared across the stack — the topic contract that
 perception, planning, control, and the racing stacks agree on.
 
-Current placeholders:
+Current messages:
 
 - `msg/Observation.msg` — flat observation vector (layout defined in
   [`libs/f1tenth_contract`](../../../libs/f1tenth_contract/)).
