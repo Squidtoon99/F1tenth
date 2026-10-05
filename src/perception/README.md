@@ -1,10 +1,8 @@
 # perception/
 
-Perception module group. Turns raw sensor data into higher-level detections
-consumed by the racing stacks.
+Perception module group. Intended for opponent/obstacle detection from sensors.
 
-- `f1tenth_perception/` — nodes such as LiDAR-based opponent/obstacle detection.
-
-Migration note: the opponent detector in
-`F1tenth-Genesis/ros2_deploy/f1tenth_rl_vehicle` (LiDAR `/scan` ->
-`/rl/opponent/odom`) moves here.
+`f1tenth_perception/` is a placeholder package (no nodes yet). The live LiDAR
+opponent detector is `opponent_detector` in [`../racing_rl/`](../racing_rl/):
+`/scan` + pose → `/rl/opponent/odom`. Solo racing leaves it off; the 6-dim
+opponent obs block stays zero.
