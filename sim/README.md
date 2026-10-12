@@ -52,7 +52,7 @@ Env:
 | --- | --- |
 | `CHECKPOINT_DIR` | Host dir with the `.pt` (required) |
 | `CKPT` | Filename inside that dir (default `policy.pt`) |
-| `STACK` | `vehicle` only — on-car C++ graph |
+| `STACK` | `vehicle` only (on-car C++ graph). Not `race.launch.py`'s `algo`/`rl`. |
 | `MODE` | `dev` (live source, default) or `release` (baked `f1tenth-racing` image) |
 | `ROS_DOMAIN_ID` | Shared DDS domain (default 42; no host networking) |
 

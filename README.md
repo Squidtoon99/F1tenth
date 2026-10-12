@@ -35,7 +35,7 @@ covers what the repo is, first-time setup, and contributing a ROS node end to en
 Everything runs in Docker; you do not need ROS 2 installed on your host.
 
 ```bash
-git clone https://github.com/Squidtoon99/F1tenth.git f1tenth && cd f1tenth
+git clone --recurse-submodules https://github.com/Squidtoon99/F1tenth.git f1tenth && cd f1tenth
 ./tools/dev.sh up        # build/enter the dev container (or `./tools/dev.sh pull`)
 ```
 
