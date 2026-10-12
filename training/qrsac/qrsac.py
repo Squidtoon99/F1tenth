@@ -414,6 +414,8 @@ class QRSACTrainer:
             torch.arange(num_quantiles, device=device, dtype=torch.float32) + 0.5
         ) / num_quantiles
 
+        if compile and hasattr(self.actor, "use_segment_gru"):
+            self.actor.use_segment_gru = False
         self._full_sequence_graph = self._adam_capturable
         self._sequence_graph = None
         self._sequence_graph_warmed = False

@@ -234,6 +234,8 @@ class PPOTrainer:
         self.value_optimizer = Adam(self.value_critic.parameters(), lr=value_lr)
         self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
         self._update_value_forward = self.value_critic
+        if self.compile and hasattr(self.actor, "use_segment_gru"):
+            self.actor.use_segment_gru = False
         if self.compile:
             self._evaluate_actions_sequence = torch.compile(
                 self._evaluate_actions_sequence, mode=self.compile_mode
