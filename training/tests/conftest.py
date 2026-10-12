@@ -23,6 +23,10 @@ os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
 _TRAINING_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(_TRAINING_ROOT, ".."))
+_POLICY_LIB = os.path.join(_REPO_ROOT, "libs", "f1tenth_policy")
+if _POLICY_LIB not in sys.path:
+    sys.path.insert(0, _POLICY_LIB)
 if _TRAINING_ROOT not in sys.path:
     sys.path.insert(0, _TRAINING_ROOT)
 

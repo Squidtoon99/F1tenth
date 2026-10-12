@@ -10,6 +10,7 @@
       2.0,
       5.0
     ],
+    "opponent_lateral_offset_m": 0.15,
     "f_drive_max": 26.5,
     "f_brake_max": 23.1,
     "power_max": 320.0,

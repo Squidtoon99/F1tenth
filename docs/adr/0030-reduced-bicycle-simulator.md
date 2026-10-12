@@ -55,3 +55,7 @@ required for a standing enable not to dive.
   unidentified, not a pass.
 - Steering saturation and drive/brake chatter are in-scope to report, not to
   retune by adding plant terms.
+- Scripted opponents command unclamped delta-to-logical steer with
+  speed-scaled lookahead and corner slow-in, and LUT recovery only replaces
+  a farther window projection. Tight maps (courtyard) override lateral offset
+  to 0.15 m.

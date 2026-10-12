@@ -141,8 +141,31 @@ def project_track(
 ) -> FrenetState:
     result = project_window(position, seed_segment, track)
     if result.distance_sq > 0.25:
-        result = project_window(position, recovery_seed(position, track), track)
+        recovered = project_window(
+            position, recovery_seed(position, track), track
+        )
+        if recovered.distance_sq < result.distance_sq:
+            result = recovered
     return result
+
+
+@wp.func
+def track_heading_ahead(
+    frenet: FrenetState,
+    track: TrackData,
+    distance: wp.float32,
+) -> wp.float32:
+    segment = frenet.segment
+    covered = wp.float32(0.0)
+    available = (1.0 - frenet.t) * track.segment_length[segment]
+    for _ in range(MAX_FORWARD_SEGMENTS):
+        if covered + available >= distance:
+            break
+        covered = covered + available
+        segment = wrap_segment(segment + 1, track.count)
+        available = track.segment_length[segment]
+    tangent = track.tangent[segment]
+    return wp.atan2(tangent[1], tangent[0])
 
 
 @wp.func
@@ -1168,29 +1191,40 @@ def scripted_opponent_action(
     opponent: VehicleLocal,
     frenet: FrenetState,
     env: EnvBuffers,
+    track: TrackData,
     sim: SimParams,
     params: OpponentParams,
 ) -> wp.vec2f:
-    heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    heading_error = wrap_angle(opponent.yaw - heading)
     track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
+    lookahead = wp.float32(0.5) * wp.abs(track_speed)
+    if lookahead < 0.05:
+        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    else:
+        heading = track_heading_ahead(frenet, track, lookahead)
+    heading_error = wrap_angle(opponent.yaw - heading)
     ey_corr = frenet.ey - env.opponent_lateral_offset[env_id]
     cross_track = wp.atan(
         params.kp_lateral
         * ey_corr
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steering_target = -(params.kp_heading * heading_error + cross_track)
+    steering_target = wp.clamp(
+        -(params.kp_heading * heading_error + cross_track),
+        -sim.max_steer,
+        sim.max_steer,
+    )
     steering = (steering_target - opponent.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
+    speed_scale = wp.max(
+        wp.float32(0.3),
+        1.0
+        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
+    )
     throttle = params.kp_speed * (
-        env.opponent_target_speed[env_id] - track_speed
+        speed_scale * env.opponent_target_speed[env_id] - track_speed
     )
-    return wp.vec2f(
-        wp.clamp(throttle, -1.0, 1.0),
-        wp.clamp(steering, -1.0, 1.0),
-    )
+    return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
 @wp.func
@@ -1199,29 +1233,40 @@ def scripted_physics_opponent_action(
     opponent: VehicleLocal,
     frenet: FrenetState,
     buffers: PhysicsBuffers,
+    track: TrackData,
     sim: SimParams,
     params: OpponentParams,
 ) -> wp.vec2f:
-    heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    heading_error = wrap_angle(opponent.yaw - heading)
     track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
+    lookahead = wp.float32(0.5) * wp.abs(track_speed)
+    if lookahead < 0.05:
+        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    else:
+        heading = track_heading_ahead(frenet, track, lookahead)
+    heading_error = wrap_angle(opponent.yaw - heading)
     ey_corr = frenet.ey - buffers.opponent_lateral_offset[env_id]
     cross_track = wp.atan(
         params.kp_lateral
         * ey_corr
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
-    steering_target = -(params.kp_heading * heading_error + cross_track)
+    steering_target = wp.clamp(
+        -(params.kp_heading * heading_error + cross_track),
+        -sim.max_steer,
+        sim.max_steer,
+    )
     steering = (steering_target - opponent.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
+    speed_scale = wp.max(
+        wp.float32(0.3),
+        1.0
+        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
+    )
     throttle = params.kp_speed * (
-        buffers.opponent_target_speed[env_id] - track_speed
+        speed_scale * buffers.opponent_target_speed[env_id] - track_speed
     )
-    return wp.vec2f(
-        wp.clamp(throttle, -1.0, 1.0),
-        wp.clamp(steering, -1.0, 1.0),
-    )
+    return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
 @wp.func
@@ -1800,6 +1845,7 @@ def physics_stage_kernel(
                 opponent,
                 opponent_frenet,
                 env,
+                track,
                 sim,
                 opponent_params,
             )
@@ -2086,6 +2132,7 @@ def env_step_kernel(
                 opponent,
                 opponent_frenet,
                 env,
+                track,
                 sim,
                 opponent_params,
             )
