@@ -1,4 +1,4 @@
-# 0030 — Replace the detailed plant with a reduced bicycle at 20 Hz
+# 0033 — Replace the detailed plant with a reduced bicycle at 20 Hz
 
 - Status: Proposed
 - Date: 2026-10-12
