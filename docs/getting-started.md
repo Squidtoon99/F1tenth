@@ -34,10 +34,13 @@ see [`../CODEOWNERS`](../CODEOWNERS).
 - Git. For training on the host: Python 3.10+.
 
 ```bash
-git clone https://github.com/Squidtoon99/F1tenth.git f1tenth
+git clone --recurse-submodules https://github.com/Squidtoon99/F1tenth.git f1tenth
 cd f1tenth
 ./tools/dev-setup.sh     # once per machine: checks docker/buildx, enables cross-arch
 ```
+
+`--recurse-submodules` pulls `src/localization/range_libc` (needed by the
+particle filter). If you already cloned: `git submodule update --init`.
 
 ### Get a dev container
 
@@ -128,6 +131,8 @@ flowchart LR
   no training stack. Never `pip install` ROS bits into `.venv`.
 - **Stack default on the car is `algo`.** `race.launch.py` starts the classical
   stack unless you pass `stack:=rl`.
+- **`tools/sim.sh` is not `race.launch.py`.** Gym eval only accepts
+  `STACK=vehicle` (the on-car C++ graph). `stack:=algo|rl` is the car launch.
 - **Speed-trained checkpoints will not load.** Need `policy_format_version >= 2`
   and `longitudinal_mode: force`.
 - **macOS is CPU Warp only.** No MPS. Keep `--num-envs` small for tests.
