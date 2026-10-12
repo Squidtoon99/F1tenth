@@ -225,9 +225,14 @@ def test_snapshot_contains_resolved_config_and_provenance(tmp_path):
     assert snapshot["config"]["schedule"]["total_transitions"] == 42
     contact = snapshot["effective_wall_contact"]
     assert contact["geometry"] == "occupancy footprint corners share the LiDAR distance field"
-    assert contact["coefficient_per_m"] == 15.0
+    assert contact["coefficient_per_m"] == cfg["reward"]["wall_contact_coefficient"]
     assert contact["control_dt_s"] == pytest.approx(0.05)
     assert contact["formula"] == "-coefficient * speed_mps"
+    horizon = snapshot["effective_horizon"]
+    assert horizon["control_dt_s"] == pytest.approx(0.05)
+    assert horizon["ppo_gamma"] == pytest.approx(0.9896 ** 0.5)
+    assert horizon["ppo_gae_lambda"] == pytest.approx(0.95 ** 0.5)
+    assert horizon["ppo_horizon_from_control_dt"] is True
     prov = snapshot["config_provenance"]
     assert prov["precedence"] == ["DEFAULT_CONFIG", "config_patch", "cli_args"]
     assert prov["patch"]["path"] == str(patch_file.resolve())

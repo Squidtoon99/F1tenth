@@ -99,6 +99,7 @@ class TrajectoryReplayBuffer:
         )
         self.reward = torch.zeros(e, t, device=device, dtype=torch.float32)
         self.done = torch.zeros(e, t, device=device, dtype=torch.float32)
+        self.truncated = torch.zeros(e, t, device=device, dtype=torch.bool)
         self.reset = torch.zeros(e, t, device=device, dtype=torch.bool)
         self.episode_id = torch.zeros(e, t, device=device, dtype=torch.long)
         self.hidden = torch.zeros(
@@ -175,6 +176,7 @@ class TrajectoryReplayBuffer:
         rewards: torch.Tensor,
         dones: torch.Tensor,
         hidden: torch.Tensor | None = None,
+        timeouts: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Append one lockstep transition for every env. Returns inserted count."""
         col = self.ptr
@@ -184,7 +186,14 @@ class TrajectoryReplayBuffer:
         self.action[:, col] = actions.detach().to(torch.float32)
         self.reward[:, col] = rewards.detach().to(torch.float32)
         dones_b = dones.detach().bool()
-        self.done[:, col] = dones_b.to(torch.float32)
+        if timeouts is None:
+            trunc_b = torch.zeros_like(dones_b)
+            true_done = dones_b
+        else:
+            trunc_b = timeouts.detach().bool()
+            true_done = dones_b & ~trunc_b
+        self.done[:, col] = true_done.to(torch.float32)
+        self.truncated[:, col] = trunc_b
         self.reset[:, col] = self._pending_reset
         self.episode_id[:, col] = self._ep_id
         if self._has_opp_block:
@@ -382,6 +391,7 @@ class TrajectoryReplayBuffer:
         action = self.action[env_exp, time_idx]
         reward = self.reward[env_exp, time_idx]
         done = self.done[env_exp, time_idx]
+        truncated = self.truncated[env_exp, time_idx].to(dtype=reward.dtype)
         reset = self.reset[env_exp, time_idx].float()
         episode_id = self.episode_id[env_exp, time_idx]
 
@@ -390,10 +400,13 @@ class TrajectoryReplayBuffer:
 
         rew_g = reward[:, self._n_step_idx]
         done_g = done[:, self._n_step_idx]
+        trunc_g = truncated[:, self._n_step_idx]
         prior_done = torch.cumsum(done_g, dim=-1) - done_g
-        alive = (prior_done == 0).to(dtype=reward.dtype)
+        prior_trunc = torch.cumsum(trunc_g, dim=-1) - trunc_g
+        alive = ((prior_done == 0) & (prior_trunc == 0)).to(dtype=reward.dtype)
         n_step_reward = (rew_g * self._gamma_powers * alive).sum(dim=-1)
         n_step_done = (done_g * alive).sum(dim=-1).clamp_max(1.0)
+        n_step_valid = 1.0 - (trunc_g * alive).sum(dim=-1).clamp_max(1.0)
 
         boot_actor = actor[:, self._boot_lo : self._boot_hi]
         boot_critic = critic[:, self._boot_lo : self._boot_hi]
@@ -409,6 +422,7 @@ class TrajectoryReplayBuffer:
             "hidden": hidden,
             "n_step_reward": n_step_reward,
             "n_step_done": n_step_done,
+            "n_step_valid": n_step_valid,
             "bootstrap_actor_obs": boot_actor,
             "bootstrap_critic_obs": boot_critic,
             "env_index": env_idx,

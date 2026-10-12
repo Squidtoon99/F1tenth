@@ -264,6 +264,33 @@ def test_trajectory_replay_terminal_safe_n_step_targets():
     assert float(batch["n_step_done"][0, 1]) == 0.0
 
 
+def test_trajectory_replay_timeouts_are_truncation_not_terminal():
+    replay = _small_trajectory_buffer(
+        num_envs=1, capacity=64, n_step=3, gamma=0.5, burn_in=4, train_len=4
+    )
+    timeout_t = 4
+    for t in range(replay.seq_len):
+        timed_out = t == timeout_t
+        replay.add(
+            torch.full((1, ACTOR_DIM), float(t)),
+            torch.full((1, CRITIC_DIM), float(t)),
+            torch.zeros(1, 1),
+            torch.ones(1),
+            torch.tensor([timed_out]),
+            hidden=torch.zeros(1, 8),
+            timeouts=torch.tensor([timed_out]),
+        )
+    assert float(replay.done[0, timeout_t]) == 0.0
+    assert bool(replay.truncated[0, timeout_t])
+    assert bool(replay.reset[0, timeout_t + 1])
+    batch = replay.sample(1)
+    assert float(batch["n_step_done"][0, 0]) == 0.0
+    assert float(batch["n_step_valid"][0, 0]) == 0.0
+    assert torch.allclose(batch["n_step_reward"][0, 0], torch.tensor(1.0))
+    assert float(batch["n_step_valid"][0, 1]) == 1.0
+    assert float(batch["n_step_done"][0, 1]) == 0.0
+
+
 def test_trajectory_replay_seven_step_targets_match_manual():
     """Production horizon constants: 16 burn-in + 32 train + 7 lookahead."""
     n_step = 7
@@ -360,10 +387,15 @@ def _reference_trajectory_sample(
     hidden = replay.hidden[env_idx, ckpt_idx].to(torch.float32)
     rew_g = reward[:, replay._n_step_idx]
     done_g = done[:, replay._n_step_idx]
+    trunc_g = replay.truncated[env_exp, time_idx].to(dtype=reward.dtype)[
+        :, replay._n_step_idx
+    ]
     prior_done = torch.cumsum(done_g, dim=-1) - done_g
-    alive = (prior_done == 0).to(torch.float32)
+    prior_trunc = torch.cumsum(trunc_g, dim=-1) - trunc_g
+    alive = ((prior_done == 0) & (prior_trunc == 0)).to(torch.float32)
     n_step_reward = (rew_g * replay._gamma_powers * alive).sum(dim=-1)
-    n_step_done = ((done_g * alive).sum(dim=-1) > 0).to(torch.float32)
+    n_step_done = (done_g * alive).sum(dim=-1).clamp_max(1.0)
+    n_step_valid = 1.0 - (trunc_g * alive).sum(dim=-1).clamp_max(1.0)
     boot_lo = replay.burn_in + replay.n_step
     boot_hi = replay.burn_in + replay.train_len + replay.n_step
     return {
@@ -377,6 +409,7 @@ def _reference_trajectory_sample(
         "hidden": hidden,
         "n_step_reward": n_step_reward,
         "n_step_done": n_step_done,
+        "n_step_valid": n_step_valid,
         "bootstrap_actor_obs": actor[:, boot_lo:boot_hi],
         "bootstrap_critic_obs": critic[:, boot_lo:boot_hi],
         "env_index": env_idx,
@@ -424,6 +457,7 @@ def test_trajectory_sample_matches_reference_and_cached_starts():
         "hidden",
         "n_step_reward",
         "n_step_done",
+        "n_step_valid",
         "bootstrap_actor_obs",
         "bootstrap_critic_obs",
     ):
@@ -774,6 +808,8 @@ def test_cpu_trajectory_replay_schema_at_production_horizons():
     assert batch["critic_obs"].shape == (2, 55, CRITIC_DIM)
     assert batch["n_step_reward"].shape == (2, 32)
     assert batch["n_step_done"].shape == (2, 32)
+    assert batch["n_step_valid"].shape == (2, 32)
+    assert torch.all(batch["n_step_valid"] == 1.0)
     assert batch["bootstrap_actor_obs"].shape == (2, 32, ACTOR_DIM)
     assert batch["bootstrap_critic_obs"].shape == (2, 32, CRITIC_DIM)
     assert batch["hidden"].shape == (2, 16)
@@ -855,6 +891,7 @@ BATCH_SCHEMA_KEYS = (
     "hidden",
     "n_step_reward",
     "n_step_done",
+    "n_step_valid",
     "bootstrap_actor_obs",
     "bootstrap_critic_obs",
     "env_index",
