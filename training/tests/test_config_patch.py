@@ -302,3 +302,55 @@ def test_build_env_cfg_forwards_root_sensor():
     assert env_cfg["sensor"]["num_beams"] == 541
     assert env_cfg["sensor"]["beam_decimation"] == 4
     assert env_cfg["sensor"]["max_march_steps"] == 64
+
+
+def test_config_without_scenarios_omits_the_key():
+    cfg = _resolve([])
+    assert "scenarios" not in cfg
+
+
+def test_validate_accepts_scenarios_list():
+    patch = {
+        "scenarios": [
+            {
+                "name": "solo_flying",
+                "weight": 1.0,
+                "env": {"reset_stationary_probability": 0.0},
+            }
+        ]
+    }
+    validate_config_patch(patch)
+    cfg = _resolve(["--num-envs", "4"], patch=patch)
+    assert cfg["scenarios"][0]["name"] == "solo_flying"
+
+
+def test_validate_rejects_non_list_scenarios():
+    with pytest.raises(ValueError, match="scenarios must be a JSON array"):
+        validate_config_patch({"scenarios": {"name": "solo"}})
+
+
+def test_validate_rejects_unknown_scenario_key():
+    with pytest.raises(ValueError, match="unknown keys"):
+        validate_config_patch(
+            {"scenarios": [{"name": "solo", "weight": 1.0, "registry": "nope"}]}
+        )
+
+
+def test_validate_rejects_scenario_env_unknown_key():
+    with pytest.raises(
+        ValueError, match=r"unknown config key 'scenarios\[0\].env.nope'"
+    ):
+        validate_config_patch(
+            {"scenarios": [{"name": "solo", "weight": 1.0, "env": {"nope": 1}}]}
+        )
+
+
+def test_build_config_rejects_too_few_envs_for_scenarios():
+    patch = {
+        "scenarios": [
+            {"name": "a", "weight": 1.0},
+            {"name": "b", "weight": 1.0},
+        ]
+    }
+    with pytest.raises(ValueError, match="num_envs=1 must be >= number of scenarios"):
+        _resolve(["--num-envs", "1"], patch=patch)

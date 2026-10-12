@@ -959,6 +959,306 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
     }
 
 
+_SCENARIO_KEYS = frozenset({"name", "weight", "env", "sensor"})
+_LOCKED_SCENARIO_ENV_KEYS = frozenset({"sim_dt", "control_interval", "num_actions"})
+
+
+def validate_scenario_list(scenarios) -> None:
+    """Reject a malformed ``scenarios`` list; empty / missing is valid."""
+    if not isinstance(scenarios, list):
+        raise ValueError(
+            f"scenarios must be a JSON array, got {type(scenarios).__name__}"
+        )
+    names: list[str] = []
+    for index, raw in enumerate(scenarios):
+        loc = f"scenarios[{index}]"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{loc} must be a JSON object")
+        extra = set(raw) - _SCENARIO_KEYS
+        if extra:
+            raise ValueError(
+                f"{loc} has unknown keys {sorted(extra)}; "
+                "allowed: name, weight, env, sensor"
+            )
+        name = raw.get("name")
+        if not isinstance(name, str) or not name or "/" in name:
+            raise ValueError(
+                f"{loc}.name must be a non-empty string without '/', got {name!r}"
+            )
+        if name in names:
+            raise ValueError(f"duplicate scenario name {name!r}")
+        names.append(name)
+        weight = raw.get("weight")
+        if (
+            not isinstance(weight, (int, float))
+            or isinstance(weight, bool)
+            or not math.isfinite(float(weight))
+            or float(weight) <= 0.0
+        ):
+            raise ValueError(
+                f"{loc}.weight must be a positive finite number, got {weight!r}"
+            )
+        env_patch = raw.get("env") or {}
+        if not isinstance(env_patch, dict):
+            raise ValueError(f"{loc}.env must be a mapping")
+        validate_config_patch(env_patch, DEFAULT_CONFIG["env"], f"{loc}.env")
+        sensor_patch = raw.get("sensor") or {}
+        if not isinstance(sensor_patch, dict):
+            raise ValueError(f"{loc}.sensor must be a mapping")
+        if sensor_patch:
+            validate_config_patch(
+                sensor_patch, DEFAULT_CONFIG["sensor"], f"{loc}.sensor"
+            )
+
+
+def allocate_env_counts(weights: list[float], num_envs: int) -> list[int]:
+    """Split ``num_envs`` across scenarios by weight (largest remainder)."""
+    n_scn = len(weights)
+    if n_scn == 0:
+        return []
+    if int(num_envs) < n_scn:
+        raise ValueError(
+            f"num_envs={num_envs} must be >= number of scenarios ({n_scn})"
+        )
+    total = float(sum(weights))
+    if total <= 0.0 or not math.isfinite(total):
+        raise ValueError("scenario weights must sum to a positive finite value")
+    raw = [float(weight) / total * int(num_envs) for weight in weights]
+    counts = [int(math.floor(value)) for value in raw]
+    leftover = int(num_envs) - sum(counts)
+    order = sorted(
+        range(n_scn), key=lambda i: (raw[i] - counts[i], -i), reverse=True
+    )
+    for i in order[:leftover]:
+        counts[i] += 1
+    while n_scn and min(counts) == 0:
+        donor = max(range(n_scn), key=lambda i: counts[i])
+        receiver = counts.index(0)
+        if counts[donor] <= 1:
+            raise ValueError("cannot allocate at least one env per scenario")
+        counts[donor] -= 1
+        counts[receiver] += 1
+    return counts
+
+
+def apply_scenario_patch(cfg: dict, scenario: dict, workspace_dir: str) -> dict:
+    """Deep-copy ``cfg`` and apply one scenario's env/sensor patch."""
+    merged = copy.deepcopy(cfg)
+    env_patch = scenario.get("env") or {}
+    sensor_patch = scenario.get("sensor") or {}
+    if env_patch:
+        _deep_merge(merged["env"], env_patch)
+    if sensor_patch:
+        _deep_merge(merged["sensor"], sensor_patch)
+    for key in _LOCKED_SCENARIO_ENV_KEYS:
+        if key in env_patch and merged["env"][key] != cfg["env"][key]:
+            raise ValueError(
+                f"scenario {scenario['name']!r} cannot change env.{key}"
+            )
+    if "track" in env_patch and "episode_length" not in env_patch:
+        merged["env"]["episode_length"] = episode_length_for_track(
+            track=merged["env"]["track"],
+            workspace_dir=workspace_dir,
+            ref_lap_speed_mps=float(
+                merged["env"].get("expected_lap_speed_mps", 3.5)
+            ),
+            lap_multiplier=float(merged["env"].get("episode_lap_multiplier", 3.0)),
+        )
+    return merged
+
+
+def resolve_training_scenarios(
+    cfg: dict, num_envs: int, workspace_dir: str
+) -> list[dict]:
+    """Return per-scenario ``{name, weight, num_envs, cfg}`` rows, or ``[]``."""
+    scenarios = cfg.get("scenarios") or []
+    if not scenarios:
+        return []
+    validate_scenario_list(scenarios)
+    counts = allocate_env_counts(
+        [float(scenario["weight"]) for scenario in scenarios], int(num_envs)
+    )
+    resolved = []
+    for scenario, count in zip(scenarios, counts):
+        resolved.append(
+            {
+                "name": scenario["name"],
+                "weight": float(scenario["weight"]),
+                "num_envs": int(count),
+                "cfg": apply_scenario_patch(cfg, scenario, workspace_dir),
+            }
+        )
+    return resolved
+
+
+def cat_nested(values):
+    """Concatenate a list of nested dicts of tensors along dim 0."""
+    first = values[0]
+    if isinstance(first, torch.Tensor):
+        return torch.cat(values, dim=0)
+    if isinstance(first, dict):
+        return {key: cat_nested([item[key] for item in values]) for key in first}
+    return first
+
+
+def make_training_envs(cfg, args, resolved, obs_cfg, reward_cfg):
+    """Build one ``F1tenthEnv`` per scenario, or the single current-path env."""
+
+    def _open(env_cfg, num_envs):
+        return F1tenthEnv(
+            num_envs=num_envs,
+            env_cfg=env_cfg,
+            obs_cfg=obs_cfg,
+            reward_cfg=reward_cfg,
+            show_viewer=False,
+            enable_recording=False,
+        )
+
+    if not resolved:
+        env_cfg = build_env_cfg(
+            cfg,
+            launch_strategy="uniform_jittered",
+            launch_strategy_data={"num_cars": args.num_envs},
+        )
+        return [_open(env_cfg, args.num_envs)], env_cfg
+    envs = []
+    primary_cfg = None
+    try:
+        for spec in resolved:
+            env_cfg = build_env_cfg(
+                spec["cfg"],
+                launch_strategy="uniform_jittered",
+                launch_strategy_data={"num_cars": spec["num_envs"]},
+            )
+            if primary_cfg is None:
+                primary_cfg = env_cfg
+            envs.append(_open(env_cfg, spec["num_envs"]))
+    except Exception:
+        for env in envs:
+            env.close()
+        raise
+    return envs, primary_cfg
+
+
+def collect_sensor_reset(envs):
+    """Reset every training env and return concatenated actor/critic obs."""
+    if len(envs) == 1:
+        raw, _extras = envs[0].reset(with_sensors=True)
+        return unpack_sensor_observations(raw)
+    actor_parts = []
+    critic_parts = []
+    for env in envs:
+        raw, _extras = env.reset(with_sensors=True)
+        actor_obs, critic_obs = unpack_sensor_observations(raw)
+        actor_parts.append(actor_obs)
+        critic_parts.append(critic_obs)
+    return torch.cat(actor_parts, dim=0), torch.cat(critic_parts, dim=0)
+
+
+def collect_sensor_step(envs, actions, counts, control_interval):
+    """Step every training env and concatenate obs/reward/done/extras."""
+    if len(envs) == 1:
+        raw, reward, done, extras = envs[0].step(
+            actions, n_steps=control_interval, with_sensors=True
+        )
+        actor_obs, critic_obs = unpack_sensor_observations(raw)
+        return actor_obs, critic_obs, reward.to(torch.float32), done, extras
+    action_chunks = torch.split(actions, counts, dim=0)
+    actor_parts = []
+    critic_parts = []
+    reward_parts = []
+    done_parts = []
+    extras_parts = []
+    for env, chunk in zip(envs, action_chunks):
+        raw, reward, done, extras = env.step(
+            chunk, n_steps=control_interval, with_sensors=True
+        )
+        actor_obs, critic_obs = unpack_sensor_observations(raw)
+        actor_parts.append(actor_obs)
+        critic_parts.append(critic_obs)
+        reward_parts.append(reward)
+        done_parts.append(done)
+        extras_parts.append(extras)
+    return (
+        torch.cat(actor_parts, dim=0),
+        torch.cat(critic_parts, dim=0),
+        torch.cat(reward_parts, dim=0).to(torch.float32),
+        torch.cat(done_parts, dim=0),
+        cat_nested(extras_parts),
+    )
+
+
+def update_episode_lap_counts(
+    episode_laps: torch.Tensor, lap_count: torch.Tensor, done: torch.Tensor
+) -> torch.Tensor:
+    """Keep last pre-reset ``lap_count`` on done rows (env auto-resets buffers)."""
+    live = ~done.bool()
+    return torch.where(live, lap_count.to(dtype=episode_laps.dtype), episode_laps)
+
+
+def accumulate_scenario_diagnostics(
+    diag: RunningStats,
+    names: list[str],
+    counts: list[int],
+    episode_rewards: torch.Tensor,
+    episode_laps: torch.Tensor,
+    done: torch.Tensor,
+    extras: dict,
+) -> None:
+    """Fold per-scenario episode return, lap completion, and crash rate."""
+    term = extras.get("termination", {})
+    offset = 0
+    for name, count in zip(names, counts):
+        sl = slice(offset, offset + count)
+        done_s = done[sl]
+        crash = torch.zeros_like(done_s, dtype=torch.bool)
+        for flag in (
+            "out_of_bounds",
+            "not_moving",
+            "invalid_state",
+            "collision",
+        ):
+            value = term.get(flag)
+            if isinstance(value, torch.Tensor):
+                crash = crash | value[sl].bool()
+        prefix = f"scn/{name}"
+        diag.add_event_mean(f"{prefix}/episode_return", episode_rewards[sl], done_s)
+        completed = (episode_laps[sl] >= 1).to(dtype=episode_rewards.dtype)
+        diag.add_event_mean(f"{prefix}/lap_completion", completed, done_s)
+        diag.add_event_mean(
+            f"{prefix}/crash", crash.to(dtype=episode_rewards.dtype), done_s
+        )
+        diag.add_total(f"{prefix}/episodes", done_s.to(dtype=episode_rewards.dtype))
+        offset += count
+
+
+def scenario_metric_payload(diag: RunningStats, names: list[str]) -> dict[str, float]:
+    payload = {}
+    for name in names:
+        prefix = f"scn/{name}"
+        payload[f"{prefix}/episode_return"] = diag.mean(f"{prefix}/episode_return")
+        payload[f"{prefix}/lap_completion_rate"] = diag.mean(
+            f"{prefix}/lap_completion"
+        )
+        payload[f"{prefix}/crash_rate"] = diag.mean(f"{prefix}/crash")
+        payload[f"{prefix}/episodes"] = diag.total(f"{prefix}/episodes")
+    return payload
+
+
+def log_scenario_metrics(log: logging.Logger, diag: RunningStats, names: list[str]):
+    payload = scenario_metric_payload(diag, names)
+    for name in names:
+        prefix = f"scn/{name}"
+        log.info(
+            "  %s: episodes=%d return=%.4f lap_completion=%.3f crash=%.3f",
+            prefix,
+            int(payload[f"{prefix}/episodes"]),
+            payload[f"{prefix}/episode_return"],
+            payload[f"{prefix}/lap_completion_rate"],
+            payload[f"{prefix}/crash_rate"],
+        )
+
+
 # Gated reward-scale coefficients that compute_rewards enables purely by their
 # presence in reward_scales, so they are intentionally absent from DEFAULT_CONFIG
 # (adding them there would activate the term). build_config injects them for 1v1,
@@ -1001,6 +1301,9 @@ def validate_config_patch(
                         f"type mismatch for config key '{loc}': expected a "
                         f"scalar, got a mapping"
                     )
+                continue
+            if path == "" and key == "scenarios":
+                validate_scenario_list(value)
                 continue
             raise ValueError(f"unknown config key '{loc}' (not in DEFAULT_CONFIG)")
         ref_val = reference[key]
@@ -1242,6 +1545,12 @@ def build_config(
     ):
         scales.pop(dead, None)
     cfg["reward"]["rear_end_gate"] = "any_contact"
+    if cfg.get("scenarios"):
+        validate_scenario_list(cfg["scenarios"])
+        allocate_env_counts(
+            [float(scenario["weight"]) for scenario in cfg["scenarios"]],
+            int(args.num_envs),
+        )
     validate_model_architecture(cfg)
     validate_algorithm_config(cfg, int(args.num_envs))
     args.algorithm = str(cfg["algorithm"])
@@ -2024,6 +2333,11 @@ def main():
         launch_strategy="uniform_jittered",
         launch_strategy_data={"num_cars": args.num_envs},
     )
+    resolved_scenarios = resolve_training_scenarios(
+        cfg, args.num_envs, str(training_root)
+    )
+    scenario_names = [spec["name"] for spec in resolved_scenarios]
+    scenario_counts = [spec["num_envs"] for spec in resolved_scenarios]
     clip_actions = cfg["env"]["clip_actions"]
     control_interval = cfg["env"]["control_interval"]
     qrsac_gamma, n_step = effective_qrsac_horizon(cfg)
@@ -2101,20 +2415,33 @@ def main():
             bool(cfg["ppo"].get("horizon_from_control_dt", True)),
         )
 
-    env = F1tenthEnv(
-        num_envs=args.num_envs,
-        env_cfg=env_cfg,
-        obs_cfg=obs_cfg,
-        reward_cfg=reward_cfg,
-        show_viewer=False,
-        enable_recording=False,
+    train_envs, _ = make_training_envs(
+        cfg, args, resolved_scenarios, obs_cfg, reward_cfg
     )
-    log.info(
-        "Episode horizon: %.1fs -> %d control steps (track=%s)",
-        float(env_cfg["episode_length"]),
-        int(env.max_episode_steps),
-        args.track,
-    )
+    env = train_envs[0]
+    if resolved_scenarios:
+        log.info(
+            "Scenarios: %s",
+            ", ".join(
+                f"{spec['name']}×{spec['num_envs']}" for spec in resolved_scenarios
+            ),
+        )
+        for spec, scn_env in zip(resolved_scenarios, train_envs):
+            log.info(
+                "  %s: track=%s horizon=%.1fs -> %d steps stationary_p=%.2f",
+                spec["name"],
+                spec["cfg"]["env"]["track"],
+                float(spec["cfg"]["env"]["episode_length"]),
+                int(scn_env.max_episode_steps),
+                float(spec["cfg"]["env"].get("reset_stationary_probability", 0.0)),
+            )
+    else:
+        log.info(
+            "Episode horizon: %.1fs -> %d control steps (track=%s)",
+            float(env_cfg["episode_length"]),
+            int(env.max_episode_steps),
+            args.track,
+        )
 
     actor_obs_dim = int(obs_cfg["num_actor_obs"])
     critic_obs_dim = int(obs_cfg["num_obs"])
@@ -2315,8 +2642,7 @@ def main():
 
     if champion_mgr is not None:
         champion_mgr.bootstrap_opponent(env)
-    raw_obs, _ = env.reset(with_sensors=True)
-    actor_obs, critic_obs = unpack_sensor_observations(raw_obs)
+    actor_obs, critic_obs = collect_sensor_reset(train_envs)
     actor_normalizer.update(actor_obs)
     critic_normalizer.update(critic_obs)
     if algorithm == "ppo":
@@ -2345,6 +2671,7 @@ def main():
     )
     learner_row_budget = 0.0
     episode_rewards = torch.zeros(args.num_envs, device=device, dtype=torch.float32)
+    episode_laps = torch.zeros(args.num_envs, device=device, dtype=torch.float32)
     ep_return_sum = torch.zeros((), device=device, dtype=torch.float32)
     ep_return_count = torch.zeros((), device=device, dtype=torch.float32)
     policy_loss_accum = torch.zeros((), device=device)
@@ -2463,15 +2790,14 @@ def main():
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
 
-            next_raw_obs, reward, done, extras = env.step(
+            next_actor_obs, next_critic_obs, reward, done, extras = collect_sensor_step(
+                train_envs,
                 actions.to(rt.tc_float),
-                n_steps=control_interval,
-                with_sensors=True,
+                scenario_counts or [args.num_envs],
+                control_interval,
             )
             vector_ticks += 1
             env_transitions += args.num_envs
-            next_actor_obs, next_critic_obs = unpack_sensor_observations(next_raw_obs)
-            reward = reward.to(torch.float32)
             ppo_metrics = None
             if algorithm == "ppo":
                 ppo_timed_out = pure_timeout_mask(extras["termination"])
@@ -2509,7 +2835,21 @@ def main():
                 if done_bool.any():
                     ego_minus_opp = -critic_obs[done_bool, OPP_TRACK_GAP_IDX]
                     selfplay_mgr.record_episode_outcomes(ego_minus_opp)
+            lap_count = extras.get("metrics", {}).get("lap_count")
+            if isinstance(lap_count, torch.Tensor):
+                episode_laps = update_episode_lap_counts(episode_laps, lap_count, done)
+            if scenario_names:
+                accumulate_scenario_diagnostics(
+                    diag,
+                    scenario_names,
+                    scenario_counts,
+                    episode_rewards,
+                    episode_laps,
+                    done,
+                    extras,
+                )
             episode_rewards = episode_rewards * (1.0 - done_f)
+            episode_laps = episode_laps * (1.0 - done_f)
 
             accumulate_step_diagnostics(diag, reward, actions, critic_obs, extras)
             accumulate_completed_episode_lifespans(
@@ -2927,6 +3267,8 @@ def main():
                         int(diag.total("term/not_moving")),
                         int(diag.total("term/invalid_state")),
                     )
+                if scenario_names:
+                    log_scenario_metrics(log, diag, scenario_names)
 
                 if wandb_run is not None:
                     wandb_metrics = {
@@ -3023,6 +3365,10 @@ def main():
                                     for key, value in ppo_metric_accum.items()
                                 }
                             )
+                    if scenario_names:
+                        wandb_metrics.update(
+                            scenario_metric_payload(diag, scenario_names)
+                        )
                     wandb_run.log(
                         wandb_metrics,
                         step=env_transitions,
@@ -3106,6 +3452,9 @@ def main():
                 except Exception as exc:
                     log.warning("Eval video rollout failed (continuing): %s", exc)
 
+        if scenario_names:
+            log_scenario_metrics(log, diag, scenario_names)
+
         save_policy_artifact(
             models,
             env_transitions,
@@ -3130,10 +3479,11 @@ def main():
                 device=device,
             )
     finally:
-        try:
-            env.close()
-        except Exception as exc:
-            log.warning("env.close() failed during shutdown: %s", exc)
+        for train_env in train_envs:
+            try:
+                train_env.close()
+            except Exception as exc:
+                log.warning("env.close() failed during shutdown: %s", exc)
         eval_env = eval_state.get("env")
         if eval_env is not None:
             try:
