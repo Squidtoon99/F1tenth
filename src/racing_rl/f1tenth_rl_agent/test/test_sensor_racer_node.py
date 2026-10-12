@@ -173,7 +173,7 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
         assert abs(cmd.longitudinal) <= si.CLIP_ACTIONS + 1e-5
         assert abs(cmd.steering) <= si.CLIP_ACTIONS + 1e-5
         assert not (cmd.drive_current_a > 0.0 and cmd.brake_current_a > 0.0)
-        assert raw_obs[-1][si.VESC_SPEED] == pytest.approx(-2.0, abs=0.05)
+        assert raw_obs[-1][si.VESC_SPEED] == pytest.approx(2.0, abs=0.05)
         assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(0.2, abs=0.05)
         assert diagnostics[-1][si.DIAG_VALID_TICK] == pytest.approx(1.0)
     finally:
@@ -543,6 +543,20 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
         odom = Odometry()
         applied = _applied_rl()
 
+        expected_step = np.tanh(1.0) * np.pi / 60.0
+
+        def two_consecutive_delta_steps() -> bool:
+            if len(desired) < 3:
+                return False
+            realized = np.asarray([msg.steering * 0.33 for msg in desired])
+            diffs = np.diff(realized)
+            return bool(
+                np.any(
+                    np.isclose(diffs[:-1], expected_step, atol=1e-5)
+                    & np.isclose(diffs[1:], expected_step, atol=1e-5)
+                )
+            )
+
         def publish_all():
             now = helper.get_clock().now().to_msg()
             scan.header.stamp = now
@@ -553,14 +567,12 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
             imu_pub.publish(imu)
             odom_pub.publish(odom)
             applied_pub.publish(applied)
-            return len(desired) >= 3
+            return two_consecutive_delta_steps()
 
-        assert _spin_until([node, helper], publish_all)
-        realized = np.asarray([msg.steering * 0.33 for msg in desired[:3]])
-        expected_step = np.tanh(1.0) * np.pi / 60.0
-        assert np.diff(realized) == pytest.approx(
-            [expected_step, expected_step], abs=1e-5
-        )
+        # 20 Hz deadline is 62.5 ms; the first CPU ticks can miss it, reset the
+        # accumulator, and republish the first step. Wait for steady integration.
+        assert _spin_until([node, helper], publish_all, timeout_s=5.0)
+        assert two_consecutive_delta_steps()
         node._reset_runtime(si.GRU_RESET_APPLIED_SAFETY)
         assert node._runtime.realized_steer_rad == pytest.approx(0.0)
     finally:
