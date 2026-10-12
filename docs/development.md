@@ -82,8 +82,9 @@ gitGraph
 
 - **Gym (deployed ROS stack)** — two containers: the gym bridge in the fork image
   + our nodes in the dev image, sharing a docker bridge network. noVNC serves
-  RViz; Foxglove is `ws://localhost:8765`. `STACK=vehicle` (the only value) is
-  the on-car C++ graph. `MODE=dev` (default) mounts live source; `MODE=release`
+  RViz; Foxglove is `ws://localhost:8765`. `STACK=vehicle` is the only
+  `tools/sim.sh` value (on-car C++ graph) — not `race.launch.py`'s
+  `stack:=algo|rl`. `MODE=dev` (default) mounts live source; `MODE=release`
   runs the baked generic image.
 
   ```bash

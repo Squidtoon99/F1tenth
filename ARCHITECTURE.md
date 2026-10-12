@@ -71,14 +71,15 @@ flowchart LR
   sensors["sensors: LiDAR / VESC / IMU"] --> vehicle[vehicle drivers]
   vehicle -->|"/scan /odom /sensors/*"| localization
   vehicle -->|"/scan"| mapping
-  localization --> planning
   localization --> racing_rl
   localization --> racing_algo
-  planning --> control
   racing_algo --> control
   racing_rl -->|"/drive"| vehicle
   control -->|"/drive"| vehicle
 ```
+
+`planning/` is a placeholder; algo controllers read `raceline.csv` from the
+per-car overlay. LiDAR opponent detection is `racing_rl/opponent_detector`.
 
 ## The observation/action contract
 
