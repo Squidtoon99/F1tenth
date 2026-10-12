@@ -113,7 +113,7 @@ def _ego_follow_actions(env, target_speed: float, delta_max: float) -> torch.Ten
     ego = env._ego.tensor
     xy = torch.stack([ego["x"], ego["y"]], dim=-1).detach().cpu().numpy()
     yaw = ego["yaw"].detach().cpu().numpy()
-    steer = ego["steer"].detach().cpu().numpy()
+    steer = ego["steer_logical"].detach().cpu().numpy()
     vx = ego["vx"].detach().cpu().numpy()
     vy = ego["vy"].detach().cpu().numpy()
     ey, tangent, _ = _project_xy(xy, env)
@@ -145,8 +145,8 @@ def _opponent_corridor_clearance(env) -> np.ndarray:
 @pytest.mark.parametrize(
     "track,target_speed,gap_m,warmup_steps,measure_steps",
     [
-        ("IV_2026_SIM", 4.0, 25.0, 300, 700),
-        ("courtyard_2", 3.5, 4.0, 50, 250),
+        ("IV_2026_SIM", 4.0, 25.0, 600, 1400),
+        ("courtyard_2", 3.5, 4.0, 100, 500),
     ],
 )
 def test_scripted_opponent_tracks_centerline_and_speed(

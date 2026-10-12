@@ -100,7 +100,7 @@ def test_speed_cap_zero_probability_is_uncapped():
         env.close()
 
 
-def _opponent_forward_progress(env, steps=50):
+def _opponent_forward_progress(env, duration_s=5.0):
     torch.manual_seed(0)
     env.reset(seed=0)
     _load_full_throttle_policy(env)
@@ -108,6 +108,7 @@ def _opponent_forward_progress(env, steps=50):
     prev = env.extras["metrics"]["opponent_s"].clone()
     progress = torch.zeros(env.num_envs)
     half = 0.5 * track_len
+    steps = max(1, int(round(duration_s / float(env.control_dt))))
     for _ in range(steps):
         _, _, _, extras = env.step(
             torch.zeros(env.num_envs, 2), n_steps=env.control_interval

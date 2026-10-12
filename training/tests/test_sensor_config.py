@@ -234,7 +234,10 @@ def test_default_sensor_dr_matches_measured_evidence():
 
 def test_gym_sim_yaml_matches_hokuyo_grid():
     root = Path(__file__).resolve().parents[2]
-    text = (root / "sim" / "f1tenth_gym_ros" / "config" / "sim.yaml").read_text()
+    sim_yaml = root / "sim" / "f1tenth_gym_ros" / "config" / "sim.yaml"
+    if not sim_yaml.is_file():
+        pytest.skip("f1tenth_gym_ros is not checked out in this worktree")
+    text = sim_yaml.read_text()
     assert "scan_num_beams: 1081" in text
     assert "scan_range_min: 0.06" in text
     assert "scan_range_max: 30.0" in text
@@ -306,6 +309,12 @@ def test_corridor_distance_field_centerline_near_half_width(real_modules):
             wall_dists.append(float(grid[iy, ix]))
     assert wall_dists
     assert min(wall_dists) <= res
+
+    outside = left[0] + (left[0] - centerline[0])
+    ix = int(np.floor((outside[0] - ox) / res))
+    iy = int(np.floor((outside[1] - oy) / res))
+    if 0 <= ix < host.width and 0 <= iy < host.height:
+        assert float(grid[iy, ix]) == pytest.approx(0.0, abs=res)
 
 
 def test_load_occupancy_distance_field_uses_ros_map_coordinates(tmp_path):

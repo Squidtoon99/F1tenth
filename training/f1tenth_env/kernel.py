@@ -357,12 +357,13 @@ def occupancy_footprint_clearance(
     car_width: wp.float32,
     field: CorridorDistanceField,
     variant_id: wp.int32,
-) -> wp.float32:
+) -> wp.vec2f:
     cosine = wp.cos(yaw)
     sine = wp.sin(yaw)
     half_l = 0.5 * car_length
     half_w = 0.5 * car_width
-    clearance = wp.float32(1.0e6)
+    min_clearance = wp.float32(1.0e6)
+    max_clearance = wp.float32(-1.0e6)
     for sx in range(2):
         for sy in range(2):
             lx = half_l
@@ -374,9 +375,11 @@ def occupancy_footprint_clearance(
             wx = x + cosine * lx - sine * ly
             wy = y + sine * lx + cosine * ly
             dist = sample_corridor_distance(field, wx, wy, variant_id)
-            if dist < clearance:
-                clearance = dist
-    return clearance
+            if dist < min_clearance:
+                min_clearance = dist
+            if dist > max_clearance:
+                max_clearance = dist
+    return wp.vec2f(min_clearance, max_clearance)
 
 
 @wp.struct
@@ -1178,7 +1181,7 @@ def scripted_opponent_action(
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
     steering_target = -(params.kp_heading * heading_error + cross_track)
-    steering = (steering_target - opponent.steer) / wp.max(
+    steering = (steering_target - opponent.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
     throttle = params.kp_speed * (
@@ -1209,7 +1212,7 @@ def scripted_physics_opponent_action(
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
     steering_target = -(params.kp_heading * heading_error + cross_track)
-    steering = (steering_target - opponent.steer) / wp.max(
+    steering = (steering_target - opponent.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
     throttle = params.kp_speed * (
@@ -1289,15 +1292,15 @@ def compute_reward_and_done(
         field,
         variant_id,
     )
-    ego_frenet.boundary_distance = clearance
-    wall_contact = clearance <= 0.0
-    off_track = clearance < 0.0
+    ego_frenet.boundary_distance = clearance[0]
+    wall_contact = clearance[0] <= 0.0
+    off_track = clearance[1] <= 0.0
     if termination.recoverable_boundary != 0:
         boundary_event = off_track
     else:
         boundary_event = wall_contact
     progress_ds = delta_s
-    if boundary_event:
+    if wall_contact:
         progress_ds = 0.0
 
     forward_ds = wp.max(progress_ds, 0.0)
@@ -1313,7 +1316,7 @@ def compute_reward_and_done(
         + reward.progress_backward * wp.min(progress_ds, 0.0)
     )
     speed_squared = ego.vx * ego.vx + ego.vy * ego.vy
-    if boundary_event:
+    if wall_contact:
         if reward.wall_cost_mode == 1:
             out.wall_contact = (
                 -reward.wall_contact_coefficient
@@ -1331,7 +1334,7 @@ def compute_reward_and_done(
                 -reward.wall_contact_coefficient
                 * wp.sqrt(speed_squared)
             )
-    first_wall_contact = boundary_event and env.prev_wall_contact[env_id] == 0
+    first_wall_contact = wall_contact and env.prev_wall_contact[env_id] == 0
     if first_wall_contact:
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
@@ -1442,9 +1445,9 @@ def compute_reward_and_done(
         env.lap_cross[env_id] = 1.0
     env.prev_s[env_id] = current_s
     env.prev_opponent_s[env_id] = opponent_frenet.s
-    env.prev_wall_contact[env_id] = wp.int32(boundary_event)
+    env.prev_wall_contact[env_id] = wp.int32(wall_contact)
     env.metric_progress[env_id] = progress_ds
-    env.metric_wall[env_id] = wp.float32(boundary_event)
+    env.metric_wall[env_id] = wp.float32(wall_contact)
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     env.metric_lateral[env_id] = ego_frenet.ey
     env.metric_speed[env_id] = wp.sqrt(speed_squared)
@@ -1991,7 +1994,7 @@ def observation_stage_kernel(
         opponent_params.car_width,
         field,
         variant_id,
-    )
+    )[0]
     env.metric_boundary[env_id] = ego_frenet.boundary_distance
     visible = write_raw_observation(
         env_id,
@@ -2264,7 +2267,7 @@ def reset_envs_kernel(
             opponent_params.car_width,
             field,
             variant_id,
-        )
+        )[0]
         env.metric_boundary[env_id] = ego_frenet.boundary_distance
         visible = write_raw_observation(
             env_id,
@@ -2380,7 +2383,7 @@ def reset_to_kernel(
             opponent_params.car_width,
             field,
             variant_id,
-        )
+        )[0]
         env.metric_boundary[env_id] = ego_frenet.boundary_distance
         env.metric_lateral[env_id] = ego_frenet.ey
         env.metric_speed[env_id] = ego_speed[env_id]

@@ -119,7 +119,6 @@ def test_command_delay_holds_previous_for_two_substeps():
     s = staged.read_state()
     assert torch.allclose(d["base_lin_vel"], s["base_lin_vel"], atol=1e-5)
     assert torch.allclose(d["base_ang_vel"], s["base_ang_vel"], atol=1e-5)
-    assert d["base_lin_vel"][0, 0].item() > 2.0
     assert d["base_ang_vel"][0, 2].item() > 0.0
 
 

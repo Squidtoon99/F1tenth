@@ -79,7 +79,7 @@ def test_first_footprint_intersection_terminates_with_one_lee_reward(
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=speed)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=speed)
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )

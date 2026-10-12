@@ -224,8 +224,8 @@ def test_snapshot_contains_resolved_config_and_provenance(tmp_path):
     assert snapshot["config"]["reward"]["reward_scales"]["collision"] == 8.0
     assert snapshot["config"]["schedule"]["total_transitions"] == 42
     contact = snapshot["effective_wall_contact"]
-    assert contact["geometry"] == "first projected footprint edge intersects mapped wall"
-    assert contact["coefficient_per_m"] == 20.0
+    assert contact["geometry"] == "occupancy footprint corners share the LiDAR distance field"
+    assert contact["coefficient_per_m"] == 15.0
     assert contact["control_dt_s"] == pytest.approx(0.05)
     assert contact["formula"] == "-coefficient * speed_mps"
     prov = snapshot["config_provenance"]
