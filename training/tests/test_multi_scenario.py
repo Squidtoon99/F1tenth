@@ -144,7 +144,7 @@ def test_scenario_cannot_change_control_interval():
     scenario = {
         "name": "bad_dt",
         "weight": 1.0,
-        "env": {"control_interval": 10},
+        "env": {"control_interval": 20},
     }
     with pytest.raises(ValueError, match="cannot change env.control_interval"):
         apply_scenario_patch(cfg, scenario, _TRAINING_ROOT)
