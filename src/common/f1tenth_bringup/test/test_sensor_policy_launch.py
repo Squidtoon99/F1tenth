@@ -130,19 +130,36 @@ def test_sensor_policy_launch_wires_gate_limits_and_topics():
     gate_params = _node_inline_parameter_keys("current_gate")
 
     assert "rl_current_gate.yaml" in source
-    assert {"i_drive_max_a", "i_brake_max_a"} <= racer_params
-    assert {"i_drive_max_a", "i_brake_max_a", "i_brake_safe_a"} <= gate_params
+    assert {"i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"} <= racer_params
+    assert {
+        "i_drive_max_a",
+        "i_brake_max_a",
+        "i_brake_safe_a",
+        "i_slew_a_per_s",
+    } <= gate_params
     assert '"gate_config"' in source
 
 
-def test_car_overlay_keeps_sensor_racer_and_gate_at_5a():
+def test_car_overlay_matches_sensor_policy_artifact_envelope():
     racer = _overlay_node_block("sensor_racer")
     gate = _overlay_node_block("rl_current_gate")
 
-    assert "i_drive_max_a: 5.0" in racer
-    assert "i_brake_max_a: 5.0" in racer
-    assert "i_drive_max_a: 5.0" in gate
-    assert "i_brake_max_a: 5.0" in gate
+    assert "i_drive_max_a: 80.0" in racer
+    assert "i_brake_max_a: 40.0" in racer
+    assert "i_slew_a_per_s: 200.0" in racer
+    assert "control_hz: 20.0" in racer
+    assert "twist_vx_sign: 1.0" in racer
+    assert "i_drive_max_a: 80.0" in gate
+    assert "i_brake_max_a: 40.0" in gate
+    assert "i_slew_a_per_s: 200.0" in gate
+
+
+def test_sensor_policy_launch_defaults_match_artifact_envelope():
+    source = _launch_source()
+
+    assert '"i_drive_max_a",\n                default_value="80.0"' in source
+    assert '"i_brake_max_a",\n                default_value="40.0"' in source
+    assert '"i_slew_a_per_s",\n                default_value="200.0"' in source
 
 
 def test_sensor_racer_node_does_not_publish_vesc_topics():

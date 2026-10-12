@@ -80,23 +80,25 @@ def test_default_config_is_unchanged_first_contact_terminal():
     assert DEFAULT_CONFIG["reward"]["oob_impact_coefficient"] == 0.0
 
 
-@pytest.mark.parametrize(
-    ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -4.0), (5.0, -10.0)],
-)
-def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_reward):
+@pytest.mark.parametrize("speed", [1.0, 2.0, 5.0])
+def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed):
     env = _make_env(wall_cost_mode="continuous")
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=speed)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=speed)
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
-        assert env.control_dt == pytest.approx(0.1)
+        assert env.control_dt == pytest.approx(0.05)
         assert bool(extras["termination"]["out_of_bounds"][0])
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
+        expected_reward = (
+            -float(env.reward_cfg["wall_contact_coefficient"])
+            * env.control_dt
+            * speed
+        )
         assert float(terms["progress"][0]) == 0.0
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4
@@ -106,22 +108,25 @@ def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_rewa
         env.close()
 
 
-@pytest.mark.parametrize(
-    ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -8.0), (5.0, -50.0)],
-)
-def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed, expected_reward):
+@pytest.mark.parametrize("speed", [1.0, 2.0, 5.0])
+def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed):
     env = _make_env(wall_cost_mode="continuous_quadratic")
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=speed)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=speed)
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
         assert bool(extras["termination"]["out_of_bounds"][0])
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
+        expected_reward = (
+            -float(env.reward_cfg["wall_contact_coefficient"])
+            * env.control_dt
+            * speed
+            * speed
+        )
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4
         )
@@ -135,7 +140,7 @@ def test_first_contact_does_not_terminate_under_recoverable_boundary():
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=2.0)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=2.0)
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
@@ -143,7 +148,7 @@ def test_first_contact_does_not_terminate_under_recoverable_boundary():
         assert not bool(done[0])
         terms = extras["rewards"]["terms"]
         assert float(terms["progress"][0]) == 0.0, "recoverable path masks progress on contact"
-        assert float(terms["wall_contact"][0]) == pytest.approx(-40.0, abs=1e-4)
+        assert float(terms["wall_contact"][0]) == pytest.approx(-30.0, abs=1e-4)
     finally:
         env.close()
 
@@ -153,7 +158,7 @@ def test_full_car_out_terminates_under_recoverable_boundary():
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l + half_width + 0.01, speed=2.0)
+        _place_at_lateral(env, target_ey=w_l + half_width + 0.08, speed=2.0)
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
@@ -172,7 +177,7 @@ def test_recoverable_boundary_with_continuous_cost_charges_every_contact_step():
     try:
         w_l, yaw = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=2.0)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=2.0)
         for _ in range(3):
             _, reward, done, extras = env.step(
                 torch.zeros(1, 2), n_steps=env.control_interval
@@ -223,7 +228,7 @@ def test_legacy_ladder_composes_graze_one_shot_contact_and_terminal_impact():
 
         # Rung 1 + rung 2: first contact is a cheap continuous graze plus the
         # one-shot contact penalty; the episode is not terminated.
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=2.0)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=2.0)
         _, _, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
@@ -253,7 +258,7 @@ def test_legacy_ladder_composes_graze_one_shot_contact_and_terminal_impact():
         # Rung 3: driving straight from clean track to fully out (skipping the
         # recoverable grace period) terminates the episode and adds the
         # terminal impact shock, scaled by the speed at exit.
-        _place_at_lateral(env, target_ey=w_l + half_width + 0.01, speed=3.0)
+        _place_at_lateral(env, target_ey=w_l + half_width + 0.08, speed=3.0)
         _, _, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )

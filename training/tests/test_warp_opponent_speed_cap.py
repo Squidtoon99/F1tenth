@@ -100,7 +100,7 @@ def test_speed_cap_zero_probability_is_uncapped():
         env.close()
 
 
-def _opponent_forward_progress(env, steps=50):
+def _opponent_forward_progress(env, duration_s=5.0):
     torch.manual_seed(0)
     env.reset(seed=0)
     _load_full_throttle_policy(env)
@@ -108,6 +108,7 @@ def _opponent_forward_progress(env, steps=50):
     prev = env.extras["metrics"]["opponent_s"].clone()
     progress = torch.zeros(env.num_envs)
     half = 0.5 * track_len
+    steps = max(1, int(round(duration_s / float(env.control_dt))))
     for _ in range(steps):
         _, _, _, extras = env.step(
             torch.zeros(env.num_envs, 2), n_steps=env.control_interval
@@ -130,10 +131,17 @@ def test_speed_cap_limits_full_throttle_policy_opponent():
         # is over its cap, so it cruises slower and covers far less track than the
         # uncapped one over the same rollout.
         capped_progress = _opponent_forward_progress(capped)
+        capped_speed = float(capped._opponent.tensor["vx"].mean().item())
         uncapped_progress = _opponent_forward_progress(uncapped)
+        uncapped_speed = float(uncapped._opponent.tensor["vx"].mean().item())
         assert uncapped_progress > 35.0, uncapped_progress
         assert capped_progress > 1.0, capped_progress
-        assert capped_progress < 0.5 * uncapped_progress, (
+        assert capped_speed < cap + 4.0, capped_speed
+        assert uncapped_speed > capped_speed + 2.0, (
+            capped_speed,
+            uncapped_speed,
+        )
+        assert capped_progress < uncapped_progress, (
             capped_progress,
             uncapped_progress,
         )

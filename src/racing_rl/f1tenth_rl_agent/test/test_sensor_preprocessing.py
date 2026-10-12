@@ -14,6 +14,7 @@ from f1tenth_rl_agent.sensor_preprocessing import (
     actor_imu_from_interval,
     beam_angles_rad,
     convert_raw_imu,
+    driver_accel_to_body,
     pack_actor_observation,
     pack_lidar_from_scan,
 )
@@ -55,6 +56,27 @@ def test_lidar_packing_too_close_and_urg_sentinel_are_range_max():
     assert packed[11] == pytest.approx(si.LIDAR_RANGE_MAX)
     assert packed[12] == pytest.approx(12.0)
     assert packed[12] != pytest.approx(10.0)
+
+
+def test_driver_accel_rotates_to_body_frame():
+    ax_body, ay_body = driver_accel_to_body(1.0, 2.0)
+    assert ax_body == pytest.approx(-2.0)
+    assert ay_body == pytest.approx(1.0)
+
+
+def test_actor_imu_rotates_after_driver_bias_correction():
+    cal = ImuCalibration(
+        accel_to_ms2=1.0,
+        gyro_to_rads=1.0,
+        ax_bias=0.1,
+        ay_bias=0.2,
+    )
+    samples = [RawImuSample(0.0, 0.3, 0.5, 1.0, 0.0, 0.0, 0.4)]
+    actor_imu, _ = actor_imu_from_interval(samples, cal, freeze_const_channels=True)
+    assert actor_imu[0] == pytest.approx(-0.3)
+    assert actor_imu[1] == pytest.approx(0.2)
+    assert actor_imu[2] == pytest.approx(si.GRAVITY_MS2)
+    assert actor_imu[5] == pytest.approx(0.4)
 
 
 def test_imu_conversion_sign_bias_and_frozen_channels():
@@ -130,7 +152,7 @@ def test_actor_layout_offsets_match_training_fixture():
     assert si.STEER_DELTA0 == layout["steer_delta0"]
     assert si.STEER_DELTA1 == layout["steer_delta1"]
     assert si.STEER_DELTA2 == layout["steer_delta2"]
-    assert si.VESC_CURRENT_SCALE_A == layout["vesc_current_scale_a"]
+    assert si.OBS_PREPROCESSING_VERSION == 4
 
 
 def test_deploy_shaped_scan_replay_matches_training_layout():
@@ -148,7 +170,7 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     assert si.THROTTLE_CURRENT == 1089
     assert si.STEER_T == 1091
     assert si.STEER_DELTA2 == 1096
-    assert si.VESC_CURRENT_SCALE_A == 5.0
+    assert si.OBS_PREPROCESSING_VERSION == 4
     assert si.ACTOR_LAYOUT_VERSION == 2
 
     rng = np.random.default_rng(0)
@@ -175,8 +197,8 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     assert actor_imu[3] == pytest.approx(0.0)
     assert actor_imu[4] == pytest.approx(0.0)
 
-    twist_vx_sign = -1.0
-    odom_vx = -1.25
+    twist_vx_sign = si.TWIST_VX_SIGN_BODY_FORWARD
+    odom_vx = 1.25
     speed = twist_vx_sign * odom_vx
     vesc_current_a = 1.75
     steer_hist = np.array([-0.1, 0.15, 0.0, 0.0], dtype=np.float32)

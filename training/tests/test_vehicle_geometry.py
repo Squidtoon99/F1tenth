@@ -61,7 +61,8 @@ def test_training_config_uses_calibrated_geometry_and_roll_split():
     assert abs(params.wheelbase - 0.325) < 1e-6
     assert abs(params.track_width - 0.253) < 1e-6
     assert abs(params.wheel_radius - 0.053) < 1e-6
-    assert abs(params.roll_stiffness_front - 0.47) < 1e-6
+    assert abs(params.izz - 0.13) < 1e-6
+    assert not hasattr(params, "roll_stiffness_front")
     assert not hasattr(params, "susp_damping")
     assert not hasattr(params, "anti_roll")
     assert not hasattr(params, "max_speed")

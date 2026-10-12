@@ -56,6 +56,9 @@ def _sensor_payload(actor: SquashedGaussianLidarGRUActor, **extra):
         "steering_action_mode": si.STEERING_ACTION_MODE,
         "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
         "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 40.0,
+        "i_slew_a_per_s": 200.0,
     }
     payload.update(extra)
     return payload

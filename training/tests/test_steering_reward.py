@@ -221,14 +221,17 @@ def test_delta_steering_integrates_three_degrees_and_saturates(warp_runtime):
         env.reset(seed=6, with_sensors=True)
         action = torch.tensor([[0.0, 1.0]])
         realized = []
-        for _ in range(8):
+        for _ in range(30):
             env.step(action, n_steps=env.control_interval, with_sensors=True)
-            realized.append(float(env._ego.tensor["steer"][0]))
+            realized.append(float(env._ego.tensor["steer_logical"][0]))
         assert realized[0] == pytest.approx(_DELTA_MAX, abs=1e-6)
         assert realized[1] == pytest.approx(2.0 * _DELTA_MAX, abs=1e-6)
         assert realized[-1] == pytest.approx(_MAX_STEER, abs=1e-6)
         assert float(env.actions[0, 1]) == pytest.approx(1.0)
         assert env.actor_obs_buf[0, 1091] == pytest.approx(_MAX_STEER, abs=1e-6)
+        physical = float(env._ego.tensor["steer"][0])
+        assert physical > _MAX_STEER
+        assert physical == pytest.approx(1.10714 * _MAX_STEER, abs=0.02)
     finally:
         env.close()
 
@@ -239,9 +242,11 @@ def test_delta_steering_applies_after_action_latency(warp_runtime):
     try:
         env.reset(seed=7)
         env.step(torch.tensor([[0.0, 1.0]]), n_steps=env.control_interval)
-        assert float(env._ego.tensor["steer"][0]) == pytest.approx(0.0, abs=1e-7)
+        assert float(env._ego.tensor["steer_logical"][0]) == pytest.approx(
+            0.0, abs=1e-7
+        )
         env.step(torch.zeros(1, 2), n_steps=env.control_interval)
-        assert float(env._ego.tensor["steer"][0]) == pytest.approx(
+        assert float(env._ego.tensor["steer_logical"][0]) == pytest.approx(
             _DELTA_MAX, abs=1e-6
         )
     finally:

@@ -155,7 +155,7 @@ def test_boundary_event_zeros_shaped_progress():
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
         half_width = 0.5 * float(env.env_cfg["car_width"])
-        _place_at_lateral(env, target_ey=w_l - half_width + 0.01, speed=6.0)
+        _place_at_lateral(env, target_ey=w_l - half_width + 0.08, speed=6.0)
         _, _, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )

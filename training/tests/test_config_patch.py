@@ -82,12 +82,12 @@ def test_default_1v1_uses_lee_reward_scales():
     assert scales["rear_end"] == DEFAULT_CONFIG["reward"]["reward_scales"]["rear_end"]
 
 
-def test_training_defaults_use_10hz_1024_envs_and_3m_replay():
+def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
     args, _ = parse_args([])
     control_dt = (
         DEFAULT_CONFIG["env"]["sim_dt"] * DEFAULT_CONFIG["env"]["control_interval"]
     )
-    assert control_dt == pytest.approx(0.1)
+    assert control_dt == pytest.approx(0.05)
     assert args.num_envs == 1024
     assert DEFAULT_CONFIG["model"]["replay_buffer_limit"] == 3_000_000
 
@@ -97,7 +97,7 @@ def test_default_steering_reward_scales_and_constants():
     scales = reward["reward_scales"]
     assert scales["steering_change"] == 0.5
     assert scales["steering_history"] == 5.0
-    assert reward["wall_contact_coefficient"] == 20.0
+    assert reward["wall_contact_coefficient"] == 15.0
     assert "oob_penalty" not in scales
     assert "oob_impact" not in scales
     assert "boundary_contact" not in scales
@@ -110,7 +110,7 @@ def test_default_steering_reward_scales_and_constants():
     assert cfg["env"]["steering_action_mode"] == "delta"
     assert "term_oob_mode" not in cfg["env"]
     assert cfg["env"]["reset_stationary_probability"] == 0.10
-    assert cfg["reward"]["wall_contact_coefficient"] == 20.0
+    assert cfg["reward"]["wall_contact_coefficient"] == 15.0
     assert "overtake" not in cfg["reward"]["reward_scales"]
 
 
@@ -224,9 +224,9 @@ def test_snapshot_contains_resolved_config_and_provenance(tmp_path):
     assert snapshot["config"]["reward"]["reward_scales"]["collision"] == 8.0
     assert snapshot["config"]["schedule"]["total_transitions"] == 42
     contact = snapshot["effective_wall_contact"]
-    assert contact["geometry"] == "first projected footprint edge intersects mapped wall"
-    assert contact["coefficient_per_m"] == 20.0
-    assert contact["control_dt_s"] == pytest.approx(0.1)
+    assert contact["geometry"] == "occupancy footprint corners share the LiDAR distance field"
+    assert contact["coefficient_per_m"] == 15.0
+    assert contact["control_dt_s"] == pytest.approx(0.05)
     assert contact["formula"] == "-coefficient * speed_mps"
     prov = snapshot["config_provenance"]
     assert prov["precedence"] == ["DEFAULT_CONFIG", "config_patch", "cli_args"]

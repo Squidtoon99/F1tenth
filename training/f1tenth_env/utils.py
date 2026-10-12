@@ -546,6 +546,9 @@ def build_corridor_distance_field(
     )
     if not occupied.any():
         raise ValueError("Corridor wall rasterization produced an empty grid")
+    occupied = _fill_corridor_exterior(
+        occupied, centerline, origin, resolution
+    )
     distance_cells = _euclidean_distance_transform(occupied)
     distance = (distance_cells * float(resolution)).astype(np.float32)
     return CorridorDistanceData(
@@ -555,6 +558,35 @@ def build_corridor_distance_field(
         origin=(float(minimum[0]), float(minimum[1])),
         resolution=float(resolution),
     )
+
+
+def _fill_corridor_exterior(
+    occupied: np.ndarray,
+    centerline: np.ndarray,
+    origin: np.ndarray,
+    resolution: float,
+) -> np.ndarray:
+    """Treat the region outside the centerline corridor as occupied."""
+    from scipy.ndimage import label
+
+    free = ~occupied
+    labeled, _ = label(free)
+    xs = np.clip(
+        np.floor((centerline[:, 0] - origin[0]) / resolution).astype(np.int32),
+        0,
+        occupied.shape[1] - 1,
+    )
+    ys = np.clip(
+        np.floor((centerline[:, 1] - origin[1]) / resolution).astype(np.int32),
+        0,
+        occupied.shape[0] - 1,
+    )
+    inside_labels = np.unique(labeled[ys, xs])
+    inside_labels = inside_labels[inside_labels > 0]
+    if inside_labels.size == 0:
+        return occupied
+    inside = np.isin(labeled, inside_labels)
+    return occupied | ~inside
 
 
 def build_track_cache(

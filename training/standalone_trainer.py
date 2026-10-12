@@ -1079,7 +1079,7 @@ def build_run_snapshot(
         "config_provenance": provenance,
         "source_git": provenance.get("source_git"),
         "effective_wall_contact": {
-            "geometry": "first projected footprint edge intersects mapped wall",
+            "geometry": "occupancy footprint corners share the LiDAR distance field",
             "car_length_m": float(cfg["env"]["car_length"]),
             "car_width_m": float(cfg["env"]["car_width"]),
             "coefficient_per_m": float(

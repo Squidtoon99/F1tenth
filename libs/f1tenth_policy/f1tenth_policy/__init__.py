@@ -19,6 +19,7 @@ from f1tenth_policy.current import (
     TRAINING_I_DRIVE_MAX_A,
     TRAINING_I_SLEW_A_PER_S,
     applied_current_fraction,
+    assert_artifact_current_limits_match,
 )
 from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
@@ -66,6 +67,7 @@ __all__ = [
     "TRAINING_I_DRIVE_MAX_A",
     "TRAINING_I_SLEW_A_PER_S",
     "applied_current_fraction",
+    "assert_artifact_current_limits_match",
     "architectures_match",
     "build_sensor_artifact_payload",
     "integrate_steering_delta",

@@ -480,6 +480,7 @@ def test_clean_imu_matches_vehicle_state(warp_runtime):
     ego.tensor["ax"][0] = 1.25
     ego.tensor["ay"][0] = -0.5
     ego.tensor["yaw_rate"][0] = 0.4
+    ego.tensor["imu_gz"][0] = 0.4
     imu = torch.zeros(1, 6, dtype=torch.float32)
     sim = vehicle.to_warp(sim_dt=0.005, control_dt=0.05)
     wp.launch(
@@ -514,6 +515,7 @@ def test_imu_dr_stays_within_bias_noise_bounds(warp_runtime):
     ego.tensor["ax"][0] = ax
     ego.tensor["ay"][0] = ay
     ego.tensor["yaw_rate"][0] = yaw_rate
+    ego.tensor["imu_gz"][0] = yaw_rate
     accel_bias = 0.05
     gyro_bias = 0.02
     accel_std = 0.03
@@ -752,7 +754,7 @@ def test_env_imu_tracks_read_state_when_clean(warp_runtime):
         imu = out["imu"]
         assert torch.allclose(imu[:, 0], state["base_lin_acc"][:, 0], atol=1e-5)
         assert torch.allclose(imu[:, 1], state["base_lin_acc"][:, 1], atol=1e-5)
-        assert torch.allclose(imu[:, 5], state["base_ang_vel"][:, 2], atol=1e-5)
+        assert torch.allclose(imu[:, 5], env._ego.tensor["imu_gz"], atol=1e-5)
         assert torch.allclose(
             imu[:, 2],
             torch.full((2,), float(env._sim_params.gravity)),

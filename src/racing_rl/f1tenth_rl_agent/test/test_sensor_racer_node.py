@@ -27,6 +27,7 @@ def _write_sensor_checkpoint(
     *,
     steering_action_mode: str = "delta",
     steering_mu: float | None = None,
+    i_slew_a_per_s: float = 200.0,
 ) -> None:
     actor = SquashedGaussianLidarGRUActor(
         obs_dim=si.NUM_OBS,
@@ -61,6 +62,9 @@ def _write_sensor_checkpoint(
         "steering_action_mode": steering_action_mode,
         "steering_delta_max_rad": 0.05235987755982988,
         "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 40.0,
+        "i_slew_a_per_s": i_slew_a_per_s,
     }
     torch.save(payload, path)
 
@@ -87,8 +91,8 @@ def _applied_rl(longitudinal: float = 0.2, steering: float = 0.0) -> ActuatorCom
     msg = ActuatorCommand()
     msg.longitudinal = float(longitudinal)
     msg.steering = float(steering)
-    msg.drive_current_a = si.VESC_CURRENT_SCALE_A * max(float(longitudinal), 0.0)
-    msg.brake_current_a = si.VESC_CURRENT_SCALE_A * max(-float(longitudinal), 0.0)
+    msg.drive_current_a = 80.0 * max(float(longitudinal), 0.0)
+    msg.brake_current_a = 40.0 * max(-float(longitudinal), 0.0)
     msg.servo_position = 0.4495
     msg.source = ActuatorCommand.SOURCE_RL
     return msg
@@ -170,9 +174,7 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
         assert abs(cmd.steering) <= si.CLIP_ACTIONS + 1e-5
         assert not (cmd.drive_current_a > 0.0 and cmd.brake_current_a > 0.0)
         assert raw_obs[-1][si.VESC_SPEED] == pytest.approx(-2.0, abs=0.05)
-        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * 0.2, abs=0.05
-        )
+        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(0.2, abs=0.05)
         assert diagnostics[-1][si.DIAG_VALID_TICK] == pytest.approx(1.0)
     finally:
         if helper is not None:
@@ -224,6 +226,23 @@ def test_sensor_racer_fail_closed_without_sensors():
             helper.destroy_node()
         if node is not None:
             node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_sensor_racer_rejects_checkpoint_current_envelope_mismatch():
+    rclpy.init()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt, i_slew_a_per_s=199.0)
+            with pytest.raises(RuntimeError, match="i_slew_a_per_s"):
+                SensorRacerNode(
+                    parameter_overrides=[
+                        Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                        Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    ]
+                )
+    finally:
         rclpy.shutdown()
 
 
@@ -464,9 +483,7 @@ def test_sensor_racer_post_gate_history_in_observation():
         obs = np.asarray(raw_obs[-1], dtype=np.float32)
         assert obs[si.THROTTLE_CURRENT] == pytest.approx(-0.3, abs=1e-5)
         assert obs[si.THROTTLE_PRED] == pytest.approx(0.4, abs=1e-5)
-        assert obs[si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * -0.3, abs=1e-5
-        )
+        assert obs[si.VESC_CURRENT] == pytest.approx(-0.3, abs=1e-5)
         assert obs[si.STEER_T] == pytest.approx(-0.2 * 0.33, abs=1e-5)
         assert obs[si.STEER_T1] == pytest.approx(0.1 * 0.33, abs=1e-5)
     finally:
@@ -545,7 +562,7 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
             [expected_step, expected_step], abs=1e-5
         )
         node._reset_runtime(si.GRU_RESET_APPLIED_SAFETY)
-        assert node._realized_steer_rad == pytest.approx(0.0)
+        assert node._runtime.realized_steer_rad == pytest.approx(0.0)
     finally:
         if helper is not None:
             helper.destroy_node()

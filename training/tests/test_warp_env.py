@@ -103,10 +103,8 @@ def test_warp_observation_slots_match_state_and_wheels():
 
 
 def test_obs_tyre_load_slip_locked_and_nonzero():
-    # Guards the tyre-load/slip -> observation path (contract slices OBS_TYRE_SLIP
-    # / OBS_TYRE_LOAD): obs must equal read_wheel_state, and after driving through a
-    # steady corner the loads must transfer off the static 1.0 and slip must be
-    # nonzero (i.e. real physics is flowing into the model input, not stubbed).
+    # Reduced bicycle: static load ratios, zero longitudinal slip, axle lateral
+    # slip from the cornering plant. Obs slices must still match read_wheel_state.
     env = _make_env(num_envs=4)
     try:
         action = torch.tensor([[0.6, 0.8]]).repeat(4, 1)
@@ -119,10 +117,9 @@ def test_obs_tyre_load_slip_locked_and_nonzero():
         load = obs[:, 380:384]
         slip = obs[:, 372:380]
         assert torch.isfinite(load).all() and torch.isfinite(slip).all()
-        # Load transfer moved at least one wheel meaningfully off the static ratio.
-        assert (load - 1.0).abs().max() > 0.05
-        # Cornering under drive produces nonzero slip ratio and slip angle.
-        assert slip.abs().max() > 1e-3
+        assert torch.allclose(load, torch.ones_like(load), atol=1e-5)
+        assert slip[:, :4].abs().max() < 1e-5
+        assert slip[:, 4:].abs().max() > 1e-3
     finally:
         env.close()
 

@@ -66,3 +66,6 @@ trade-off. Routine work is captured by the PR instead (see
   plant (mass 3.444 kg, 26.5/23.1 N, μ 0.71) into training defaults.
 - [0029](0029-bag-referenced-sensor-dr.md) — Pin `drive_scale`, conservative
   friction `[0.66, 0.85]`, bag-referenced IMU/VESC DR; scenario JSON inherits.
+- [0033](0033-reduced-bicycle-simulator.md) — Reduced bicycle plant, occupancy
+  contact, and 20 Hz sensor-policy cadence (supersedes 0002 plant and 0010
+  sensor cadence).

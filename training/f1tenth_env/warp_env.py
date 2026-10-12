@@ -66,18 +66,21 @@ class _VehicleStorage:
             "vy": zeros(num_envs),
             "yaw_rate": zeros(num_envs),
             "steer": zeros(num_envs),
-            "effort_state": zeros(num_envs),
+            "steer_logical": zeros(num_envs),
+            "i_drive": zeros(num_envs),
+            "i_brake": zeros(num_envs),
+            "i_drive_cmd": zeros(num_envs),
+            "i_brake_cmd": zeros(num_envs),
             "applied_effort": zeros(num_envs),
             "ax": zeros(num_envs),
             "ay": zeros(num_envs),
+            "imu_gz": zeros(num_envs),
             "omega": zeros(num_envs, 4),
             "slip_ratio": zeros(num_envs, 4),
             "slip_angle": zeros(num_envs, 4),
             "load_ratio": torch.ones(
                 num_envs, 4, device=device, dtype=torch.float32
             ),
-            "fx_lag": zeros(num_envs, 4),
-            "fy_lag": zeros(num_envs, 4),
             "mass": torch.full(
                 (num_envs,), params.mass, device=device, dtype=torch.float32
             ),
@@ -95,8 +98,6 @@ class _VehicleStorage:
             "slip_ratio",
             "slip_angle",
             "load_ratio",
-            "fx_lag",
-            "fy_lag",
         }
         for name, tensor in self.tensor.items():
             if name in vector_fields:
@@ -146,6 +147,7 @@ class _EnvironmentStorage:
         "vesc_current_bias",
         "vesc_speed_noise_std",
         "vesc_current_noise_std",
+        "vesc_speed_dropout_prob",
         "terminal_x",
         "terminal_y",
         "terminal_s",
@@ -377,9 +379,9 @@ class WarpF1tenthEnv:
         if int(obs_cfg["num_obs"]) != OBS_DIM:
             raise ValueError("Warp environment requires the fixed 392-d observation")
         self.dt = float(env_cfg.get("sim_dt", 0.005))
-        self.control_interval = int(env_cfg.get("control_interval", 20))
-        if self.dt != 0.005 or self.control_interval != 20:
-            raise ValueError("Warp kernel requires sim_dt=0.005 and control_interval=20")
+        self.control_interval = int(env_cfg.get("control_interval", 10))
+        if self.dt != 0.005 or self.control_interval != 10:
+            raise ValueError("Warp kernel requires sim_dt=0.005 and control_interval=10")
         self.control_dt = self.dt * self.control_interval
         self.step_launch_count = 3
         self.max_episode_steps = int(
@@ -743,6 +745,13 @@ class WarpF1tenthEnv:
         )
         if not 0.0 <= params.stationary_probability <= 1.0:
             raise ValueError("reset_stationary_probability must be in [0, 1]")
+        params.post_brake_history_probability = float(
+            self.env_cfg.get("reset_post_brake_history_probability", 0.0)
+        )
+        if not 0.0 <= params.post_brake_history_probability <= 1.0:
+            raise ValueError(
+                "reset_post_brake_history_probability must be in [0, 1]"
+            )
         params.opponent_gap_min = float(
             self.env_cfg.get("opponent_spawn_gap_min_m", 3.0)
         )
@@ -823,6 +832,7 @@ class WarpF1tenthEnv:
             ("vesc_current_bias", "vesc_current_bias_range"),
             ("vesc_speed_noise_std", "vesc_speed_noise_std_range"),
             ("vesc_current_noise_std", "vesc_current_noise_std_range"),
+            ("vesc_speed_dropout_prob", "vesc_speed_dropout_prob_range"),
         ):
             minimum, maximum = interval(key, (0.0, 0.0))
             setattr(params, f"{field}_min", minimum)
@@ -1034,7 +1044,6 @@ class WarpF1tenthEnv:
 
     def _launch_ego_sensor_actor(self, output_wp):
         """Fused ego LiDAR + IMU + VESC + causal commands into ``output_wp``."""
-        wheel_radius = float(self._sim_params.wheel_radius)
         if self.has_opponent:
             wp.launch(
                 sensor_actor_stage_kernel,
@@ -1048,7 +1057,6 @@ class WarpF1tenthEnv:
                     self._opponent_params,
                     self._reset_params,
                     self._sim_params,
-                    wheel_radius,
                     0,
                     VIEW_EGO,
                     output_wp,
@@ -1068,7 +1076,6 @@ class WarpF1tenthEnv:
                     self._opponent_params,
                     self._reset_params,
                     self._sim_params,
-                    wheel_radius,
                     output_wp,
                 ],
                 device=self.wp_device,
@@ -1089,7 +1096,6 @@ class WarpF1tenthEnv:
                 self._opponent_params,
                 self._reset_params,
                 self._sim_params,
-                float(self._sim_params.wheel_radius),
                 1,
                 VIEW_OPPONENT,
                 output_wp,
@@ -1146,6 +1152,7 @@ class WarpF1tenthEnv:
                 self._opponent.buffers,
                 self._env.buffers,
                 self._track.data,
+                self._corridor.data,
                 self._sim_params,
                 self._obs_params,
                 self._reset_params,
@@ -1251,6 +1258,7 @@ class WarpF1tenthEnv:
                 self._opponent.buffers,
                 self._env.buffers,
                 self._track.data,
+                self._corridor.data,
                 self._sim_params,
                 self._obs_params,
                 self._reset_params,
@@ -1288,7 +1296,7 @@ class WarpF1tenthEnv:
             return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
-    def step(self, actions, n_steps=20, with_sensors=False):
+    def step(self, actions, n_steps=10, with_sensors=False):
         if int(n_steps) != self.control_interval:
             raise ValueError(
                 f"Warp environment requires n_steps=control_interval="
@@ -1344,6 +1352,7 @@ class WarpF1tenthEnv:
                 self._opponent.buffers,
                 self._env.buffers,
                 self._track.data,
+                self._corridor.data,
                 self._sim_params,
                 self._reward_params,
                 self._termination_params,
@@ -1378,8 +1387,10 @@ class WarpF1tenthEnv:
                 self._opponent.buffers,
                 self._env.buffers,
                 self._track.data,
+                self._corridor.data,
                 self._obs_params,
                 self._reset_params,
+                self._opponent_params,
                 self._raw_obs_wp[self._active_obs],
                 self._raw_obs_wp[inactive],
                 self._obs_wp[inactive],

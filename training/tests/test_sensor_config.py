@@ -183,10 +183,12 @@ def test_default_current_scale_is_80a_drive_40a_brake_envelope():
     assert env["f_brake_max"] == pytest.approx(23.1)
     assert env["tire_friction"] == pytest.approx(0.71)
     assert env["power_max"] == pytest.approx(320.0)
-    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(2.5)
-    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
-        env["i_slew_a_per_s"] / env["i_drive_max_a"]
-    )
+    assert env["control_interval"] == 10
+    assert env["warp_sim"]["izz"] == pytest.approx(0.13)
+    assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(11.0)
+    assert env["warp_sim"]["steer_gain"] == pytest.approx(1.10714)
+    assert env["warp_sim"]["c_coast"] == pytest.approx(0.0)
+    assert "longitudinal_slew_rate_per_s" not in env["warp_sim"]
 
 
 def test_default_sensor_dr_matches_measured_evidence():
@@ -217,6 +219,7 @@ def test_default_sensor_dr_matches_measured_evidence():
         0.03165226619154528,
     ]
     assert dr["vesc_speed_noise_std_range"] == [0.0, 0.022474802475579557]
+    assert dr["vesc_speed_dropout_prob_range"] == [0.0, 0.05]
     noop_keys = [
         "lidar_range_noise_std_range",
         "lidar_far_dropout_prob_range",
@@ -231,7 +234,10 @@ def test_default_sensor_dr_matches_measured_evidence():
 
 def test_gym_sim_yaml_matches_hokuyo_grid():
     root = Path(__file__).resolve().parents[2]
-    text = (root / "sim" / "f1tenth_gym_ros" / "config" / "sim.yaml").read_text()
+    sim_yaml = root / "sim" / "f1tenth_gym_ros" / "config" / "sim.yaml"
+    if not sim_yaml.is_file():
+        pytest.skip("f1tenth_gym_ros is not checked out in this worktree")
+    text = sim_yaml.read_text()
     assert "scan_num_beams: 1081" in text
     assert "scan_range_min: 0.06" in text
     assert "scan_range_max: 30.0" in text
@@ -303,6 +309,12 @@ def test_corridor_distance_field_centerline_near_half_width(real_modules):
             wall_dists.append(float(grid[iy, ix]))
     assert wall_dists
     assert min(wall_dists) <= res
+
+    outside = left[0] + (left[0] - centerline[0])
+    ix = int(np.floor((outside[0] - ox) / res))
+    iy = int(np.floor((outside[1] - oy) / res))
+    if 0 <= ix < host.width and 0 <= iy < host.height:
+        assert float(grid[iy, ix]) == pytest.approx(0.0, abs=res)
 
 
 def test_load_occupancy_distance_field_uses_ros_map_coordinates(tmp_path):
@@ -502,10 +514,10 @@ def test_courtyard_2_e2e_ppo_merged_patch_is_80a_drive_40a_brake():
     assert env["f_drive_max"] == pytest.approx(26.5)
     assert env["f_brake_max"] == pytest.approx(23.1)
     assert env["i_slew_a_per_s"] == pytest.approx(200.0)
-    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(
-        env["i_slew_a_per_s"] / env["i_drive_max_a"]
-    )
-    assert env["warp_sim"]["longitudinal_slew_rate_per_s"] == pytest.approx(2.5)
+    assert env["control_interval"] == 10
+    assert env["warp_sim"]["izz"] == pytest.approx(0.13)
+    assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(11.0)
+    assert "longitudinal_slew_rate_per_s" not in env["warp_sim"]
     dr = env["domain_randomization"]
     assert dr["drive_scale_range"] == [1.0, 1.0]
     assert dr["tire_friction_range"] == [0.66, 0.85]
