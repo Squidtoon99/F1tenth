@@ -562,6 +562,9 @@ class RunningStats:
         self._max.clear()
 
 
+STEP_DIAGNOSTIC_STRIDE = 8
+
+
 def accumulate_step_diagnostics(
     diag: RunningStats,
     reward: torch.Tensor,
@@ -2838,7 +2841,8 @@ def main():
             lap_count = extras.get("metrics", {}).get("lap_count")
             if isinstance(lap_count, torch.Tensor):
                 episode_laps = update_episode_lap_counts(episode_laps, lap_count, done)
-            if scenario_names:
+            sample_diag = vector_ticks % STEP_DIAGNOSTIC_STRIDE == 0
+            if scenario_names and sample_diag:
                 accumulate_scenario_diagnostics(
                     diag,
                     scenario_names,
@@ -2851,22 +2855,26 @@ def main():
             episode_rewards = episode_rewards * (1.0 - done_f)
             episode_laps = episode_laps * (1.0 - done_f)
 
-            accumulate_step_diagnostics(diag, reward, actions, critic_obs, extras)
+            if sample_diag:
+                accumulate_step_diagnostics(
+                    diag, reward, actions, critic_obs, extras
+                )
             accumulate_completed_episode_lifespans(
                 diag,
                 extras["metrics"]["completed_episode_steps"],
                 done,
                 env.control_dt,
             )
-            diag.add_mean(
-                "obs/norm_abs",
-                actor_normalizer.normalize(actor_obs).abs(),
-                track_range=True,
-            )
-            if use_1v1 and critic_obs.shape[-1] > OPP_OBS_BASE_IDX:
-                opp_block = critic_obs[:, OPP_OBS_BASE_IDX:]
-                in_range = (opp_block != 0).any(dim=-1).to(critic_obs.dtype)
-                diag.add_mean("metric/opponent_presence", in_range)
+            if sample_diag:
+                diag.add_mean(
+                    "obs/norm_abs",
+                    actor_normalizer.normalize(actor_obs).abs(),
+                    track_range=True,
+                )
+                if use_1v1 and critic_obs.shape[-1] > OPP_OBS_BASE_IDX:
+                    opp_block = critic_obs[:, OPP_OBS_BASE_IDX:]
+                    in_range = (opp_block != 0).any(dim=-1).to(critic_obs.dtype)
+                    diag.add_mean("metric/opponent_presence", in_range)
 
             if algorithm == "qrsac":
                 replay_inserts += buffer.add(

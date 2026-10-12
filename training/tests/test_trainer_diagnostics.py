@@ -9,11 +9,16 @@ import torch
 
 from standalone_trainer import (
     RunningStats,
+    STEP_DIAGNOSTIC_STRIDE,
     TRAINING_SUMMARY_REWARD_TAIL,
     accumulate_completed_episode_lifespans,
     accumulate_step_diagnostics,
     training_summary_reward_tail_args,
 )
+
+
+def test_step_diagnostic_stride_samples_every_eighth_tick():
+    assert STEP_DIAGNOSTIC_STRIDE == 8
 
 
 def _accumulate_once(diag: RunningStats, extras: dict, *, num_envs: int = 4) -> None:
