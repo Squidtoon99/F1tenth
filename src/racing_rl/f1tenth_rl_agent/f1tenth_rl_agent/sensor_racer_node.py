@@ -45,7 +45,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("odom_topic", si.TOPIC_ODOM)
         self.declare_parameter("applied_actuator_topic", si.TOPIC_APPLIED_ACTUATOR)
         self.declare_parameter("sensor_max_age_s", 0.15)
-        self.declare_parameter("twist_vx_sign", -1.0)
+        self.declare_parameter("twist_vx_sign", si.TWIST_VX_SIGN_BODY_FORWARD)
         self.declare_parameter("i_drive_max_a", 80.0)
         self.declare_parameter("i_brake_max_a", 40.0)
         self.declare_parameter("i_slew_a_per_s", 200.0)

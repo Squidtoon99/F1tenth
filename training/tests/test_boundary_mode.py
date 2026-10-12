@@ -80,11 +80,8 @@ def test_default_config_is_unchanged_first_contact_terminal():
     assert DEFAULT_CONFIG["reward"]["oob_impact_coefficient"] == 0.0
 
 
-@pytest.mark.parametrize(
-    ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -4.0), (5.0, -10.0)],
-)
-def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_reward):
+@pytest.mark.parametrize("speed", [1.0, 2.0, 5.0])
+def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed):
     env = _make_env(wall_cost_mode="continuous")
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
@@ -93,10 +90,15 @@ def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_rewa
         _, reward, done, extras = env.step(
             torch.zeros(1, 2), n_steps=env.control_interval
         )
-        assert env.control_dt == pytest.approx(0.1)
+        assert env.control_dt == pytest.approx(0.05)
         assert bool(extras["termination"]["out_of_bounds"][0])
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
+        expected_reward = (
+            -float(env.reward_cfg["wall_contact_coefficient"])
+            * env.control_dt
+            * speed
+        )
         assert float(terms["progress"][0]) == 0.0
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4
@@ -106,11 +108,8 @@ def test_continuous_wall_cost_is_dt_scaled_at_first_contact(speed, expected_rewa
         env.close()
 
 
-@pytest.mark.parametrize(
-    ("speed", "expected_reward"),
-    [(1.0, -2.0), (2.0, -8.0), (5.0, -50.0)],
-)
-def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed, expected_reward):
+@pytest.mark.parametrize("speed", [1.0, 2.0, 5.0])
+def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed):
     env = _make_env(wall_cost_mode="continuous_quadratic")
     try:
         w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
@@ -122,6 +121,12 @@ def test_continuous_quadratic_wall_cost_is_dt_scaled_speed_squared(speed, expect
         assert bool(extras["termination"]["out_of_bounds"][0])
         assert bool(done[0])
         terms = extras["rewards"]["terms"]
+        expected_reward = (
+            -float(env.reward_cfg["wall_contact_coefficient"])
+            * env.control_dt
+            * speed
+            * speed
+        )
         assert float(terms["wall_contact"][0]) == pytest.approx(
             expected_reward, abs=1e-4
         )

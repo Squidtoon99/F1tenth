@@ -293,6 +293,92 @@ class CorridorDistanceField:
     resolution: wp.float32
 
 
+@wp.func
+def sample_corridor_distance(
+    field: CorridorDistanceField,
+    x: wp.float32,
+    y: wp.float32,
+    variant_id: wp.int32,
+) -> wp.float32:
+    gx = (x - field.origin[0]) / field.resolution
+    gy = (y - field.origin[1]) / field.resolution
+    if (
+        gx < 0.0
+        or gy < 0.0
+        or gx >= wp.float32(field.width - 1)
+        or gy >= wp.float32(field.height - 1)
+    ):
+        return wp.float32(-1.0)
+    x0 = wp.int32(wp.floor(gx))
+    y0 = wp.int32(wp.floor(gy))
+    x1 = x0 + 1
+    y1 = y0 + 1
+    tx = gx - wp.float32(x0)
+    ty = gy - wp.float32(y0)
+    offset = variant_id * field.width * field.height
+    i00 = offset + y0 * field.width + x0
+    i10 = offset + y0 * field.width + x1
+    i01 = offset + y1 * field.width + x0
+    i11 = offset + y1 * field.width + x1
+    d00 = field.distance[i00]
+    d10 = field.distance[i10]
+    d01 = field.distance[i01]
+    d11 = field.distance[i11]
+    if d00 < 0.0 or d10 < 0.0 or d01 < 0.0 or d11 < 0.0:
+        nearest_x = x0
+        nearest_y = y0
+        if tx >= 0.5:
+            nearest_x = x1
+        if ty >= 0.5:
+            nearest_y = y1
+        return field.distance[offset + nearest_y * field.width + nearest_x]
+    return (1.0 - tx) * (1.0 - ty) * d00 + tx * (1.0 - ty) * d10 + (
+        1.0 - tx
+    ) * ty * d01 + tx * ty * d11
+
+
+@wp.func
+def map_variant_id(
+    seed: wp.int32,
+    env_id: wp.int32,
+    episode_id: wp.int32,
+    variant_count: wp.int32,
+) -> wp.int32:
+    mixed = seed ^ (env_id * 73244475) ^ (episode_id * 295075153)
+    return (mixed & 2147483647) % variant_count
+
+
+@wp.func
+def occupancy_footprint_clearance(
+    x: wp.float32,
+    y: wp.float32,
+    yaw: wp.float32,
+    car_length: wp.float32,
+    car_width: wp.float32,
+    field: CorridorDistanceField,
+    variant_id: wp.int32,
+) -> wp.float32:
+    cosine = wp.cos(yaw)
+    sine = wp.sin(yaw)
+    half_l = 0.5 * car_length
+    half_w = 0.5 * car_width
+    clearance = wp.float32(1.0e6)
+    for sx in range(2):
+        for sy in range(2):
+            lx = half_l
+            ly = half_w
+            if sx == 0:
+                lx = -half_l
+            if sy == 0:
+                ly = -half_w
+            wx = x + cosine * lx - sine * ly
+            wy = y + sine * lx + cosine * ly
+            dist = sample_corridor_distance(field, wx, wy, variant_id)
+            if dist < clearance:
+                clearance = dist
+    return clearance
+
+
 @wp.struct
 class RewardParams:
     progress_forward: wp.float32
@@ -394,6 +480,9 @@ class ResetParams:
     vesc_speed_noise_std_max: wp.float32
     vesc_current_noise_std_min: wp.float32
     vesc_current_noise_std_max: wp.float32
+    vesc_speed_dropout_prob_min: wp.float32
+    vesc_speed_dropout_prob_max: wp.float32
+    post_brake_history_probability: wp.float32
 
 
 @wp.struct
@@ -480,6 +569,7 @@ class EnvBuffers:
     vesc_current_bias: wp.array(dtype=wp.float32)
     vesc_speed_noise_std: wp.array(dtype=wp.float32)
     vesc_current_noise_std: wp.array(dtype=wp.float32)
+    vesc_speed_dropout_prob: wp.array(dtype=wp.float32)
     opponent_mode: wp.array(dtype=wp.int32)
     contact: wp.array(dtype=wp.int32)
     valid: wp.array(dtype=wp.int32)
@@ -715,16 +805,19 @@ def clear_vehicle(vehicle: VehicleLocal) -> VehicleLocal:
     vehicle.vy = 0.0
     vehicle.yaw_rate = 0.0
     vehicle.steer = 0.0
-    vehicle.effort_state = 0.0
+    vehicle.steer_logical = 0.0
+    vehicle.i_drive = 0.0
+    vehicle.i_brake = 0.0
+    vehicle.i_drive_cmd = 0.0
+    vehicle.i_brake_cmd = 0.0
     vehicle.applied_effort = 0.0
     vehicle.ax = 0.0
     vehicle.ay = 0.0
+    vehicle.imu_gz = 0.0
     vehicle.omega = wp.vec4f(0.0)
     vehicle.slip_ratio = wp.vec4f(0.0)
     vehicle.slip_angle = wp.vec4f(0.0)
     vehicle.load_ratio = wp.vec4f(1.0)
-    vehicle.fx_lag = wp.vec4f(0.0)
-    vehicle.fy_lag = wp.vec4f(0.0)
     return vehicle
 
 
@@ -955,6 +1048,11 @@ def reset_pair(
     env.vesc_current_noise_std[env_id] = random_range(
         random, reset.vesc_current_noise_std_min, reset.vesc_current_noise_std_max
     )
+    env.vesc_speed_dropout_prob[env_id] = random_range(
+        random,
+        reset.vesc_speed_dropout_prob_min,
+        reset.vesc_speed_dropout_prob_max,
+    )
     env.episode_id[env_id] = next_episode
     env.episode_step[env_id] = 0
     env.lap_count[env_id] = 0
@@ -974,8 +1072,16 @@ def reset_pair(
     env.action_head[env_id] = 0
     for history_index in range(ACTION_HISTORY):
         env.action_history[env_id, history_index] = wp.vec2f(0.0)
+    seed_brake_history = (
+        speed == 0.0
+        and reset.post_brake_history_probability > 0.0
+        and wp.randf(random) < reset.post_brake_history_probability
+    )
+    long0 = wp.float32(0.0)
+    if seed_brake_history:
+        long0 = -1.0
     for longitudinal_index in range(2):
-        env.executed_longitudinal_history[env_id, longitudinal_index] = 0.0
+        env.executed_longitudinal_history[env_id, longitudinal_index] = long0
         env.opponent_executed_longitudinal_history[env_id, longitudinal_index] = 0.0
     for steer_index in range(STEER_HISTORY):
         env.executed_steer_history[env_id, steer_index] = 0.0
@@ -1142,8 +1248,10 @@ def compute_reward_and_done(
     contact: ContactResult,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     reward: RewardParams,
     termination: TerminationParams,
+    reset: ResetParams,
     opponent_enabled: wp.int32,
     car_length: wp.float32,
     car_width: wp.float32,
@@ -1169,18 +1277,21 @@ def compute_reward_and_done(
     )
     heading = wp.atan2(ego_frenet.tangent[1], ego_frenet.tangent[0])
     heading_error = wrap_angle(ego.yaw - heading)
-    footprint = (
-        0.5 * car_length * wp.abs(wp.sin(heading_error))
-        + 0.5 * car_width * wp.abs(wp.cos(heading_error))
+    variant_id = map_variant_id(
+        reset.seed, env_id, env.episode_id[env_id], field.variant_count
     )
-    off_track = (
-        ego_frenet.ey + footprint > ego_frenet.width_left
-        or ego_frenet.ey - footprint < -ego_frenet.width_right
+    clearance = occupancy_footprint_clearance(
+        ego.x,
+        ego.y,
+        ego.yaw,
+        car_length,
+        car_width,
+        field,
+        variant_id,
     )
-    wall_contact = (
-        ego_frenet.ey + footprint >= ego_frenet.width_left
-        or ego_frenet.ey - footprint <= -ego_frenet.width_right
-    )
+    ego_frenet.boundary_distance = clearance
+    wall_contact = clearance <= 0.0
+    off_track = clearance < 0.0
     if termination.recoverable_boundary != 0:
         boundary_event = off_track
     else:
@@ -1274,12 +1385,7 @@ def compute_reward_and_done(
         env.stopped_streak[env_id] = 0
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
-    if termination.recoverable_boundary != 0:
-        full_out_left = ego_frenet.ey - footprint > ego_frenet.width_left
-        full_out_right = ego_frenet.ey + footprint < -ego_frenet.width_right
-        oob_done = full_out_left or full_out_right
-    else:
-        oob_done = wall_contact
+    oob_done = boundary_event
     if oob_done:
         out.oob_impact = -reward.oob_impact_coefficient * speed_squared
     stopped = (
@@ -1614,8 +1720,7 @@ def physics_solo_kernel(
         sim,
         substeps,
     )
-    executed_steer = execution_action[1]
-    executed_steer = ego.steer
+    executed_steer = ego.steer_logical
     push_executed_steer(
         env.executed_steer_history, env_id, executed_steer
     )
@@ -1671,8 +1776,7 @@ def physics_stage_kernel(
             sim,
             substeps,
         )
-        executed_steer = execution_action[1]
-        executed_steer = ego.steer
+        executed_steer = ego.steer_logical
         push_executed_steer(
             env.executed_steer_history, env_id, executed_steer
         )
@@ -1717,8 +1821,7 @@ def physics_stage_kernel(
             sim,
             substeps,
         )
-        opponent_executed_steer = opponent_action[1]
-        opponent_executed_steer = opponent.steer
+        opponent_executed_steer = opponent.steer_logical
         push_executed_steer(
             env.opponent_executed_steer_history,
             env_id,
@@ -1754,6 +1857,7 @@ def transaction_stage_kernel(
     opponent_buffers: VehicleBuffers,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     sim: SimParams,
     reward_params: RewardParams,
     termination: TerminationParams,
@@ -1797,8 +1901,10 @@ def transaction_stage_kernel(
         contact,
         env,
         track,
+        field,
         reward_params,
         termination,
+        reset,
         reset.has_opponent,
         opponent_params.car_length,
         opponent_params.car_width,
@@ -1852,8 +1958,10 @@ def observation_stage_kernel(
     opponent_buffers: VehicleBuffers,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     obs_params: ObsParams,
     reset: ResetParams,
+    opponent_params: OpponentParams,
     raw_previous: wp.array2d(dtype=wp.float32),
     raw_current: wp.array2d(dtype=wp.float32),
     output: wp.array2d(dtype=wp.float32),
@@ -1872,6 +1980,19 @@ def observation_stage_kernel(
             env.opponent_segment[env_id],
             track,
         )
+    variant_id = map_variant_id(
+        reset.seed, env_id, env.episode_id[env_id], field.variant_count
+    )
+    ego_frenet.boundary_distance = occupancy_footprint_clearance(
+        ego.x,
+        ego.y,
+        ego.yaw,
+        opponent_params.car_length,
+        opponent_params.car_width,
+        field,
+        variant_id,
+    )
+    env.metric_boundary[env_id] = ego_frenet.boundary_distance
     visible = write_raw_observation(
         env_id,
         ego,
@@ -1919,6 +2040,7 @@ def env_step_kernel(
     opponent_buffers: VehicleBuffers,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     sim: SimParams,
     obs_params: ObsParams,
     reward_params: RewardParams,
@@ -1942,8 +2064,7 @@ def env_step_kernel(
     ego = apply_command(
         ego, execution_action, ego_buffers.steer_bias[env_id], sim
     )
-    executed_steer = execution_action[1]
-    executed_steer = ego.steer
+    executed_steer = ego.steer_logical
     push_executed_steer(
         env.executed_steer_history, env_id, executed_steer
     )
@@ -1971,8 +2092,7 @@ def env_step_kernel(
             opponent_buffers.steer_bias[env_id],
             sim,
         )
-        opponent_executed_steer = opponent_action[1]
-        opponent_executed_steer = opponent.steer
+        opponent_executed_steer = opponent.steer_logical
         push_executed_steer(
             env.opponent_executed_steer_history,
             env_id,
@@ -2035,8 +2155,10 @@ def env_step_kernel(
         contact,
         env,
         track,
+        field,
         reward_params,
         termination,
+        reset,
         reset.has_opponent,
         opponent_params.car_length,
         opponent_params.car_width,
@@ -2108,6 +2230,7 @@ def reset_envs_kernel(
     opponent_buffers: VehicleBuffers,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     sim: SimParams,
     obs_params: ObsParams,
     reset: ResetParams,
@@ -2130,6 +2253,19 @@ def reset_envs_kernel(
             reset,
             opponent_params,
         )
+        variant_id = map_variant_id(
+            reset.seed, env_id, env.episode_id[env_id], field.variant_count
+        )
+        ego_frenet.boundary_distance = occupancy_footprint_clearance(
+            ego.x,
+            ego.y,
+            ego.yaw,
+            opponent_params.car_length,
+            opponent_params.car_width,
+            field,
+            variant_id,
+        )
+        env.metric_boundary[env_id] = ego_frenet.boundary_distance
         visible = write_raw_observation(
             env_id,
             ego,
@@ -2203,6 +2339,7 @@ def reset_to_kernel(
     opponent_buffers: VehicleBuffers,
     env: EnvBuffers,
     track: TrackData,
+    field: CorridorDistanceField,
     sim: SimParams,
     obs_params: ObsParams,
     reset: ResetParams,
@@ -2232,6 +2369,18 @@ def reset_to_kernel(
         env.opponent_segment[env_id] = opponent_frenet.segment
         env.prev_s[env_id] = ego_frenet.s
         env.prev_opponent_s[env_id] = opponent_frenet.s
+        variant_id = map_variant_id(
+            reset.seed, env_id, env.episode_id[env_id], field.variant_count
+        )
+        ego_frenet.boundary_distance = occupancy_footprint_clearance(
+            ego.x,
+            ego.y,
+            ego.yaw,
+            opponent_params.car_length,
+            opponent_params.car_width,
+            field,
+            variant_id,
+        )
         env.metric_boundary[env_id] = ego_frenet.boundary_distance
         env.metric_lateral[env_id] = ego_frenet.ey
         env.metric_speed[env_id] = ego_speed[env_id]

@@ -20,7 +20,10 @@
     "i_brake_max_a": 40.0,
     "i_slew_a_per_s": 200.0,
     "warp_sim": {
-      "longitudinal_slew_rate_per_s": 2.5
+      "izz": 0.13,
+      "lat_stiffness_scale": 11.0,
+      "steer_gain": 1.10714,
+      "c_coast": 0.0
     },
     "domain_randomization": {
       "enabled": true,
@@ -59,7 +62,7 @@
     "eval_interval_transitions": 0
   },
   "ppo": {
-    "rollout_steps": 128,
+    "rollout_steps": 256,
     "epochs": 4,
     "env_minibatches": 32,
     "entropy_coef": 0.01,

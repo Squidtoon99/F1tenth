@@ -147,6 +147,8 @@ def test_car_overlay_matches_sensor_policy_artifact_envelope():
     assert "i_drive_max_a: 80.0" in racer
     assert "i_brake_max_a: 40.0" in racer
     assert "i_slew_a_per_s: 200.0" in racer
+    assert "control_hz: 20.0" in racer
+    assert "twist_vx_sign: 1.0" in racer
     assert "i_drive_max_a: 80.0" in gate
     assert "i_brake_max_a: 40.0" in gate
     assert "i_slew_a_per_s: 200.0" in gate

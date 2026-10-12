@@ -7,6 +7,7 @@ import math
 import pytest
 
 from f1tenth_policy import (
+    CONTROL_HZ,
     OBS_PREPROCESSING_VERSION,
     TRAINING_I_BRAKE_MAX_A,
     TRAINING_I_DRIVE_MAX_A,
@@ -16,8 +17,9 @@ from f1tenth_policy import (
 )
 
 
-def test_obs_preprocessing_version_is_normalized_current():
-    assert OBS_PREPROCESSING_VERSION == 3
+def test_obs_preprocessing_version_is_body_imu_and_20hz():
+    assert OBS_PREPROCESSING_VERSION == 4
+    assert CONTROL_HZ == pytest.approx(20.0)
 
 
 def test_training_current_scale_is_80a_drive_40a_brake_envelope():

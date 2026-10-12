@@ -124,6 +124,10 @@ def convert_raw_imu(
     return ax_si, ay_si, az_si, gx_si, gy_si, gz_si
 
 
+def driver_accel_to_body(ax_driver: float, ay_driver: float) -> tuple[float, float]:
+    return -float(ay_driver), float(ax_driver)
+
+
 def average_dynamic_imu(samples: list[RawImuSample]) -> tuple[float, float, float]:
     if not samples:
         return 0.0, 0.0, 0.0
@@ -149,19 +153,29 @@ def actor_imu_from_interval(
         )
         return actor, raw_mean
 
-    raw_mean = np.mean(converted, axis=0).astype(np.float32)
+    body = [
+        (
+            *driver_accel_to_body(c[0], c[1]),
+            c[2],
+            c[3],
+            c[4],
+            c[5],
+        )
+        for c in converted
+    ]
+    raw_mean = np.mean(body, axis=0).astype(np.float32)
     ax, ay, gz = average_dynamic_imu(
         [
             RawImuSample(
                 stamp_s=s.stamp_s,
-                ax=c[0],
-                ay=c[1],
-                az=c[2],
-                gx=c[3],
-                gy=c[4],
-                gz=c[5],
+                ax=b[0],
+                ay=b[1],
+                az=b[2],
+                gx=b[3],
+                gy=b[4],
+                gz=b[5],
             )
-            for s, c in zip(samples, converted)
+            for s, b in zip(samples, body)
         ]
     )
     if freeze_const_channels:

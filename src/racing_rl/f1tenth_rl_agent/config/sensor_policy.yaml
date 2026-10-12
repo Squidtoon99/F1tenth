@@ -6,13 +6,13 @@ sensor_racer:
     state_dict_key: actor
     device: cpu
     deterministic: true
-    control_hz: 10.0
+    control_hz: 20.0
     scan_topic: /scan
     imu_topic: /sensors/imu/raw
     odom_topic: /odom
     applied_actuator_topic: /rl/actuator/applied
     sensor_max_age_s: 0.15
-    twist_vx_sign: -1.0
+    twist_vx_sign: 1.0
     i_drive_max_a: 80.0
     i_brake_max_a: 40.0
     i_slew_a_per_s: 200.0
@@ -49,13 +49,13 @@ sensor_policy:
     state_dict_key: actor
     device: cpu
     deterministic: true
-    control_hz: 10.0
+    control_hz: 20.0
     scan_topic: /scan
     imu_topic: /sensors/imu/raw
     odom_topic: /odom
     applied_actuator_topic: /rl/actuator/applied
     sensor_max_age_s: 0.15
-    twist_vx_sign: -1.0
+    twist_vx_sign: 1.0
     i_drive_max_a: 80.0
     i_brake_max_a: 40.0
     i_slew_a_per_s: 200.0

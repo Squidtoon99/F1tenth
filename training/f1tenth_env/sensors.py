@@ -29,7 +29,9 @@ from .kernel import (
     OpponentParams,
     ResetParams,
     SensorParams,
+    map_variant_id,
     observation_noise,
+    sample_corridor_distance,
 )
 
 MAX_LIDAR_MARCH_STEPS = 512
@@ -39,51 +41,8 @@ VIEW_EGO = 0
 VIEW_OPPONENT = 1
 _VIEW_SEED_PRIME = 668265263
 _VESC_SPEED_NOISE_FEATURE = 10_000
+_VESC_SPEED_DROPOUT_FEATURE = 10_002
 _VESC_CURRENT_NOISE_FEATURE = 10_001
-
-
-@wp.func
-def sample_corridor_distance(
-    field: CorridorDistanceField,
-    x: wp.float32,
-    y: wp.float32,
-    variant_id: wp.int32,
-) -> wp.float32:
-    gx = (x - field.origin[0]) / field.resolution
-    gy = (y - field.origin[1]) / field.resolution
-    if (
-        gx < 0.0
-        or gy < 0.0
-        or gx >= wp.float32(field.width - 1)
-        or gy >= wp.float32(field.height - 1)
-    ):
-        return wp.float32(-1.0)
-    x0 = wp.int32(wp.floor(gx))
-    y0 = wp.int32(wp.floor(gy))
-    x1 = x0 + 1
-    y1 = y0 + 1
-    tx = gx - wp.float32(x0)
-    ty = gy - wp.float32(y0)
-    offset = variant_id * field.width * field.height
-    i00 = offset + y0 * field.width + x0
-    i10 = offset + y0 * field.width + x1
-    i01 = offset + y1 * field.width + x0
-    i11 = offset + y1 * field.width + x1
-    d00 = field.distance[i00]
-    d10 = field.distance[i10]
-    d01 = field.distance[i01]
-    d11 = field.distance[i11]
-    if d00 < 0.0 or d10 < 0.0 or d01 < 0.0 or d11 < 0.0:
-        nearest_x = x0
-        nearest_y = y0
-        if tx >= 0.5:
-            nearest_x = x1
-        if ty >= 0.5:
-            nearest_y = y1
-        return field.distance[offset + nearest_y * field.width + nearest_x]
-    return (1.0 - tx) * (1.0 - ty) * d00 + tx * (1.0 - ty) * d10 + (
-        1.0 - tx
-    ) * ty * d01 + tx * ty * d11
 
 
 @wp.func
@@ -209,12 +168,9 @@ def lidar_beam_range(
     )
     direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
 
-    mixed_variant = (
-        reset.seed
-        ^ (env_id * 73244475)
-        ^ (env.episode_id[env_id] * 295075153)
+    variant_id = map_variant_id(
+        reset.seed, env_id, env.episode_id[env_id], field.variant_count
     )
-    variant_id = (mixed_variant & 2147483647) % field.variant_count
 
     hit = sphere_trace_walls(
         origin,
@@ -367,7 +323,7 @@ def write_imu_columns(
     az = sim.gravity
     gx = wp.float32(0.0)
     gy = wp.float32(0.0)
-    gz = ego.yaw_rate
+    gz = ego.imu_gz
 
     misalign = env.imu_axis_misalign[env_id]
     if misalign != 0.0:
@@ -411,15 +367,12 @@ def write_vesc_and_commands(
     env: EnvBuffers,
     reset: ResetParams,
     env_id: wp.int32,
-    wheel_radius: wp.float32,
     use_opponent_commands: wp.int32,
     view_id: wp.int32,
     output: wp.array2d(dtype=wp.float32),
 ):
-    omega = vehicle.omega[env_id]
-    mean_omega = 0.25 * (omega[0] + omega[1] + omega[2] + omega[3])
-    speed = mean_omega * wheel_radius
-    # applied_effort is already the signed directional current-limit fraction.
+    raw_speed = vehicle.vx[env_id]
+    speed = raw_speed
     current = vehicle.applied_effort[env_id]
     speed = speed + env.vesc_speed_bias[env_id]
     current = current + env.vesc_current_bias[env_id]
@@ -436,6 +389,20 @@ def write_vesc_and_commands(
             _VESC_SPEED_NOISE_FEATURE,
             speed_std,
         )
+    if raw_speed * speed < 0.0 and wp.abs(raw_speed) > 0.5:
+        speed = raw_speed
+    dropout = env.vesc_speed_dropout_prob[env_id]
+    if dropout > 0.0:
+        mixed = (
+            view_seed
+            ^ (env_id * 73244475)
+            ^ (episode * 295075153)
+            ^ (step * 104395301)
+            ^ (_VESC_SPEED_DROPOUT_FEATURE * 122949829)
+        )
+        random = wp.rand_init(mixed & 2147483647)
+        if wp.randf(random) < dropout:
+            speed = 0.0
     current_std = env.vesc_current_noise_std[env_id]
     if current_std > 0.0:
         current = current + observation_noise(
@@ -496,7 +463,6 @@ def sensor_actor_solo_kernel(
     opponent_params: OpponentParams,
     reset: ResetParams,
     sim: SimParams,
-    wheel_radius: wp.float32,
     output: wp.array2d(dtype=wp.float32),
 ):
     env_id, beam_id = wp.tid()
@@ -526,7 +492,6 @@ def sensor_actor_solo_kernel(
             env,
             reset,
             env_id,
-            wheel_radius,
             0,
             VIEW_EGO,
             output,
@@ -543,7 +508,6 @@ def sensor_actor_stage_kernel(
     opponent_params: OpponentParams,
     reset: ResetParams,
     sim: SimParams,
-    wheel_radius: wp.float32,
     use_opponent_commands: wp.int32,
     view_id: wp.int32,
     output: wp.array2d(dtype=wp.float32),
@@ -575,7 +539,6 @@ def sensor_actor_stage_kernel(
             env,
             reset,
             env_id,
-            wheel_radius,
             use_opponent_commands,
             view_id,
             output,
