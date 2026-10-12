@@ -1682,7 +1682,7 @@ def store_reward(
 
 
 @wp.func
-def apply_ego_speed_cap(
+def apply_speed_cap(
     vehicle: VehicleLocal,
     action: wp.vec2f,
     speed_cap_mps: wp.float32,
@@ -1709,7 +1709,7 @@ def physics_solo_kernel(
     )
     execution_action = delayed_physics_action(env_id, action, env)
     ego = load_vehicle(ego_buffers, env_id)
-    execution_action = apply_ego_speed_cap(ego, execution_action, ego_speed_cap_mps)
+    execution_action = apply_speed_cap(ego, execution_action, ego_speed_cap_mps)
     push_executed_longitudinal(
         env.executed_longitudinal_history, env_id, execution_action[0]
     )
@@ -1763,7 +1763,7 @@ def physics_stage_kernel(
         )
         execution_action = delayed_physics_action(env_id, action, env)
         ego = load_vehicle(ego_buffers, env_id)
-        execution_action = apply_ego_speed_cap(
+        execution_action = apply_speed_cap(
             ego, execution_action, ego_speed_cap_mps
         )
         push_executed_longitudinal(
@@ -1804,11 +1804,11 @@ def physics_stage_kernel(
                 opponent_params,
             )
         else:
-            forward_speed = wp.dot(
-                body_velocity_world(opponent), opponent_frenet.tangent
+            opponent_action = apply_speed_cap(
+                opponent,
+                opponent_action,
+                env.opponent_speed_cap[env_id],
             )
-            if forward_speed > env.opponent_speed_cap[env_id]:
-                opponent_action = wp.vec2f(0.0, opponent_action[1])
         push_executed_longitudinal(
             env.opponent_executed_longitudinal_history,
             env_id,
