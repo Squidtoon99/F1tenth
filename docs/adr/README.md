@@ -33,7 +33,8 @@ trade-off. Routine work is captured by the PR instead (see
   steering deltas and full-footprint boundary behavior to the sensor experiment
   (partially superseded by 0012 for the sensor stack).
 - [0012](0012-lee-core-and-fixed-opponents.md) — Canonical Lee/ADR-0011 sensor
-  core, fixed champion opponents, and shared `f1tenth_policy` module.
+  core, fixed champion opponents, and shared `f1tenth_policy` module
+  (amended 2026-10-12: 20 Hz γ/λ rescale, multi-scenario mix).
 - [0013](0013-first-footprint-wall-contact.md) — Canonical first-footprint wall
   termination with one linear-speed Lee barrier reward.
 - [0014](0014-paper-literal-wall-event-scale.md) — Paper-literal wall-event
