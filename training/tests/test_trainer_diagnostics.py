@@ -129,9 +129,13 @@ def test_episode_eval_metrics_match_between_stride_1_and_8():
         assert stride_1.mean(f"{prefix}/lap_completion") == pytest.approx(
             stride_8.mean(f"{prefix}/lap_completion")
         )
+        assert stride_1.total(f"{prefix}/lap_completion") == stride_8.total(
+            f"{prefix}/lap_completion"
+        )
         assert stride_1.mean(f"{prefix}/crash") == pytest.approx(
             stride_8.mean(f"{prefix}/crash")
         )
+        assert stride_1.total(f"{prefix}/crash") == stride_8.total(f"{prefix}/crash")
     assert stride_1.total("scn/flying/episodes") + stride_1.total(
         "scn/standing/episodes"
     ) == expected_episodes
