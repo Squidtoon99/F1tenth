@@ -1,6 +1,7 @@
 # 0002 — PhysX-grounded tyre slip + tyre-load observation block
 
-- Status: Accepted
+- Status: Accepted (simulation backend superseded by [0007](0007-warp-simulator.md);
+  PhysX slip/load contract still stands)
 - Date: 2026-07-08
 
 ## Context

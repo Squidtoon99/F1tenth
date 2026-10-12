@@ -1,29 +1,44 @@
 # sim/
 
-Simulator integration. Two simulators are used, for different purposes:
+Two simulators, different jobs. Training never talks ROS; gym eval never trains.
 
-- **Gym bridge** (`f1tenth_gym_ros`) — a ROS 2 wrapper around the F1TENTH gym. Used
-  to run and evaluate the *deployed* racing stack (algorithmic or RL) over ROS
-  topics, closest to on-car behavior. Pinned via
-  [`f1tenth_gym_ros.repos`](f1tenth_gym_ros.repos) (the bridge fork + the gym engine
-  it wraps) and imported, not vendored:
+| Task | Simulator |
+| --- | --- |
+| RL training / synthetic data | `training/f1tenth_sim/` (NVIDIA Warp) |
+| Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
 
-  ```bash
-  vcs import sim < sim/f1tenth_gym_ros.repos
-  ```
+```mermaid
+flowchart LR
+  warp["Warp (batched, no ROS)"] --> pt["policy.pt"]
+  pt --> gym["gym bridge + vehicle_obs → policy_inference → drive"]
+  gym --> vnc["RViz :8080 / Foxglove :8765"]
+```
 
-  The imported clone (`sim/f1tenth_gym_ros/`, with the engine nested at
-  `f1tenth_gym/`) is gitignored. It is a sim-only dependency and is **not** part of
-  the car runtime image.
+## Gym bridge (`f1tenth_gym_ros`)
 
-### Running the RL stack against the gym
-
-Use [`../tools/sim.sh`](../tools/sim.sh) — it stands up a **two-container** stack
-(the gym bridge in the fork's own image, our nodes in the dev image) on a shared
-docker bridge network, plus a noVNC container for RViz:
+A ROS 2 wrapper around the F1TENTH gym. Used to run the *deployed* racing stack
+over ROS topics, closest to on-car behavior. Pinned via
+[`f1tenth_gym_ros.repos`](f1tenth_gym_ros.repos) and imported, not vendored:
 
 ```bash
-# Runs the exact on-car C++ graph. The policy is mounted at /policies/${CKPT}.
+vcs import sim < sim/f1tenth_gym_ros.repos
+```
+
+`tools/sim.sh` runs that import inside `f1tenth-base` so the host needs no
+`vcs`. The clone (`sim/f1tenth_gym_ros/`, engine at `f1tenth_gym/`) is gitignored
+and is **not** in the car image.
+
+Map is **IV_2026**. The gym centerline and
+`src/racing_rl/f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv` must match
+(`tools/sim.sh` checks). Train with `--track IV_2026_SIM` for a checkpoint that
+can pass this gate.
+
+### Run the on-car graph against the gym
+
+[`../tools/sim.sh`](../tools/sim.sh) starts noVNC + the gym bridge + our agent:
+
+```bash
+# Policy is mounted at /policies/${CKPT}. Needs a force-mode 390-dim checkpoint.
 CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
@@ -31,25 +46,32 @@ CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
 ./tools/sim.sh down
 ```
 
-It launches the fork's bridge-only `rl_agent_sim_launch.py` (the built-in
-gap/pid/pp drivers are omitted so they don't fight the agent on `/drive`) together
-with our `f1tenth_bringup/sim.launch.py` (on-car C++ graph). The two ROS containers
-discover each other over DDS via a shared `ROS_DOMAIN_ID` (no host networking —
-unreliable on macOS Docker Desktop).
-The `evaluation` node spawns the car forward-facing along the centerline so it
-matches the training distribution. `tools/sim.sh validate` then runs the closed-loop
-acceptance gate; see [`../docs/deployment.md`](../docs/deployment.md) for the full
-certification sequence and acceptance criteria.
+Env:
 
-- **Training simulator** ([`../training/f1tenth_sim/`](../training/f1tenth_sim/)) —
-  the batched NVIDIA Warp vehicle model used for RL rollouts. It is pure Python,
-  not a ROS package.
-
-## Which sim, when?
-
-| Task | Simulator |
+| Var | Meaning |
 | --- | --- |
-| RL training / synthetic data | `training/f1tenth_sim/` (Warp) |
-| Evaluating the deployed ROS stack | gym bridge (`f1tenth_gym_ros`) |
+| `CHECKPOINT_DIR` | Host dir with the `.pt` (required) |
+| `CKPT` | Filename inside that dir (default `policy.pt`) |
+| `STACK` | `vehicle` only (on-car C++ graph). Not `race.launch.py`'s `algo`/`rl`. |
+| `MODE` | `dev` (live source, default) or `release` (baked `f1tenth-racing` image) |
+| `ROS_DOMAIN_ID` | Shared DDS domain (default 42; no host networking) |
 
-See [`docs/development.md`](../docs/development.md) for launch instructions.
+It launches the fork's bridge-only `rl_agent_sim_launch.py` (gap/pid/pp omitted
+so they don't fight `/drive`) plus `f1tenth_bringup/sim.launch.py`. The
+`evaluation` node spawns forward-facing on the centerline. `validate` is the
+closed-loop acceptance gate; criteria live in
+[`../docs/deployment.md`](../docs/deployment.md).
+
+Release-mode gym (image + `/config` + `/policies`):
+
+```bash
+deploy/scripts/build_image.sh
+CHECKPOINT_DIR=/abs/dir CKPT=policy.pt CONFIG_DIR=deploy/cars/car01 \
+  STACK=vehicle MODE=release ./tools/sim.sh up
+```
+
+## Training simulator
+
+[`../training/f1tenth_sim/`](../training/f1tenth_sim/) is the batched Warp
+vehicle model. Pure Python, not a ROS package. See
+[`../training/README.md`](../training/README.md).

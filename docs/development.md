@@ -2,9 +2,19 @@
 
 How to set up, build, run, and contribute.
 
-## One-command setup
+## Two environments
 
-Everything runs in Docker; you don't need ROS 2 on your host.
+| Work | Where | Entry |
+| --- | --- | --- |
+| ROS 2 nodes, colcon, gym eval | Dev container | `./tools/dev.sh up` |
+| QR-SAC training, Warp physics | Host `.venv` at repo root | `python3 -m venv .venv` then `pip install -r training/requirements-*.txt` |
+
+The container has no training stack. The host `.venv` has no `rclpy`. See
+[`getting-started.md`](getting-started.md).
+
+## One-command ROS setup
+
+Everything ROS-related runs in Docker; you don't need ROS 2 on your host.
 
 ```bash
 ./tools/dev-setup.sh     # once per machine: checks docker/buildx, enables cross-arch
@@ -16,6 +26,7 @@ Inside the dev container the source is mounted at `/ws`:
 ```bash
 ./tools/build.sh                 # colcon build everything (--symlink-install)
 ./tools/build.sh -t control      # build just one module group
+./tools/test.sh                  # unit tests + ament lint (vendored pkgs skipped)
 ```
 
 Teammates can skip building by pulling the prebuilt seed images from Docker Hub
@@ -69,37 +80,71 @@ gitGraph
 
 ## Running
 
-- Simulation — evaluate the deployed RL stack in the gym (two containers: the gym
-  bridge in the fork image + our nodes in the dev image, sharing a docker bridge
-  network; noVNC serves RViz, Foxglove serves at `ws://localhost:8765`):
+- **Gym (deployed ROS stack)** — two containers: the gym bridge in the fork image
+  + our nodes in the dev image, sharing a docker bridge network. noVNC serves
+  RViz; Foxglove is `ws://localhost:8765`. `STACK=vehicle` is the only
+  `tools/sim.sh` value (on-car C++ graph) — not `race.launch.py`'s
+  `stack:=algo|rl`. `MODE=dev` (default) mounts live source; `MODE=release`
+  runs the baked generic image.
 
   ```bash
   # CHECKPOINT_DIR is the host dir holding the trained .pt; CKPT its filename.
   CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
   # ... watch: RViz at http://localhost:8080/vnc.html, or Foxglove -> ws://localhost:8765
+  CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
   ./tools/sim.sh down
   ```
 
   `tools/sim.sh` imports the gym (`vcs import sim < sim/f1tenth_gym_ros.repos`),
   builds the agent workspace, launches the bridge-only sim
-  (`rl_agent_sim_launch.py`) plus our `f1tenth_bringup/sim.launch.py` (on-car C++
-  graph), and drives the car
-  with the trained policy. The `evaluation` node spawns the car forward-facing along
-  the centerline (matching training) and resets it on stuck/out-of-bounds. See
-  [`../sim/README.md`](../sim/README.md).
+  (`rl_agent_sim_launch.py`) plus our `f1tenth_bringup/sim.launch.py`, and drives
+  the car with the trained policy. The gym map is **IV_2026**. The `evaluation`
+  node spawns the car forward-facing along the centerline and resets it on
+  stuck/out-of-bounds. See [`../sim/README.md`](../sim/README.md).
 
-- On the car: vehicle-only shakedown then full stack:
+- **On the car** — vehicle-only shakedown then full stack.
+  `race.launch.py` defaults to `stack:=algo`. Pass `stack:=rl` for the policy.
 
   ```bash
   ros2 launch f1tenth_bringup car.launch.py
   ros2 launch f1tenth_bringup race.launch.py stack:=algo
+  ros2 launch f1tenth_bringup race.launch.py stack:=rl
   ```
+
+  `car.launch.py` starves vendored `ackermann_to_vesc` so `vesc_actuator` owns
+  current, brake, and servo (see [adr/0006](adr/0006-current-only-vesc-actuation.md)).
 
 ## RL training
 
-Training is pure Python and never built by colcon. See
-[`../training/README.md`](../training/README.md). The observation contract is
-installed editable, so changing the observation space needs no rebuild.
+Training is pure Python and never built by colcon. Physics is NVIDIA Warp
+([adr/0007](adr/0007-warp-simulator.md)). See
+[`../training/README.md`](../training/README.md).
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r training/requirements-gpu.txt \
+  --extra-index-url https://download.pytorch.org/whl/cu130
+.venv/bin/python training/standalone_trainer.py \
+  --device cuda --precision 32 --num-envs 4096 --track IV_2026_SIM
+```
+
+The observation contract is installed editable, so changing the observation space
+needs no rebuild. Domain randomization is on in training; eval/tests use the
+nominal profile. macOS: CPU Warp tests only, no MPS.
+
+## Troubleshooting
+
+- `CHECKPOINT_DIR is unset` — `tools/sim.sh` needs an absolute dir that contains
+  `CKPT` (default `policy.pt`).
+- Gym obs dim mismatch — the graph always publishes 390-dim; opponent block is
+  zero in solo. Speed-mode checkpoints fail at `policy_inference` load.
+- `CUDA driver version is insufficient` on Jetson — the CUDA image must ship
+  L4T `libcudart`, not the NGC compile-stage copy. See
+  [`deployment.md`](deployment.md).
+- Warp compile cache — GPU training needs a writable `WARP_CACHE_PATH` (HPC
+  Apptainer sets `/tmp/f1tenth-warp-cache`).
+- `particle_filter` / `range_libc` missing — `git submodule update --init
+  src/localization/range_libc`.
 
 ## Conventions
 
