@@ -41,3 +41,40 @@ editable install without rebuilding images for Python-only edits.
 [0013](0013-first-footprint-wall-contact.md):** decision 1's course-limit reward
 and termination clause is replaced. Its sensor architecture and the
 fixed-opponent decisions remain in force.
+
+## Amendment (2026-10-12)
+
+Parity status of this Lee/ADR-0011 sensor path against the reference paper.
+Original decisions above are unchanged.
+
+- **Reference.** arXiv 2504.09021 (Lee et al., vision-based GT7 agent with
+  asymmetric QR-SAC). Pure simulation; no sim-to-real. Domain randomization and
+  on-car transfer are our additions.
+- **Policy.** The actor gets onboard sensors only (LiDAR, IMU, VESC speed,
+  command history) as a 1097-d LiDAR-CNN+GRU. The critic gets privileged 392-d
+  state through a separate feed-forward network. LiDAR stands in for the
+  paper's camera. No encoder is shared.
+- **Algorithm.** The live training path is PPO
+  (`courtyard_2_e2e_ppo.json`, `courtyard_2_e2e_ppo_multi_scenario.json`,
+  `galaxy_1_scripted_v3_80a_ppo.json`). That departs from QR-SAC. QR-SAC
+  remains config-selectable.
+- **Now true on `experiments/e2e-ppo`** (PRs #31–#33):
+  - 20 Hz sensor-policy cadence is live
+    ([0033](0033-reduced-bicycle-simulator.md)). Privileged critic contract
+    cadence stays 10 Hz.
+  - Time-based γ/λ rescale is on by default (`horizon_from_control_dt`). At
+    20 Hz, PPO γ≈0.9948 and λ≈0.9747 from the 10 Hz refs 0.9896 / 0.95.
+  - Multi-scenario mixing exists
+    (`courtyard_2_e2e_ppo_multi_scenario.json`): flying / standing /
+    IV_2026 with `scn/<name>/...` metrics.
+  - Timeout bootstrapping: PPO bootstraps pure `term_timeout` rows; QR-SAC
+    replay stores timeouts as truncation and drops truncated n-step tails.
+  - Standing starts have a dedicated `solo_standing` scenario as well as
+    `reset_stationary_probability` mixing.
+- **Known gaps still open:**
+  - Lap-completion eval: `eval_interval_transitions` still defaults to 0.
+    Per-scenario `scn/<name>/lap_completion` is a training diagnostic, not
+    a held-out eval protocol.
+- **Legacy contract.** `libs/f1tenth_contract` and `observation_layout.hpp`
+  hold the 392-d symmetric privileged layout. Only the legacy on-car graph
+  (`vehicle_obs` → `policy_inference` → `drive`) uses it.
