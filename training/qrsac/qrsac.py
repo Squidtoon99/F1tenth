@@ -13,7 +13,7 @@ DEFAULT_BURN_IN = 16
 DEFAULT_TRAIN_LEN = 32
 
 
-def quantile_huber_loss(pred, target, kappa=1.0, taus=None):
+def quantile_huber_loss(pred, target, kappa=1.0, taus=None, weight=None):
     _, M = pred.shape
 
     pred_expanded = pred.unsqueeze(1)
@@ -33,7 +33,11 @@ def quantile_huber_loss(pred, target, kappa=1.0, taus=None):
 
     indicator = (diff.detach() < 0).float()
     loss = torch.abs(taus - indicator) * huber
-    return loss.sum(dim=2).mean(dim=1).mean()
+    per_row = loss.sum(dim=2).mean(dim=1)
+    if weight is None:
+        return per_row.mean()
+    w = weight.reshape(-1).to(dtype=per_row.dtype)
+    return (per_row * w).sum() / w.sum().clamp_min(1.0)
 
 
 def select_min_quantiles(
@@ -91,6 +95,7 @@ def _critic_phase(
     target_quantiles,
     kappa,
     taus,
+    weight=None,
 ):
     """Critic forwards + quantile-Huber in one compiled region."""
     q1_quantile_observed = critic1(critic_obs, action)
@@ -100,11 +105,13 @@ def _critic_phase(
         target_quantiles,
         kappa=kappa,
         taus=taus,
+        weight=weight,
     ) + quantile_huber_loss(
         q2_quantile_observed,
         target_quantiles,
         kappa=kappa,
         taus=taus,
+        weight=weight,
     )
 
 
@@ -125,6 +132,7 @@ def _sequence_policy_phase(
     bootstrap_critic_obs,
     n_step_reward,
     n_step_done,
+    n_step_valid,
     discount,
     alpha,
     n_step,
@@ -166,6 +174,7 @@ def _sequence_policy_phase(
         next_critic = bootstrap_critic_obs.reshape(rows, critic_obs_dim)
         reward_flat = n_step_reward.reshape(rows)
         done_flat = n_step_done.reshape(rows)
+        valid_flat = n_step_valid.reshape(rows, 1)
 
         q1_quantile_next = critic1_target(next_critic, actions_next)
         q2_quantile_next = critic2_target(next_critic, actions_next)
@@ -192,7 +201,8 @@ def _sequence_policy_phase(
         q1_sampled.mean(dim=-1, keepdim=True),
         q2_sampled.mean(dim=-1, keepdim=True),
     )
-    policy_loss = (alpha * log_prob_flat.unsqueeze(-1) - q_sampled).mean()
+    per_row = alpha * log_prob_flat.unsqueeze(-1) - q_sampled
+    policy_loss = (per_row * valid_flat).sum() / valid_flat.sum().clamp_min(1.0)
     return policy_loss, target_quantiles
 
 
@@ -663,6 +673,11 @@ class QRSACTrainer:
         hidden = batch["hidden"].to(self.device)
         n_step_reward = batch["n_step_reward"].to(self.device)
         n_step_done = batch["n_step_done"].to(self.device)
+        n_step_valid = batch.get("n_step_valid")
+        if n_step_valid is None:
+            n_step_valid = torch.ones_like(n_step_done)
+        else:
+            n_step_valid = n_step_valid.to(self.device)
         bootstrap_critic_obs = batch["bootstrap_critic_obs"].to(self.device)
         if self.assert_bootstrap_alignment:
             bootstrap_actor_obs = batch["bootstrap_actor_obs"].to(self.device)
@@ -707,6 +722,7 @@ class QRSACTrainer:
             bootstrap_critic_obs,
             n_step_reward,
             n_step_done,
+            n_step_valid,
             discount,
             self.alpha,
             n_step,
@@ -732,6 +748,7 @@ class QRSACTrainer:
             target_quantiles,
             self.kappa,
             self.quantile_fractions,
+            n_step_valid.reshape(rows),
         )
         critic_loss.backward()
         nn.utils.clip_grad_norm_(self.critic_params, max_norm=10.0)

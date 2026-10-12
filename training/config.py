@@ -192,8 +192,9 @@ DEFAULT_CONFIG = {
         "lidar_pool_bins": 32,
         "lidar_projection_dim": 256,
         "num_quantiles": 32,
-        "rew_gamma": 0.994786410446459,
-        "n_step": 14,
+        "rew_gamma": 0.9896,
+        "n_step": 7,
+        "horizon_from_control_dt": True,
         "alpha": 0.01,
         "actor_lr": 2.5e-5,
         "critic_lr": 2.5e-5,
@@ -211,8 +212,9 @@ DEFAULT_CONFIG = {
         "rollout_steps": 256,
         "epochs": 4,
         "env_minibatches": 32,
-        "gamma": 0.994786410446459,
-        "gae_lambda": 0.9746794344808963,
+        "gamma": 0.9896,
+        "horizon_from_control_dt": True,
+        "gae_lambda": 0.95,
         "clip_ratio": 0.2,
         "value_clip": 0.2,
         "actor_lr": 3e-5,
@@ -243,3 +245,51 @@ DEFAULT_CONFIG = {
         "anchor_prob": 0.0,
     },
 }
+
+
+REFERENCE_CONTROL_DT_S = 0.1
+
+
+def control_dt_s(env_cfg: dict) -> float:
+    return float(env_cfg["sim_dt"]) * float(env_cfg["control_interval"])
+
+
+def rescale_gamma_for_dt(
+    gamma_at_ref: float,
+    dt_s: float,
+    ref_dt_s: float = REFERENCE_CONTROL_DT_S,
+) -> float:
+    if dt_s <= 0.0 or ref_dt_s <= 0.0:
+        raise ValueError("control dt must be positive")
+    return float(gamma_at_ref) ** (float(dt_s) / float(ref_dt_s))
+
+
+def rescale_n_step_for_dt(
+    n_at_ref: int,
+    dt_s: float,
+    ref_dt_s: float = REFERENCE_CONTROL_DT_S,
+) -> int:
+    if dt_s <= 0.0 or ref_dt_s <= 0.0:
+        raise ValueError("control dt must be positive")
+    return max(1, int(round(int(n_at_ref) * float(ref_dt_s) / float(dt_s))))
+
+
+def effective_qrsac_horizon(cfg: dict) -> tuple[float, int]:
+    gamma = float(cfg["model"]["rew_gamma"])
+    n_step = int(cfg["model"]["n_step"])
+    if bool(cfg["model"].get("horizon_from_control_dt", True)):
+        dt = control_dt_s(cfg["env"])
+        return rescale_gamma_for_dt(gamma, dt), rescale_n_step_for_dt(n_step, dt)
+    return gamma, n_step
+
+
+def effective_ppo_horizon(cfg: dict) -> tuple[float, float]:
+    gamma = float(cfg["ppo"]["gamma"])
+    gae_lambda = float(cfg["ppo"]["gae_lambda"])
+    if bool(cfg["ppo"].get("horizon_from_control_dt", True)):
+        dt = control_dt_s(cfg["env"])
+        return (
+            rescale_gamma_for_dt(gamma, dt),
+            rescale_gamma_for_dt(gae_lambda, dt),
+        )
+    return gamma, gae_lambda

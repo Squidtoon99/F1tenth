@@ -44,7 +44,12 @@ from f1tenth_policy.layout import (
     STEERING_ACTION_MODE,
 )
 
-from config import DEFAULT_CONFIG
+from config import (
+    DEFAULT_CONFIG,
+    control_dt_s,
+    effective_ppo_horizon,
+    effective_qrsac_horizon,
+)
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.sensors import ACTOR_LIDAR_DIM
@@ -813,6 +818,11 @@ def validate_model_architecture(cfg: dict) -> None:
             "model.actor_lr_ramp_transitions must be a non-negative int, got "
             f"{ramp!r}"
         )
+    if not isinstance(model.get("horizon_from_control_dt"), bool):
+        raise ValueError(
+            "model.horizon_from_control_dt must be a bool, got "
+            f"{model.get('horizon_from_control_dt')!r}"
+        )
     if not isinstance(model.get("lidar_aug_enabled"), bool):
         raise ValueError(
             "model.lidar_aug_enabled must be a bool, got "
@@ -871,6 +881,11 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
     for key in ("gamma", "gae_lambda"):
         if float(ppo[key]) > 1.0:
             raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
+    if not isinstance(ppo.get("horizon_from_control_dt"), bool):
+        raise ValueError(
+            "ppo.horizon_from_control_dt must be a bool, got "
+            f"{ppo.get('horizon_from_control_dt')!r}"
+        )
     if not isinstance(ppo.get("advantage_filter_enabled"), bool):
         raise ValueError(
             "ppo.advantage_filter_enabled must be a bool, got "
@@ -1063,6 +1078,25 @@ def training_source_git_state(training_root: Path) -> dict:
     }
 
 
+def _effective_horizon_snapshot(cfg: dict) -> dict:
+    dt = control_dt_s(cfg["env"])
+    qrsac_gamma, qrsac_n_step = effective_qrsac_horizon(cfg)
+    ppo_gamma, ppo_gae_lambda = effective_ppo_horizon(cfg)
+    return {
+        "control_dt_s": dt,
+        "qrsac_gamma": qrsac_gamma,
+        "qrsac_n_step": qrsac_n_step,
+        "qrsac_horizon_from_control_dt": bool(
+            cfg["model"].get("horizon_from_control_dt", True)
+        ),
+        "ppo_gamma": ppo_gamma,
+        "ppo_gae_lambda": ppo_gae_lambda,
+        "ppo_horizon_from_control_dt": bool(
+            cfg["ppo"].get("horizon_from_control_dt", True)
+        ),
+    }
+
+
 def build_run_snapshot(
     run_id: str,
     run_dir: Path,
@@ -1091,6 +1125,7 @@ def build_run_snapshot(
             ),
             "formula": "-coefficient * speed_mps",
         },
+        "effective_horizon": _effective_horizon_snapshot(cfg),
     }
 
 
@@ -1256,11 +1291,12 @@ def build_models(
     models.critic1_target.load_state_dict(models.critic1.state_dict())
     models.critic2_target.load_state_dict(models.critic2.state_dict())
 
+    gamma, n_step = effective_qrsac_horizon(cfg)
     trainer = QRSACTrainer(
         models,
         device=device,
-        gamma=cfg["model"]["rew_gamma"],
-        n_step=cfg["model"]["n_step"],
+        gamma=gamma,
+        n_step=n_step,
         alpha=alpha,
         smooth_factor=0.005,
         compile=compile,
@@ -1286,6 +1322,7 @@ def build_ppo_models(
     env_minibatches = min(int(num_envs), int(ppo_cfg["env_minibatches"]))
     actor = make_policy_network(cfg).to(device=device, dtype=torch.float32)
     models = ActorModels(actor=actor)
+    gamma, gae_lambda = effective_ppo_horizon(cfg)
     trainer = PPOTrainer(
         actor,
         int(cfg["obs"]["num_obs"]),
@@ -1296,8 +1333,8 @@ def build_ppo_models(
         rollout_steps=int(ppo_cfg["rollout_steps"]),
         num_epochs=int(ppo_cfg["epochs"]),
         env_minibatch_size=int(num_envs) // env_minibatches,
-        gamma=float(ppo_cfg["gamma"]),
-        gae_lambda=float(ppo_cfg["gae_lambda"]),
+        gamma=gamma,
+        gae_lambda=gae_lambda,
         clip_ratio=float(ppo_cfg["clip_ratio"]),
         value_clip=float(ppo_cfg["value_clip"]),
         actor_lr=float(ppo_cfg["actor_lr"]),
@@ -1989,7 +2026,8 @@ def main():
     )
     clip_actions = cfg["env"]["clip_actions"]
     control_interval = cfg["env"]["control_interval"]
-    n_step = model_cfg["n_step"]
+    qrsac_gamma, n_step = effective_qrsac_horizon(cfg)
+    ppo_gamma, ppo_gae_lambda = effective_ppo_horizon(cfg)
 
     device = select_device(args.device)
     if device.type == "cuda":
@@ -2022,7 +2060,8 @@ def main():
             "control_hz=%.1f total_transitions=%d wall_contact_geometry=%s "
             "footprint_m=%.3fx%.3f wall_contact_coefficient=%.1f/m "
             "wall_contact_formula='-coefficient*speed_mps' "
-            "replay=%d compile=%s compile_mode=%s",
+            "replay=%d compile=%s compile_mode=%s "
+            "gamma=%.6f n_step=%d horizon_from_control_dt=%s",
             env_cfg.get("steering_action_mode", "delta"),
             float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
             1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
@@ -2034,6 +2073,9 @@ def main():
             int(model_cfg["replay_buffer_limit"]),
             bool(args.compile),
             args.compile_mode,
+            qrsac_gamma,
+            n_step,
+            bool(model_cfg.get("horizon_from_control_dt", True)),
         )
     else:
         log.info(
@@ -2042,7 +2084,8 @@ def main():
             "wall_contact_geometry=%s footprint_m=%.3fx%.3f "
             "wall_contact_coefficient=%.1f/m "
             "wall_contact_formula='-coefficient*speed_mps' "
-            "compile=%s compile_mode=%s",
+            "compile=%s compile_mode=%s "
+            "gamma=%.6f gae_lambda=%.6f horizon_from_control_dt=%s",
             env_cfg.get("steering_action_mode", "delta"),
             float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
             1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
@@ -2053,6 +2096,9 @@ def main():
             float(reward_cfg["wall_contact_coefficient"]),
             bool(args.compile),
             args.compile_mode,
+            ppo_gamma,
+            ppo_gae_lambda,
+            bool(cfg["ppo"].get("horizon_from_control_dt", True)),
         )
 
     env = F1tenthEnv(
@@ -2099,7 +2145,7 @@ def main():
             critic_obs_dim=critic_obs_dim,
             act_dim=act_dim,
             n_step=n_step,
-            gamma=model_cfg["rew_gamma"],
+            gamma=qrsac_gamma,
             num_envs=args.num_envs,
             device=device,
             batch_size=args.batch_size,
@@ -2490,6 +2536,7 @@ def main():
                     reward,
                     done,
                     hidden=hidden_checkpoint,
+                    timeouts=pure_timeout_mask(extras["termination"]),
                 )
                 if learner_hidden is not None:
                     done_b = done.bool()
