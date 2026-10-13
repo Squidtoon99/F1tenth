@@ -232,6 +232,21 @@ validate() {
     expect="${expect:-390}"
   fi
   echo "==> Closed-loop acceptance gate (${STACK} stack, expect ${expect}-dim obs)"
+  # Prefer the live graph container so DDS stays on-box. A second compose-run
+  # agent on the docker bridge only sees a few Hz of /desired.
+  local agent_cid=""
+  agent_cid="$(docker ps --filter ancestor=f1tenth-dev:latest --filter status=running --format '{{.ID}}' | head -1)"
+  if [ -n "${agent_cid}" ]; then
+    echo "==> Running gate inside agent container ${agent_cid}"
+    docker exec \
+      -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+      -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
+      "${agent_cid}" bash -lc "
+        source /opt/ros/humble/setup.bash &&
+        source /ws/install/setup.bash &&
+        python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
+    return
+  fi
   compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
     --entrypoint bash agent -lc "
     source /opt/ros/humble/setup.bash &&
