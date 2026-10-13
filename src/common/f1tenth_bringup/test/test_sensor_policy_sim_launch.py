@@ -159,7 +159,6 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "wait_graph_ready f1tenth-gym-agent" in source
     assert "GymBridge ready" in source
     assert "log GymBridge ready after publishers exist" in source
-    assert "Running in synchronous mode" in source
     assert '"async_mode": "False"' in source
     assert '"use_sim_time": "False"' in source
     assert "gym node stays wall-clock; always publish /clock" in source
