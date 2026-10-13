@@ -83,7 +83,6 @@ _REEXPORTS = (architectures_match, SENSOR_POLICY_FORMAT_VERSION)
 LOGGER_NAME = "standalone_trainer"
 RESUME_STATE_FILENAME = "resume_state.pt"
 RESUME_FORMAT_VERSION = 1
-DEFAULT_POLICY_ARTIFACT_KEEP = 3
 # Privileged opponent block [384:392): rel_xy, rel_vxy, rel_axy, gap_norm, ey.
 # gap_norm (index +6) is (s_other - s_self) / (0.5 * track_length).
 OPP_OBS_BASE_IDX = 384
@@ -1889,17 +1888,6 @@ def load_resume_state(
     }
 
 
-def prune_policy_artifacts(
-    artifact_dir: Path, *, keep: int = DEFAULT_POLICY_ARTIFACT_KEEP
-) -> None:
-    paths = sorted(
-        artifact_dir.glob("policy_*.pt"),
-        key=lambda p: int(p.stem.split("_", 1)[1]),
-    )
-    for path in paths[:-keep]:
-        path.unlink(missing_ok=True)
-
-
 def run_eval_video(
     eval_state: dict,
     env_cfg: dict,
@@ -3399,7 +3387,6 @@ def main():
                     cfg,
                     protocol_state=protocol_state,
                 )
-                prune_policy_artifacts(ckpt_dir)
                 if algorithm == "ppo":
                     save_resume_state(
                         resume_state_path(run_dir),
@@ -3463,7 +3450,6 @@ def main():
             cfg,
             protocol_state=protocol_state,
         )
-        prune_policy_artifacts(ckpt_dir)
         if algorithm == "ppo":
             save_resume_state(
                 resume_state_path(run_dir),
