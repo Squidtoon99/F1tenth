@@ -133,12 +133,12 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    STACK=sensor_policy CHECKPOINT_DIR=/abs/dir CKPT=e2e_policy.pt tools/sim.sh certify
    ```
 
-   `certify` brings the courtyard gym up, scores the live graph, prints a
+   `certify` waits for the gym bridge, scores the live graph, prints a
    `SCORE_JSON` line (`laps`, `lap_times_s`, `mean_lap_s`, `crashes`,
-   `progress_m`, `desired_hz`), then tears the stack down. Gym SPEED mode maps
-   normalized longitudinal × 5 onto m/s, so lap times will not match the 80 A
-   training plant (~5.3 s). Keep `CUDA_VISIBLE_DEVICES=` so inference stays off
-   the training GPU.
+   `progress_m`, `desired_hz`), writes `gym_score.json`, then tears the stack
+   down. Gym SPEED mode maps normalized longitudinal × 5 onto m/s, so lap times
+   will not match the 80 A training plant (~5.3 s). Keep
+   `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
    with the per-car overlay, so `/config` + `/policies` wiring is exercised:

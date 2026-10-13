@@ -143,6 +143,12 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "validate_closed_loop_sensor_policy.py" in source
     assert "certify" in source
     assert "1097" in source
+    assert "stop_stray_agents" in source
+    assert "wait_sim_ready" in source
+    assert "Running in asynchronous mode" in source
+    assert "name=f1tenth-gym-agent" in source
+    assert "name=docker-agent-run" in source
+    assert "--json-out /ws/gym_score.json" in source
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02

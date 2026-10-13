@@ -28,6 +28,8 @@ CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
 CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
+STACK=sensor_policy CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt \
+  ./tools/sim.sh certify   # one-shot: laps / crashes / lap time → SCORE_JSON
 ./tools/sim.sh down
 ```
 

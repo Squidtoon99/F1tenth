@@ -230,6 +230,8 @@ class SensorPolicyValidator(Node):
             failures.append(f"{self.obs_non_finite} non-finite observations")
         if self.drive_count < min_samples:
             failures.append(f"drive msgs {self.drive_count} < {min_samples}")
+        if self.odom_count < min_samples // 2:
+            failures.append(f"odom msgs {self.odom_count} < {min_samples // 2}")
         if self.drive_oob:
             failures.append(f"{self.drive_oob} out-of-bounds drive commands")
         if self.moving_count < min_samples // 4:
@@ -272,6 +274,7 @@ class SensorPolicyValidator(Node):
             "max_speed_mps": round(self.max_speed, 3),
             "desired_hz": round(hz, 2),
             "desired": self.desired_count,
+            "odom": self.odom_count,
             "deadline_misses": self.deadline_misses,
             "infer_ms_mean": None if math.isnan(mean_infer) else round(mean_infer, 2),
             "infer_ms_p95": None if math.isnan(p95_infer) else round(p95_infer, 2),
@@ -299,6 +302,7 @@ def main() -> int:
     parser.add_argument("--min-samples", type=int, default=200)
     parser.add_argument("--min-laps", type=float, default=1.0)
     parser.add_argument("--offtrack-m", type=float, default=1.2)
+    parser.add_argument("--warmup-s", type=float, default=30.0)
     parser.add_argument("--json-out", default="")
     parser.add_argument(
         "--centerline",
@@ -321,6 +325,18 @@ def main() -> int:
         offtrack_m=args.offtrack_m,
     )
     try:
+        warmup_deadline = time.monotonic() + max(float(args.warmup_s), 0.0)
+        while time.monotonic() < warmup_deadline and node.odom_count == 0:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        if node.odom_count == 0:
+            print("FAIL: gym odom never arrived during warmup", file=sys.stderr)
+            return node.report(
+                min_samples=args.min_samples,
+                min_laps=args.min_laps,
+                duration_s=args.duration_s,
+                json_out=args.json_out,
+            )
+        node._lap_t0 = time.monotonic()
         deadline = time.monotonic() + float(args.duration_s)
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)

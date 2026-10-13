@@ -44,6 +44,18 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+stop_stray_agents() {
+  # compose run one-offs are not compose services; `compose down` leaves them
+  # on ROS_DOMAIN_ID and they steal /drive + validate's docker exec target.
+  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  local ids=""
+  ids="$(docker ps -aq --filter name=docker-agent-run 2>/dev/null || true)"
+  if [ -n "${ids}" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f ${ids} >/dev/null 2>&1 || true
+  fi
+}
+
 check_stack() {
   case "${STACK}" in
     vehicle|sensor_policy) : ;;
@@ -253,7 +265,10 @@ validate() {
   # Prefer the live graph container so DDS stays on-box. A second compose-run
   # agent on the docker bridge only sees a few Hz of /desired.
   local agent_cid=""
-  agent_cid="$(docker ps --filter ancestor=f1tenth-dev:latest --filter status=running --format '{{.ID}}' | head -1)"
+  agent_cid="$(docker ps --filter name=f1tenth-gym-agent --filter status=running --format '{{.ID}}' | head -1)"
+  if [ -z "${agent_cid}" ]; then
+    agent_cid="$(docker ps --filter ancestor=f1tenth-dev:latest --filter status=running --format '{{.ID}}' | head -1)"
+  fi
   if [ -n "${agent_cid}" ]; then
     echo "==> Running gate inside agent container ${agent_cid}"
     docker exec \
@@ -270,6 +285,21 @@ validate() {
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
+}
+
+wait_sim_ready() {
+  echo "==> Waiting for gym bridge"
+  local cid=""
+  local i
+  for i in $(seq 1 90); do
+    cid="$(compose ps -q sim 2>/dev/null || true)"
+    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in asynchronous mode"; then
+      echo "==> Gym bridge ready"
+      return 0
+    fi
+    sleep 2
+  done
+  die "gym bridge did not become ready"
 }
 
 wait_graph_ready() {
@@ -303,8 +333,9 @@ certify() {
   fi
   echo "==> Certify ${STACK} ${CKPT} (CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES}')"
   compose down >/dev/null 2>&1 || true
-  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  stop_stray_agents
   compose up -d novnc sim
+  wait_sim_ready
   if [ "${MODE}" = "dev" ]; then
     echo "==> Building the agent workspace"
     compose run --rm --entrypoint bash agent -lc "
@@ -323,10 +354,9 @@ certify() {
   fi
   wait_graph_ready f1tenth-gym-agent
   local rc=0
-  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1}"
+  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
   validate || rc=$?
-  docker stop f1tenth-gym-agent >/dev/null 2>&1 || true
-  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  stop_stray_agents
   compose down >/dev/null 2>&1 || true
   if [ "${STACK}" != "sensor_policy" ]; then
     restore_vehicle_gym
@@ -334,12 +364,17 @@ certify() {
   return "${rc}"
 }
 
+down() {
+  stop_stray_agents
+  compose down
+}
+
 CMD="${1:-up}"
 case "${CMD}" in
   up)       up ;;
   validate) validate ;;
   certify)  certify ;;
-  down)     compose down ;;
+  down)     down ;;
   logs)     compose logs -f sim ;;
   *)
     echo "usage: tools/sim.sh [up|validate|certify|logs|down]" >&2
