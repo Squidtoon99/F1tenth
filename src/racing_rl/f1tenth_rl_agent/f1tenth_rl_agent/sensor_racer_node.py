@@ -511,6 +511,7 @@ class SensorRacerNode(Node):
             scan_angle_increment=float(self._scan.angle_increment),
             scan_ranges=self._scan.ranges,
             scan_range_min=float(self._scan.range_min),
+            scan_range_max=float(self._scan.range_max),
             imu_interval=self._imu_interval,
             imu_cal=self._imu_cal,
             speed=speed,

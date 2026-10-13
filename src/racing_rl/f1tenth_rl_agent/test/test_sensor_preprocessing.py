@@ -29,6 +29,21 @@ def test_beam_layout_matches_training_fov():
     assert abs(float(angles[1] - angles[0]) - math.radians(0.25)) < 1e-6
 
 
+def test_ust10lx_scan_header_matches_policy_grid():
+    # Hokuyo UST-10LX SCIP: 1081 steps, 270°, 0.25°. urg_node publishes
+    # float32(-135°) after clamping ±π to the sensor FOV; range_max is 30 m.
+    angle_min = float(np.float32(math.radians(-135.0)))
+    increment = float(np.float32(math.radians(0.25)))
+    n = 1081
+    angle_max = angle_min + increment * (n - 1)
+    assert n == si.LIDAR_DIM
+    assert abs(angle_min - si.LIDAR_ANGLE_MIN) < 1e-6
+    assert abs(increment - si.LIDAR_ANGLE_INCREMENT) < 1e-6
+    assert abs(angle_max - math.radians(135.0)) < 1e-5
+    assert si.LIDAR_RANGE_MAX == pytest.approx(30.0)
+    assert si.LIDAR_RANGE_MIN == pytest.approx(0.06)
+
+
 def test_lidar_packing_clamps_and_maps_no_return():
     scan_min = math.radians(-135.0)
     inc = math.radians(0.25)
@@ -45,11 +60,50 @@ def test_lidar_packing_clamps_and_maps_no_return():
     assert np.all(packed <= si.LIDAR_RANGE_MAX)
 
 
+def test_ust10lx_no_return_sentinels_match_warp_range_max():
+    # Warp lidar_beam_range: no-hit / hit < range_min → range_max (30 m).
+    # urg_node: raw 0 → NaN; SCIP error 4 (<21 mm) → 0.004 m; error 65533
+    # (no object / >30 m) → 65.533 m. Message range_max is 30 m.
+    scan_min = float(np.float32(math.radians(-135.0)))
+    inc = float(np.float32(math.radians(0.25)))
+    ranges = np.full(si.LIDAR_DIM, 1.5, dtype=np.float32)
+    ranges[0] = float("inf")
+    ranges[1] = float("nan")
+    ranges[2] = 0.0
+    ranges[3] = 0.004
+    ranges[4] = 0.02
+    ranges[5] = 65.533
+    ranges[6] = 30.0
+    ranges[7] = 8.0
+    packed = pack_lidar_from_scan(
+        scan_min,
+        inc,
+        ranges,
+        scan_range_min=0.02,
+        scan_range_max=30.0,
+    )
+    for idx in (0, 1, 2, 3, 4, 5, 6):
+        assert packed[idx] == pytest.approx(si.LIDAR_RANGE_MAX)
+    assert packed[7] == pytest.approx(8.0)
+
+
+def test_unset_scan_range_max_does_not_drop_valid_hits():
+    scan_min = math.radians(-135.0)
+    inc = math.radians(0.25)
+    ranges = np.full(si.LIDAR_DIM, 1.5, dtype=np.float32)
+    packed = pack_lidar_from_scan(
+        scan_min, inc, ranges, scan_range_min=0.05, scan_range_max=0.0
+    )
+    np.testing.assert_allclose(packed, ranges, atol=1e-5)
+
+
 def test_matching_hokuyo_scan_packs_as_identity():
     scan_min = math.radians(-135.0)
     inc = math.radians(0.25)
     ranges = np.linspace(0.2, 12.0, si.LIDAR_DIM).astype(np.float32)
-    packed = pack_lidar_from_scan(scan_min, inc, ranges, scan_range_min=0.06)
+    packed = pack_lidar_from_scan(
+        scan_min, inc, ranges, scan_range_min=0.06, scan_range_max=30.0
+    )
     np.testing.assert_allclose(packed, ranges, atol=1e-5)
 
 

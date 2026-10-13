@@ -76,6 +76,7 @@ def pack_lidar_from_scan(
     scan_ranges: np.ndarray | list[float],
     *,
     scan_range_min: float = 0.0,
+    scan_range_max: float | None = None,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
     if out is None:
@@ -101,6 +102,10 @@ def pack_lidar_from_scan(
     values = ranges[pick]
     floor = max(float(scan_range_min), float(LIDAR_RANGE_MIN))
     valid = np.isfinite(values) & (values >= floor)
+    if scan_range_max is not None:
+        ceiling = float(scan_range_max)
+        if math.isfinite(ceiling) and ceiling > floor:
+            valid = valid & (values < ceiling)
     values = np.where(valid, values, LIDAR_RANGE_MAX)
     values = np.clip(values, LIDAR_RANGE_MIN, LIDAR_RANGE_MAX)
     out[:] = values.astype(np.float32)
