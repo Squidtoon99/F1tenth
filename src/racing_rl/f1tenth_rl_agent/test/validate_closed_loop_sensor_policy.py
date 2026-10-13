@@ -20,6 +20,8 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from f1tenth_interfaces.msg import ActuatorCommand
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
@@ -29,15 +31,35 @@ COURTYARD_LENGTH_M = 17.62
 TRAINING_LAP_S = 5.3
 
 
-def _spin_until(node: Node, deadline: float) -> None:
-    # Drain every pending callback. spin_once(..., 0.05) once per loop only
-    # counts ~2 Hz of a 20 Hz graph with five subscriptions.
-    while time.monotonic() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.0)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.0:
-            break
-        time.sleep(min(0.001, remaining))
+def _now_s(node: Node) -> float:
+    return node.get_clock().now().nanoseconds * 1e-9
+
+
+def _stamp_s(stamp) -> float:
+    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+
+def _spin_until(
+    node: Node,
+    *,
+    sim_start_s: float,
+    duration_s: float,
+    wall_deadline: float,
+) -> None:
+    # 5 ms waits drain 20 Hz × 5 topics without a 1 kHz busy loop that
+    # starves sensor_racer in the same container. Duration is sim /clock
+    # so the score does not depend on host wall speed.
+    from rclpy.executors import SingleThreadedExecutor
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        while time.monotonic() < wall_deadline:
+            executor.spin_once(timeout_sec=0.005)
+            if _now_s(node) - sim_start_s >= duration_s:
+                return
+    finally:
+        executor.remove_node(node)
 
 
 def _load_centerline(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
@@ -94,7 +116,12 @@ class SensorPolicyValidator(Node):
         centerline: Path | None,
         offtrack_m: float,
     ):
-        super().__init__("sensor_policy_closed_loop_validator")
+        super().__init__(
+            "sensor_policy_closed_loop_validator",
+            parameter_overrides=[
+                Parameter("use_sim_time", Parameter.Type.BOOL, True),
+            ],
+        )
         self.expect_obs_dim = expect_obs_dim
         self.max_steer = max_steer
         self.move_speed_floor = move_speed_floor
@@ -125,7 +152,7 @@ class SensorPolicyValidator(Node):
         self._prev_s: float | None = None
         self._progress_m = 0.0
         self._offtrack = False
-        self._lap_t0 = time.monotonic()
+        self._lap_t0 = 0.0
         self._start_xy: tuple[float, float] | None = None
         self._end_xy: tuple[float, float] | None = None
 
@@ -139,7 +166,9 @@ class SensorPolicyValidator(Node):
             Float32MultiArray, si.TOPIC_DIAGNOSTICS, self._on_diag, 10
         )
         self.create_subscription(AckermannDriveStamped, ifc.TOPIC_DRIVE, self._on_drive, 10)
-        self.create_subscription(Odometry, ifc.TOPIC_ODOM, self._on_odom, 10)
+        self.create_subscription(
+            Odometry, ifc.TOPIC_ODOM, self._on_odom, qos_profile_sensor_data
+        )
 
     def _on_obs(self, msg: Float32MultiArray) -> None:
         self.obs_count += 1
@@ -151,7 +180,7 @@ class SensorPolicyValidator(Node):
 
     def _on_desired(self, msg: ActuatorCommand) -> None:
         self.desired_count += 1
-        self.desired_stamps.append(time.monotonic())
+        self.desired_stamps.append(_stamp_s(msg.header.stamp))
 
     def _on_diag(self, msg: Float32MultiArray) -> None:
         self.diag_count += 1
@@ -201,7 +230,7 @@ class SensorPolicyValidator(Node):
             delta = s - self._prev_s
             if delta < -0.5 * self.loop_length:
                 delta += self.loop_length
-                now = time.monotonic()
+                now = _now_s(self)
                 self.laps += 1
                 self.lap_times.append(now - self._lap_t0)
                 self._lap_t0 = now
@@ -322,13 +351,14 @@ class SensorPolicyValidator(Node):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sensor-policy closed-loop gym gate")
     parser.add_argument("--duration-s", type=float, default=90.0)
+    parser.add_argument("--wall-timeout-s", type=float, default=600.0)
     parser.add_argument("--expect-obs-dim", type=int, default=si.NUM_OBS)
     parser.add_argument("--max-steer", type=float, default=si.MAX_STEER_RAD)
     parser.add_argument("--move-speed-floor", type=float, default=0.3)
     parser.add_argument("--min-samples", type=int, default=200)
     parser.add_argument("--min-laps", type=float, default=1.0)
     parser.add_argument("--offtrack-m", type=float, default=1.2)
-    parser.add_argument("--warmup-s", type=float, default=30.0)
+    parser.add_argument("--warmup-s", type=float, default=5.0)
     parser.add_argument("--json-out", default="")
     parser.add_argument(
         "--centerline",
@@ -354,12 +384,19 @@ def main() -> int:
         warmup_deadline = time.monotonic() + max(float(args.warmup_s), 0.0)
         while time.monotonic() < warmup_deadline and node.odom_count == 0:
             rclpy.spin_once(node, timeout_sec=0.01)
-        node._lap_t0 = time.monotonic()
-        _spin_until(node, time.monotonic() + float(args.duration_s))
+        sim_start = _now_s(node)
+        node._lap_t0 = sim_start
+        wall_deadline = time.monotonic() + max(float(args.wall_timeout_s), 1.0)
+        _spin_until(
+            node,
+            sim_start_s=sim_start,
+            duration_s=float(args.duration_s),
+            wall_deadline=wall_deadline,
+        )
         return node.report(
             min_samples=args.min_samples,
             min_laps=args.min_laps,
-            duration_s=args.duration_s,
+            duration_s=_now_s(node) - sim_start,
             json_out=args.json_out,
         )
     finally:

@@ -8,9 +8,9 @@
 #            is viewable at http://localhost:8080/vnc.html. Foxglove needs no X:
 #            connect Foxglove Studio to ws://localhost:8765.
 #
-# The two ROS containers share a user-defined bridge network and a ROS_DOMAIN_ID so
-# DDS discovery connects them (no host networking -- that is unreliable on macOS
-# Docker Desktop). Bring it up with tools/sim.sh.
+# Gym + agent share one network namespace (service:sim) so FastDDS does not have
+# to discover a late joiner across the docker bridge (that path delivers ~0.2 Hz
+# of /odom on this host). novnc stays on the compose bridge for VNC.
 #
 # Prereqs: `vcs import sim < sim/f1tenth_gym_ros.repos` (populates sim/f1tenth_gym_ros)
 # and the f1tenth-dev image (tools/dev.sh build). tools/sim.sh does both for you.
@@ -29,6 +29,7 @@ services:
       - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
+    cpuset: "0-3"
     networks:
       - rosnet
     ports:
@@ -42,13 +43,14 @@ services:
     # drivers are intentionally NOT launched so they do not fight our agent on /drive.
     # entrypoint override: the fork image's ENTRYPOINT is ["/bin/bash"], so we pass a
     # single -lc script string here rather than re-invoking bash in the command.
-    entrypoint: ["/bin/bash", "-lc"]
+    entrypoint: ["taskset", "-c", "0-3", "/bin/bash", "-lc"]
     command: >
       "source /opt/ros/humble/setup.bash &&
        cd /sim_ws &&
        rm -rf build/f1tenth_gym_ros install/f1tenth_gym_ros &&
        colcon build --symlink-install &&
        source install/setup.bash &&
+       export PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym:$${PYTHONPATH:-} &&
        ros2 launch f1tenth_gym_ros rl_agent_sim_launch.py"
 
   agent:
@@ -70,11 +72,10 @@ services:
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
-    networks:
-      - rosnet
+    cpuset: "4-7"
+    network_mode: "service:sim"
     depends_on:
       - sim
-      - novnc
     stdin_open: true
     tty: true
     # Overridden by tools/sim.sh (which builds the workspace first). Default just
@@ -100,6 +101,7 @@ services:
       - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
+    cpuset: "4-7"
     networks:
       - rosnet
     depends_on:

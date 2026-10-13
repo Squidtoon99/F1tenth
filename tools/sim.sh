@@ -156,7 +156,8 @@ replacements = {
     "sx": f"{sx:.6f}",
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
-    "async_mode": "True",
+    "async_mode": "False",
+    "use_sim_time": "False",
     "kb_teleop": "False",
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
@@ -175,22 +176,455 @@ for key, value in replacements.items():
 open(cfg_path, "w", encoding="utf-8").write(text)
 print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
 PY
-  # The fork's async publisher runs at 250 Hz and starves the 20 Hz racer timer.
-  python3 - sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py <<'PY'
+  # 1081-beam lidar inside every physics step caps the graph at ~2.5 Hz.
+  # Skip raycast on ST steps; snapshot-scan on a 20 Hz Python thread.
+  # Re-apply patches on clean fork sources so leftover live edits cannot
+  # miss an insert needle.
+  if [ -d sim/f1tenth_gym_ros/.git ]; then
+    git -C sim/f1tenth_gym_ros checkout -- \
+      f1tenth_gym_ros/gym_bridge.py launch/rl_agent_sim_launch.py
+  fi
+  if [ -d sim/f1tenth_gym_ros/f1tenth_gym/.git ]; then
+    git -C sim/f1tenth_gym_ros/f1tenth_gym checkout -- \
+      f1tenth_gym/envs/simulator.py
+  fi
+  python3 - <<'PY'
 from pathlib import Path
-import sys
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-old = "self.timer = self.create_timer(0.004, self.timer_callback)"
-new = "self.timer = self.create_timer(0.05, self.timer_callback)"
-if old in text:
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    print("==> gym lidar publish timer 250 Hz -> 20 Hz")
-elif new in text:
-    print("==> gym lidar publish timer already 20 Hz")
-else:
-    raise SystemExit(f"{path}: async lidar timer string not found")
+def apply(path, replacements):
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for item in replacements:
+        old, new, label, *rest = item
+        optional = bool(rest[0]) if rest else False
+        if new in text:
+            print(f"==> already patched: {label}")
+            continue
+        if old not in text:
+            if optional:
+                print(f"==> skip (not applicable): {label}")
+                continue
+            raise SystemExit(f"{path}: string not found for: {label}")
+        text = text.replace(old, new, 1)
+        print(f"==> {label}")
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+
+def patch_gym_bridge(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    orig = text
+    if "import threading" not in text:
+        text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
+        print("==> import threading for off-executor lidar")
+    if "from rclpy.qos import qos_profile_sensor_data" not in text:
+        text = text.replace(
+            "from rclpy.node import Node\n",
+            "from rclpy.node import Node\nfrom rclpy.qos import qos_profile_sensor_data\n",
+            1,
+        )
+        print("==> import sensor-data QoS for gym scan")
+    old_scan_pub = (
+        "self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)"
+    )
+    new_scan_pub = (
+        "self.ego_scan_pub = self.create_publisher("
+        "LaserScan, ego_scan_topic, qos_profile_sensor_data)"
+    )
+    if old_scan_pub in text:
+        text = text.replace(old_scan_pub, new_scan_pub, 1)
+        print("==> publish gym /scan best-effort so foxglove cannot stall physics")
+    old_sync_drive = (
+        "        if not self.get_parameter('async_mode').value:\n"
+        "            # step the sim immediately and publish odom and scan\n"
+        "            self.drive_timer_callback()\n"
+        "            self.timer_callback()\n"
+    )
+    new_sync_drive = (
+        "        if not self.get_parameter('async_mode').value:\n"
+        "            stamp = (\n"
+        "                drive_msg.header.stamp.sec\n"
+        "                + drive_msg.header.stamp.nanosec * 1e-9\n"
+        "            )\n"
+            "            if stamp <= getattr(self, '_last_drive_stamp', -1.0):\n"
+            "                return\n"
+            "            self._last_drive_stamp = stamp\n"
+            "            self.drive_timer_callback()\n"
+            "            self.timer_callback()\n"
+    )
+    if old_sync_drive in text:
+        text = text.replace(old_sync_drive, new_sync_drive, 1)
+        print("==> lockstep: one physics step per unique /drive stamp")
+    ready = "        self.sim_paused = False"
+    ready_log = (
+        "        self.sim_paused = False\n"
+        "        self.get_logger().info('GymBridge ready')"
+    )
+    if "GymBridge ready" not in text and ready in text:
+        text = text.replace(ready, ready_log, 1)
+        print("==> log GymBridge ready after publishers exist")
+    old_odom_pub = (
+        "self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)"
+    )
+    new_odom_pub = (
+        "self.ego_odom_pub = self.create_publisher("
+        "Odometry, ego_odom_topic, qos_profile_sensor_data)"
+    )
+    if old_odom_pub in text:
+        text = text.replace(old_odom_pub, new_odom_pub, 1)
+        print("==> publish gym odom best-effort to match scan QoS")
+    text = text.replace(
+        "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n", ""
+    )
+    text = text.replace("from rclpy.executors import MultiThreadedExecutor\n", "")
+    text = text.replace(", callback_group=self._lidar_cg", "")
+    text = text.replace(", callback_group=self._physics_cg", "")
+    text = text.replace("self.timer = self.create_timer(0.004, self.timer_callback)",
+                        "self.timer = self.create_timer(0.05, self.timer_callback)")
+    text = text.replace("self.timer = self.create_timer(1, self.timer_callback)",
+                        "self.timer = self.create_timer(0.05, self.timer_callback)")
+    text = text.replace("self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+                        "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)")
+    if "timestep=0.05,\n" not in text:
+        text = text.replace("timestep=0.01,\n", "timestep=0.05,\n", 1)
+        print("==> gym timestep 0.05 (20 Hz, 1.0x realtime)")
+    mt = (
+        "    gym_bridge = GymBridge()\n"
+        "    executor = MultiThreadedExecutor(num_threads=2)\n"
+        "    executor.add_node(gym_bridge)\n"
+        "    executor.spin()"
+    )
+    if mt in text:
+        text = text.replace(mt, "    gym_bridge = GymBridge()\n    rclpy.spin(gym_bridge)", 1)
+        print("==> spin gym bridge single-threaded")
+    cg_block = (
+        "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
+        "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
+    )
+    if cg_block in text:
+        text = text.replace(cg_block, "", 1)
+        print("==> drop unused gym callback groups")
+    if "scan_every_step = False" not in text:
+        needle = "            self._update_sim_state()\n\n        if not self.get_parameter('async_mode').value:"
+        if needle not in text:
+            raise SystemExit(f"{path}: async_mode insert point missing")
+        text = text.replace(
+            needle,
+            "            self._update_sim_state()\n"
+            "        self.env.unwrapped.sim.scan_every_step = False\n"
+            "        if self.env.unwrapped.sim.scan_enabled:\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self._update_sim_state()\n\n"
+            "        if not self.get_parameter('async_mode').value:",
+            1,
+        )
+        print("==> defer gym lidar and warm numba")
+    thread_start = (
+        "        self._scan_thread = threading.Thread("
+        "target=self._lidar_loop, daemon=True)\n"
+        "        self._scan_thread.start()\n"
+    )
+    if thread_start in text:
+        text = text.replace(thread_start, "", 1)
+        print("==> disable gym lidar thread")
+    lock_only = (
+        "        self._scan_lock = threading.Lock()\n"
+        "        self._scan_stop = False\n"
+    )
+    if "self._scan_lock" not in text:
+        start = (
+            "        self.env.unwrapped.sim.scan_every_step = False\n"
+            "        if self.env.unwrapped.sim.scan_enabled:\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self._update_sim_state()\n"
+        )
+        if start not in text:
+            start = "        self.env.unwrapped.sim.scan_every_step = False\n"
+        text = text.replace(start, start + lock_only, 1)
+        print("==> allocate gym lidar lock before physics timers")
+    timer_scan = (
+        "        sim = self.env.unwrapped.sim\n"
+        "        if sim.scan_enabled and sim.scan_sims:\n"
+        "            pose = np.array(sim.state.poses[0], copy=True)\n"
+        "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
+    )
+    if timer_scan not in text:
+        needle = (
+            "    def timer_callback(self):\n"
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            "        ts = self.get_clock().now().to_msg()\n"
+        )
+        if needle not in text:
+            if "sim.scan_sims[0].scan(pose" in text:
+                print("==> already patched: raycast gym lidar on the publish timer")
+            else:
+                raise SystemExit(f"{path}: timer_callback insert missing")
+        text = text.replace(
+            needle,
+            "    def timer_callback(self):\n"
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            + timer_scan
+            + "        ts = self.get_clock().now().to_msg()\n",
+            1,
+        )
+        print("==> raycast gym lidar on the 20 Hz publish timer")
+    if "with self._scan_lock:" not in text.split("def drive_timer_callback", 1)[-1][:800]:
+        old = (
+            "        if not self.has_opp:\n"
+            "            _, _, self.done, _, _ = self.env.step(\n"
+            "                np.array([[self.ego_steer, self.ego_requested_speed]])\n"
+            "            )\n"
+        )
+        new = (
+            "        with self._scan_lock:\n"
+            "            if not self.has_opp:\n"
+            "                _, _, self.done, _, _ = self.env.step(\n"
+            "                    np.array([[self.ego_steer, self.ego_requested_speed]])\n"
+            "                )\n"
+        )
+        if old not in text:
+            raise SystemExit(f"{path}: drive step insert missing")
+        text = text.replace(old, new, 1)
+        old_else = (
+            "        else:\n"
+            "            _, _, self.done, _, _ = self.env.step(\n"
+            "                np.array(\n"
+            "                    [\n"
+            "                        [self.ego_steer, self.ego_requested_speed],\n"
+            "                        [self.opp_steer, self.opp_requested_speed],\n"
+            "                    ]\n"
+            "                )\n"
+            "            )\n"
+            "        self._update_sim_state()\n"
+        )
+        new_else = (
+            "            else:\n"
+            "                _, _, self.done, _, _ = self.env.step(\n"
+            "                    np.array(\n"
+            "                        [\n"
+            "                            [self.ego_steer, self.ego_requested_speed],\n"
+            "                            [self.opp_steer, self.opp_requested_speed],\n"
+            "                        ]\n"
+            "                    )\n"
+            "                )\n"
+            "            self._update_sim_state()\n"
+        )
+        if old_else not in text:
+            raise SystemExit(f"{path}: drive opp-step insert missing")
+        text = text.replace(old_else, new_else, 1)
+        print("==> hold pose lock only around physics step")
+    ray = (
+        "        sim = self.env.unwrapped.sim\n"
+        "        if not getattr(sim, 'scan_every_step', True) and sim.scan_enabled:\n"
+        "            sim._update_scans()\n"
+        "            self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()"
+    )
+    if ray in text:
+        text = text.replace(
+            ray,
+            "        ts = self.get_clock().now().to_msg()",
+            1,
+        )
+        print("==> publish cached scan without blocking physics")
+    stale = "        self.ego_scan = list(scans[0])"
+    fresh = (
+        "        if getattr(self.env.unwrapped.sim, 'scan_every_step', True):\n"
+        "            self.ego_scan = list(scans[0])"
+    )
+    if stale in text and fresh not in text:
+        text = text.replace(stale, fresh, 1)
+        print("==> do not clobber thread lidar from physics")
+    odom_from_phys = (
+        "        self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        self._publish_odom(ts)\n"
+    )
+    if odom_from_phys not in text:
+        old = (
+            "        self._update_sim_state()\n"
+            "        if self.get_parameter('use_sim_time_bridge').value:\n"
+            "            clock_msg = Clock()"
+        )
+        new = (
+            "        self._update_sim_state()\n"
+            "        ts = self.get_clock().now().to_msg()\n"
+            "        self._publish_odom(ts)\n"
+            "        self._publish_transforms(ts)\n"
+            "        self._publish_laser_transforms(ts)\n"
+            "        self._publish_wheel_transforms(ts)\n"
+            "        if self.get_parameter('use_sim_time_bridge').value:\n"
+            "            clock_msg = Clock()"
+        )
+        if old not in text:
+            print("==> already patched: publish odom from physics timer")
+        else:
+            text = text.replace(old, new, 1)
+            print("==> publish odom from physics timer without waiting for lidar")
+    busy = (
+        "            scan = scanner.scan(pose, None)\n"
+        "            self.ego_scan = [float(x) for x in scan]\n"
+        "            time.sleep(0.0)\n"
+    )
+    paced = (
+        "            t0 = time.perf_counter()\n"
+        "            scan = scanner.scan(pose, None)\n"
+        "            self.ego_scan = [float(x) for x in scan]\n"
+        "            time.sleep(max(0.0, 0.05 - (time.perf_counter() - t0)))\n"
+    )
+    if busy in text:
+        text = text.replace(busy, paced, 1)
+        print("==> pace lidar thread at 20 Hz")
+    sim_stamp = (
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        if self.get_parameter('use_sim_time_bridge').value:\n"
+        "            sim_time = self.env.unwrapped.sim_time\n"
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+    )
+    wall_odom = "        ts = self.get_clock().now().to_msg()\n        t_pub = time.perf_counter()\n        self._publish_odom(ts)\n"
+    sim_odom = sim_stamp + "        t_pub = time.perf_counter()\n        self._publish_odom(ts)\n"
+    if wall_odom in text and sim_stamp not in text.split("def drive_timer_callback", 1)[-1][:2500]:
+        text = text.replace(wall_odom, sim_odom, 1)
+        print("==> stamp physics odom with sim time")
+    wall_odom2 = (
+        "        self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        self._publish_odom(ts)\n"
+    )
+    sim_odom2 = (
+        "        self._update_sim_state()\n"
+        + sim_stamp
+        + "        self._publish_odom(ts)\n"
+    )
+    if wall_odom2 in text:
+        text = text.replace(wall_odom2, sim_odom2, 1)
+        print("==> stamp physics odom with sim time")
+    clock_after_scan = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    clock_pub_scan = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            clock_msg = Clock()\n"
+        "            clock_msg.clock = ts\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    if clock_after_scan in text and "clock_msg.clock = ts" not in text:
+        text = text.replace(clock_after_scan, clock_pub_scan, 1)
+        print("==> publish /clock from the scan timer so lockstep can bootstrap")
+    scan_only = (
+        "        scan.ranges = self.ego_scan\n"
+        "        self.ego_scan_pub.publish(scan)\n"
+        "\n"
+        "        if self.has_opp:\n"
+    )
+    scan_and_odom = (
+        "        scan.ranges = self.ego_scan\n"
+        "        self.ego_scan_pub.publish(scan)\n"
+        "        self._publish_odom(ts)\n"
+        "\n"
+        "        if self.has_opp:\n"
+    )
+    if scan_only in text and "self.ego_scan_pub.publish(scan)\n        self._publish_odom(ts)" not in text:
+        text = text.replace(scan_only, scan_and_odom, 1)
+        print("==> heartbeat last odom with the scan timer")
+    clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
+    clock_best_effort = (
+        "            self.clock_pub = self.create_publisher(\n"
+        "                Clock, '/clock', qos_profile_sensor_data)\n"
+    )
+    clock_init = (
+        "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
+        "            clock_msg = Clock()\n"
+        "            sim_time = float(self.env.unwrapped.sim_time)\n"
+        "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
+        "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+    )
+    old_clock_if = (
+        "        if self.get_parameter('use_sim_time_bridge').value:\n"
+        "            self.get_logger().info('Using simulation time. "
+        "Will publish /clock topic. Drive and odom will be as fast as possible.')\n"
+    )
+    new_clock_if = (
+        "        if (not self.get_parameter('async_mode').value) or "
+        "self.get_parameter('use_sim_time_bridge').value:\n"
+        "            self.get_logger().info('Using simulation time. "
+        "Will publish /clock topic. Drive and odom will be as fast as possible.')\n"
+    )
+    if old_clock_if in text:
+        text = text.replace(old_clock_if, new_clock_if, 1)
+        print("==> always publish /clock in lockstep mode")
+    if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
+        text = text.replace(clock_create, clock_init, 1)
+        print("==> publish initial /clock at sim t=0")
+    elif clock_best_effort in text:
+        text = text.replace(clock_best_effort, clock_init, 1)
+        print("==> publish initial /clock at sim t=0")
+    if text != orig:
+        path.write_text(text, encoding="utf-8")
+    else:
+        print("==> gym_bridge already patched")
+
+bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
+sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
+launch = Path("sim/f1tenth_gym_ros/launch/rl_agent_sim_launch.py")
+patch_gym_bridge(bridge)
+if launch.exists():
+    launch_text = launch.read_text(encoding="utf-8")
+    fox = "    ld.add_action(foxglove_bridge_node)\n"
+    if fox in launch_text:
+        launch_text = launch_text.replace(
+            fox, "    # foxglove omitted: reliable scan/odom stalls gym\n", 1
+        )
+        print("==> disable foxglove so reliable odom cannot block the gym executor")
+    old_clock = (
+        "            'use_sim_time': False,\n"
+        "            'use_sim_time_bridge': use_sim_time,\n"
+    )
+    new_clock = (
+        "            'use_sim_time': False,\n"
+        "            'use_sim_time_bridge': True,\n"
+    )
+    if old_clock in launch_text:
+        launch_text = launch_text.replace(old_clock, new_clock, 1)
+        print("==> gym node stays wall-clock; always publish /clock")
+    launch.write_text(launch_text, encoding="utf-8")
+apply(
+    sim,
+    (
+        (
+            "        if self.scan_enabled:\n"
+            "            self._update_scans()\n"
+            "        else:\n"
+            "            self.state.scans.fill(0.0)\n"
+            "            self.state.collisions.fill(0.0)\n"
+            "\n"
+            "        self._update_agent_collisions()",
+            "        if self.scan_enabled and getattr(self, \"scan_every_step\", True):\n"
+            "            self._update_scans()\n"
+            "        elif not self.scan_enabled:\n"
+            "            self.state.scans.fill(0.0)\n"
+            "            self.state.collisions.fill(0.0)\n"
+            "\n"
+            "        if getattr(self, \"scan_every_step\", True) or not self.scan_enabled:\n"
+            "            self._update_agent_collisions()",
+            "skip lidar raycast on physics steps",
+        ),
+    ),
+)
 PY
 }
 
@@ -229,6 +663,7 @@ up() {
   fi
   echo "==> Starting novnc + gym bridge (ROS_DOMAIN_ID=${ROS_DOMAIN_ID})"
   compose up -d novnc sim
+  wait_sim_ready
   if [ "${MODE}" = "release" ]; then
     echo "==> Launching ${STACK} graph from the generic runtime image (/config + /policies)"
     # Override the image CMD (race.launch.py) so no hardware drivers start in sim.
@@ -238,14 +673,14 @@ up() {
     return
   fi
   echo "==> Building the agent workspace (racing_rl + control + bringup + common)"
-  compose run --rm --entrypoint bash agent -lc "
+  compose run --rm --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     colcon build --symlink-install --base-paths src libs \
       --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
         f1tenth_bringup f1tenth_common f1tenth_policy"
   echo "==> Launching the ${STACK} agent graph (policy: /policies/${CKPT})"
   echo "    Foxglove: ws://localhost:8765   |   RViz over VNC: http://localhost:8080/vnc.html"
-  compose run --rm --service-ports --entrypoint bash agent -lc "
+    compose run --rm --service-ports --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     $(agent_launch_cmd)"
@@ -274,6 +709,7 @@ validate() {
     docker exec \
       -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
       -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
+      -e ROS_LOCALHOST_ONLY=0 \
       "${agent_cid}" bash -lc "
         source /opt/ros/humble/setup.bash &&
         source /ws/install/setup.bash &&
@@ -281,7 +717,7 @@ validate() {
     return
   fi
   compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
-    --entrypoint bash agent -lc "
+    --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
@@ -291,9 +727,9 @@ wait_sim_ready() {
   echo "==> Waiting for gym bridge"
   local cid=""
   local i
-  for i in $(seq 1 90); do
+  for i in $(seq 1 150); do
     cid="$(compose ps -q sim 2>/dev/null || true)"
-    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in asynchronous mode"; then
+    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "GymBridge ready"; then
       echo "==> Gym bridge ready"
       return 0
     fi
@@ -335,26 +771,24 @@ certify() {
   compose down >/dev/null 2>&1 || true
   stop_stray_agents
   compose up -d novnc sim
+  wait_sim_ready
   if [ "${MODE}" = "dev" ]; then
     echo "==> Building the agent workspace"
-    compose run --rm --entrypoint bash agent -lc "
+    compose run --rm --entrypoint taskset agent -c 4-7 bash -lc "
       source /opt/ros/humble/setup.bash &&
       colcon build --symlink-install --base-paths src libs \
         --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
           f1tenth_bringup f1tenth_common f1tenth_policy"
-    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint bash agent -lc "
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset agent -c 4-7 bash -lc "
       source /opt/ros/humble/setup.bash &&
       source install/setup.bash &&
       $(agent_launch_cmd)"
   else
-    compose run -d --name f1tenth-gym-agent --service-ports runtime \
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset runtime -c 4-7 \
       ros2 launch f1tenth_bringup sim.launch.py \
       stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
   fi
-  # Start the agent while gym is still coming up so FastDDS meets the bridge
-  # as a late-starting publisher, then wait for both before scoring.
   wait_graph_ready f1tenth-gym-agent
-  wait_sim_ready
   local rc=0
   VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
   validate || rc=$?

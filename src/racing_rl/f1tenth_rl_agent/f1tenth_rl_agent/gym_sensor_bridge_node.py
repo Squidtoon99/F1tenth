@@ -6,6 +6,7 @@ import rclpy
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from f1tenth_interfaces.msg import ActuatorCommand
 from nav_msgs.msg import Odometry
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
@@ -51,8 +52,12 @@ class GymSensorBridgeNode(Node):
         self._drive_msg = AckermannDriveStamped()
         self._seed_msg = ActuatorCommand()
         self._seed_msg.source = ActuatorCommand.SOURCE_SAFE
+        self._seed_ns = 0
+        self._drive_seq = 0
 
-        self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(
+            Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
+        )
         self.create_subscription(
             ActuatorCommand, applied_topic, self._on_applied, 10
         )
@@ -69,10 +74,14 @@ class GymSensorBridgeNode(Node):
         self._publish_safe_zero_applied()
         if self._seed_remaining > 0:
             period = 1.0 / max(seed_hz, 1.0)
-            self._seed_timer = self.create_timer(period, self._on_seed_timer)
+            self._seed_timer = self.create_timer(
+                period,
+                self._on_seed_timer,
+                clock=Clock(clock_type=ClockType.STEADY_TIME),
+            )
         else:
             self._seed_timer = None
-        self._imu_hold_timer = self.create_timer(1.0 / 50.0, self._on_imu_hold)
+        self._imu_hold_timer = self.create_timer(1.0 / 20.0, self._on_imu_hold)
 
         self.get_logger().info(
             f"gym_sensor_bridge odom={odom_topic} → imu={imu_topic}; "
@@ -81,7 +90,9 @@ class GymSensorBridgeNode(Node):
 
     def _publish_safe_zero_applied(self) -> None:
         msg = self._seed_msg
-        msg.header.stamp = self.get_clock().now().to_msg()
+        self._seed_ns += 1000
+        msg.header.stamp.sec = 0
+        msg.header.stamp.nanosec = self._seed_ns
         msg.header.frame_id = self._imu_frame_id
         msg.drive_current_a = 0.0
         msg.brake_current_a = 0.0
@@ -140,7 +151,13 @@ class GymSensorBridgeNode(Node):
 
     def _on_applied(self, msg: ActuatorCommand) -> None:
         drive = self._drive_msg
-        drive.header.stamp = msg.header.stamp
+        incoming = int(msg.header.stamp.sec) * 1_000_000_000 + int(
+            msg.header.stamp.nanosec
+        )
+        self._drive_seq = max(self._drive_seq + 1, incoming)
+        sec, nsec = divmod(self._drive_seq, 1_000_000_000)
+        drive.header.stamp.sec = int(sec)
+        drive.header.stamp.nanosec = int(nsec)
         drive.header.frame_id = msg.header.frame_id or self._imu_frame_id
         drive.drive = AckermannDrive()
         long_cmd = float(msg.longitudinal)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 
 import numpy as np
@@ -52,6 +53,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
         self.declare_parameter("steering_delta_max_rad", si.STEERING_DELTA_MAX_RAD)
+        self.declare_parameter("history_stride", si.HISTORY_STRIDE)
         self.declare_parameter("steering_angle_to_servo_gain", -1.2135)
         self.declare_parameter("steering_angle_to_servo_offset", 0.4495)
         self.declare_parameter("imu_accel_to_ms2", 9.80665)
@@ -74,6 +76,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("recording_mode", False)
         self.declare_parameter("publish_raw_observation", False)
         self.declare_parameter("publish_diagnostics", True)
+        self.declare_parameter("tick_on_scan", False)
         self.declare_parameter("inference_warmup_iters", 5)
         self.declare_parameter("use_torch_compile", False)
 
@@ -114,6 +117,7 @@ class SensorRacerNode(Node):
         )
         if self.steering_delta_max_rad <= 0.0:
             raise ValueError("steering_delta_max_rad must be positive")
+        self.history_stride = max(1, int(gp("history_stride").value))
         self.steering_angle_to_servo_gain = float(
             gp("steering_angle_to_servo_gain").get_parameter_value().double_value
         )
@@ -127,6 +131,9 @@ class SensorRacerNode(Node):
         self.publish_diagnostics = (
             gp("publish_diagnostics").get_parameter_value().bool_value
         )
+        self.tick_on_scan = gp("tick_on_scan").get_parameter_value().bool_value
+        self._last_lockstep_scan: tuple[int, int] | None = None
+        self._tick_lock = threading.Lock() if self.tick_on_scan else None
         warmup_iters = int(gp("inference_warmup_iters").get_parameter_value().integer_value)
         use_torch_compile = gp("use_torch_compile").get_parameter_value().bool_value
 
@@ -170,6 +177,7 @@ class SensorRacerNode(Node):
                 i_brake_max_a=self.i_brake_max_a,
                 steering_angle_to_servo_gain=self.steering_angle_to_servo_gain,
                 steering_angle_to_servo_offset=self.steering_angle_to_servo_offset,
+                history_stride=self.history_stride,
             )
 
         self._scan: LaserScan | None = None
@@ -203,7 +211,9 @@ class SensorRacerNode(Node):
         self.create_subscription(
             Imu, imu_topic, self._on_imu, qos_profile_sensor_data
         )
-        self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(
+            Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
+        )
         self.create_subscription(ActuatorCommand, applied_topic, self._on_applied, 10)
 
         self._desired_pub = self.create_publisher(
@@ -233,7 +243,8 @@ class SensorRacerNode(Node):
             self._imu_actor_pub = None
 
         period = 1.0 / max(self.control_hz, 1.0)
-        self.create_timer(period, self._on_timer)
+        if not self.tick_on_scan:
+            self.create_timer(period, self._on_timer)
 
         self.get_logger().info(
             f"sensor_racer {si.NUM_OBS}-D @ {self.control_hz:.1f} Hz "
@@ -324,17 +335,33 @@ class SensorRacerNode(Node):
         self._diag_buf[si.DIAG_GRU_RESET] = 1.0
         self._diag_buf[si.DIAG_GRU_RESET_REASON] = float(reason)
 
+    def _maybe_lockstep_tick(self) -> None:
+        if not self.tick_on_scan or self._tick_lock is None:
+            return
+        with self._tick_lock:
+            if self._tick_unusable():
+                return
+            stamp = self._scan.header.stamp
+            key = (int(stamp.sec), int(stamp.nanosec))
+            if key == self._last_lockstep_scan:
+                return
+            self._last_lockstep_scan = key
+            self._on_timer()
+
     def _on_scan(self, msg: LaserScan) -> None:
         self._scan = msg
         self._scan_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_odom(self, msg: Odometry) -> None:
         self._odom = msg
         self._odom_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_applied(self, msg: ActuatorCommand) -> None:
         self._applied = msg
         self._applied_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_imu(self, msg: Imu) -> None:
         stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -349,6 +376,7 @@ class SensorRacerNode(Node):
         )
         self._imu_interval.append(sample)
         self._imu_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _sensors_fresh(self) -> bool:
         ages = (
@@ -429,7 +457,10 @@ class SensorRacerNode(Node):
             diag[si.DIAG_GRU_RESET] = float(timings["gru_reset"])
         diag[si.DIAG_GRU_RESETS] = float(self._gru_resets)
         self._publish_diagnostics()
-        self._imu_interval.clear()
+        if self.tick_on_scan and self._imu_interval:
+            self._imu_interval[:] = self._imu_interval[-1:]
+        else:
+            self._imu_interval.clear()
         self._last_tick_time = now
 
     def _on_timer(self) -> None:
@@ -597,11 +628,18 @@ class SensorRacerNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = SensorRacerNode()
+    executor = None
     try:
-        rclpy.spin(node)
+        from rclpy.executors import MultiThreadedExecutor
+
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if executor is not None:
+            executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

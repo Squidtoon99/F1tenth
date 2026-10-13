@@ -133,6 +133,37 @@ def test_gate_publishes_rl_drive_when_teleop_stale():
         rclpy.shutdown()
 
 
+def test_gate_publish_on_desired_without_timer():
+    rclpy.init()
+    node = helper = None
+    try:
+        node = _make_gate(publish_on_desired=True, publish_rate_hz=0.0)
+        helper = rclpy.create_node("rl_gate_helper_on_desired")
+        applied = []
+        helper.create_subscription(
+            ActuatorCommand,
+            "/rl/actuator/applied",
+            lambda m: applied.append(m),
+            10,
+        )
+        rl_pub = helper.create_publisher(
+            ActuatorCommand, "/rl/actuator/desired", 10
+        )
+
+        def saw_rl():
+            rl_pub.publish(_rl_msg())
+            return bool(applied) and applied[-1].source == SOURCE_RL
+
+        assert _spin_until([node, helper], saw_rl, timeout_s=2.0)
+        assert applied[-1].drive_current_a == pytest.approx(8.0, abs=0.05)
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_gate_teleop_overrides_rl():
     rclpy.init()
     node = helper = None

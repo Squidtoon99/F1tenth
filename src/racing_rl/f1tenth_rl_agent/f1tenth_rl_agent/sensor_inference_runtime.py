@@ -60,6 +60,7 @@ class SensorInferenceRuntime:
         i_brake_max_a: float = 40.0,
         steering_angle_to_servo_gain: float = 1.0,
         steering_angle_to_servo_offset: float = 0.5,
+        history_stride: int | None = None,
     ) -> None:
         self.actor = actor
         self.normalizer = normalizer
@@ -67,6 +68,10 @@ class SensorInferenceRuntime:
         self.deterministic = bool(deterministic)
         self.steering_action_mode = str(steering_action_mode)
         self.steering_delta_max_rad = float(steering_delta_max_rad)
+        self.history_stride = max(
+            1,
+            int(si.HISTORY_STRIDE if history_stride is None else history_stride),
+        )
         self.max_steer = float(max_steer)
         self.i_drive_max_a = float(i_drive_max_a)
         self.i_brake_max_a = float(i_brake_max_a)
@@ -164,7 +169,7 @@ class SensorInferenceRuntime:
         self._steer_hist_view[0] = applied_steer_rad
         self._steer_hist_view[1:] = hist[: si.STEER_HISTORY - 1]
         raw_obs = self._obs_host_np
-        stride = max(1, int(si.HISTORY_STRIDE))
+        stride = self.history_stride
         throttle_pred = float(long_hist[stride - 1])
         pack_actor_observation(
             self._lidar_buf,
@@ -174,6 +179,7 @@ class SensorInferenceRuntime:
             applied_long,
             throttle_pred,
             self._steer_hist_view,
+            stride=stride,
             out=raw_obs,
         )
         finite = bool(observation_is_finite(raw_obs))

@@ -136,9 +136,32 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    `certify` waits for the gym bridge, scores the live graph, prints a
    `SCORE_JSON` line (`laps`, `lap_times_s`, `mean_lap_s`, `crashes`,
    `progress_m`, `desired_hz`), writes `gym_score.json`, then tears the stack
-   down. Gym SPEED mode maps normalized longitudinal × 5 onto m/s, so lap times
-   will not match the 80 A training plant (~5.3 s). Keep
-   `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
+   down. Keep `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
+
+   Gym `SCORE_JSON` is a closed-loop graph check, not a Warp lap-time replay.
+   Training longitudinal is 80 A current (`+1` → 80 A → torque → vx). The gym
+   fork's SPEED mode treats the same `+1` as a speed setpoint (`× 5` m/s in
+   sim launch). Steering still maps to radians. That plant mismatch does **not**
+   invalidate lap *completion* once `desired_hz` is ~20; it **does** invalidate
+   lap-*time* comparison to the Warp ~5.3 s courtyard. At ~2.5 Hz the score is
+   meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
+   the gym fork to skip lidar on physics steps and raycast 1081-beam lidar from
+   a snapshot pose on the publish timer. Certify is **lockstep**: gym
+   `async_mode=False` advances one 50 ms physics step per unique `/drive` stamp,
+   publishes `/clock`, and the agent graph runs `use_sim_time:=true`. The
+   validator scores `desired_hz` from sim time, so the gate does not depend on
+   WSL/DDS wall throughput. Gym + agent are pinned to cores 0–3
+   (`taskset` / compose `cpuset`). `ROS_LOCALHOST_ONLY=1` hung FastDDS on
+   `/clock` on this host (CycloneDDS is not in the images), so certify uses
+   shared netns + FastDDS UDPv4. The gym image
+   imports `/sim_ws/f1tenth_gym` (build-time copy); compose prepends
+   `PYTHONPATH` to the live mounted engine so that skip actually applies.
+
+   Overnight `policy_317440000.pt` is preprocessing **v3 @ 20 Hz** with
+   π/60 rad/tick (3°/tick) consecutive history. Car defaults after v5 are
+   0.30 s strided history and 30°/s (π/120). Gym launch pins
+   `steering_delta_max_rad=π/60` and `history_stride=1` so that checkpoint
+   still matches. v5 campaign winners should drop those overrides.
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
    with the per-car overlay, so `/config` + `/policies` wiring is exercised:

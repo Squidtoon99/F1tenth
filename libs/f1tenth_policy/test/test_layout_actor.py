@@ -81,6 +81,24 @@ def test_artifact_roundtrip_validation():
     assert payload["i_slew_a_per_s"] == 200.0
 
 
+def test_artifact_accepts_v3_and_v4_preprocessing_at_20hz():
+    torch.manual_seed(1)
+    actor = make_actor(ACTOR_OBS_DIM, 2, [64, 64], activation=nn.ReLU)
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, torch.device("cpu"))
+    payload = build_sensor_artifact_payload(
+        actor_state_dict=actor.state_dict(),
+        obs_norm=normalizer.state_dict(),
+        actor_architecture=actor.actor_architecture,
+        env_transitions=1000,
+    )
+    for version in (3, 4):
+        payload["observation_preprocessing_version"] = version
+        validate_sensor_policy_artifact(
+            payload,
+            expected_architecture=actor.actor_architecture,
+        )
+
+
 def test_artifact_validation_rejects_missing_or_invalid_current_slew():
     torch.manual_seed(2)
     actor = make_actor(ACTOR_OBS_DIM, 2, [64, 64], activation=nn.ReLU)

@@ -37,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             default_sensor_racer,
             {
+                "use_sim_time": True,
                 "checkpoint_path": ParameterValue(checkpoint_path, value_type=str),
                 "device": ParameterValue(device, value_type=str),
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
@@ -52,6 +53,9 @@ def generate_launch_description() -> LaunchDescription:
                 "imu_gz_bias": 0.0,
                 "twist_vx_sign": 1.0,
                 "sensor_max_age_s": 1.0,
+                "steering_delta_max_rad": 0.05235987755982988,
+                "history_stride": 1,
+                "tick_on_scan": True,
                 "publish_raw_observation": True,
                 "publish_diagnostics": True,
             },
@@ -66,10 +70,13 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             default_gate,
             {
+                "use_sim_time": True,
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
                 "rl_command_timeout_s": 1.0,
+                "publish_on_desired": True,
+                "publish_rate_hz": 0.0,
             },
         ],
     )
@@ -81,6 +88,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {
+                "use_sim_time": True,
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
                 "speed_scale": 5.0,
             },
