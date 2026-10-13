@@ -287,9 +287,10 @@ def patch_gym_bridge(path: Path) -> None:
             "                continue\n"
             "            with self._scan_lock:\n"
             "                pose = np.array(sim.state.poses[0], copy=True)\n"
+            "            t0 = time.perf_counter()\n"
             "            scan = scanner.scan(pose, None)\n"
             "            self.ego_scan = [float(x) for x in scan]\n"
-            "            time.sleep(0.0)\n"
+            "            time.sleep(max(0.0, 0.05 - (time.perf_counter() - t0)))\n"
             "\n"
             + needle,
             1,
@@ -388,6 +389,20 @@ def patch_gym_bridge(path: Path) -> None:
         else:
             text = text.replace(old, new, 1)
             print("==> publish odom from physics timer without waiting for lidar")
+    busy = (
+        "            scan = scanner.scan(pose, None)\n"
+        "            self.ego_scan = [float(x) for x in scan]\n"
+        "            time.sleep(0.0)\n"
+    )
+    paced = (
+        "            t0 = time.perf_counter()\n"
+        "            scan = scanner.scan(pose, None)\n"
+        "            self.ego_scan = [float(x) for x in scan]\n"
+        "            time.sleep(max(0.0, 0.05 - (time.perf_counter() - t0)))\n"
+    )
+    if busy in text:
+        text = text.replace(busy, paced, 1)
+        print("==> pace lidar thread at 20 Hz")
     if text != orig:
         path.write_text(text, encoding="utf-8")
     else:
