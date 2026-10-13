@@ -67,6 +67,7 @@ services:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - ROS_LOCALHOST_ONLY=0
       - DISPLAY=novnc:0.0
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
     networks:
       - rosnet
     depends_on:

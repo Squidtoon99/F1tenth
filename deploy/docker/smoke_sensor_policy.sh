@@ -64,11 +64,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 actor = load_sensor_actor(path, "actor", device)
 norm = load_sensor_obs_norm(path, device, si.OBS_NORM_EPS, si.OBS_NORM_CLIP)
 obs = torch.zeros(1, si.NUM_OBS, device=device)
+hidden = actor.initial_hidden(1, device=device, dtype=obs.dtype)
 with torch.inference_mode():
-    action, hidden = actor(obs, deterministic=True, with_logprob=False)
+    action, _, hidden = actor.step(
+        obs, hidden, deterministic=True, with_logprob=False
+    )
 print(
     f"artifact_ok obs_dim={si.NUM_OBS} layout={si.ACTOR_LAYOUT_VERSION} "
     f"format={si.POLICY_FORMAT_VERSION} gru_hidden={si.GRU_HIDDEN_DIM} "
+    f"norm={tuple(norm.mean.shape)} "
     f"action={tuple(float(x) for x in action.reshape(-1).tolist())}"
 )
 PY

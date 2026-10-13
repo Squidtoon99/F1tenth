@@ -91,6 +91,8 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["imu_gyro_to_rads"] == 1.0
     assert racer["imu_ax_bias"] == 0.0
     assert racer["twist_vx_sign"] == 1.0
+    assert racer["publish_raw_observation"] is True
+    assert racer["publish_diagnostics"] is True
     assert '"i_drive_max_a"' in source
     assert 'default_value="80.0"' in source
     assert 'default_value="40.0"' in source
@@ -125,7 +127,7 @@ def test_gym_sensor_bridge_is_registered():
     )
 
 
-def test_sim_sh_sensor_policy_wires_courtyard_and_keeps_validate_vehicle():
+def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     source = SIM_SH.read_text()
     sx, sy, stheta = _courtyard_spawn()
 
@@ -134,7 +136,9 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_keeps_validate_vehicle():
     assert "courtyard_2.yaml" in source
     assert "courtyard_2.png" in source
     assert "courtyard_2_centerline.csv" in source
-    assert "validate is vehicle-only" in source
+    assert "validate_closed_loop_sensor_policy.py" in source
+    assert "1097" in source
+    assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02
     assert abs(stheta + 0.909) < 0.01

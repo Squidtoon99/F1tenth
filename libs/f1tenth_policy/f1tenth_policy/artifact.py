@@ -104,10 +104,15 @@ def validate_sensor_policy_artifact(
             f"expected {expected_layout_version}."
         )
     preprocessing = payload.get("observation_preprocessing_version")
-    if preprocessing is None or int(preprocessing) != OBS_PREPROCESSING_VERSION:
+    allowed_preprocessing = {OBS_PREPROCESSING_VERSION}
+    # 20 Hz courtyard artifacts written before the v4 tag already pack body-frame
+    # IMU in sim; v4 only records the matching driver→body rotation on the car.
+    if abs(CONTROL_HZ - 20.0) <= 1.0e-6:
+        allowed_preprocessing.add(3)
+    if preprocessing is None or int(preprocessing) not in allowed_preprocessing:
         raise ValueError(
             "Sensor policy artifact observation_preprocessing_version="
-            f"{preprocessing!r}; expected {OBS_PREPROCESSING_VERSION}."
+            f"{preprocessing!r}; expected one of {sorted(allowed_preprocessing)}."
         )
     for key in ("i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"):
         value = payload.get(key)

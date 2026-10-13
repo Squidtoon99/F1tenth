@@ -12,6 +12,7 @@ from sensor_msgs.msg import Imu
 
 from f1tenth_rl_agent import interfaces as ifc
 from f1tenth_rl_agent import sensor_interfaces as si
+from f1tenth_rl_agent.sensor_preprocessing import body_accel_to_driver
 
 
 class GymSensorBridgeNode(Node):
@@ -25,6 +26,7 @@ class GymSensorBridgeNode(Node):
         self.declare_parameter("imu_frame_id", ifc.FRAME_BASE_LINK)
         self.declare_parameter("seed_applied_hz", 20.0)
         self.declare_parameter("seed_applied_count", 5)
+        self.declare_parameter("max_steer", float(si.MAX_STEER_RAD))
 
         gp = self.get_parameter
         odom_topic = gp("odom_topic").get_parameter_value().string_value
@@ -36,6 +38,7 @@ class GymSensorBridgeNode(Node):
         self._seed_remaining = int(
             gp("seed_applied_count").get_parameter_value().integer_value
         )
+        self._max_steer = float(gp("max_steer").get_parameter_value().double_value)
 
         self._prev_t: float | None = None
         self._prev_vx = 0.0
@@ -111,11 +114,12 @@ class GymSensorBridgeNode(Node):
         self._prev_vx = vx
         self._prev_vy = vy
 
+        ax_driver, ay_driver = body_accel_to_driver(ax, ay)
         imu = self._imu_msg
         imu.header.stamp = stamp
         imu.header.frame_id = self._imu_frame_id
-        imu.linear_acceleration.x = ax
-        imu.linear_acceleration.y = ay
+        imu.linear_acceleration.x = ax_driver
+        imu.linear_acceleration.y = ay_driver
         imu.linear_acceleration.z = float(si.GRAVITY_MS2)
         imu.angular_velocity.x = float(msg.twist.twist.angular.x)
         imu.angular_velocity.y = float(msg.twist.twist.angular.y)
@@ -129,8 +133,8 @@ class GymSensorBridgeNode(Node):
         drive.drive = AckermannDrive()
         long_cmd = float(msg.longitudinal)
         drive.drive.acceleration = long_cmd
-        drive.drive.steering_angle = float(msg.steering)
-        # Gym fork steps on speed (SPEED mode), not acceleration.
+        drive.drive.steering_angle = float(msg.steering) * self._max_steer
+        # Gym fork steps on speed (SPEED mode), not the 80 A current plant.
         drive.drive.speed = long_cmd
         self._drive_pub.publish(drive)
 

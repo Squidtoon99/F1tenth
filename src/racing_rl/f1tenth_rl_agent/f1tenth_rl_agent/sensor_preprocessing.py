@@ -128,6 +128,10 @@ def driver_accel_to_body(ax_driver: float, ay_driver: float) -> tuple[float, flo
     return -float(ay_driver), float(ax_driver)
 
 
+def body_accel_to_driver(ax_body: float, ay_body: float) -> tuple[float, float]:
+    return float(ay_body), -float(ax_body)
+
+
 def average_dynamic_imu(samples: list[RawImuSample]) -> tuple[float, float, float]:
     if not samples:
         return 0.0, 0.0, 0.0

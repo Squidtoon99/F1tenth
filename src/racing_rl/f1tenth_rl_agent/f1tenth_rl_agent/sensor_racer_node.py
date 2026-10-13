@@ -1,4 +1,4 @@
-"""Standalone 1,097-D recurrent sensor racer (10 Hz, no localization)."""
+"""Standalone 1,097-D recurrent sensor racer (20 Hz, no localization)."""
 
 from __future__ import annotations
 

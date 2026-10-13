@@ -22,22 +22,22 @@
 #   MODE            "dev" (live source, default) or "release" (built runtime image)
 #   ROS_DOMAIN_ID   DDS domain shared by both containers (default: 42)
 #
-# The vehicle stack (default) is the release gate: it runs the exact on-car C++
-# autonomy graph (vehicle_obs -> policy_inference -> drive) against the gym's
-# ground-truth odom, with the 6-dim opponent block zeroed for solo racing.
-# STACK=sensor_policy is a courtyard smoke loop, not the 3-lap IV_2026 gate.
+# The vehicle stack is the legacy 392-D C++ gate (vehicle_obs -> policy_inference
+# -> drive). STACK=sensor_policy is the 1,097-D on-car graph
+# (sensor_racer -> rl_current_gate -> gym_sensor_bridge -> /drive) on courtyard_2.
 set -eo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
 COMPOSE_FILE="deploy/docker/docker-compose.sim.yml"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+# Keep gym inference off the training GPU (entropy-ab and overnight runs).
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 CKPT="${CKPT:-policy.pt}"
 STACK="${STACK:-vehicle}"
 MODE="${MODE:-dev}"
 
-# Observation dim the running graph must emit: solo racing uses the 390-dim 1v1
-# layout with the opponent block zeroed, so the validator expects 390.
-EXPECT_OBS_DIM="${EXPECT_OBS_DIM:-390}"
+# Observation dim: 392-D vehicle graph (legacy) or 1097-D sensor_racer.
+EXPECT_OBS_DIM="${EXPECT_OBS_DIM:-}"
 
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
@@ -204,8 +204,9 @@ up() {
   echo "==> Building the agent workspace (racing_rl + control + bringup + common)"
   compose run --rm --entrypoint bash agent -lc "
     source /opt/ros/humble/setup.bash &&
-    colcon build --symlink-install \
-      --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control f1tenth_bringup f1tenth_common"
+    colcon build --symlink-install --base-paths src libs \
+      --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
+        f1tenth_bringup f1tenth_common f1tenth_policy"
   echo "==> Launching the ${STACK} agent graph (policy: /policies/${CKPT})"
   echo "    Foxglove: ws://localhost:8765   |   RViz over VNC: http://localhost:8080/vnc.html"
   compose run --rm --service-ports --entrypoint bash agent -lc "
@@ -215,15 +216,21 @@ up() {
 }
 
 validate() {
-  [ "${STACK}" = "vehicle" ] || \
-    die "validate is vehicle-only (got STACK=${STACK}); do not use it for sensor_policy"
-  echo "==> Closed-loop acceptance gate (${STACK} stack, expect ${EXPECT_OBS_DIM}-dim obs)"
-  compose run --rm --entrypoint bash agent -lc "
+  check_stack
+  local expect="${EXPECT_OBS_DIM}"
+  local script="src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_gym.py"
+  if [ "${STACK}" = "sensor_policy" ]; then
+    expect="${expect:-1097}"
+    script="src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_sensor_policy.py"
+  else
+    expect="${expect:-390}"
+  fi
+  echo "==> Closed-loop acceptance gate (${STACK} stack, expect ${expect}-dim obs)"
+  compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+    --entrypoint bash agent -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
-    python3 src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_gym.py \
-      --expect-obs-dim ${EXPECT_OBS_DIM} \
-      ${VALIDATE_ARGS:-}"
+    python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
 }
 
 CMD="${1:-up}"

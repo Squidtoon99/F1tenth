@@ -51,6 +51,8 @@ def generate_launch_description() -> LaunchDescription:
                 "imu_gy_bias": 0.0,
                 "imu_gz_bias": 0.0,
                 "twist_vx_sign": 1.0,
+                "publish_raw_observation": True,
+                "publish_diagnostics": True,
             },
         ],
     )
