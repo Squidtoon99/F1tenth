@@ -27,7 +27,11 @@ from f1tenth_rl_agent.policy_model import (
     load_sensor_obs_norm,
 )
 from f1tenth_rl_agent.sensor_inference_runtime import SensorInferenceRuntime
-from f1tenth_rl_agent.sensor_preprocessing import ImuCalibration, RawImuSample
+from f1tenth_rl_agent.sensor_preprocessing import (
+    ImuCalibration,
+    RawImuSample,
+    applied_obs_channels,
+)
 
 
 class SensorRacerNode(Node):
@@ -546,13 +550,14 @@ class SensorRacerNode(Node):
         assert self._runtime is not None
 
         speed = self.twist_vx_sign * float(self._odom.twist.twist.linear.x)
-        applied_long = float(self._applied.longitudinal)
-        applied_steer = float(self._applied.steering) * self.max_steer
-        signed_current_a = float(
-            self._applied.drive_current_a - self._applied.brake_current_a
-        )
-        vesc_current = si.applied_current_fraction(
-            signed_current_a, self.i_drive_max_a, self.i_brake_max_a
+        applied_long, vesc_current, applied_steer = applied_obs_channels(
+            longitudinal=float(self._applied.longitudinal),
+            drive_current_a=float(self._applied.drive_current_a),
+            brake_current_a=float(self._applied.brake_current_a),
+            steering_norm=float(self._applied.steering),
+            i_drive_max_a=self.i_drive_max_a,
+            i_brake_max_a=self.i_brake_max_a,
+            max_steer=self.max_steer,
         )
         raw_obs, actor_imu, raw_imu, finite = self._runtime.pack_observation(
             scan_angle_min=float(self._scan.angle_min),

@@ -25,6 +25,10 @@ from eval_full_lap import (  # noqa: E402
     load_actor_bundle,
     spawn_speed_mps,
 )
+from f1tenth_policy.current import (  # noqa: E402
+    TRAINING_I_BRAKE_MAX_A,
+    TRAINING_I_DRIVE_MAX_A,
+)
 from f1tenth_policy.layout import (  # noqa: E402
     ACTOR_OBS_DIM,
     CONTROL_HZ,
@@ -33,12 +37,14 @@ from f1tenth_policy.layout import (  # noqa: E402
     LIDAR_DIM,
     LIDAR_RANGE_MAX,
     LIDAR_RANGE_MIN,
+    MAX_STEER_RAD,
 )
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
 from f1tenth_rl_agent.gym_certify import spawn_pose_from_centerline  # noqa: E402
 from f1tenth_rl_agent.sensor_preprocessing import (  # noqa: E402
     ImuCalibration,
     RawImuSample,
+    applied_obs_channels,
     beam_angles_rad,
     body_accel_to_driver,
     pack_lidar_from_scan,
@@ -172,6 +178,21 @@ def ros_pack_frame(runtime, frame: dict, *, imu: str) -> np.ndarray:
         raise ValueError(imu)
     ax_d, ay_d = body_accel_to_driver(ax, ay)
     increment = float(beam_angles_rad()[1] - beam_angles_rad()[0])
+    effort = float(frame["applied_effort"])
+    steer_norm = (
+        float(frame["steer_hist"][0]) / float(MAX_STEER_RAD)
+        if MAX_STEER_RAD
+        else 0.0
+    )
+    applied_long, vesc_current, applied_steer = applied_obs_channels(
+        longitudinal=float(frame["long_hist"][0]),
+        drive_current_a=max(effort, 0.0) * TRAINING_I_DRIVE_MAX_A,
+        brake_current_a=max(-effort, 0.0) * TRAINING_I_BRAKE_MAX_A,
+        steering_norm=steer_norm,
+        i_drive_max_a=TRAINING_I_DRIVE_MAX_A,
+        i_brake_max_a=TRAINING_I_BRAKE_MAX_A,
+        max_steer=float(MAX_STEER_RAD),
+    )
     runtime.pack_observation(
         scan_angle_min=float(LIDAR_ANGLE_MIN),
         scan_angle_increment=increment,
@@ -191,9 +212,9 @@ def ros_pack_frame(runtime, frame: dict, *, imu: str) -> np.ndarray:
         ],
         imu_cal=ImuCalibration(accel_to_ms2=1.0, gyro_to_rads=1.0),
         speed=frame["vx"],
-        applied_long=float(frame["long_hist"][0]),
-        applied_steer_rad=float(frame["steer_hist"][0]),
-        vesc_current=frame["applied_effort"],
+        applied_long=applied_long,
+        applied_steer_rad=applied_steer,
+        vesc_current=vesc_current,
     )
     return runtime.host_obs_buffer.copy()
 
