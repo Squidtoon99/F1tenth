@@ -851,6 +851,7 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
     if algorithm == "qrsac":
         return
     ppo = cfg["ppo"]
+    _validate_ppo_init_lr_schedule(cfg, ppo)
     for key in ("rollout_steps", "epochs", "env_minibatches"):
         value = ppo.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -904,6 +905,9 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.advantage_filter_discard_fraction must be a finite number in "
             f"[0.0, 1.0), got {discard_fraction!r}"
         )
+
+
+def _validate_ppo_init_lr_schedule(cfg: dict, ppo: dict) -> None:
     lr_schedule = ppo.get("lr_schedule", "constant")
     if lr_schedule not in ("constant", "linear", "cosine", "adaptive_kl"):
         raise ValueError(

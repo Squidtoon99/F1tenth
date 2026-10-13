@@ -525,6 +525,10 @@ class PPOTrainer:
             self._rollout.advantages.copy_(advantages)
             self._rollout.returns.copy_(returns)
         metrics = self.update(self._rollout)
+        if self.lr_schedule == "adaptive_kl":
+            self.adapt_kl_learning_rates(metrics["approx_kl"])
+        metrics["actor_lr"] = self.current_actor_lr()
+        metrics["value_lr"] = self.current_value_lr()
         self.last_rollout = self._rollout
         self._step = 0
         self._live_hidden.zero_()
@@ -571,8 +575,6 @@ class PPOTrainer:
                 "advantage_filter_discard_rate": 1.0,
                 "advantage_filter_retained": 0,
                 "advantage_filter_eta": float(eta),
-                "actor_lr": self.current_actor_lr(),
-                "value_lr": self.current_value_lr(),
             }
         if self.advantage_filter_enabled:
             kept_adv = raw_advantages[keep_mask]
@@ -741,10 +743,6 @@ class PPOTrainer:
                 "advantage_filter_eta": float(eta),
             }
         )
-        if self.lr_schedule == "adaptive_kl":
-            self.adapt_kl_learning_rates(metrics["approx_kl"])
-        metrics["actor_lr"] = self.current_actor_lr()
-        metrics["value_lr"] = self.current_value_lr()
         return metrics
 
 
