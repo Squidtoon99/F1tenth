@@ -136,9 +136,14 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    `certify` waits for the gym bridge, scores the live graph, prints a
    `SCORE_JSON` line (`laps`, `lap_times_s`, `mean_lap_s`, `crashes`,
    `progress_m`, `desired_hz`), writes `gym_score.json`, then tears the stack
-   down. Gym SPEED mode maps normalized longitudinal × 5 onto m/s, so lap times
-   will not match the 80 A training plant (~5.3 s). Keep
-   `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
+   down. Keep `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
+
+   Gym `SCORE_JSON` is a closed-loop graph check, not a Warp lap-time replay.
+   Training longitudinal is 80 A current (`+1` → 80 A → torque → vx). The gym
+   fork's SPEED mode treats the same `+1` as a speed setpoint (`× 5` m/s in
+   sim launch). Steering still maps to radians. `desired_hz` must be ~20 or
+   GRU dt / delta-steer are wrong and the score is meaningless. Lap times will
+   not match the 80 A courtyard ~5.3 s even at 20 Hz.
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
    with the per-car overlay, so `/config` + `/policies` wiring is exercised:

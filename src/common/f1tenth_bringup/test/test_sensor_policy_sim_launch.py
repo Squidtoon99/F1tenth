@@ -159,7 +159,29 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
         / "test"
         / "validate_closed_loop_sensor_policy.py"
     )
-    assert "_spin_until" in validator.read_text()
+    validator_src = validator.read_text()
+    assert "_spin_until" in validator_src
+    assert "timeout_sec=0.005" in validator_src
+    assert "create_timer(0.05, self.drive_timer_callback)" in source
+    assert "timestep=0.05," in source
+    bridge_src = (
+        REPO
+        / "src"
+        / "racing_rl"
+        / "f1tenth_rl_agent"
+        / "f1tenth_rl_agent"
+        / "gym_sensor_bridge_node.py"
+    ).read_text()
+    assert "create_timer(1.0 / 20.0, self._on_imu_hold)" in bridge_src
+    racer_src = (
+        REPO
+        / "src"
+        / "racing_rl"
+        / "f1tenth_rl_agent"
+        / "f1tenth_rl_agent"
+        / "sensor_racer_node.py"
+    ).read_text()
+    assert "MultiThreadedExecutor" in racer_src
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02

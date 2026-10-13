@@ -30,14 +30,17 @@ TRAINING_LAP_S = 5.3
 
 
 def _spin_until(node: Node, deadline: float) -> None:
-    # Drain every pending callback. spin_once(..., 0.05) once per loop only
-    # counts ~2 Hz of a 20 Hz graph with five subscriptions.
-    while time.monotonic() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.0)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.0:
-            break
-        time.sleep(min(0.001, remaining))
+    # 5 ms waits drain 20 Hz × 5 topics without a 1 kHz busy loop that
+    # starves sensor_racer in the same container.
+    from rclpy.executors import SingleThreadedExecutor
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.005)
+    finally:
+        executor.remove_node(node)
 
 
 def _load_centerline(path: Path) -> tuple[np.ndarray, np.ndarray, float]:

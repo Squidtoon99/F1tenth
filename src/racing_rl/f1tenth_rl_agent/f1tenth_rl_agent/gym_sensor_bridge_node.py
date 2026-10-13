@@ -72,7 +72,7 @@ class GymSensorBridgeNode(Node):
             self._seed_timer = self.create_timer(period, self._on_seed_timer)
         else:
             self._seed_timer = None
-        self._imu_hold_timer = self.create_timer(1.0 / 50.0, self._on_imu_hold)
+        self._imu_hold_timer = self.create_timer(1.0 / 20.0, self._on_imu_hold)
 
         self.get_logger().info(
             f"gym_sensor_bridge odom={odom_topic} → imu={imu_topic}; "

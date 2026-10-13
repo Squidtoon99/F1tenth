@@ -597,11 +597,18 @@ class SensorRacerNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = SensorRacerNode()
+    executor = None
     try:
-        rclpy.spin(node)
+        from rclpy.executors import MultiThreadedExecutor
+
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if executor is not None:
+            executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

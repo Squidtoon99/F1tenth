@@ -175,22 +175,43 @@ for key, value in replacements.items():
 open(cfg_path, "w", encoding="utf-8").write(text)
 print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
 PY
-  # The fork's async publisher runs at 250 Hz and starves the 20 Hz racer timer.
+  # 1081-beam lidar runs inside every physics step. The fork's 100 Hz drive
+  # timer plus 250 Hz publisher starves both gym and the 20 Hz racer.
   python3 - sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-old = "self.timer = self.create_timer(0.004, self.timer_callback)"
-new = "self.timer = self.create_timer(0.05, self.timer_callback)"
-if old in text:
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    print("==> gym lidar publish timer 250 Hz -> 20 Hz")
-elif new in text:
-    print("==> gym lidar publish timer already 20 Hz")
-else:
-    raise SystemExit(f"{path}: async lidar timer string not found")
+replacements = (
+    (
+        "self.timer = self.create_timer(0.004, self.timer_callback)",
+        "self.timer = self.create_timer(0.05, self.timer_callback)",
+        "gym lidar publish timer 250 Hz -> 20 Hz",
+    ),
+    (
+        "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+        "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
+        "gym physics timer 100 Hz -> 20 Hz",
+    ),
+    (
+        "timestep=0.01,",
+        "timestep=0.05,",
+        "gym timestep 0.01 -> 0.05 (1.0x realtime at 20 Hz)",
+    ),
+)
+changed = False
+for old, new, label in replacements:
+    if old in text:
+        text = text.replace(old, new, 1)
+        print(f"==> {label}")
+        changed = True
+    elif new in text:
+        print(f"==> already patched: {label}")
+    else:
+        raise SystemExit(f"{path}: string not found for: {label}")
+if changed:
+    path.write_text(text, encoding="utf-8")
 PY
 }
 
