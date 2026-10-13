@@ -133,10 +133,13 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    STACK=sensor_policy CHECKPOINT_DIR=/abs/dir CKPT=e2e_policy.pt tools/sim.sh certify
    ```
 
-   `certify` waits for the gym bridge, scores the live graph, prints a
+   `certify` waits for the gym bridge, holds the car paused at the centerline
+   spawn, then scores three repeats of the live graph. Each repeat prints a
    `SCORE_JSON` line (`laps`, `lap_times_s`, `mean_lap_s`, `crashes`,
-   `progress_m`, `desired_hz`), writes `gym_score.json`, then tears the stack
-   down. Keep `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
+   `progress_m`, `desired_hz`, `deadline_misses`, `start_xy`). A `REPEAT_JSON`
+   summary with mean/var is written to `gym_score.json`. A run fails if spawn
+   is off the configured pose or any lockstep deadline is missed. Keep
+   `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
 
    Gym `SCORE_JSON` is a closed-loop graph check, not a Warp lap-time replay.
    Training longitudinal is 80 A current (`+1` → 80 A → torque → vx). The gym
@@ -147,10 +150,11 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
    the gym fork to skip lidar on physics steps and raycast 1081-beam lidar from
    a snapshot pose on the publish timer. Certify is **lockstep**: gym
-   `async_mode=False` advances one 50 ms physics step per unique `/drive` stamp,
-   publishes `/clock`, and the agent graph runs `use_sim_time:=true`. The
-   validator scores `desired_hz` from sim time, so the gate does not depend on
-   WSL/DDS wall throughput. Gym + agent are pinned to cores 0–3
+   `async_mode=False` starts paused at spawn, then advances one 50 ms physics
+   step per unique `/drive` stamp after `/pause_sim false`, publishes `/clock`,
+   and the agent graph runs `use_sim_time:=true`. The validator scores
+   `desired_hz` from sim time, so the gate does not depend on WSL/DDS wall
+   throughput. Gym + agent are pinned to cores 0–3
    (`taskset` / compose `cpuset`). `ROS_LOCALHOST_ONLY=1` hung FastDDS on
    `/clock` on this host (CycloneDDS is not in the images), so certify uses
    shared netns + FastDDS UDPv4. The gym image

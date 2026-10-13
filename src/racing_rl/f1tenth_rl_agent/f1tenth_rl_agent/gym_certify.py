@@ -38,6 +38,54 @@ def spawn_pose_from_centerline(path: str | Path) -> tuple[float, float, float]:
     return float(xy[0, 0]), float(xy[0, 1]), heading
 
 
+def yaw_from_quat(x: float, y: float, z: float, w: float) -> float:
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def ang_diff(a: float, b: float) -> float:
+    return (float(a) - float(b) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def pose_error_xy_yaw(
+    x: float,
+    y: float,
+    yaw: float,
+    spawn_x: float,
+    spawn_y: float,
+    spawn_yaw: float,
+) -> tuple[float, float]:
+    return (
+        math.hypot(float(x) - float(spawn_x), float(y) - float(spawn_y)),
+        abs(ang_diff(yaw, spawn_yaw)),
+    )
+
+
+REPEAT_SCORE_KEYS = (
+    "progress_m",
+    "laps",
+    "crashes",
+    "deadline_misses",
+    "max_speed_mps",
+    "offtrack_samples",
+    "desired_hz",
+)
+
+
+def summarize_repeat_scores(scores: list[dict]) -> dict:
+    if not scores:
+        raise ValueError("need at least one score")
+    out: dict = {
+        "repeats": len(scores),
+        "pass": all(bool(item.get("pass")) for item in scores),
+        "runs": scores,
+    }
+    for key in REPEAT_SCORE_KEYS:
+        vals = np.asarray([float(item[key]) for item in scores], dtype=np.float64)
+        out[f"{key}_mean"] = float(vals.mean())
+        out[f"{key}_var"] = float(vals.var(ddof=1)) if vals.size > 1 else 0.0
+    return out
+
+
 def wrapped_delta_s(current, previous, length) -> float:
     """Shortest-arc along-track delta in (-L/2, L/2]."""
     length = float(length)
@@ -118,6 +166,15 @@ class NetLapCounter:
         self.prev_s = float(s)
         self.progress = 0.0
         self.lap_t0 = float(t)
+
+    def clear(self) -> None:
+        self.prev_s = None
+        self.progress = 0.0
+        self.laps = 0
+        self.lap_times.clear()
+        self.crashes = 0
+        self.offtrack = False
+        self.lap_t0 = 0.0
 
     def _on_crash(self, s: float, t: float) -> None:
         self.crashes += 1

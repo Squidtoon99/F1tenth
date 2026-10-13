@@ -273,12 +273,24 @@ def patch_gym_bridge(path: Path) -> None:
         print("==> lockstep: one physics step per unique /drive stamp")
     ready = "        self.sim_paused = False"
     ready_log = (
-        "        self.sim_paused = False\n"
-        "        self.get_logger().info('GymBridge ready')"
+        "        self.sim_paused = not (self.get_parameter('async_mode').value)\n"
+        "        self._spawn_pose = list(self.ego_pose)\n"
+        "        self._force_obs_ns = 0\n"
+        "        self.get_logger().info(\n"
+        "            'GymBridge ready (paused at spawn)' if self.sim_paused\n"
+        "            else 'GymBridge ready')\n"
     )
     if "GymBridge ready" not in text and ready in text:
         text = text.replace(ready, ready_log, 1)
         print("==> log GymBridge ready after publishers exist")
+    if "paused at spawn" not in text and "GymBridge ready')" in text:
+        old_ready = (
+            "        self.sim_paused = False\n"
+            "        self.get_logger().info('GymBridge ready')\n"
+        )
+        if old_ready in text:
+            text = text.replace(old_ready, ready_log, 1)
+            print("==> start lockstep paused at the configured spawn")
     old_odom_pub = (
         "self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)"
     )
@@ -602,6 +614,127 @@ def patch_gym_bridge(path: Path) -> None:
     elif clock_best_effort in text:
         text = text.replace(clock_best_effort, clock_init, 1)
         print("==> publish initial /clock at sim t=0")
+    pause_skip = (
+        "    def timer_callback(self):\n"
+        "        if self.sim_paused:\n"
+        "            return  # Skip stepping the sim if paused\n"
+    )
+    pause_pub = (
+        "    def timer_callback(self):\n"
+        "        # Lockstep pause still publishes scan/odom; physics does not step.\n"
+    )
+    if pause_skip in text:
+        text = text.replace(pause_skip, pause_pub, 1)
+        print("==> publish observations while lockstep is paused")
+    reset_skip = (
+        "    def ego_reset_callback(self, pose_msg):\n"
+        "        if self.sim_paused:\n"
+        "            return  # Skip stepping the sim if paused\n\n"
+    )
+    if reset_skip in text:
+        text = text.replace(
+            reset_skip,
+            "    def ego_reset_callback(self, pose_msg):\n",
+            1,
+        )
+        print("==> /initialpose resets spawn even while paused")
+    pause_cb = (
+        "    def pause_callback(self, msg):\n"
+        "        self.sim_paused = msg.data\n"
+        "        self.get_logger().info("
+        "f\"Simulation {'paused' if self.sim_paused else 'resumed'}\")\n"
+    )
+    pause_reset = (
+        "    def pause_callback(self, msg):\n"
+        "        was_paused = self.sim_paused\n"
+        "        self.sim_paused = bool(msg.data)\n"
+        "        if was_paused and not self.sim_paused:\n"
+        "            spawn = getattr(self, '_spawn_pose', self.ego_pose)\n"
+        "            if self.has_opp:\n"
+        "                self.env.reset(options={\"poses\": np.array(\n"
+        "                    [spawn, self.opp_pose])})\n"
+        "            else:\n"
+        "                self.env.reset(options={\"poses\": np.array([spawn])})\n"
+        "            self._update_sim_state()\n"
+        "            self._last_drive_stamp = -1.0\n"
+        "            self.ego_requested_speed = 0.0\n"
+        "            self.ego_steer = 0.0\n"
+        "            self._force_obs_ns = 1\n"
+        "            self.timer_callback()\n"
+        "        self.get_logger().info("
+        "f\"Simulation {'paused' if self.sim_paused else 'resumed'}\")\n"
+    )
+    if "was_paused = self.sim_paused" not in text and pause_cb in text:
+        text = text.replace(pause_cb, pause_reset, 1)
+        print("==> unpause resets the car to the configured spawn")
+    force_stamp = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            clock_msg = Clock()\n"
+        "            clock_msg.clock = ts\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    force_stamp_new = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            extra = int(getattr(self, '_force_obs_ns', 0))\n"
+        "            if extra:\n"
+        "                nsec = int(ts.nanosec) + extra\n"
+        "                ts.sec += nsec // 1_000_000_000\n"
+        "                ts.nanosec = nsec % 1_000_000_000\n"
+        "                self._force_obs_ns = 0\n"
+        "            clock_msg = Clock()\n"
+        "            clock_msg.clock = ts\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    if "_force_obs_ns', 0))" not in text and force_stamp in text:
+        text = text.replace(force_stamp, force_stamp_new, 1)
+        print("==> unique scan stamp on unpause so the agent reticks")
+    lockstep_ts = (
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        if self.get_parameter('use_sim_time_bridge').value:\n"
+    )
+    lockstep_ts_new = (
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        if not self.get_parameter('async_mode').value:\n"
+        "            sim_time = float(self.env.unwrapped.sim_time)\n"
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            extra = int(getattr(self, '_force_obs_ns', 0))\n"
+        "            if extra:\n"
+        "                nsec = int(ts.nanosec) + extra\n"
+        "                ts.sec += nsec // 1_000_000_000\n"
+        "                ts.nanosec = nsec % 1_000_000_000\n"
+        "                self._force_obs_ns = 0\n"
+        "            if hasattr(self, 'clock_pub'):\n"
+        "                clock_msg = Clock()\n"
+        "                clock_msg.clock = ts\n"
+        "                self.clock_pub.publish(clock_msg)\n"
+        "        elif self.get_parameter('use_sim_time_bridge').value:\n"
+    )
+    if "if not self.get_parameter('async_mode').value:" not in text.split(
+        "def timer_callback", 1
+    )[-1][:1800]:
+        # Only rewrite the publish-timer stamp, not physics-timer stamps.
+        needle = (
+            "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
+            "        ts = self.get_clock().now().to_msg()\n"
+            "        if self.get_parameter('use_sim_time_bridge').value:\n"
+        )
+        repl = (
+            "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
+            + lockstep_ts_new
+        )
+        if needle in text:
+            text = text.replace(needle, repl, 1)
+            print("==> lockstep observation stamps use frozen sim time")
+        elif lockstep_ts in text.split("def timer_callback", 1)[-1]:
+            text = text.replace(lockstep_ts, lockstep_ts_new, 1)
+            print("==> lockstep observation stamps use frozen sim time")
     if text != orig:
         path.write_text(text, encoding="utf-8")
     else:
@@ -837,7 +970,7 @@ certify() {
   fi
   wait_graph_ready f1tenth-gym-agent
   local rc=0
-  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 180 --min-laps 1 --json-out /ws/gym_score.json}"
+  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 180 --min-laps 1 --repeats 3 --json-out /ws/gym_score.json}"
   validate || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "==> Certify failed; last gym / agent logs:" >&2
