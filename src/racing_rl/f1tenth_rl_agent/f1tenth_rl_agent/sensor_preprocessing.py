@@ -5,8 +5,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from f1tenth_policy.steering import steer_history_angles_and_deltas
 from f1tenth_rl_agent.sensor_interfaces import (
     GRAVITY_MS2,
+    HISTORY_STRIDE,
     IMU_DIM,
     IMU_START,
     LIDAR_ANGLE_INCREMENT,
@@ -19,7 +21,6 @@ from f1tenth_rl_agent.sensor_interfaces import (
     STEER_DELTA0,
     STEER_DELTA1,
     STEER_DELTA2,
-    STEER_HISTORY,
     STEER_T,
     STEER_T1,
     STEER_T2,
@@ -198,6 +199,7 @@ def pack_actor_observation(
     throttle_predecessor: float,
     executed_steer_history: np.ndarray,
     *,
+    stride: int | None = None,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
     if out is None:
@@ -214,22 +216,22 @@ def pack_actor_observation(
     obs[VESC_SPEED] = float(speed_mps)
     obs[VESC_CURRENT] = float(vesc_current_a)
     hist = np.asarray(executed_steer_history, dtype=np.float32).reshape(-1)
-    if hist.size < STEER_HISTORY:
+    step = HISTORY_STRIDE if stride is None else max(1, int(stride))
+    need = 1 + 3 * step
+    if hist.size < need:
         raise ValueError(
-            f"executed_steer_history length={hist.size}; expected {STEER_HISTORY}"
+            f"executed_steer_history length={hist.size}; expected {need} "
+            f"for stride={step}"
         )
-    steer_t = float(hist[0])
-    steer_t1 = float(hist[1])
-    steer_t2 = float(hist[2])
-    steer_t3 = float(hist[3])
+    angles, deltas = steer_history_angles_and_deltas(hist, stride=step)
     obs[THROTTLE_CURRENT] = float(throttle_current)
     obs[THROTTLE_PRED] = float(throttle_predecessor)
-    obs[STEER_T] = steer_t
-    obs[STEER_T1] = steer_t1
-    obs[STEER_T2] = steer_t2
-    obs[STEER_DELTA0] = steer_t - steer_t1
-    obs[STEER_DELTA1] = steer_t1 - steer_t2
-    obs[STEER_DELTA2] = steer_t2 - steer_t3
+    obs[STEER_T] = angles[0]
+    obs[STEER_T1] = angles[1]
+    obs[STEER_T2] = angles[2]
+    obs[STEER_DELTA0] = deltas[0]
+    obs[STEER_DELTA1] = deltas[1]
+    obs[STEER_DELTA2] = deltas[2]
     return obs
 
 

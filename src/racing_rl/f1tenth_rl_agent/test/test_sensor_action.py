@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
+from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.sensor_action import (
     integrate_steering_delta,
     normalized_action_to_physical,
@@ -75,9 +74,9 @@ def test_nonfinite_input_coasts():
     assert steer_norm == pytest.approx(0.0)
 
 
-def test_delta_steering_integrates_three_degrees_and_saturates():
+def test_delta_steering_integrates_rate_limit_and_saturates():
     steer = 0.0
-    step = math.pi / 60.0
+    step = float(si.STEERING_DELTA_MAX_RAD)
     steer = integrate_steering_delta(
         steer, 1.0, delta_max_rad=step, max_steer=0.33
     )

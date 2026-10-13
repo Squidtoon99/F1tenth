@@ -18,7 +18,7 @@ from f1tenth_policy import (
 
 
 def test_obs_preprocessing_version_is_body_imu_and_20hz():
-    assert OBS_PREPROCESSING_VERSION == 4
+    assert OBS_PREPROCESSING_VERSION == 5
     assert CONTROL_HZ == pytest.approx(20.0)
 
 

@@ -8,8 +8,12 @@ import pytest
 
 from f1tenth_policy import (
     ACTOR_OBS_DIM,
+    CONTROL_HZ,
+    HISTORY_STRIDE,
     LIDAR_DIM,
+    LONG_HISTORY,
     PROPRIO_DIM,
+    STEER_HISTORY,
     make_actor,
     steer_history_angles_and_deltas,
     validate_sensor_policy_artifact,
@@ -24,6 +28,17 @@ def test_layout_dimensions():
 
 def test_steer_history_deltas():
     angles, deltas = steer_history_angles_and_deltas((0.30, 0.20, 0.10, 0.0))
+    assert angles == (0.30, 0.20, 0.10)
+    assert all(abs(d - 0.10) < 1e-12 for d in deltas)
+
+
+def test_steer_history_stride_covers_10hz_window():
+    assert CONTROL_HZ == pytest.approx(20.0)
+    assert HISTORY_STRIDE == 2
+    assert STEER_HISTORY == 7
+    assert LONG_HISTORY == 3
+    hist = (0.30, 0.25, 0.20, 0.15, 0.10, 0.05, 0.0)
+    angles, deltas = steer_history_angles_and_deltas(hist, stride=HISTORY_STRIDE)
     assert angles == (0.30, 0.20, 0.10)
     assert all(abs(d - 0.10) < 1e-12 for d in deltas)
 

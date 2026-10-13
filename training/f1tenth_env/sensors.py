@@ -366,6 +366,7 @@ def write_vesc_and_commands(
     vehicle: VehicleBuffers,
     env: EnvBuffers,
     reset: ResetParams,
+    sim: SimParams,
     env_id: wp.int32,
     use_opponent_commands: wp.int32,
     view_id: wp.int32,
@@ -416,20 +417,27 @@ def write_vesc_and_commands(
     output[env_id, ACTOR_VESC_SPEED] = speed
     output[env_id, ACTOR_VESC_CURRENT] = current
 
+    stride = sim.history_stride
+    if stride < 1:
+        stride = wp.int32(1)
     if use_opponent_commands != 0:
         longitudinal = env.opponent_executed_longitudinal_history[env_id, 0]
-        longitudinal_predecessor = env.opponent_executed_longitudinal_history[env_id, 1]
+        longitudinal_predecessor = env.opponent_executed_longitudinal_history[
+            env_id, stride
+        ]
         steer_t = env.opponent_executed_steer_history[env_id, 0]
-        steer_t1 = env.opponent_executed_steer_history[env_id, 1]
-        steer_t2 = env.opponent_executed_steer_history[env_id, 2]
-        steer_t3 = env.opponent_executed_steer_history[env_id, 3]
+        steer_t1 = env.opponent_executed_steer_history[env_id, stride]
+        steer_t2 = env.opponent_executed_steer_history[env_id, 2 * stride]
+        steer_t3 = env.opponent_executed_steer_history[env_id, 3 * stride]
     else:
         longitudinal = env.executed_longitudinal_history[env_id, 0]
-        longitudinal_predecessor = env.executed_longitudinal_history[env_id, 1]
+        longitudinal_predecessor = env.executed_longitudinal_history[
+            env_id, stride
+        ]
         steer_t = env.executed_steer_history[env_id, 0]
-        steer_t1 = env.executed_steer_history[env_id, 1]
-        steer_t2 = env.executed_steer_history[env_id, 2]
-        steer_t3 = env.executed_steer_history[env_id, 3]
+        steer_t1 = env.executed_steer_history[env_id, stride]
+        steer_t2 = env.executed_steer_history[env_id, 2 * stride]
+        steer_t3 = env.executed_steer_history[env_id, 3 * stride]
     output[env_id, ACTOR_THROTTLE_CURRENT] = longitudinal
     output[env_id, ACTOR_THROTTLE_PRED] = longitudinal_predecessor
     output[env_id, ACTOR_STEER_T] = steer_t
@@ -491,6 +499,7 @@ def sensor_actor_solo_kernel(
             ego_buffers,
             env,
             reset,
+            sim,
             env_id,
             0,
             VIEW_EGO,
@@ -538,6 +547,7 @@ def sensor_actor_stage_kernel(
             ego_buffers,
             env,
             reset,
+            sim,
             env_id,
             use_opponent_commands,
             view_id,

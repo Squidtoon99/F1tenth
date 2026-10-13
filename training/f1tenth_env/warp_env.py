@@ -13,6 +13,7 @@ from f1tenth_sim.params import VehicleParams
 from . import runtime as rt
 from .kernel import (
     ACTION_HISTORY,
+    LONG_HISTORY,
     STEER_HISTORY,
     OBS_DIM,
     CorridorDistanceField,
@@ -225,10 +226,10 @@ class _EnvironmentStorage:
             dtype=torch.float32,
         )
         self.tensor["executed_longitudinal_history"] = torch.zeros(
-            num_envs, 2, device=device, dtype=torch.float32
+            num_envs, LONG_HISTORY, device=device, dtype=torch.float32
         )
         self.tensor["opponent_executed_longitudinal_history"] = torch.zeros(
-            num_envs, 2, device=device, dtype=torch.float32
+            num_envs, LONG_HISTORY, device=device, dtype=torch.float32
         )
         self.tensor["executed_steer_history"] = torch.zeros(
             num_envs,
@@ -382,8 +383,10 @@ class WarpF1tenthEnv:
             raise ValueError("Warp environment requires the fixed 392-d observation")
         self.dt = float(env_cfg.get("sim_dt", 0.005))
         self.control_interval = int(env_cfg.get("control_interval", 10))
-        if self.dt != 0.005 or self.control_interval != 10:
-            raise ValueError("Warp kernel requires sim_dt=0.005 and control_interval=10")
+        if self.dt != 0.005:
+            raise ValueError("Warp kernel requires sim_dt=0.005")
+        if self.control_interval < 1:
+            raise ValueError("control_interval must be a positive integer")
         self.control_dt = self.dt * self.control_interval
         self.step_launch_count = 3
         self.max_episode_steps = int(
@@ -443,6 +446,13 @@ class WarpF1tenthEnv:
         self._sim_params = self.vehicle_params.to_warp(
             sim_dt=self.dt, control_dt=self.control_dt
         )
+        history_stride = int(self._sim_params.history_stride)
+        if STEER_HISTORY <= 3 * history_stride or LONG_HISTORY <= history_stride:
+            raise ValueError(
+                f"history buffers STEER_HISTORY={STEER_HISTORY} "
+                f"LONG_HISTORY={LONG_HISTORY} too small for "
+                f"history_stride={history_stride}"
+            )
         self._ego_speed_cap_mps = float(env_cfg.get("ego_speed_cap_mps", 0.0))
         if self._ego_speed_cap_mps < 0.0:
             raise ValueError("ego_speed_cap_mps must be non-negative")
@@ -658,13 +668,13 @@ class WarpF1tenthEnv:
         )
         params.steering_c_s = float(
             self.reward_cfg.get("steering_history_c_s", 182.883569)
-        )
+        ) / cadence
         params.steering_c_o = float(
             self.reward_cfg.get("steering_history_c_o", 0.034)
-        )
+        ) * cadence
         params.steering_c_d = float(
             self.reward_cfg.get("steering_history_c_d", 0.014)
-        )
+        ) * cadence
         params.passing = float(scales.get("passing", 0.0))
         params.passing_ahead = float(
             self.reward_cfg.get("passing_gate_ahead_m", 40.0)
@@ -1309,7 +1319,9 @@ class WarpF1tenthEnv:
             return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
-    def step(self, actions, n_steps=10, with_sensors=False):
+    def step(self, actions, n_steps=None, with_sensors=False):
+        if n_steps is None:
+            n_steps = self.control_interval
         if int(n_steps) != self.control_interval:
             raise ValueError(
                 f"Warp environment requires n_steps=control_interval="

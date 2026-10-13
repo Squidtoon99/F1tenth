@@ -61,7 +61,7 @@ def _write_sensor_checkpoint(
         "actor_architecture": actor.actor_architecture,
         "longitudinal_mode": "force",
         "steering_action_mode": steering_action_mode,
-        "steering_delta_max_rad": 0.05235987755982988,
+        "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
         "control_hz": si.CONTROL_HZ,
         "i_drive_max_a": 80.0,
         "i_brake_max_a": 40.0,
@@ -526,7 +526,7 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
                     Parameter(
                         "steering_delta_max_rad",
                         Parameter.Type.DOUBLE,
-                        np.pi / 60.0,
+                        float(si.STEERING_DELTA_MAX_RAD),
                     ),
                 ]
             )
@@ -553,7 +553,7 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
         odom = Odometry()
         applied = _applied_rl()
 
-        expected_step = np.tanh(1.0) * np.pi / 60.0
+        expected_step = np.tanh(1.0) * float(si.STEERING_DELTA_MAX_RAD)
 
         def two_consecutive_delta_steps() -> bool:
             if len(desired) < 3:

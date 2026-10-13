@@ -44,7 +44,7 @@ def _percentiles(samples_ms: list[float]) -> dict[str, float]:
 def _synthetic_obs(rng: np.random.Generator) -> np.ndarray:
     lidar = np.full(si.LIDAR_DIM, 2.5, dtype=np.float32)
     imu = np.array([0.1, 0.0, si.GRAVITY_MS2, 0.0, 0.0, 0.05], dtype=np.float32)
-    steer_hist = np.zeros(4, dtype=np.float32)
+    steer_hist = np.zeros(si.STEER_HISTORY, dtype=np.float32)
     return pack_actor_observation(
         lidar,
         imu,

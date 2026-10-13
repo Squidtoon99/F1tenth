@@ -589,7 +589,7 @@ def synchronize_observations(
     scan_age = np.zeros(valid_indices.size, dtype=float)
     imu_count = np.zeros(valid_indices.size, dtype=np.int64)
     executed_steer = np.zeros(si.STEER_HISTORY, dtype=np.float32)
-    previous_applied_long = 0.0
+    executed_long = np.zeros(si.LONG_HISTORY, dtype=np.float32)
 
     for frame, diag_index in enumerate(valid_indices):
         t = float(diagnostics[diag_index, 0])
@@ -638,7 +638,7 @@ def synchronize_observations(
 
         if reset[frame]:
             executed_steer.fill(0.0)
-            previous_applied_long = 0.0
+            executed_long.fill(0.0)
         applied_long = float(applied_row[6])
         applied_steer = float(applied_row[7]) * float(
             params.get("max_steer", si.MAX_STEER_RAD)
@@ -648,30 +648,24 @@ def synchronize_observations(
             float(params["i_drive_max_a"]),
             float(params["i_brake_max_a"]),
         )
-        steer_view = np.array(
-            [
-                applied_steer,
-                executed_steer[0],
-                executed_steer[1],
-                executed_steer[2],
-            ],
-            dtype=np.float32,
-        )
+        stride = max(1, int(si.HISTORY_STRIDE))
+        steer_view = np.zeros(si.STEER_HISTORY, dtype=np.float32)
+        steer_view[0] = applied_steer
+        steer_view[1:] = executed_steer[: si.STEER_HISTORY - 1]
         pack_actor_observation(
             packed_lidar,
             actor_imu,
             float(params["twist_vx_sign"]) * float(odom[odom_index, 1]),
             vesc_current,
             applied_long,
-            previous_applied_long,
+            float(executed_long[stride - 1]),
             steer_view,
             out=observations[frame],
         )
-        executed_steer[3] = executed_steer[2]
-        executed_steer[2] = executed_steer[1]
-        executed_steer[1] = executed_steer[0]
+        executed_steer[1:] = executed_steer[:-1]
         executed_steer[0] = applied_steer
-        previous_applied_long = applied_long
+        executed_long[1:] = executed_long[:-1]
+        executed_long[0] = applied_long
 
     return {
         "observations": observations,

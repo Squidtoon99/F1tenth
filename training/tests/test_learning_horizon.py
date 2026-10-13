@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,9 @@ from config import (
     control_dt_s,
     effective_ppo_horizon,
     effective_qrsac_horizon,
+    effective_qrsac_sequence,
+    history_stride_for_dt,
+    steering_delta_max_for_dt,
 )
 from standalone_trainer import build_config, load_config_patch, parse_args
 
@@ -34,6 +38,13 @@ def test_time_horizon_is_identity_at_10hz():
     q_gamma, n_step = effective_qrsac_horizon(cfg)
     assert q_gamma == pytest.approx(0.9896)
     assert n_step == 7
+    burn_in, train_len = effective_qrsac_sequence(cfg)
+    assert burn_in == 16
+    assert train_len == 32
+    assert history_stride_for_dt(control_dt_s(cfg["env"])) == 1
+    assert steering_delta_max_for_dt(control_dt_s(cfg["env"])) == pytest.approx(
+        math.pi / 60.0
+    )
 
 
 def test_default_20hz_rescales_gamma_lambda_and_n_step():
@@ -47,6 +58,11 @@ def test_default_20hz_rescales_gamma_lambda_and_n_step():
     q_gamma, n_step = effective_qrsac_horizon(cfg)
     assert q_gamma == pytest.approx(0.9896**0.5)
     assert n_step == 14
+    burn_in, train_len = effective_qrsac_sequence(cfg)
+    assert burn_in == 32
+    assert train_len == 64
+    assert history_stride_for_dt(0.05) == 2
+    assert steering_delta_max_for_dt(0.05) == pytest.approx(math.pi / 120.0)
     # Identity rescale at the critic contract dt would leave 10 Hz values in place.
     assert gamma != pytest.approx(0.9896)
     assert gae_lambda != pytest.approx(0.95)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import pytest
 
@@ -108,6 +109,7 @@ def test_default_steering_reward_scales_and_constants():
     assert reward["steering_history_c_s"] == 182.883569
     cfg = _resolve([])
     assert cfg["env"]["steering_action_mode"] == "delta"
+    assert cfg["env"]["steering_delta_max_rad"] == pytest.approx(math.pi / 120.0)
     assert "term_oob_mode" not in cfg["env"]
     assert cfg["env"]["reset_stationary_probability"] == 0.10
     assert cfg["reward"]["wall_contact_coefficient"] == 15.0
