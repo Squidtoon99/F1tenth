@@ -1,8 +1,9 @@
 """Vehicle parameters for the reduced bicycle simulator.
 
 ``VehicleParams`` is a plain dataclass of scalar physical constants. Per-env
-randomized quantities (mass, friction) live on the simulator state, not here.
-Yaw inertia is a labeled prior, not a bag measurement.
+randomized quantities (mass, friction, Izz, C_α, steer lag/rate, drive scale)
+live on the simulator state, not here. Yaw inertia is a labeled prior, not a
+bag measurement.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ STEER_GAIN_SKIDPAD = 1.10714
 STEER_LAG_S = 0.09
 LOW_SPEED_BLEND_MPS = 1.0
 LAT_STIFFNESS_SCALE_PRIOR = 11.0
+STEER_RATE_UNBOUNDED = 1.0e6
 
 _DEFAULT_URDF = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "F110.export.urdf")
@@ -132,6 +134,13 @@ class VehicleParams:
             raise ValueError("control_dt must be positive")
         params.history_stride = max(1, int(round(0.1 / float(control_dt))))
         return params
+
+    def axle_stiffness(self, mass: float | None = None) -> tuple[float, float]:
+        m = self.mass if mass is None else float(mass)
+        weight = m * self.gravity
+        denom = max(self.wheelbase, 1.0e-9)
+        scale = self.lat_stiffness_scale * weight / denom
+        return scale * self.lr, scale * self.lf
 
     @classmethod
     def from_config(

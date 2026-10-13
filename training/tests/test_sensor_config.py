@@ -198,6 +198,11 @@ def test_default_sensor_dr_matches_measured_evidence():
     assert dr["tire_friction_range"] == [0.66, 0.85]
     assert dr["vehicle_mass_range"] == [3.29, 3.60]
     assert dr["drive_scale_range"] == [1.0, 1.0]
+    assert "yaw_inertia_range" not in dr
+    assert "cornering_stiffness_front_range" not in dr
+    assert "cornering_stiffness_rear_range" not in dr
+    assert "steer_time_constant_range" not in dr
+    assert "steer_rate_max_range" not in dr
     assert dr["imu_accel_bias_range"] == [-0.15, 0.15]
     assert dr["imu_gyro_bias_range"] == [
         -0.006607313505033768,

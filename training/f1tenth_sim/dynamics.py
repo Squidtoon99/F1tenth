@@ -57,6 +57,11 @@ class VehicleBuffers:
     mu: wp.array(dtype=wp.float32)
     drive_scale: wp.array(dtype=wp.float32)
     steer_bias: wp.array(dtype=wp.float32)
+    izz: wp.array(dtype=wp.float32)
+    c_f: wp.array(dtype=wp.float32)
+    c_r: wp.array(dtype=wp.float32)
+    steer_lag: wp.array(dtype=wp.float32)
+    steer_rate: wp.array(dtype=wp.float32)
 
 
 @wp.func
@@ -170,10 +175,20 @@ def apply_command(
 
 
 @wp.func
-def apply_steering_lag(vehicle: VehicleLocal, params: SimParams) -> VehicleLocal:
+def apply_steering_lag(
+    vehicle: VehicleLocal,
+    params: SimParams,
+    steer_lag: wp.float32,
+    steer_rate: wp.float32,
+) -> VehicleLocal:
     target = params.steer_gain * vehicle.steer_logical
-    alpha = params.sim_dt / (params.steer_time_constant + params.sim_dt)
-    vehicle.steer = vehicle.steer + alpha * (target - vehicle.steer)
+    lag = wp.max(steer_lag, 0.0)
+    alpha = params.sim_dt / (lag + params.sim_dt)
+    next_steer = vehicle.steer + alpha * (target - vehicle.steer)
+    max_step = wp.max(steer_rate, 0.0) * params.sim_dt
+    vehicle.steer = vehicle.steer + wp.clamp(
+        next_steer - vehicle.steer, -max_step, max_step
+    )
     return vehicle
 
 
@@ -202,16 +217,19 @@ def integrate_vehicle_substep(
     mass: wp.float32,
     mu: wp.float32,
     drive_scale: wp.float32,
+    izz: wp.float32,
+    c_f: wp.float32,
+    c_r: wp.float32,
+    steer_lag: wp.float32,
+    steer_rate: wp.float32,
     params: SimParams,
 ) -> VehicleLocal:
     vehicle = apply_current_slew(vehicle, params)
-    vehicle = apply_steering_lag(vehicle, params)
+    vehicle = apply_steering_lag(vehicle, params, steer_lag, steer_rate)
 
     weight = mass * params.gravity
     fz_f = weight * params.lr / params.wheelbase
     fz_r = weight * params.lf / params.wheelbase
-    c_f = params.lat_stiffness_scale * fz_f
-    c_r = params.lat_stiffness_scale * fz_r
 
     drive_force = (
         vehicle.i_drive
@@ -252,7 +270,9 @@ def integrate_vehicle_substep(
     ay = force_y / mass
     vx_dyn = vx + params.sim_dt * (ax + vehicle.yaw_rate * vehicle.vy)
     vy_dyn = vehicle.vy + params.sim_dt * (ay - vehicle.yaw_rate * vx)
-    r_dyn = vehicle.yaw_rate + params.sim_dt * (yaw_moment / params.izz)
+    r_dyn = vehicle.yaw_rate + params.sim_dt * (
+        yaw_moment / wp.max(izz, 1.0e-6)
+    )
 
     if vx * vx_dyn < 0.0 and vx_dyn * drive_force <= 0.0:
         vx_dyn = 0.0
@@ -293,6 +313,11 @@ def apply_command_and_integrate(
     mass: wp.float32,
     mu: wp.float32,
     drive_scale: wp.float32,
+    izz: wp.float32,
+    c_f: wp.float32,
+    c_r: wp.float32,
+    steer_lag: wp.float32,
+    steer_rate: wp.float32,
     params: SimParams,
     substeps: wp.int32,
 ) -> VehicleLocal:
@@ -309,13 +334,69 @@ def apply_command_and_integrate(
         if delay > 0 and step == delay:
             vehicle = apply_command(vehicle, action, steer_bias, params)
         vehicle = integrate_vehicle_substep(
-            vehicle, mass, mu, drive_scale, params
+            vehicle,
+            mass,
+            mu,
+            drive_scale,
+            izz,
+            c_f,
+            c_r,
+            steer_lag,
+            steer_rate,
+            params,
         )
     inv = 1.0 / wp.max(count, 1.0)
     vehicle.ax = vehicle.ax * inv
     vehicle.ay = vehicle.ay * inv
     vehicle.imu_gz = vehicle.imu_gz * inv
     return vehicle
+
+
+@wp.func
+def apply_command_and_integrate_env(
+    vehicle: VehicleLocal,
+    action: wp.vec2f,
+    buffers: VehicleBuffers,
+    index: wp.int32,
+    params: SimParams,
+    substeps: wp.int32,
+) -> VehicleLocal:
+    return apply_command_and_integrate(
+        vehicle,
+        action,
+        buffers.steer_bias[index],
+        buffers.mass[index],
+        buffers.mu[index],
+        buffers.drive_scale[index],
+        buffers.izz[index],
+        buffers.c_f[index],
+        buffers.c_r[index],
+        buffers.steer_lag[index],
+        buffers.steer_rate[index],
+        params,
+        substeps,
+    )
+
+
+@wp.func
+def integrate_vehicle_substep_env(
+    vehicle: VehicleLocal,
+    buffers: VehicleBuffers,
+    index: wp.int32,
+    params: SimParams,
+) -> VehicleLocal:
+    return integrate_vehicle_substep(
+        vehicle,
+        buffers.mass[index],
+        buffers.mu[index],
+        buffers.drive_scale[index],
+        buffers.izz[index],
+        buffers.c_f[index],
+        buffers.c_r[index],
+        buffers.steer_lag[index],
+        buffers.steer_rate[index],
+        params,
+    )
 
 
 @wp.func

@@ -27,13 +27,16 @@ def _reset(sim, n, speed=0.0, yaw=0.0):
     sim.reset(None, pos, quat, torch.full((n,), float(speed)))
 
 
-def _set_domain(sim, n, mass=None, mu=None, drive_scale=None, steer_bias=None):
+def _set_domain(
+    sim, n, mass=None, mu=None, drive_scale=None, steer_bias=None, **extra
+):
     p = sim.params
     sim.set_domain(
         torch.full((n,), p.mass) if mass is None else mass,
         torch.full((n,), p.tire_mu) if mu is None else mu,
         torch.ones(n) if drive_scale is None else drive_scale,
         torch.zeros(n) if steer_bias is None else steer_bias,
+        **extra,
     )
 
 
@@ -246,3 +249,52 @@ def test_domain_randomization_consumed():
     for _ in range(40):
         sim.step(a, n_steps=10)
     assert sim.read_state()["base_ang_vel"][0, 2].item() > 0.0
+
+
+def _step_yaw(izz=None, c_f=None, c_r=None, speed=2.0):
+    sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
+    _reset(sim, 1, speed=speed)
+    extra = {}
+    if izz is not None:
+        extra["izz"] = torch.tensor([izz])
+    if c_f is not None:
+        extra["c_f"] = torch.tensor([c_f])
+    if c_r is not None:
+        extra["c_r"] = torch.tensor([c_r])
+    _set_domain(sim, 1, **extra)
+    action = torch.tensor([[0.2, 0.5]])
+    for _ in range(20):
+        sim.step(action, n_steps=10)
+    return abs(sim.read_state()["base_ang_vel"][0, 2].item())
+
+
+def test_per_env_izz_changes_yaw_rate():
+    assert _step_yaw(izz=0.047) > _step_yaw(izz=0.13)
+
+
+def test_per_env_cornering_stiffness_changes_yaw_rate():
+    assert _step_yaw(c_f=200.0, c_r=200.0) > _step_yaw(c_f=90.0, c_r=90.0)
+
+
+def test_steer_lag_slows_wheel_angle():
+    def wheel(lag):
+        sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
+        _reset(sim, 1)
+        _set_domain(sim, 1, steer_lag=torch.tensor([lag]))
+        sim.step(torch.tensor([[0.0, 0.8]]), n_steps=10)
+        return abs(sim.s["steer"][0].item())
+
+    assert wheel(0.03) > wheel(0.15)
+
+
+def test_steer_rate_caps_wheel_angle():
+    sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
+    _reset(sim, 1)
+    _set_domain(
+        sim,
+        1,
+        steer_lag=torch.tensor([0.0]),
+        steer_rate=torch.tensor([0.5]),
+    )
+    sim.step(torch.tensor([[0.0, 1.0]]), n_steps=10)
+    assert abs(sim.s["steer"][0].item()) <= 0.5 * 0.05 + 1.0e-3

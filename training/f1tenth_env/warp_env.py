@@ -8,7 +8,7 @@ import torch
 import warp as wp
 
 from f1tenth_sim.dynamics import VehicleBuffers
-from f1tenth_sim.params import VehicleParams
+from f1tenth_sim.params import STEER_RATE_UNBOUNDED, VehicleParams
 
 from . import runtime as rt
 from .kernel import (
@@ -60,6 +60,7 @@ class _VehicleStorage:
         def zeros(*shape):
             return torch.zeros(*shape, device=device, dtype=torch.float32)
 
+        c_f, c_r = params.axle_stiffness()
         self.tensor = {
             "x": zeros(num_envs),
             "y": zeros(num_envs),
@@ -93,6 +94,24 @@ class _VehicleStorage:
                 num_envs, device=device, dtype=torch.float32
             ),
             "steer_bias": zeros(num_envs),
+            "izz": torch.full(
+                (num_envs,), params.izz, device=device, dtype=torch.float32
+            ),
+            "c_f": torch.full(
+                (num_envs,), c_f, device=device, dtype=torch.float32
+            ),
+            "c_r": torch.full(
+                (num_envs,), c_r, device=device, dtype=torch.float32
+            ),
+            "steer_lag": torch.full(
+                (num_envs,), params.t_delta, device=device, dtype=torch.float32
+            ),
+            "steer_rate": torch.full(
+                (num_envs,),
+                STEER_RATE_UNBOUNDED,
+                device=device,
+                dtype=torch.float32,
+            ),
         }
         self.buffers = VehicleBuffers()
         vector_fields = {
@@ -807,6 +826,41 @@ class WarpF1tenthEnv:
         params.drive_scale_min = minimum
         params.drive_scale_max = maximum
         minimum, maximum = interval(
+            "yaw_inertia_range",
+            (self.vehicle_params.izz, self.vehicle_params.izz),
+        )
+        params.izz_min = minimum
+        params.izz_max = maximum
+        params.sample_c_f = int(
+            enabled and dr.get("cornering_stiffness_front_range") is not None
+        )
+        params.sample_c_r = int(
+            enabled and dr.get("cornering_stiffness_rear_range") is not None
+        )
+        nominal_c_f, nominal_c_r = self.vehicle_params.axle_stiffness()
+        minimum, maximum = interval(
+            "cornering_stiffness_front_range", (nominal_c_f, nominal_c_f)
+        )
+        params.c_f_min = minimum
+        params.c_f_max = maximum
+        minimum, maximum = interval(
+            "cornering_stiffness_rear_range", (nominal_c_r, nominal_c_r)
+        )
+        params.c_r_min = minimum
+        params.c_r_max = maximum
+        minimum, maximum = interval(
+            "steer_time_constant_range",
+            (self.vehicle_params.t_delta, self.vehicle_params.t_delta),
+        )
+        params.steer_lag_min = minimum
+        params.steer_lag_max = maximum
+        minimum, maximum = interval(
+            "steer_rate_max_range",
+            (STEER_RATE_UNBOUNDED, STEER_RATE_UNBOUNDED),
+        )
+        params.steer_rate_min = minimum
+        params.steer_rate_max = maximum
+        minimum, maximum = interval(
             "steer_bias_range", (0.0, 0.0)
         )
         params.steer_bias_min = minimum
@@ -959,6 +1013,11 @@ class WarpF1tenthEnv:
                 "dr/vehicle_mass": self._ego.tensor["mass"],
                 "dr/drive_scale": self._ego.tensor["drive_scale"],
                 "dr/steer_bias": self._ego.tensor["steer_bias"],
+                "dr/yaw_inertia": self._ego.tensor["izz"],
+                "dr/cornering_stiffness_front": self._ego.tensor["c_f"],
+                "dr/cornering_stiffness_rear": self._ego.tensor["c_r"],
+                "dr/steer_time_constant": self._ego.tensor["steer_lag"],
+                "dr/steer_rate_max": self._ego.tensor["steer_rate"],
                 "dr/action_latency_steps": tensors["action_latency"],
                 "dr/obs_latency_steps": tensors["observation_latency"],
                 "dr/obs_noise_std": tensors["observation_noise"],
