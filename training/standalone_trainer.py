@@ -61,6 +61,7 @@ from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
 from ppo import (
     PPOTrainer,
+    annealed_entropy_coef,
     mix_residual_actions,
     pure_timeout_mask,
     residual_alpha,
@@ -82,7 +83,12 @@ from qrsac.replay import (
     REPLAY_TRAIN_LEN,
     TrajectoryReplayBuffer,
 )
-from qrsac.spinningup.core import ALLOWED_LIDAR_POOL_BINS, GRU_HIDDEN_DIM
+from qrsac.spinningup.core import (
+    ALLOWED_LIDAR_POOL_BINS,
+    GRU_HIDDEN_DIM,
+    LOG_STD_MAX,
+    LOG_STD_MIN,
+)
 
 # Compatibility alias used by recurrent actor / artifact tests.
 reference_actor_from_architecture = actor_from_architecture
@@ -877,7 +883,6 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         "actor_lr",
         "value_lr",
         "max_grad_norm",
-        "entropy_coef",
     ):
         value = ppo.get(key)
         if (
@@ -887,6 +892,46 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             or float(value) <= 0.0
         ):
             raise ValueError(f"ppo.{key} must be a positive finite number, got {value!r}")
+    for key in ("entropy_coef", "entropy_coef_end"):
+        value = ppo.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise ValueError(
+                f"ppo.{key} must be a finite number >= 0, got {value!r}"
+            )
+    horizon = ppo.get("entropy_coef_horizon_transitions")
+    if (
+        isinstance(horizon, bool)
+        or not isinstance(horizon, (int, float))
+        or not math.isfinite(float(horizon))
+        or float(horizon) < 0.0
+    ):
+        raise ValueError(
+            "ppo.entropy_coef_horizon_transitions must be a finite number >= 0, "
+            f"got {horizon!r}"
+        )
+    for key in ("log_std_min", "log_std_max"):
+        value = ppo.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"ppo.{key} must be a finite number, got {value!r}")
+    if float(ppo["log_std_min"]) >= float(ppo["log_std_max"]):
+        raise ValueError(
+            f"ppo.log_std_min={ppo['log_std_min']!r} must be < "
+            f"ppo.log_std_max={ppo['log_std_max']!r}"
+        )
+    if not isinstance(ppo.get("entropy_from_squashed"), bool):
+        raise ValueError(
+            "ppo.entropy_from_squashed must be a bool, got "
+            f"{ppo.get('entropy_from_squashed')!r}"
+        )
     for key in ("gamma", "gae_lambda"):
         if float(ppo[key]) > 1.0:
             raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
@@ -1034,6 +1079,7 @@ def _validate_ppo_init_lr_schedule(cfg: dict, ppo: dict) -> None:
 def make_policy_network(cfg: dict):
     validate_model_architecture(cfg)
     model = cfg["model"]
+    ppo = cfg.get("ppo", {})
     return make_actor(
         actor_type=model["actor_type"],
         obs_dim=cfg["obs"]["num_actor_obs"],
@@ -1043,6 +1089,8 @@ def make_policy_network(cfg: dict):
         act_limit=1.0,
         lidar_pool_bins=model["lidar_pool_bins"],
         lidar_projection_dim=model["lidar_projection_dim"],
+        log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
+        log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
     )
 
 
@@ -1826,6 +1874,7 @@ def build_ppo_models(
         value_normalization=bool(ppo_cfg["value_normalization"]),
         value_huber_delta=float(ppo_cfg["value_huber_delta"]),
         entropy_coef=float(ppo_cfg["entropy_coef"]),
+        entropy_from_squashed=bool(ppo_cfg["entropy_from_squashed"]),
         action_clip=float(cfg["env"]["clip_actions"]),
         compile=compile,
         compile_mode=compile_mode,
@@ -2882,7 +2931,7 @@ def main():
             )
         init_kwargs = {
             "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
-            "name": f"standalone_{run_id}",
+            "name": os.getenv("WANDB_NAME") or f"standalone_{run_id}",
             "id": run_id,
             "config": wandb_config,
             "mode": os.getenv("WANDB_MODE", args.wandb_mode),
@@ -2891,6 +2940,8 @@ def main():
         }
         if entity := os.getenv("WANDB_ENTITY"):
             init_kwargs["entity"] = entity
+        if group := os.getenv("WANDB_GROUP"):
+            init_kwargs["group"] = group
         wandb_run = wandb.init(**init_kwargs)
 
     if champion_mgr is not None:
@@ -2965,14 +3016,22 @@ def main():
         log.info(
             "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
             "env_minibatches=%d env_minibatch_size=%d actor_lr=%.3e value_lr=%.3e "
-            "compile=%s compile_mode=%s lidar_aug_enabled=%s "
-            "lidar_aug_max_shift_beams=%d",
+            "entropy_coef=%.4f entropy_coef_end=%.4f "
+            "entropy_coef_horizon_transitions=%d entropy_from_squashed=%s "
+            "log_std_min=%.3f log_std_max=%.3f compile=%s compile_mode=%s "
+            "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
             trainer.rollout_steps,
             trainer.num_epochs,
             args.num_envs // trainer.env_minibatch_size,
             trainer.env_minibatch_size,
             float(cfg["ppo"]["actor_lr"]),
             float(cfg["ppo"]["value_lr"]),
+            float(cfg["ppo"]["entropy_coef"]),
+            float(cfg["ppo"]["entropy_coef_end"]),
+            int(cfg["ppo"]["entropy_coef_horizon_transitions"]),
+            bool(cfg["ppo"]["entropy_from_squashed"]),
+            float(cfg["ppo"]["log_std_min"]),
+            float(cfg["ppo"]["log_std_max"]),
             trainer.compile,
             trainer.compile_mode,
             lidar_aug_enabled,
@@ -3012,6 +3071,12 @@ def main():
             hidden_checkpoint = learner_hidden
 
             if algorithm == "ppo":
+                trainer.entropy_coef = annealed_entropy_coef(
+                    float(cfg["ppo"]["entropy_coef"]),
+                    float(cfg["ppo"]["entropy_coef_end"]),
+                    int(cfg["ppo"]["entropy_coef_horizon_transitions"]),
+                    env_transitions,
+                )
                 actions = trainer.act(actor_obs, critic_obs)
             elif env_transitions < args.min_train_transitions:
                 actions = (
@@ -3389,7 +3454,9 @@ def main():
                     if loss_count:
                         log.info(
                             "  ppo: value_loss=%.5f neg_logp=%.5f approx_kl=%.5f "
-                            "policy_entropy=%.3f policy_clip_frac=%.3f value_clip_frac=%.3f "
+                            "policy_entropy=%.3f gaussian_entropy=%.3f "
+                            "log_std=%.3f entropy_coef=%.4f "
+                            "policy_clip_frac=%.3f value_clip_frac=%.3f "
                             "actor_grad_norm=%.3f value_grad_norm=%.3f "
                             "epochs=%.2f minibatches=%.2f "
                             "advantage_filter_discard_rate=%.4f "
@@ -3400,6 +3467,9 @@ def main():
                             ppo_metric_accum["negative_log_prob"] / loss_count,
                             ppo_metric_accum["approx_kl"] / loss_count,
                             ppo_metric_accum["policy_entropy"] / loss_count,
+                            ppo_metric_accum["policy_gaussian_entropy"] / loss_count,
+                            ppo_metric_accum["policy_log_std"] / loss_count,
+                            ppo_metric_accum["entropy_coef"] / loss_count,
                             ppo_metric_accum["policy_clip_fraction"] / loss_count,
                             ppo_metric_accum["value_clip_fraction"] / loss_count,
                             ppo_metric_accum["actor_grad_norm"] / loss_count,

@@ -48,6 +48,19 @@ class Rollout:
     optimized: bool = False
 
 
+def annealed_entropy_coef(start, end, horizon_transitions, transitions):
+    start = float(start)
+    end = float(end)
+    horizon = int(horizon_transitions)
+    if horizon <= 0:
+        return start
+    t = min(max(int(transitions), 0), horizon)
+    return start + (end - start) * (t / horizon)
+
+
+_GAUSSIAN_ENTROPY_OFFSET = 0.5 * (1.0 + math.log(2.0 * math.pi))
+
+
 def compute_gae(
     rewards,
     values,
@@ -216,6 +229,7 @@ class PPOTrainer:
         value_normalization=False,
         value_huber_delta=0.0,
         entropy_coef=0.01,
+        entropy_from_squashed=False,
         action_clip=1.0,
         compile=False,
         compile_mode="default",
@@ -269,6 +283,7 @@ class PPOTrainer:
                 f"value_huber_delta must be >= 0, got {value_huber_delta!r}"
             )
         self.entropy_coef = float(entropy_coef)
+        self.entropy_from_squashed = bool(entropy_from_squashed)
         self.action_clip = float(action_clip)
         self.compile = bool(compile)
         self.compile_mode = str(compile_mode)
@@ -659,6 +674,9 @@ class PPOTrainer:
                 "negative_log_prob": 0.0,
                 "approx_kl": 0.0,
                 "policy_entropy": 0.0,
+                "policy_gaussian_entropy": 0.0,
+                "policy_log_std": 0.0,
+                "entropy_coef": self.entropy_coef,
                 "policy_clip_fraction": 0.0,
                 "value_clip_fraction": 0.0,
                 "actor_grad_norm": 0.0,
@@ -710,6 +728,8 @@ class PPOTrainer:
                 "negative_log_prob",
                 "approx_kl",
                 "policy_entropy",
+                "policy_gaussian_entropy",
+                "policy_log_std",
                 "policy_clip_fraction",
                 "value_clip_fraction",
                 "actor_grad_norm",
@@ -781,8 +801,17 @@ class PPOTrainer:
                 keep_denom = mb_keep.sum().clamp(min=1.0)
                 policy_loss_per = -torch.minimum(unclipped, clipped)
                 policy_loss = (policy_loss_per * mb_keep).sum() / keep_denom
-                policy_entropy = (new_entropy * mb_keep).sum() / keep_denom
+                gaussian_entropy = (new_entropy * mb_keep).sum() / keep_denom
+                squashed_entropy = ((-new_logp) * mb_keep).sum() / keep_denom
+                policy_entropy = (
+                    squashed_entropy
+                    if self.entropy_from_squashed
+                    else gaussian_entropy
+                )
                 policy_loss = policy_loss - self.entropy_coef * policy_entropy
+                mean_log_std = (
+                    gaussian_entropy / self.act_dim - _GAUSSIAN_ENTROPY_OFFSET
+                )
                 caps_loss = policy_loss.new_zeros(())
                 if new_mean is not None:
                     caps_loss = caps_temporal_loss(new_mean, reset_seq)
@@ -860,6 +889,8 @@ class PPOTrainer:
                 )
                 metric_sums["approx_kl"] += approx_kl.detach()
                 metric_sums["policy_entropy"] += policy_entropy.detach()
+                metric_sums["policy_gaussian_entropy"] += gaussian_entropy.detach()
+                metric_sums["policy_log_std"] += mean_log_std.detach()
                 metric_sums["caps_loss"] += caps_loss.detach()
                 metric_sums["policy_clip_fraction"] += (
                     (
@@ -910,6 +941,7 @@ class PPOTrainer:
                 "advantage_filter_discard_rate": discard_rate,
                 "advantage_filter_retained": retained,
                 "advantage_filter_eta": float(eta),
+                "entropy_coef": self.entropy_coef,
             }
         )
         with torch.no_grad():
