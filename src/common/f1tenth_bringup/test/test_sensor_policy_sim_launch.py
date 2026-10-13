@@ -216,6 +216,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in compose_src
     assert "ROS_LOCALHOST_ONLY=0" in compose_src
     assert 'cpuset: "0-3"' in compose_src
+    assert 'cpuset: "4-7"' in compose_src
+    assert "always publish /clock in lockstep mode" in source
     assert "taskset" in compose_src
     assert "PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym" in compose_src
     assert "network_mode: \"service:sim\"" in compose_src

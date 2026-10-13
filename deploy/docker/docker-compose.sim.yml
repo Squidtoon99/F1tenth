@@ -72,7 +72,7 @@ services:
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
-    cpuset: "0-3"
+    cpuset: "4-7"
     network_mode: "service:sim"
     depends_on:
       - sim
@@ -101,7 +101,7 @@ services:
       - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
-    cpuset: "0-3"
+    cpuset: "4-7"
     networks:
       - rosnet
     depends_on:

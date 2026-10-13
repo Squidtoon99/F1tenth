@@ -537,6 +537,20 @@ def patch_gym_bridge(path: Path) -> None:
         "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
         "            self.clock_pub.publish(clock_msg)\n"
     )
+    old_clock_if = (
+        "        if self.get_parameter('use_sim_time_bridge').value:\n"
+        "            self.get_logger().info('Using simulation time. "
+        "Will publish /clock topic. Drive and odom will be as fast as possible.')\n"
+    )
+    new_clock_if = (
+        "        if (not self.get_parameter('async_mode').value) or "
+        "self.get_parameter('use_sim_time_bridge').value:\n"
+        "            self.get_logger().info('Using simulation time. "
+        "Will publish /clock topic. Drive and odom will be as fast as possible.')\n"
+    )
+    if old_clock_if in text:
+        text = text.replace(old_clock_if, new_clock_if, 1)
+        print("==> always publish /clock in lockstep mode")
     if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
         text = text.replace(clock_create, clock_init, 1)
         print("==> publish initial /clock at sim t=0")
@@ -640,14 +654,14 @@ up() {
     return
   fi
   echo "==> Building the agent workspace (racing_rl + control + bringup + common)"
-  compose run --rm --entrypoint taskset agent -c 0-3 bash -lc "
+  compose run --rm --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     colcon build --symlink-install --base-paths src libs \
       --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
         f1tenth_bringup f1tenth_common f1tenth_policy"
   echo "==> Launching the ${STACK} agent graph (policy: /policies/${CKPT})"
   echo "    Foxglove: ws://localhost:8765   |   RViz over VNC: http://localhost:8080/vnc.html"
-    compose run --rm --service-ports --entrypoint taskset agent -c 0-3 bash -lc "
+    compose run --rm --service-ports --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     $(agent_launch_cmd)"
@@ -684,7 +698,7 @@ validate() {
     return
   fi
   compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
-    --entrypoint taskset agent -c 0-3 bash -lc "
+    --entrypoint taskset agent -c 4-7 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
@@ -741,17 +755,17 @@ certify() {
   wait_sim_ready
   if [ "${MODE}" = "dev" ]; then
     echo "==> Building the agent workspace"
-    compose run --rm --entrypoint taskset agent -c 0-3 bash -lc "
+    compose run --rm --entrypoint taskset agent -c 4-7 bash -lc "
       source /opt/ros/humble/setup.bash &&
       colcon build --symlink-install --base-paths src libs \
         --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
           f1tenth_bringup f1tenth_common f1tenth_policy"
-    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset agent -c 0-3 bash -lc "
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset agent -c 4-7 bash -lc "
       source /opt/ros/humble/setup.bash &&
       source install/setup.bash &&
       $(agent_launch_cmd)"
   else
-    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset runtime -c 0-3 \
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset runtime -c 4-7 \
       ros2 launch f1tenth_bringup sim.launch.py \
       stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
   fi
