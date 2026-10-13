@@ -558,7 +558,9 @@ def main() -> int:
         summary = summarize_repeat_scores(scores)
         print("REPEAT_JSON", json.dumps(summary))
         if args.json_out:
-            Path(args.json_out).write_text(json.dumps(summary, indent=2) + "\n")
+            out = Path(args.json_out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(summary, indent=2) + "\n")
         if not summary["pass"]:
             print("FAIL: one or more repeats failed", file=sys.stderr)
             return 1
