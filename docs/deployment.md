@@ -145,8 +145,8 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    invalidate lap *completion* once `desired_hz` is ~20; it **does** invalidate
    lap-*time* comparison to the Warp ~5.3 s courtyard. At ~2.5 Hz the score is
    meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
-   the gym fork to raycast 1081-beam lidar only on the 20 Hz publish timer so
-   physics can stay at 100 Hz.
+   the gym fork to skip lidar on physics steps and raycast 1081-beam lidar from
+   a snapshot pose on a Python thread so 20 Hz physics/odom never wait on scan.
 
    Overnight `policy_317440000.pt` is preprocessing **v3 @ 20 Hz** with
    π/60 rad/tick (3°/tick) consecutive history. Car defaults after v5 are

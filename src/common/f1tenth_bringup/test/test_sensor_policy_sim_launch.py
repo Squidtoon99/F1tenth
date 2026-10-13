@@ -172,6 +172,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "skip lidar raycast on physics steps" in source
     assert "def _lidar_loop(self)" in source
     assert "snapshot-pose lidar loop off the ROS executor" in source
+    assert "start lidar thread after sim_paused" in source
+    assert r'getattr(self, \"sim_paused\", True)' in source
     assert "publish odom from physics timer" in source
     assert "gym timestep 0.05 (20 Hz, 1.0x realtime)" in source
     bridge_src = (
