@@ -162,6 +162,8 @@ replacements = {
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
     "scan_range_max": "30.0",
+    "lidar_noise_std": "0.0",
+    "lidar_base_link_to_lidar_tf": "[0.27, 0.0, 0.0]",
 }
 for key, value in replacements.items():
     text, n = re.subn(
@@ -186,7 +188,8 @@ PY
   fi
   if [ -d sim/f1tenth_gym_ros/f1tenth_gym/.git ]; then
     git -C sim/f1tenth_gym_ros/f1tenth_gym checkout -- \
-      f1tenth_gym/envs/simulator.py
+      f1tenth_gym/envs/simulator.py \
+      f1tenth_gym/envs/lidar/laser_models.py
   fi
   python3 - <<'PY'
 from pathlib import Path
@@ -214,6 +217,19 @@ def apply(path, replacements):
 def patch_gym_bridge(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     orig = text
+    old_occ = (
+        "    occupancy_map[occupancy_map <= 128] = 0.0\n"
+        "    occupancy_map[occupancy_map > 128] = 255.0\n"
+    )
+    new_occ = (
+        "    unknown = occupancy_map == 205\n"
+        "    occupancy_map[occupancy_map <= 128] = 0.0\n"
+        "    occupancy_map[occupancy_map > 128] = 255.0\n"
+        "    occupancy_map[unknown] = 205.0\n"
+    )
+    if new_occ not in text and old_occ in text:
+        text = text.replace(old_occ, new_occ, 1)
+        print("==> keep ROS unknown cells so gym LiDAR matches Warp trinary")
     if "import threading" not in text:
         text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
         print("==> import threading for off-executor lidar")
@@ -348,8 +364,21 @@ def patch_gym_bridge(path: Path) -> None:
         "        sim = self.env.unwrapped.sim\n"
         "        if sim.scan_enabled and sim.scan_sims:\n"
         "            pose = np.array(sim.state.poses[0], copy=True)\n"
+        "            pose = sim._lidar_pose_from_base(pose)\n"
         "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
     )
+    unmounted_scan = (
+        "            pose = np.array(sim.state.poses[0], copy=True)\n"
+        "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
+    )
+    mounted_scan = (
+        "            pose = np.array(sim.state.poses[0], copy=True)\n"
+        "            pose = sim._lidar_pose_from_base(pose)\n"
+        "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
+    )
+    if unmounted_scan in text:
+        text = text.replace(unmounted_scan, mounted_scan, 1)
+        print("==> raycast gym lidar from the LiDAR mount frame")
     if timer_scan not in text:
         needle = (
             "    def timer_callback(self):\n"
@@ -580,8 +609,26 @@ def patch_gym_bridge(path: Path) -> None:
 
 bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
 sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
+lidar = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/lidar/laser_models.py")
 launch = Path("sim/f1tenth_gym_ros/launch/rl_agent_sim_launch.py")
 patch_gym_bridge(bridge)
+if lidar.exists():
+    apply(
+        lidar,
+        (
+            (
+                "        # get the distance transform\n"
+                "        self.dt = get_dt(self.map_img, self.map_resolution)\n",
+                "        # get the distance transform\n"
+                "        bitmap = np.where(\n"
+                "            (self.map_img == 0) | (self.map_img == 205), 0.0, 255.0\n"
+                "        )\n"
+                "        self.dt = get_dt(bitmap, self.map_resolution)\n"
+                "        self.dt[self.map_img == 205] = self.max_range\n",
+                "stamp unknown LiDAR cells as max-range like Warp",
+            ),
+        ),
+    )
 if launch.exists():
     launch_text = launch.read_text(encoding="utf-8")
     fox = "    ld.add_action(foxglove_bridge_node)\n"

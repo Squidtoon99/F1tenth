@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,32 @@ import numpy as np
 
 PROGRESS_EPS_M = 1e-4
 DEFAULT_MAX_STEP_FRAC = 0.1
+WARP_LIDAR_TF_XYYAW = (0.27, 0.0, 0.0)
+GYM_LIDAR_TF_XYYAW = (0.27, 0.0, 0.0)
+
+
+def lidar_frame_pose(
+    x: float,
+    y: float,
+    yaw: float,
+    tf_xyyaw: tuple[float, float, float] = WARP_LIDAR_TF_XYYAW,
+) -> tuple[float, float, float]:
+    """World pose of the LiDAR mount from a base_link / CoG pose."""
+    dx, dy, dtheta = (float(v) for v in tf_xyyaw)
+    cosine = math.cos(float(yaw))
+    sine = math.sin(float(yaw))
+    return (
+        float(x) + dx * cosine - dy * sine,
+        float(y) + dx * sine + dy * cosine,
+        float(yaw) + dtheta,
+    )
+
+
+def spawn_pose_from_centerline(path: str | Path) -> tuple[float, float, float]:
+    """First centerline vertex and heading of the following segment."""
+    xy, _cum, _length = load_centerline(path)
+    heading = math.atan2(float(xy[1, 1] - xy[0, 1]), float(xy[1, 0] - xy[0, 0]))
+    return float(xy[0, 0]), float(xy[0, 1]), heading
 
 
 def wrapped_delta_s(current, previous, length) -> float:
