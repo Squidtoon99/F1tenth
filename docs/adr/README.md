@@ -72,5 +72,5 @@ trade-off. Routine work is captured by the PR instead (see
   sensor cadence).
 - [0034](0034-gym-warp-plant-and-net-progress-laps.md) — Gym certify uses Warp
   current→vx and eval_full_lap net-progress laps on Austin.
-- [0035](0035-per-episode-warp-dynamics-dr.md) — Opt-in per-episode Warp
+- [0036](0036-per-episode-warp-dynamics-dr.md) — Opt-in per-episode Warp
   Izz / μ / C_α / mass / steer-lag / drive-scale DR covering gym ST.
