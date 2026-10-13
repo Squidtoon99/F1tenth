@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -132,8 +133,7 @@ class SensorPolicyValidator(Node):
 
     def _on_desired(self, msg: ActuatorCommand) -> None:
         self.desired_count += 1
-        stamp = msg.header.stamp
-        self.desired_stamps.append(stamp.sec + stamp.nanosec * 1e-9)
+        self.desired_stamps.append(time.monotonic())
 
     def _on_diag(self, msg: Float32MultiArray) -> None:
         self.diag_count += 1
@@ -185,14 +185,10 @@ class SensorPolicyValidator(Node):
     def _desired_hz(self) -> float:
         if len(self.desired_stamps) < 4:
             return 0.0
-        stamps = [t for t in self.desired_stamps if t > 0.0]
-        if len(stamps) < 4:
-            duration = max(len(self.desired_stamps) / max(si.CONTROL_HZ, 1.0), 1e-6)
-            return self.desired_count / duration
-        span = stamps[-1] - stamps[0]
+        span = self.desired_stamps[-1] - self.desired_stamps[0]
         if span <= 1e-6:
             return 0.0
-        return (len(stamps) - 1) / span
+        return (len(self.desired_stamps) - 1) / span
 
     def report(self, *, min_samples: int, min_laps: float, duration_s: float) -> int:
         hz = self._desired_hz()
@@ -282,9 +278,9 @@ def main() -> int:
         offtrack_m=args.offtrack_m,
     )
     try:
-        end = node.get_clock().now().nanoseconds + int(args.duration_s * 1e9)
-        while node.get_clock().now().nanoseconds < end:
-            rclpy.spin_once(node, timeout_sec=0.1)
+        deadline = time.monotonic() + float(args.duration_s)
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.05)
         return node.report(
             min_samples=args.min_samples,
             min_laps=args.min_laps,
