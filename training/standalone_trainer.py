@@ -864,7 +864,6 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         "gamma",
         "gae_lambda",
         "clip_ratio",
-        "value_clip",
         "actor_lr",
         "value_lr",
         "max_grad_norm",
@@ -878,6 +877,44 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             or float(value) <= 0.0
         ):
             raise ValueError(f"ppo.{key} must be a positive finite number, got {value!r}")
+    value_clip = ppo.get("value_clip")
+    if value_clip is not None and (
+        not isinstance(value_clip, (int, float))
+        or isinstance(value_clip, bool)
+        or not math.isfinite(float(value_clip))
+        or float(value_clip) < 0.0
+    ):
+        raise ValueError(
+            "ppo.value_clip must be None or a finite number >= 0, "
+            f"got {value_clip!r}"
+        )
+    value_max_grad_norm = ppo.get("value_max_grad_norm")
+    if value_max_grad_norm is not None and (
+        not isinstance(value_max_grad_norm, (int, float))
+        or isinstance(value_max_grad_norm, bool)
+        or not math.isfinite(float(value_max_grad_norm))
+        or float(value_max_grad_norm) <= 0.0
+    ):
+        raise ValueError(
+            "ppo.value_max_grad_norm must be None or a positive finite number, "
+            f"got {value_max_grad_norm!r}"
+        )
+    value_huber_delta = ppo.get("value_huber_delta")
+    if (
+        not isinstance(value_huber_delta, (int, float))
+        or isinstance(value_huber_delta, bool)
+        or not math.isfinite(float(value_huber_delta))
+        or float(value_huber_delta) < 0.0
+    ):
+        raise ValueError(
+            "ppo.value_huber_delta must be a finite number >= 0, "
+            f"got {value_huber_delta!r}"
+        )
+    if not isinstance(ppo.get("value_normalization"), bool):
+        raise ValueError(
+            "ppo.value_normalization must be a bool, got "
+            f"{ppo.get('value_normalization')!r}"
+        )
     for key in ("gamma", "gae_lambda"):
         if float(ppo[key]) > 1.0:
             raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
@@ -1645,10 +1682,13 @@ def build_ppo_models(
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_ratio=float(ppo_cfg["clip_ratio"]),
-        value_clip=float(ppo_cfg["value_clip"]),
+        value_clip=ppo_cfg["value_clip"],
         actor_lr=float(ppo_cfg["actor_lr"]),
         value_lr=float(ppo_cfg["value_lr"]),
         max_grad_norm=float(ppo_cfg["max_grad_norm"]),
+        value_max_grad_norm=ppo_cfg["value_max_grad_norm"],
+        value_normalization=bool(ppo_cfg["value_normalization"]),
+        value_huber_delta=float(ppo_cfg["value_huber_delta"]),
         entropy_coef=float(ppo_cfg["entropy_coef"]),
         action_clip=float(cfg["env"]["clip_actions"]),
         compile=compile,
@@ -1837,6 +1877,8 @@ def save_resume_state(
         payload["critic_obs_norm"] = critic_normalizer.state_dict()
         payload["actor_optimizer"] = trainer.actor_optimizer.state_dict()
         payload["value_optimizer"] = trainer.value_optimizer.state_dict()
+        if trainer.value_normalizer is not None:
+            payload["value_norm"] = trainer.value_normalizer.state_dict()
     else:
         raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
     path = Path(path)
@@ -1874,6 +1916,8 @@ def load_resume_state(
         critic_normalizer.load_state_dict(payload["critic_obs_norm"])
         trainer.actor_optimizer.load_state_dict(payload["actor_optimizer"])
         trainer.value_optimizer.load_state_dict(payload["value_optimizer"])
+        if trainer.value_normalizer is not None and "value_norm" in payload:
+            trainer.value_normalizer.load_state_dict(payload["value_norm"])
     restore_rng_state(payload["rng_state"], device)
     logging.getLogger(LOGGER_NAME).info(
         "Resumed from %s (env_transitions=%d gradient_updates=%d)",
@@ -3122,7 +3166,9 @@ def main():
                             "actor_grad_norm=%.3f value_grad_norm=%.3f "
                             "epochs=%.2f minibatches=%.2f "
                             "advantage_filter_discard_rate=%.4f "
-                            "advantage_filter_retained=%.1f",
+                            "advantage_filter_retained=%.1f "
+                            "explained_var=%.4f explained_var_post=%.4f "
+                            "value_clip_active_frac=%.3f",
                             ppo_metric_accum["value_loss"] / loss_count,
                             ppo_metric_accum["negative_log_prob"] / loss_count,
                             ppo_metric_accum["approx_kl"] / loss_count,
@@ -3135,6 +3181,9 @@ def main():
                             ppo_metric_accum["minibatches"] / loss_count,
                             ppo_metric_accum["advantage_filter_discard_rate"] / loss_count,
                             ppo_metric_accum["advantage_filter_retained"] / loss_count,
+                            ppo_metric_accum["explained_variance"] / loss_count,
+                            ppo_metric_accum["explained_variance_post"] / loss_count,
+                            ppo_metric_accum["value_clip_active_fraction"] / loss_count,
                         )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps

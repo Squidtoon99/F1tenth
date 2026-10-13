@@ -5,7 +5,10 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Adam
+
+from f1tenth_policy.normalizer import ObsNormalizer
 
 
 class ValueCritic(nn.Module):
@@ -43,6 +46,43 @@ class Rollout:
     advantages: torch.Tensor
     rollout_start_hidden: torch.Tensor
     optimized: bool = False
+
+
+def explained_variance(returns, values):
+    var_r = returns.var(unbiased=False)
+    return 1.0 - (returns - values).var(unbiased=False) / var_r.clamp_min(1e-8)
+
+
+def value_prediction_loss(
+    new_values,
+    old_values,
+    returns,
+    *,
+    value_clip,
+    huber_delta,
+):
+    if huber_delta > 0.0:
+        unclipped = F.huber_loss(
+            new_values, returns, reduction="none", delta=huber_delta
+        )
+    else:
+        unclipped = 0.5 * (new_values - returns).square()
+    if value_clip > 0.0:
+        clipped_values = old_values + (new_values - old_values).clamp(
+            -value_clip, value_clip
+        )
+        if huber_delta > 0.0:
+            clipped = F.huber_loss(
+                clipped_values, returns, reduction="none", delta=huber_delta
+            )
+        else:
+            clipped = 0.5 * (clipped_values - returns).square()
+        per_row = torch.maximum(unclipped, clipped)
+        active = clipped > unclipped
+    else:
+        per_row = unclipped
+        active = torch.zeros_like(unclipped, dtype=torch.bool)
+    return per_row, active
 
 
 def compute_gae(
@@ -119,7 +159,7 @@ def apply_timeout_bootstrap_rewards(
     timed_out,
     timeout_critic_obs,
     *,
-    value_critic,
+    value_fn,
     critic_normalizer,
     gamma,
     device,
@@ -138,7 +178,7 @@ def apply_timeout_bootstrap_rewards(
         normalized = timeout_critic_obs
         if critic_normalizer is not None:
             normalized = critic_normalizer.normalize(timeout_critic_obs)
-        terminal_values = value_critic(normalized)
+        terminal_values = value_fn(normalized)
         augmented = reward.clone()
         augmented[timed_out] = reward[timed_out] + gamma * terminal_values[timed_out]
     return augmented
@@ -164,6 +204,9 @@ class PPOTrainer:
         actor_lr=3e-5,
         value_lr=1e-4,
         max_grad_norm=0.5,
+        value_max_grad_norm=None,
+        value_normalization=False,
+        value_huber_delta=0.0,
         entropy_coef=0.01,
         action_clip=1.0,
         compile=False,
@@ -198,8 +241,20 @@ class PPOTrainer:
         self.gamma = float(gamma)
         self.gae_lambda = float(gae_lambda)
         self.clip_ratio = float(clip_ratio)
-        self.value_clip = float(value_clip)
+        self.value_clip = 0.0 if value_clip is None else float(value_clip)
+        if self.value_clip < 0.0:
+            raise ValueError(f"value_clip must be >= 0 or None, got {value_clip!r}")
         self.max_grad_norm = float(max_grad_norm)
+        if value_max_grad_norm is None:
+            self.value_max_grad_norm = self.max_grad_norm
+        else:
+            self.value_max_grad_norm = float(value_max_grad_norm)
+        self.value_normalization = bool(value_normalization)
+        self.value_huber_delta = float(value_huber_delta)
+        if self.value_huber_delta < 0.0:
+            raise ValueError(
+                f"value_huber_delta must be >= 0, got {value_huber_delta!r}"
+            )
         self.entropy_coef = float(entropy_coef)
         self.action_clip = float(action_clip)
         self.compile = bool(compile)
@@ -232,6 +287,9 @@ class PPOTrainer:
 
         self.actor_optimizer = Adam(self.actor.parameters(), lr=actor_lr)
         self.value_optimizer = Adam(self.value_critic.parameters(), lr=value_lr)
+        self.value_normalizer = (
+            ObsNormalizer(1, self.device) if self.value_normalization else None
+        )
         self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
         self._update_value_forward = self.value_critic
         if self.compile:
@@ -253,6 +311,29 @@ class PPOTrainer:
     def _normalize(self, normalizer, obs):
         obs = obs.to(device=self.device, dtype=torch.float32)
         return normalizer.normalize(obs) if normalizer is not None else obs
+
+    def _value_mu_sigma(self):
+        norm = self.value_normalizer
+        mu = norm.mean.reshape(())
+        sigma = torch.sqrt(norm.var.reshape(()) + norm.eps)
+        return mu, sigma
+
+    def _denormalize_value(self, normalized_pred):
+        if self.value_normalizer is None:
+            return normalized_pred
+        mu, sigma = self._value_mu_sigma()
+        return normalized_pred * sigma + mu
+
+    def _value(self, normalized_obs):
+        return self._denormalize_value(self.value_critic(normalized_obs))
+
+    def _popart_rescale(self, mu_old, sigma_old, mu_new, sigma_new):
+        last = self.value_critic.net[-1]
+        with torch.no_grad():
+            last.weight.mul_((sigma_old / sigma_new).reshape(()))
+            last.bias.copy_(
+                (sigma_old * last.bias + mu_old - mu_new) / sigma_new
+            )
 
     @property
     def rollout_position(self):
@@ -355,7 +436,7 @@ class PPOTrainer:
         self._rollout.pre_tanh_actions[self._step].copy_(pre_tanh)
         self._rollout.old_logp[self._step].copy_(logp)
         self._rollout.old_values[self._step].copy_(
-            self.value_critic(normalized_critic)
+            self._value(normalized_critic)
         )
         self._live_hidden.copy_(next_hidden)
         self._awaiting_observe = True
@@ -393,7 +474,7 @@ class PPOTrainer:
             reward,
             timed_out,
             timeout_critic_obs,
-            value_critic=self.value_critic,
+            value_fn=self._value,
             critic_normalizer=self.critic_normalizer,
             gamma=self.gamma,
             device=self.device,
@@ -411,7 +492,7 @@ class PPOTrainer:
             normalized_next_critic = self._normalize(
                 self.critic_normalizer, next_critic_obs
             )
-            bootstrap_value = self.value_critic(normalized_next_critic)
+            bootstrap_value = self._value(normalized_next_critic)
             bootstrap_value.masked_fill_(done, 0.0)
             advantages, returns = compute_gae(
                 self._rollout.rewards,
@@ -457,10 +538,16 @@ class PPOTrainer:
                 "policy_entropy": 0.0,
                 "policy_clip_fraction": 0.0,
                 "value_clip_fraction": 0.0,
+                "value_clip_active_fraction": 0.0,
                 "actor_grad_norm": 0.0,
                 "value_grad_norm": 0.0,
                 "actor_grad_clip_fraction": 0.0,
                 "value_grad_clip_fraction": 0.0,
+                "explained_variance": 0.0,
+                "explained_variance_post": 0.0,
+                "return_mean": 0.0,
+                "return_std": 0.0,
+                "value_mean": 0.0,
                 "epochs": 0,
                 "minibatches": 0,
                 "actor_updates": 0,
@@ -478,6 +565,19 @@ class PPOTrainer:
             adv_std = raw_advantages.std(unbiased=False)
         advantages = (raw_advantages - adv_mean) / (adv_std + 1e-8)
         keep_weights = keep_mask.to(dtype=advantages.dtype)
+        kept_returns = rollout.returns[keep_mask]
+        kept_old_values = rollout.old_values[keep_mask]
+        with torch.no_grad():
+            ev_pre = explained_variance(kept_returns, kept_old_values)
+            return_mean = kept_returns.mean()
+            return_std = kept_returns.std(unbiased=False)
+            value_mean = kept_old_values.mean()
+        if self.value_normalizer is not None:
+            mu_old, sigma_old = self._value_mu_sigma()
+            self.value_normalizer.update(rollout.returns.reshape(-1, 1))
+            mu_new, sigma_new = self._value_mu_sigma()
+            self._popart_rescale(mu_old, sigma_old, mu_new, sigma_new)
+        post_values = torch.empty_like(rollout.old_values)
         metric_sums = {
             "policy_loss": 0.0,
             "value_loss": 0.0,
@@ -486,6 +586,7 @@ class PPOTrainer:
             "policy_entropy": 0.0,
             "policy_clip_fraction": 0.0,
             "value_clip_fraction": 0.0,
+            "value_clip_active_fraction": 0.0,
             "actor_grad_norm": 0.0,
             "value_grad_norm": 0.0,
             "actor_grad_clip_fraction": 0.0,
@@ -552,20 +653,31 @@ class PPOTrainer:
                 new_values = self._update_value_forward(critic_obs)
                 old_values = rollout.old_values[:, env_index]
                 mb_returns = rollout.returns[:, env_index]
-                clipped_values = old_values + (new_values - old_values).clamp(
-                    -self.value_clip, self.value_clip
-                )
-                value_loss_unclipped = (new_values - mb_returns).square()
-                value_loss_clipped = (clipped_values - mb_returns).square()
-                value_loss_per = 0.5 * torch.maximum(
-                    value_loss_unclipped, value_loss_clipped
+                if self.value_normalizer is not None:
+                    mu, sigma = self._value_mu_sigma()
+                    old_n = (old_values - mu) / sigma
+                    ret_n = (mb_returns - mu) / sigma
+                else:
+                    old_n = old_values
+                    ret_n = mb_returns
+                value_loss_per, clip_active = value_prediction_loss(
+                    new_values,
+                    old_n,
+                    ret_n,
+                    value_clip=self.value_clip,
+                    huber_delta=self.value_huber_delta,
                 )
                 value_loss = (value_loss_per * mb_keep).sum() / keep_denom
+                if epoch == self.num_epochs - 1:
+                    post_raw = new_values.detach()
+                    if self.value_normalizer is not None:
+                        post_raw = post_raw * sigma + mu
+                    post_values[:, env_index] = post_raw
 
                 self.value_optimizer.zero_grad(set_to_none=True)
                 value_loss.backward()
                 value_grad_norm = nn.utils.clip_grad_norm_(
-                    self.value_critic.parameters(), self.max_grad_norm
+                    self.value_critic.parameters(), self.value_max_grad_norm
                 )
                 self.value_optimizer.step()
                 value_updates += 1
@@ -598,11 +710,17 @@ class PPOTrainer:
                     .div(keep_denom)
                     .detach()
                 )
+                if self.value_clip > 0.0:
+                    value_clip_hit = (
+                        (new_values - old_n).abs() > self.value_clip
+                    ).to(dtype=mb_keep.dtype)
+                else:
+                    value_clip_hit = torch.zeros_like(mb_keep)
                 metric_sums["value_clip_fraction"] += float(
-                    (
-                        ((new_values - old_values).abs() > self.value_clip).float()
-                        * mb_keep
-                    )
+                    (value_clip_hit * mb_keep).sum().div(keep_denom).detach()
+                )
+                metric_sums["value_clip_active_fraction"] += float(
+                    (clip_active.to(dtype=mb_keep.dtype) * mb_keep)
                     .sum()
                     .div(keep_denom)
                     .detach()
@@ -610,7 +728,7 @@ class PPOTrainer:
                 value_grad = float(value_grad_norm)
                 metric_sums["value_grad_norm"] += value_grad
                 metric_sums["value_grad_clip_fraction"] += float(
-                    value_grad > self.max_grad_norm
+                    value_grad > self.value_max_grad_norm
                 )
                 updates += 1
             epochs_completed = epoch + 1
@@ -625,6 +743,8 @@ class PPOTrainer:
                 rollout.critic_obs.reshape(-1, self.critic_obs_dim)
             )
         metrics = {key: value / updates for key, value in metric_sums.items()}
+        with torch.no_grad():
+            ev_post = explained_variance(kept_returns, post_values[keep_mask])
         metrics.update(
             {
                 "epochs": epochs_completed,
@@ -634,6 +754,11 @@ class PPOTrainer:
                 "advantage_filter_discard_rate": discard_rate,
                 "advantage_filter_retained": retained,
                 "advantage_filter_eta": float(eta),
+                "explained_variance": float(ev_pre),
+                "explained_variance_post": float(ev_post),
+                "return_mean": float(return_mean),
+                "return_std": float(return_std),
+                "value_mean": float(value_mean),
             }
         )
         return metrics

@@ -5,7 +5,9 @@ from .ppo import (
     advantage_filter_keep_mask,
     apply_timeout_bootstrap_rewards,
     compute_gae,
+    explained_variance,
     pure_timeout_mask,
+    value_prediction_loss,
 )
 
 __all__ = [
@@ -15,5 +17,7 @@ __all__ = [
     "advantage_filter_keep_mask",
     "apply_timeout_bootstrap_rewards",
     "compute_gae",
+    "explained_variance",
     "pure_timeout_mask",
+    "value_prediction_loss",
 ]
