@@ -105,10 +105,11 @@ def validate_sensor_policy_artifact(
         )
     preprocessing = payload.get("observation_preprocessing_version")
     allowed_preprocessing = {OBS_PREPROCESSING_VERSION}
-    # 20 Hz courtyard artifacts written before the v4 tag already pack body-frame
-    # IMU in sim; v4 only records the matching driver→body rotation on the car.
+    # 20 Hz courtyard artifacts written before the v5 tag already pack body-frame
+    # IMU in sim; v4 records the driver→body rotation, v5 only changes history
+    # stride / steer rate. Loaders still have to match those at runtime.
     if abs(CONTROL_HZ - 20.0) <= 1.0e-6:
-        allowed_preprocessing.add(3)
+        allowed_preprocessing.update((3, 4))
     if preprocessing is None or int(preprocessing) not in allowed_preprocessing:
         raise ValueError(
             "Sensor policy artifact observation_preprocessing_version="

@@ -141,9 +141,18 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    Gym `SCORE_JSON` is a closed-loop graph check, not a Warp lap-time replay.
    Training longitudinal is 80 A current (`+1` → 80 A → torque → vx). The gym
    fork's SPEED mode treats the same `+1` as a speed setpoint (`× 5` m/s in
-   sim launch). Steering still maps to radians. `desired_hz` must be ~20 or
-   GRU dt / delta-steer are wrong and the score is meaningless. Lap times will
-   not match the 80 A courtyard ~5.3 s even at 20 Hz.
+   sim launch). Steering still maps to radians. That plant mismatch does **not**
+   invalidate lap *completion* once `desired_hz` is ~20; it **does** invalidate
+   lap-*time* comparison to the Warp ~5.3 s courtyard. At ~2.5 Hz the score is
+   meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
+   the gym fork to raycast 1081-beam lidar only on the 20 Hz publish timer so
+   physics can stay at 100 Hz.
+
+   Overnight `policy_317440000.pt` is preprocessing **v3 @ 20 Hz** with
+   π/60 rad/tick (3°/tick) consecutive history. Car defaults after v5 are
+   0.30 s strided history and 30°/s (π/120). Gym launch pins
+   `steering_delta_max_rad=π/60` and `history_stride=1` so that checkpoint
+   still matches. v5 campaign winners should drop those overrides.
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
    with the per-car overlay, so `/config` + `/policies` wiring is exercised:

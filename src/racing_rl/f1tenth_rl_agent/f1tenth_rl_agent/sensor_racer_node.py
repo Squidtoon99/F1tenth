@@ -52,6 +52,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
         self.declare_parameter("steering_delta_max_rad", si.STEERING_DELTA_MAX_RAD)
+        self.declare_parameter("history_stride", si.HISTORY_STRIDE)
         self.declare_parameter("steering_angle_to_servo_gain", -1.2135)
         self.declare_parameter("steering_angle_to_servo_offset", 0.4495)
         self.declare_parameter("imu_accel_to_ms2", 9.80665)
@@ -114,6 +115,7 @@ class SensorRacerNode(Node):
         )
         if self.steering_delta_max_rad <= 0.0:
             raise ValueError("steering_delta_max_rad must be positive")
+        self.history_stride = max(1, int(gp("history_stride").value))
         self.steering_angle_to_servo_gain = float(
             gp("steering_angle_to_servo_gain").get_parameter_value().double_value
         )
@@ -170,6 +172,7 @@ class SensorRacerNode(Node):
                 i_brake_max_a=self.i_brake_max_a,
                 steering_angle_to_servo_gain=self.steering_angle_to_servo_gain,
                 steering_angle_to_servo_offset=self.steering_angle_to_servo_offset,
+                history_stride=self.history_stride,
             )
 
         self._scan: LaserScan | None = None

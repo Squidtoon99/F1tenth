@@ -52,6 +52,8 @@ def generate_launch_description() -> LaunchDescription:
                 "imu_gz_bias": 0.0,
                 "twist_vx_sign": 1.0,
                 "sensor_max_age_s": 1.0,
+                "steering_delta_max_rad": 0.05235987755982988,
+                "history_stride": 1,
                 "publish_raw_observation": True,
                 "publish_diagnostics": True,
             },

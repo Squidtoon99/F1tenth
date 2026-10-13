@@ -175,43 +175,93 @@ for key, value in replacements.items():
 open(cfg_path, "w", encoding="utf-8").write(text)
 print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
 PY
-  # 1081-beam lidar runs inside every physics step. The fork's 100 Hz drive
-  # timer plus 250 Hz publisher starves both gym and the 20 Hz racer.
-  python3 - sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py <<'PY'
+  # 1081-beam lidar inside every physics step is ~400 ms and caps the graph
+  # at ~2.5 Hz. Raycast only on the 20 Hz publish timer; keep 100 Hz ST.
+  python3 - <<'PY'
 from pathlib import Path
-import sys
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-replacements = (
-    (
-        "self.timer = self.create_timer(0.004, self.timer_callback)",
-        "self.timer = self.create_timer(0.05, self.timer_callback)",
-        "gym lidar publish timer 250 Hz -> 20 Hz",
-    ),
-    (
-        "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
-        "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
-        "gym physics timer 100 Hz -> 20 Hz",
-    ),
-    (
-        "timestep=0.01,",
-        "timestep=0.05,",
-        "gym timestep 0.01 -> 0.05 (1.0x realtime at 20 Hz)",
-    ),
-)
-changed = False
-for old, new, label in replacements:
-    if old in text:
+def apply(path, replacements):
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for old, new, label in replacements:
+        if new in text and old not in text:
+            print(f"==> already patched: {label}")
+            continue
+        if old not in text:
+            raise SystemExit(f"{path}: string not found for: {label}")
         text = text.replace(old, new, 1)
         print(f"==> {label}")
         changed = True
-    elif new in text:
-        print(f"==> already patched: {label}")
-    else:
-        raise SystemExit(f"{path}: string not found for: {label}")
-if changed:
-    path.write_text(text, encoding="utf-8")
+    if changed:
+        path.write_text(text, encoding="utf-8")
+
+bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
+sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
+apply(
+    bridge,
+    (
+        (
+            "self.timer = self.create_timer(0.004, self.timer_callback)",
+            "self.timer = self.create_timer(0.05, self.timer_callback)",
+            "gym lidar publish timer 250 Hz -> 20 Hz",
+        ),
+        (
+            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
+            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+            "restore gym physics timer 100 Hz",
+        ),
+        (
+            "timestep=0.05,",
+            "timestep=0.01,",
+            "restore gym timestep 0.01",
+        ),
+        (
+            "            self._update_sim_state()\n\n        if not self.get_parameter('async_mode').value:",
+            "            self._update_sim_state()\n"
+            "        self.env.unwrapped.sim.scan_every_step = False\n\n"
+            "        if not self.get_parameter('async_mode').value:",
+            "defer gym lidar to 20 Hz publish timer",
+        ),
+        (
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            "        ts = self.get_clock().now().to_msg()",
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            "        sim = self.env.unwrapped.sim\n"
+            "        if not getattr(sim, 'scan_every_step', True) and sim.scan_enabled:\n"
+            "            sim._update_scans()\n"
+            "            self._update_sim_state()\n"
+            "        ts = self.get_clock().now().to_msg()",
+            "raycast 1081-beam lidar only when publishing",
+        ),
+    ),
+)
+apply(
+    sim,
+    (
+        (
+            "        if self.scan_enabled:\n"
+            "            self._update_scans()\n"
+            "        else:\n"
+            "            self.state.scans.fill(0.0)\n"
+            "            self.state.collisions.fill(0.0)\n"
+            "\n"
+            "        self._update_agent_collisions()",
+            "        if self.scan_enabled and getattr(self, \"scan_every_step\", True):\n"
+            "            self._update_scans()\n"
+            "        elif not self.scan_enabled:\n"
+            "            self.state.scans.fill(0.0)\n"
+            "            self.state.collisions.fill(0.0)\n"
+            "\n"
+            "        if getattr(self, \"scan_every_step\", True) or not self.scan_enabled:\n"
+            "            self._update_agent_collisions()",
+            "skip lidar raycast on physics steps",
+        ),
+    ),
+)
 PY
 }
 

@@ -2,6 +2,8 @@ import ast
 import math
 from pathlib import Path
 
+import pytest
+
 BRINGUP = Path(__file__).resolve().parents[1]
 REPO = BRINGUP.parents[2]
 SENSOR_POLICY_SIM = BRINGUP / "launch" / "sensor_policy_sim.launch.py"
@@ -93,6 +95,8 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["imu_ax_bias"] == 0.0
     assert racer["twist_vx_sign"] == 1.0
     assert racer["sensor_max_age_s"] == 1.0
+    assert racer["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
+    assert racer["history_stride"] == 1
     assert gate["rl_command_timeout_s"] == 1.0
     bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
     assert bridge["speed_scale"] == 5.0
@@ -123,6 +127,8 @@ def test_on_car_sensor_policy_launch_unchanged_defaults():
     assert 'default_value="5.0"' in source
     assert 'default_value="true"' in source
     assert "gym_sensor_bridge" not in source
+    assert "history_stride" not in source
+    assert "0.05235987755982988" not in source
 
 
 def test_gym_sensor_bridge_is_registered():
@@ -162,8 +168,10 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     validator_src = validator.read_text()
     assert "_spin_until" in validator_src
     assert "timeout_sec=0.005" in validator_src
-    assert "create_timer(0.05, self.drive_timer_callback)" in source
-    assert "timestep=0.05," in source
+    assert "scan_every_step" in source
+    assert "skip lidar raycast on physics steps" in source
+    assert "create_timer(0.05, self.timer_callback)" in source
+    assert "restore gym physics timer 100 Hz" in source
     bridge_src = (
         REPO
         / "src"
