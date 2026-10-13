@@ -234,6 +234,8 @@ class PPOTrainer:
         self.value_optimizer = Adam(self.value_critic.parameters(), lr=value_lr)
         self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
         self._update_value_forward = self.value_critic
+        if self.compile and hasattr(self.actor, "use_segment_gru"):
+            self.actor.use_segment_gru = False
         if self.compile:
             self._evaluate_actions_sequence = torch.compile(
                 self._evaluate_actions_sequence, mode=self.compile_mode
@@ -479,17 +481,20 @@ class PPOTrainer:
         advantages = (raw_advantages - adv_mean) / (adv_std + 1e-8)
         keep_weights = keep_mask.to(dtype=advantages.dtype)
         metric_sums = {
-            "policy_loss": 0.0,
-            "value_loss": 0.0,
-            "negative_log_prob": 0.0,
-            "approx_kl": 0.0,
-            "policy_entropy": 0.0,
-            "policy_clip_fraction": 0.0,
-            "value_clip_fraction": 0.0,
-            "actor_grad_norm": 0.0,
-            "value_grad_norm": 0.0,
-            "actor_grad_clip_fraction": 0.0,
-            "value_grad_clip_fraction": 0.0,
+            key: torch.zeros((), device=self.device, dtype=torch.float32)
+            for key in (
+                "policy_loss",
+                "value_loss",
+                "negative_log_prob",
+                "approx_kl",
+                "policy_entropy",
+                "policy_clip_fraction",
+                "value_clip_fraction",
+                "actor_grad_norm",
+                "value_grad_norm",
+                "actor_grad_clip_fraction",
+                "value_grad_clip_fraction",
+            )
         }
         updates = 0
         actor_updates = 0
@@ -577,41 +582,46 @@ class PPOTrainer:
                 )
                 self.actor_optimizer.step()
                 actor_updates += 1
-                actor_grad = float(actor_grad_norm)
+                actor_grad = actor_grad_norm.detach()
                 metric_sums["actor_grad_norm"] += actor_grad
-                metric_sums["actor_grad_clip_fraction"] += float(
+                metric_sums["actor_grad_clip_fraction"] += (
                     actor_grad > self.max_grad_norm
-                )
+                ).to(dtype=torch.float32)
 
-                metric_sums["policy_loss"] += float(policy_loss.detach())
-                metric_sums["value_loss"] += float(value_loss.detach())
-                metric_sums["negative_log_prob"] += float(
+                metric_sums["policy_loss"] += policy_loss.detach()
+                metric_sums["value_loss"] += value_loss.detach()
+                metric_sums["negative_log_prob"] += (
                     ((-new_logp) * mb_keep).sum().div(keep_denom).detach()
                 )
-                metric_sums["approx_kl"] += float(approx_kl.detach())
-                metric_sums["policy_entropy"] += float(policy_entropy.detach())
-                metric_sums["policy_clip_fraction"] += float(
+                metric_sums["approx_kl"] += approx_kl.detach()
+                metric_sums["policy_entropy"] += policy_entropy.detach()
+                metric_sums["policy_clip_fraction"] += (
                     (
-                        ((ratio - 1.0).abs() > self.clip_ratio).float() * mb_keep
-                    )
-                    .sum()
-                    .div(keep_denom)
-                    .detach()
-                )
-                metric_sums["value_clip_fraction"] += float(
-                    (
-                        ((new_values - old_values).abs() > self.value_clip).float()
+                        ((ratio - 1.0).abs() > self.clip_ratio).to(
+                            dtype=torch.float32
+                        )
                         * mb_keep
                     )
                     .sum()
                     .div(keep_denom)
                     .detach()
                 )
-                value_grad = float(value_grad_norm)
-                metric_sums["value_grad_norm"] += value_grad
-                metric_sums["value_grad_clip_fraction"] += float(
-                    value_grad > self.max_grad_norm
+                metric_sums["value_clip_fraction"] += (
+                    (
+                        ((new_values - old_values).abs() > self.value_clip).to(
+                            dtype=torch.float32
+                        )
+                        * mb_keep
+                    )
+                    .sum()
+                    .div(keep_denom)
+                    .detach()
                 )
+                value_grad = value_grad_norm.detach()
+                metric_sums["value_grad_norm"] += value_grad
+                metric_sums["value_grad_clip_fraction"] += (
+                    value_grad > self.max_grad_norm
+                ).to(dtype=torch.float32)
                 updates += 1
             epochs_completed = epoch + 1
 
@@ -624,7 +634,7 @@ class PPOTrainer:
             self.critic_normalizer.update(
                 rollout.critic_obs.reshape(-1, self.critic_obs_dim)
             )
-        metrics = {key: value / updates for key, value in metric_sums.items()}
+        metrics = {key: float(value / updates) for key, value in metric_sums.items()}
         metrics.update(
             {
                 "epochs": epochs_completed,

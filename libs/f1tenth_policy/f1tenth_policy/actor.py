@@ -221,6 +221,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             hidden_size=self.gru_hidden_dim,
             batch_first=True,
         )
+        self.gru.flatten_parameters()
         self.net = mlp(
             [self.gru_hidden_dim] + list(hidden_sizes),
             activation,
@@ -229,6 +230,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.act_limit = act_limit
+        self.use_segment_gru = True
         self.actor_architecture = {
             "name": ACTOR_ARCHITECTURE_NAME,
             "version": 1,
@@ -352,14 +354,80 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             empty = features.new_zeros(batch, 0, self.gru_hidden_dim)
             return empty, hidden
 
+        if features.is_cuda:
+            self.gru.flatten_parameters()
         if reset_mask is None:
             out, h_n = self.gru(features, hidden.unsqueeze(0).contiguous())
             return out, h_n.squeeze(0)
 
+        reset = reset_mask.to(dtype=torch.bool)
+        capturing = features.is_cuda and torch.cuda.is_current_stream_capturing()
+        if (
+            not self.use_segment_gru
+            or torch.compiler.is_compiling()
+            or capturing
+        ):
+            return self._gru_sequence_cell(features, hidden, reset)
+        if steps == 1 or not bool(reset[:, 1:].any()):
+            h0 = self._apply_reset_mask(hidden, reset[:, 0])
+            out, h_n = self.gru(features, h0.unsqueeze(0).contiguous())
+            return out, h_n.squeeze(0)
+
+        return self._gru_sequence_segments(features, hidden, reset)
+
+    def _gru_sequence_segments(self, features, hidden, reset):
+        """Run nn.GRU over episode segments split at resets.
+
+        reset[b, t] True zeros the hidden state before consuming features[b, t],
+        matching a per-timestep gru_cell loop with _apply_reset_mask. Segments are
+        padded to the longest episode piece and run in one cuDNN GRU call.
+        """
+        batch, steps, feat_dim = features.shape
+        device = features.device
+        starts = reset.clone()
+        starts[:, 0] = True
+        starts_i = starts.to(dtype=torch.int64)
+        segs_per_batch = starts_i.sum(dim=1)
+        batch_offset = torch.zeros(batch, dtype=torch.int64, device=device)
+        if batch > 1:
+            batch_offset[1:] = segs_per_batch.cumsum(dim=0)[:-1]
+        segment_id = (starts_i.cumsum(dim=1) - 1) + batch_offset.unsqueeze(1)
+        num_segments = int(segs_per_batch.sum().item())
+
+        t_idx = torch.arange(steps, device=device).unsqueeze(0).expand(batch, steps)
+        last_start = torch.where(starts, t_idx, torch.zeros_like(t_idx)).cummax(
+            dim=1
+        ).values
+        pos = t_idx - last_start
+
+        lengths = torch.zeros(num_segments, dtype=torch.int64, device=device)
+        lengths.scatter_add_(
+            0,
+            segment_id.reshape(-1),
+            torch.ones(batch * steps, dtype=torch.int64, device=device),
+        )
+        max_len = int(lengths.max().item())
+        if num_segments * max_len > 8 * batch * steps:
+            return self._gru_sequence_cell(features, hidden, reset)
+
+        padded = features.new_zeros(num_segments, max_len, feat_dim)
+        padded[segment_id, pos] = features
+
+        h0 = hidden.new_zeros(num_segments, self.gru_hidden_dim)
+        h0[batch_offset] = self._apply_reset_mask(hidden, reset[:, 0])
+
+        gru_out, _ = self.gru(padded, h0.unsqueeze(0).contiguous())
+        out = gru_out[segment_id, pos]
+        last_seg = batch_offset + segs_per_batch - 1
+        last_pos = lengths[last_seg] - 1
+        next_hidden = gru_out[last_seg, last_pos]
+        return out, next_hidden
+
+    def _gru_sequence_cell(self, features, hidden, reset):
         outs = []
         h = hidden
-        for t in range(steps):
-            h = self._apply_reset_mask(h, reset_mask[:, t])
+        for t in range(features.shape[1]):
+            h = self._apply_reset_mask(h, reset[:, t])
             h = self.gru_cell(features[:, t], h)
             outs.append(h)
         return torch.stack(outs, dim=1), h

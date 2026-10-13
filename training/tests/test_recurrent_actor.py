@@ -158,7 +158,7 @@ def test_batched_sequence_matches_stepwise(reset_mask, deterministic):
     assert torch.allclose(seq_h, step_h, atol=1e-6)
 
 
-def test_batched_sequence_encodes_once_and_uses_static_cell_recurrence():
+def test_batched_sequence_encodes_once_and_runs_one_packed_gru():
     actor = _make_gru_actor(3)
     batch, steps = 3, 7
     obs = torch.randn(batch, steps, OBS_DIM)
@@ -193,7 +193,7 @@ def test_batched_sequence_encodes_once_and_uses_static_cell_recurrence():
         gru_handle.remove()
 
     assert conv_calls == 1
-    assert gru_calls == 0
+    assert gru_calls == 1
 
 
 def test_batched_sequence_gradient_parity_with_mixed_resets():
@@ -253,6 +253,108 @@ def test_batched_sequence_gradient_parity_with_mixed_resets():
             atol=1e-6,
             rtol=1e-5,
         ), name
+
+
+def _gru_sequence_cell_loop(actor, features, hidden, reset_mask):
+    """Pre-cuDNN per-timestep gru_cell path; used as the parity reference."""
+    if reset_mask is None:
+        out, h_n = actor.gru(features, hidden.unsqueeze(0).contiguous())
+        return out, h_n.squeeze(0)
+    outs = []
+    h = hidden
+    for t in range(features.shape[1]):
+        h = actor._apply_reset_mask(h, reset_mask[:, t])
+        h = actor.gru_cell(features[:, t], h)
+        outs.append(h)
+    return torch.stack(outs, dim=1), h
+
+
+def _assert_close(actual, expected, name, rtol=1e-5, atol=1e-5):
+    assert actual.shape == expected.shape, f"{name} shape {tuple(actual.shape)}"
+    max_abs = (actual - expected).abs().max().item()
+    denom = expected.abs().max().clamp(min=1e-8).item()
+    rel = max_abs / denom
+    assert rel <= rtol or max_abs <= atol, (
+        f"{name}: max_abs={max_abs:.3e} rel={rel:.3e}"
+    )
+
+
+def _packed_vs_cell_case(device, seed=7, batch=4, steps=11):
+    torch.manual_seed(seed)
+    actor = _make_gru_actor(seed).to(device)
+    actor.train()
+    obs = torch.randn(batch, steps, OBS_DIM, device=device)
+    hidden = torch.randn(batch, GRU_HIDDEN_DIM, device=device)
+    reset = torch.zeros(batch, steps, dtype=torch.bool, device=device)
+    reset[0, 0] = True
+    reset[0, 4] = True
+    reset[1, 2] = True
+    reset[1, 10] = True
+    reset[2, 7] = True
+    reset[3, :] = False
+    actions = torch.tanh(torch.randn(batch, steps, ACT_DIM, device=device)) * 0.9
+    pre_tanh = torch.randn(batch, steps, ACT_DIM, device=device)
+
+    packed = copy.deepcopy(actor)
+    cell = copy.deepcopy(actor)
+
+    def cell_sequence(features, hidden_s, reset_mask):
+        return _gru_sequence_cell_loop(cell, features, hidden_s, reset_mask)
+
+    cell._gru_sequence = cell_sequence
+
+    obs_p = obs.clone().requires_grad_()
+    hid_p = hidden.clone().requires_grad_()
+    obs_c = obs.clone().requires_grad_()
+    hid_c = hidden.clone().requires_grad_()
+
+    logp_p, h_p, ent_p = packed.evaluate_actions_sequence(
+        obs_p, hid_p, actions, reset_mask=reset, pre_tanh_actions=pre_tanh
+    )
+    logp_c, h_c, ent_c = cell.evaluate_actions_sequence(
+        obs_c, hid_c, actions, reset_mask=reset, pre_tanh_actions=pre_tanh
+    )
+    act_p, lp_p, hf_p = packed.forward_sequence(
+        obs, hidden, reset_mask=reset, deterministic=True, with_logprob=True
+    )
+    act_c, lp_c, hf_c = cell.forward_sequence(
+        obs, hidden, reset_mask=reset, deterministic=True, with_logprob=True
+    )
+    loss_p = logp_p.square().mean() + ent_p.mean() + h_p.square().mean()
+    loss_c = logp_c.square().mean() + ent_c.mean() + h_c.square().mean()
+    loss_p.backward()
+    loss_c.backward()
+
+    _assert_close(logp_p, logp_c, "logp")
+    _assert_close(ent_p, ent_c, "entropy")
+    _assert_close(h_p, h_c, "eval_hidden")
+    _assert_close(act_p, act_c, "actions")
+    _assert_close(lp_p, lp_c, "forward_logp")
+    _assert_close(hf_p, hf_c, "forward_hidden")
+    _assert_close(obs_p.grad, obs_c.grad, "obs_grad")
+    _assert_close(hid_p.grad, hid_c.grad, "hidden_grad")
+    for (name, p_param), (_, c_param) in zip(
+        packed.named_parameters(), cell.named_parameters(), strict=True
+    ):
+        assert p_param.grad is not None and c_param.grad is not None, name
+        _assert_close(p_param.grad, c_param.grad, f"grad:{name}")
+
+
+def test_packed_gru_parity_with_cell_loop_mid_sequence_resets():
+    _packed_vs_cell_case(torch.device("cpu"))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda not available")
+def test_packed_gru_parity_with_cell_loop_cuda():
+    matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    cudnn_tf32 = torch.backends.cudnn.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        _packed_vs_cell_case(torch.device("cuda"))
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = matmul_tf32
+        torch.backends.cudnn.allow_tf32 = cudnn_tf32
 
 
 def test_hidden_carry_and_reset_mask():
