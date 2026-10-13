@@ -224,20 +224,27 @@ apply(
             "bind lidar timer to lidar callback group",
         ),
         (
-            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
             "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=self._physics_cg)",
-            "restore gym physics timer 100 Hz",
+            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
+            "gym physics timer 20 Hz without lidar",
             True,
         ),
         (
             "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
-            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=self._physics_cg)",
+            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
             "bind physics timer to physics callback group",
+            True,
         ),
         (
-            "timestep=0.05,",
-            "timestep=0.01,",
-            "restore gym timestep 0.01",
+            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
+            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
+            "bind 20 Hz physics timer callback group",
+            True,
+        ),
+        (
+            "timestep=0.01,\n",
+            "timestep=0.05,\n",
+            "gym timestep 0.05 (20 Hz, 1.0x realtime)",
             True,
         ),
         (

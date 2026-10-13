@@ -174,6 +174,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "callback_group=self._physics_cg" in source
     assert "MultiThreadedExecutor(num_threads=2)" in source
     assert "publish odom from physics timer" in source
+    assert "gym physics timer 20 Hz without lidar" in source
     bridge_src = (
         REPO
         / "src"
