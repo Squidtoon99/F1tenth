@@ -373,3 +373,14 @@ def test_austin_e2e_ppo_dr_config_enables_dynamics_ranges():
     assert cfg["ppo"]["entropy_coef_end"] == 0.0
     assert cfg["ppo"]["entropy_coef_horizon_transitions"] == 32000000
     assert cfg["env"]["track"] == "Austin"
+
+
+def test_austin_e2e_ppo_dr_config_is_a_valid_patch():
+    from standalone_trainer import load_config_patch
+
+    path = os.path.join(_REPO_ROOT, "configs", "austin_e2e_ppo_dr.json")
+    patch, _meta = load_config_patch(path)
+    assert patch["env"]["domain_randomization"]["yaw_inertia_range"] == [
+        0.045,
+        0.14,
+    ]

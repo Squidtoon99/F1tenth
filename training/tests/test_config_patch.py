@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -194,6 +195,15 @@ def test_fixed_opponents_patch_can_set_opponent_mix_and_stationary():
     assert cfg["env"]["reset_stationary_probability"] == 0.3
     assert cfg["env"]["opponent_mix"]["policy_weight"] == 0.9
     assert cfg["env"]["opponent_mix"]["policy_speed_cap_range"] == [5.0, 8.0]
+
+
+def test_every_shipped_config_patch_loads():
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    paths = sorted(config_dir.glob("*.json"))
+    assert paths, f"no JSON configs in {config_dir}"
+    for path in paths:
+        patch, _meta = load_config_patch(str(path))
+        assert isinstance(patch, dict), path.name
 
 
 def test_build_config_rejects_invalid_patch():

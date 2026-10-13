@@ -1480,6 +1480,15 @@ def log_scenario_metrics(log: logging.Logger, diag: RunningStats, names: list[st
 # and a --config patch may set them, so the validator accepts them under
 # reward.reward_scales even though they are not in the reference shape.
 _OPTIONAL_REWARD_SCALE_KEYS = frozenset({"passing", "collision", "rear_end"})
+_OPTIONAL_DR_RANGE_KEYS = frozenset(
+    {
+        "yaw_inertia_range",
+        "cornering_stiffness_front_range",
+        "cornering_stiffness_rear_range",
+        "steer_time_constant_range",
+        "steer_rate_max_range",
+    }
+)
 
 
 def validate_config_patch(
@@ -1492,7 +1501,9 @@ def validate_config_patch(
     raised early with the offending dotted path so a typo cannot silently create
     an ignored config key. Known optional gated reward-scale keys (enabled by
     presence, so absent from ``DEFAULT_CONFIG``) are accepted under
-    ``reward.reward_scales`` as scalars. ``model.hidden_layers`` is rejected with
+    ``reward.reward_scales`` as scalars. Opt-in dynamics DR range keys (ADR 0036;
+    missing keeps the nominal bicycle) are accepted under
+    ``env.domain_randomization``. ``model.hidden_layers`` is rejected with
     an actionable split-key message rather than a generic unknown-key error.
     """
     if not isinstance(patch, dict):
@@ -1513,6 +1524,16 @@ def validate_config_patch(
                     raise ValueError(
                         f"type mismatch for config key '{loc}': expected a "
                         f"scalar, got a mapping"
+                    )
+                continue
+            if (
+                path == "env.domain_randomization"
+                and key in _OPTIONAL_DR_RANGE_KEYS
+            ):
+                if isinstance(value, dict):
+                    raise ValueError(
+                        f"type mismatch for config key '{loc}': expected a "
+                        f"list, got a mapping"
                     )
                 continue
             if path == "" and key == "scenarios":
