@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 
@@ -14,7 +15,7 @@ if _REPO_ROOT not in sys.path:
 
 from config import DEFAULT_CONFIG  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
-from f1tenth_sim import VehicleParams  # noqa: E402
+from f1tenth_sim.params import STEER_RATE_UNBOUNDED, VehicleParams  # noqa: E402
 
 _SENSOR_DR_METRICS = (
     "dr/lidar_extrinsic_x",
@@ -135,6 +136,31 @@ def test_dr_disabled_matches_baseline(warp_runtime):
             ), f"{key} should be zero when DR is disabled"
         loads = env.read_wheel_state()["tyre_load"]
         assert torch.allclose(loads, torch.ones_like(loads))
+        params = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+        c_f, c_r = params.axle_stiffness()
+        assert torch.allclose(
+            metrics["dr/yaw_inertia"],
+            torch.full((num_envs,), params.izz),
+        )
+        assert torch.allclose(
+            metrics["dr/cornering_stiffness_front"],
+            torch.full((num_envs,), c_f),
+            atol=1e-4,
+        )
+        assert torch.allclose(
+            metrics["dr/cornering_stiffness_rear"],
+            torch.full((num_envs,), c_r),
+            atol=1e-4,
+        )
+        assert torch.allclose(
+            metrics["dr/steer_time_constant"],
+            torch.full((num_envs,), params.t_delta),
+        )
+        assert torch.allclose(
+            metrics["dr/steer_rate_max"],
+            torch.full((num_envs,), STEER_RATE_UNBOUNDED),
+        )
+        assert metrics["dr/yaw_inertia"].device == env.device
     finally:
         env.close()
 
@@ -232,3 +258,118 @@ def test_sensor_dr_off_yields_clean_deterministic_scans(warp_runtime):
             assert torch.allclose(metrics[key], torch.zeros(num_envs)), key
     finally:
         env.close()
+
+
+def test_default_dr_keeps_nominal_dynamics(warp_runtime):
+    num_envs = 8
+    env = _make_env(enable_dr=True, num_envs=num_envs)
+    params = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+    try:
+        env.reset()
+        metrics = env.extras["metrics"]
+        assert torch.allclose(
+            metrics["dr/yaw_inertia"],
+            torch.full((num_envs,), params.izz),
+        )
+        mass = metrics["dr/vehicle_mass"].detach()
+        expected_c_f = []
+        expected_c_r = []
+        for value in mass.cpu().tolist():
+            c_f, c_r = params.axle_stiffness(value)
+            expected_c_f.append(c_f)
+            expected_c_r.append(c_r)
+        assert torch.allclose(
+            metrics["dr/cornering_stiffness_front"].cpu(),
+            torch.tensor(expected_c_f),
+            atol=1e-4,
+        )
+        assert torch.allclose(
+            metrics["dr/cornering_stiffness_rear"].cpu(),
+            torch.tensor(expected_c_r),
+            atol=1e-4,
+        )
+        assert torch.allclose(
+            metrics["dr/steer_time_constant"],
+            torch.full((num_envs,), params.t_delta),
+        )
+        assert torch.allclose(
+            metrics["dr/steer_rate_max"],
+            torch.full((num_envs,), STEER_RATE_UNBOUNDED),
+        )
+        assert torch.allclose(
+            metrics["dr/drive_scale"],
+            torch.ones(num_envs),
+        )
+        assert metrics["dr/yaw_inertia"].device == env.device
+        assert metrics["dr/cornering_stiffness_front"].device == env.device
+    finally:
+        env.close()
+
+
+_DYNAMICS_DR = {
+    "yaw_inertia_range": [0.045, 0.14],
+    "cornering_stiffness_front_range": [90.0, 200.0],
+    "cornering_stiffness_rear_range": [90.0, 200.0],
+    "steer_time_constant_range": [0.03, 0.15],
+    "steer_rate_max_range": [2.5, 5.0],
+    "drive_scale_range": [0.8, 1.2],
+    "vehicle_mass_range": [3.1, 3.79],
+    "tire_friction_range": [0.65, 1.1],
+}
+
+
+def test_dynamics_dr_samples_vary_and_respect_bounds(warp_runtime):
+    num_envs = 8
+    env = _make_env(enable_dr=True, num_envs=num_envs, sensor_dr=_DYNAMICS_DR)
+    keys = {
+        "dr/yaw_inertia": (0.045, 0.14),
+        "dr/cornering_stiffness_front": (90.0, 200.0),
+        "dr/cornering_stiffness_rear": (90.0, 200.0),
+        "dr/steer_time_constant": (0.03, 0.15),
+        "dr/steer_rate_max": (2.5, 5.0),
+        "dr/drive_scale": (0.8, 1.2),
+        "dr/vehicle_mass": (3.1, 3.79),
+        "dr/tire_friction": (0.65, 1.1),
+    }
+    try:
+        samples = {key: [] for key in keys}
+        for _ in range(8):
+            env.reset()
+            metrics = env.extras["metrics"]
+            for key in keys:
+                tensor = metrics[key]
+                assert tensor.device == env.device, key
+                samples[key].extend(tensor.detach().cpu().tolist())
+        for key, (lo, hi) in keys.items():
+            vals = samples[key]
+            assert len(set(round(v, 4) for v in vals)) > 1, f"{key} did not vary"
+            assert all(lo - 1e-5 <= v <= hi + 1e-5 for v in vals), key
+
+        control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
+        obs, _ = env.reset()
+        for _ in range(40):
+            actions = torch.rand(num_envs, 2, device=env.device) * 0.4
+            obs, reward, _, _ = env.step(actions, n_steps=control_interval)
+            assert torch.isfinite(obs).all()
+            assert torch.isfinite(reward).all()
+    finally:
+        env.close()
+
+
+def test_austin_e2e_ppo_dr_config_enables_dynamics_ranges():
+    path = os.path.join(_REPO_ROOT, "configs", "austin_e2e_ppo_dr.json")
+    with open(path, encoding="utf-8") as handle:
+        cfg = json.load(handle)
+    dr = cfg["env"]["domain_randomization"]
+    assert dr["enabled"] is True
+    assert dr["yaw_inertia_range"] == [0.045, 0.14]
+    assert dr["tire_friction_range"] == [0.65, 1.1]
+    assert dr["cornering_stiffness_front_range"] == [90.0, 200.0]
+    assert dr["cornering_stiffness_rear_range"] == [90.0, 200.0]
+    assert dr["vehicle_mass_range"] == [3.1, 3.79]
+    assert dr["steer_time_constant_range"] == [0.03, 0.15]
+    assert dr["steer_rate_max_range"] == [2.5, 5.0]
+    assert dr["drive_scale_range"] == [0.8, 1.2]
+    assert cfg["ppo"]["entropy_coef_end"] == 0.0
+    assert cfg["ppo"]["entropy_coef_horizon_transitions"] == 32000000
+    assert cfg["env"]["track"] == "Austin"

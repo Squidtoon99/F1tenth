@@ -6,8 +6,8 @@ from f1tenth_sim.dynamics import (
     VehicleBuffers,
     VehicleLocal,
     apply_command,
-    apply_command_and_integrate,
-    integrate_vehicle_substep,
+    apply_command_and_integrate_env,
+    integrate_vehicle_substep_env,
     load_vehicle,
     store_vehicle,
     vehicle_is_finite,
@@ -473,6 +473,18 @@ class ResetParams:
     drive_scale_max: wp.float32
     steer_bias_min: wp.float32
     steer_bias_max: wp.float32
+    izz_min: wp.float32
+    izz_max: wp.float32
+    c_f_min: wp.float32
+    c_f_max: wp.float32
+    c_r_min: wp.float32
+    c_r_max: wp.float32
+    steer_lag_min: wp.float32
+    steer_lag_max: wp.float32
+    steer_rate_min: wp.float32
+    steer_rate_max: wp.float32
+    sample_c_f: wp.int32
+    sample_c_r: wp.int32
     action_latency_min: wp.int32
     action_latency_max: wp.int32
     observation_latency_min: wp.int32
@@ -969,14 +981,50 @@ def reset_pair(
     steer_bias = random_range(
         random, reset.steer_bias_min, reset.steer_bias_max
     )
+    izz = random_range(random, reset.izz_min, reset.izz_max)
+    steer_lag = random_range(
+        random, reset.steer_lag_min, reset.steer_lag_max
+    )
+    steer_rate = random_range(
+        random, reset.steer_rate_min, reset.steer_rate_max
+    )
+    weight = mass * sim.gravity
+    if reset.sample_c_f != 0:
+        c_f = random_range(random, reset.c_f_min, reset.c_f_max)
+    else:
+        c_f = (
+            sim.lat_stiffness_scale
+            * weight
+            * sim.lr
+            / wp.max(sim.wheelbase, 1.0e-8)
+        )
+    if reset.sample_c_r != 0:
+        c_r = random_range(random, reset.c_r_min, reset.c_r_max)
+    else:
+        c_r = (
+            sim.lat_stiffness_scale
+            * weight
+            * sim.lf
+            / wp.max(sim.wheelbase, 1.0e-8)
+        )
     ego_buffers.mass[env_id] = mass
     ego_buffers.mu[env_id] = friction
     ego_buffers.drive_scale[env_id] = drive_scale
     ego_buffers.steer_bias[env_id] = steer_bias
+    ego_buffers.izz[env_id] = izz
+    ego_buffers.c_f[env_id] = c_f
+    ego_buffers.c_r[env_id] = c_r
+    ego_buffers.steer_lag[env_id] = steer_lag
+    ego_buffers.steer_rate[env_id] = steer_rate
     opponent_buffers.mass[env_id] = mass
     opponent_buffers.mu[env_id] = friction
     opponent_buffers.drive_scale[env_id] = drive_scale
     opponent_buffers.steer_bias[env_id] = steer_bias
+    opponent_buffers.izz[env_id] = izz
+    opponent_buffers.c_f[env_id] = c_f
+    opponent_buffers.c_r[env_id] = c_r
+    opponent_buffers.steer_lag[env_id] = steer_lag
+    opponent_buffers.steer_rate[env_id] = steer_rate
 
     action_span = reset.action_latency_max - reset.action_latency_min + 1
     observation_span = (
@@ -1825,13 +1873,11 @@ def physics_solo_kernel(
     push_executed_longitudinal(
         env.executed_longitudinal_history, env_id, execution_action[0]
     )
-    ego = apply_command_and_integrate(
+    ego = apply_command_and_integrate_env(
         ego,
         execution_action,
-        ego_buffers.steer_bias[env_id],
-        ego_buffers.mass[env_id],
-        ego_buffers.mu[env_id],
-        ego_buffers.drive_scale[env_id],
+        ego_buffers,
+        env_id,
         sim,
         substeps,
     )
@@ -1881,13 +1927,11 @@ def physics_stage_kernel(
         push_executed_longitudinal(
             env.executed_longitudinal_history, env_id, execution_action[0]
         )
-        ego = apply_command_and_integrate(
+        ego = apply_command_and_integrate_env(
             ego,
             execution_action,
-            ego_buffers.steer_bias[env_id],
-            ego_buffers.mass[env_id],
-            ego_buffers.mu[env_id],
-            ego_buffers.drive_scale[env_id],
+            ego_buffers,
+            env_id,
             sim,
             substeps,
         )
@@ -1927,13 +1971,11 @@ def physics_stage_kernel(
             env_id,
             opponent_action[0],
         )
-        opponent = apply_command_and_integrate(
+        opponent = apply_command_and_integrate_env(
             opponent,
             opponent_action,
-            opponent_buffers.steer_bias[env_id],
-            opponent_buffers.mass[env_id],
-            opponent_buffers.mu[env_id],
-            opponent_buffers.drive_scale[env_id],
+            opponent_buffers,
+            env_id,
             sim,
             substeps,
         )
@@ -2220,19 +2262,17 @@ def env_step_kernel(
     valid = wp.int32(1)
     for _ in range(substeps):
         if valid != 0:
-            ego = integrate_vehicle_substep(
+            ego = integrate_vehicle_substep_env(
                 ego,
-                ego_buffers.mass[env_id],
-                ego_buffers.mu[env_id],
-                ego_buffers.drive_scale[env_id],
+                ego_buffers,
+                env_id,
                 sim,
             )
             if reset.has_opponent != 0:
-                opponent = integrate_vehicle_substep(
+                opponent = integrate_vehicle_substep_env(
                     opponent,
-                    opponent_buffers.mass[env_id],
-                    opponent_buffers.mu[env_id],
-                    opponent_buffers.drive_scale[env_id],
+                    opponent_buffers,
+                    env_id,
                     sim,
                 )
                 substep_contact = resolve_pair_contact(

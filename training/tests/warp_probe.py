@@ -12,7 +12,7 @@ from f1tenth_sim.dynamics import (
     apply_current_slew,
     apply_steering_lag,
 )
-from f1tenth_sim.params import SimParams, VehicleParams
+from f1tenth_sim.params import STEER_RATE_UNBOUNDED, SimParams, VehicleParams
 
 wp.init()
 
@@ -40,7 +40,9 @@ def _probe_command_and_slew(
     vehicle.steer = steer[i]
     vehicle = apply_command(vehicle, action[i], steer_bias[i], params)
     vehicle = apply_current_slew(vehicle, params)
-    vehicle = apply_steering_lag(vehicle, params)
+    vehicle = apply_steering_lag(
+        vehicle, params, params.steer_time_constant, STEER_RATE_UNBOUNDED
+    )
     out_drive[i] = vehicle.i_drive
     out_brake[i] = vehicle.i_brake
     out_applied[i] = vehicle.applied_effort

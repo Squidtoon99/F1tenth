@@ -5,11 +5,11 @@ import warp as wp
 
 from .dynamics import (
     VehicleBuffers,
-    apply_command_and_integrate,
+    apply_command_and_integrate_env,
     load_vehicle,
     store_vehicle,
 )
-from .params import SimParams, VehicleParams
+from .params import STEER_RATE_UNBOUNDED, SimParams, VehicleParams
 
 
 @wp.kernel(enable_backward=False)
@@ -21,13 +21,11 @@ def vehicle_step_kernel(
 ):
     env_id = wp.tid()
     vehicle = load_vehicle(buffers, env_id)
-    vehicle = apply_command_and_integrate(
+    vehicle = apply_command_and_integrate_env(
         vehicle,
         actions[env_id],
-        buffers.steer_bias[env_id],
-        buffers.mass[env_id],
-        buffers.mu[env_id],
-        buffers.drive_scale[env_id],
+        buffers,
+        env_id,
         params,
         substeps,
     )
@@ -66,6 +64,7 @@ class WarpVehicleSim:
 
     def _allocate_state(self):
         n = self.num_envs
+        c_f, c_r = self.params.axle_stiffness()
         state = {
             "X": self._zeros(n),
             "Y": self._zeros(n),
@@ -92,6 +91,15 @@ class WarpVehicleSim:
             "mu": torch.full((n,), self.params.tire_mu, device=self.device),
             "drive_scale": torch.ones(n, device=self.device),
             "steer_bias": self._zeros(n),
+            "izz": torch.full((n,), self.params.izz, device=self.device),
+            "c_f": torch.full((n,), c_f, device=self.device),
+            "c_r": torch.full((n,), c_r, device=self.device),
+            "steer_lag": torch.full(
+                (n,), self.params.t_delta, device=self.device
+            ),
+            "steer_rate": torch.full(
+                (n,), STEER_RATE_UNBOUNDED, device=self.device
+            ),
         }
         return state
 
@@ -118,6 +126,11 @@ class WarpVehicleSim:
             "mu": "mu",
             "drive_scale": "drive_scale",
             "steer_bias": "steer_bias",
+            "izz": "izz",
+            "c_f": "c_f",
+            "c_r": "c_r",
+            "steer_lag": "steer_lag",
+            "steer_rate": "steer_rate",
         }
         for field, key in scalar_fields.items():
             setattr(buffers, field, wp.from_torch(self.s[key]))
@@ -175,11 +188,42 @@ class WarpVehicleSim:
         self.s["omega"][mask] = speed[mask, None] / self.params.wheel_radius
         self.s["load_ratio"][mask] = 1.0
 
-    def set_domain(self, mass, mu, drive_scale, steer_bias):
-        self.s["mass"].copy_(mass.to(self.device, torch.float32))
+    def set_domain(
+        self,
+        mass,
+        mu,
+        drive_scale,
+        steer_bias,
+        izz=None,
+        c_f=None,
+        c_r=None,
+        steer_lag=None,
+        steer_rate=None,
+    ):
+        mass = mass.to(self.device, torch.float32)
+        self.s["mass"].copy_(mass)
         self.s["mu"].copy_(mu.to(self.device, torch.float32))
         self.s["drive_scale"].copy_(drive_scale.to(self.device, torch.float32))
         self.s["steer_bias"].copy_(steer_bias.to(self.device, torch.float32))
+        if izz is None:
+            izz = torch.full_like(mass, self.params.izz)
+        self.s["izz"].copy_(izz.to(self.device, torch.float32))
+        if c_f is None or c_r is None:
+            weight = mass * self.params.gravity
+            denom = max(self.params.wheelbase, 1.0e-9)
+            scale = self.params.lat_stiffness_scale * weight / denom
+            if c_f is None:
+                c_f = scale * self.params.lr
+            if c_r is None:
+                c_r = scale * self.params.lf
+        self.s["c_f"].copy_(c_f.to(self.device, torch.float32))
+        self.s["c_r"].copy_(c_r.to(self.device, torch.float32))
+        if steer_lag is None:
+            steer_lag = torch.full_like(mass, self.params.t_delta)
+        self.s["steer_lag"].copy_(steer_lag.to(self.device, torch.float32))
+        if steer_rate is None:
+            steer_rate = torch.full_like(mass, STEER_RATE_UNBOUNDED)
+        self.s["steer_rate"].copy_(steer_rate.to(self.device, torch.float32))
 
     def step(self, actions, n_steps: int = 10):
         actions = actions.to(device=self.device, dtype=torch.float32).contiguous()
