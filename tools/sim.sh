@@ -75,8 +75,14 @@ import_sim_sources() {
   else
     echo "==> Importing gym bridge + engine (vcs import sim < sim/f1tenth_gym_ros.repos)"
     # vcstool lives in the base image; run it there so the host needs nothing extra.
-    docker run --rm -v "${PWD}:/ws" -w /ws f1tenth-base:latest \
-      bash -lc "vcs import sim < sim/f1tenth_gym_ros.repos"
+    # Mount only sim/ so a git worktree's .git pointer (outside this tree) is not
+    # visible inside the container.
+    if [ -e sim/f1tenth_gym_ros ]; then
+      docker run --rm -v "${PWD}/sim:/sim" -w /sim f1tenth-base:latest \
+        bash -lc "rm -rf /sim/f1tenth_gym_ros"
+    fi
+    docker run --rm -v "${PWD}/sim:/sim" -w /sim f1tenth-base:latest \
+      bash -lc "vcs import . < f1tenth_gym_ros.repos"
   fi
   # vcs import via docker leaves root-owned files; map wiring needs to write.
   if [ ! -w sim/f1tenth_gym_ros/maps ] || [ ! -w sim/f1tenth_gym_ros/config ]; then
