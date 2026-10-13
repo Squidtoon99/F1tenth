@@ -178,6 +178,16 @@ print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f
 PY
   # 1081-beam lidar inside every physics step caps the graph at ~2.5 Hz.
   # Skip raycast on ST steps; snapshot-scan on a 20 Hz Python thread.
+  # Re-apply patches on clean fork sources so leftover live edits cannot
+  # miss an insert needle.
+  if [ -d sim/f1tenth_gym_ros/.git ]; then
+    git -C sim/f1tenth_gym_ros checkout -- \
+      f1tenth_gym_ros/gym_bridge.py launch/rl_agent_sim_launch.py
+  fi
+  if [ -d sim/f1tenth_gym_ros/f1tenth_gym/.git ]; then
+    git -C sim/f1tenth_gym_ros/f1tenth_gym checkout -- \
+      f1tenth_gym/envs/simulator.py
+  fi
   python3 - <<'PY'
 from pathlib import Path
 
@@ -341,7 +351,10 @@ def patch_gym_bridge(path: Path) -> None:
             "        ts = self.get_clock().now().to_msg()\n"
         )
         if needle not in text:
-            raise SystemExit(f"{path}: timer_callback insert missing")
+            if "sim.scan_sims[0].scan(pose" in text:
+                print("==> already patched: raycast gym lidar on the publish timer")
+            else:
+                raise SystemExit(f"{path}: timer_callback insert missing")
         text = text.replace(
             needle,
             "    def timer_callback(self):\n"
