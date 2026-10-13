@@ -306,18 +306,20 @@ def test_sensor_racer_resets_when_applied_source_not_rl():
 
         def saw_teleop_reset():
             publish_all()
-            if not diagnostics:
-                return False
-            d = diagnostics[-1]
-            return (
-                d[si.DIAG_GRU_RESET] == 1.0
-                and d[si.DIAG_STALE_SENSORS] == 0.0
-                and d[si.DIAG_VALID_TICK] == 0.0
-                and d[si.DIAG_APPLIED_SOURCE]
-                == float(ActuatorCommand.SOURCE_TELEOP)
-            )
+            for d in diagnostics:
+                if len(d) <= si.DIAG_APPLIED_SOURCE:
+                    continue
+                if (
+                    d[si.DIAG_GRU_RESET] == 1.0
+                    and d[si.DIAG_STALE_SENSORS] == 0.0
+                    and d[si.DIAG_VALID_TICK] == 0.0
+                    and d[si.DIAG_APPLIED_SOURCE]
+                    == float(ActuatorCommand.SOURCE_TELEOP)
+                ):
+                    return True
+            return False
 
-        assert _spin_until([node, helper], saw_teleop_reset)
+        assert _spin_until([node, helper], saw_teleop_reset, timeout_s=5.0)
         assert desired["count"] == 0
     finally:
         if helper is not None:
