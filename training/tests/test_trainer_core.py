@@ -627,7 +627,7 @@ def test_sensor_policy_artifact_round_trip(tmp_path):
     assert payload["actor_layout_version"] == ACTOR_LAYOUT_VERSION
     assert payload["action_dim"] == 2
     assert payload["steering_action_mode"] == "delta"
-    assert payload["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
+    assert payload["steering_delta_max_rad"] == pytest.approx(math.pi / 120.0)
     assert payload["config_version"] == cfg["config_version"]
     validate_sensor_policy_artifact(
         payload,
@@ -673,7 +673,7 @@ def test_delta_sensor_artifact_metadata_and_legacy_rejection(tmp_path):
         expected_layout_version=ACTOR_LAYOUT_VERSION,
         expected_architecture=payload["actor_architecture"],
         expected_steering_action_mode="delta",
-        expected_steering_delta_max_rad=math.pi / 60.0,
+        expected_steering_delta_max_rad=math.pi / 120.0,
         expected_critic_obs_dim=CRITIC_OBS_DIM,
     )
     legacy = copy.deepcopy(payload)
@@ -687,7 +687,7 @@ def test_delta_sensor_artifact_metadata_and_legacy_rejection(tmp_path):
             expected_layout_version=ACTOR_LAYOUT_VERSION,
             expected_architecture=payload["actor_architecture"],
             expected_steering_action_mode="delta",
-            expected_steering_delta_max_rad=math.pi / 60.0,
+            expected_steering_delta_max_rad=math.pi / 120.0,
             expected_critic_obs_dim=CRITIC_OBS_DIM,
         )
 

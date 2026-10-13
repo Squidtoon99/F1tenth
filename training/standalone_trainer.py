@@ -43,6 +43,7 @@ from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     SENSOR_POLICY_FORMAT_VERSION,
     STEERING_ACTION_MODE,
+    STEERING_DELTA_MAX_RAD,
 )
 
 from config import (
@@ -50,6 +51,7 @@ from config import (
     control_dt_s,
     effective_ppo_horizon,
     effective_qrsac_horizon,
+    effective_qrsac_sequence,
 )
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
@@ -1764,11 +1766,14 @@ def build_models(
     models.critic2_target.load_state_dict(models.critic2.state_dict())
 
     gamma, n_step = effective_qrsac_horizon(cfg)
+    burn_in, train_len = effective_qrsac_sequence(cfg)
     trainer = QRSACTrainer(
         models,
         device=device,
         gamma=gamma,
         n_step=n_step,
+        burn_in=burn_in,
+        train_len=train_len,
         alpha=alpha,
         smooth_factor=0.005,
         compile=compile,
@@ -1865,7 +1870,7 @@ def save_policy_artifact(
         longitudinal_mode=str(cfg["env"].get("longitudinal_mode", "force")),
         steering_action_mode=str(cfg["env"].get("steering_action_mode", "delta")),
         steering_delta_max_rad=float(
-            cfg["env"].get("steering_delta_max_rad", math.pi / 60.0)
+            cfg["env"].get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)
         ),
         f_drive_max=float(cfg["env"].get("f_drive_max", 26.5)),
         f_brake_max=float(cfg["env"].get("f_brake_max", 23.1)),
@@ -1876,7 +1881,7 @@ def save_policy_artifact(
             1.0
             / (
                 float(cfg["env"].get("sim_dt", 0.005))
-                * float(cfg["env"].get("control_interval", 20))
+                * float(cfg["env"].get("control_interval", 10))
             )
         ),
         simulator_id=str(cfg["simulator"]["id"]),
@@ -2564,6 +2569,7 @@ def main():
     clip_actions = cfg["env"]["clip_actions"]
     control_interval = cfg["env"]["control_interval"]
     qrsac_gamma, n_step = effective_qrsac_horizon(cfg)
+    qrsac_burn_in, qrsac_train_len = effective_qrsac_sequence(cfg)
     ppo_gamma, ppo_gae_lambda = effective_ppo_horizon(cfg)
 
     device = select_device(args.device)
@@ -2600,7 +2606,7 @@ def main():
             "replay=%d compile=%s compile_mode=%s "
             "gamma=%.6f n_step=%d horizon_from_control_dt=%s",
             env_cfg.get("steering_action_mode", "delta"),
-            float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
+            float(env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)),
             1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
             int(args.total_transitions),
             "first_projected_footprint_edge_intersects_mapped_wall",
@@ -2624,7 +2630,7 @@ def main():
             "compile=%s compile_mode=%s "
             "gamma=%.6f gae_lambda=%.6f horizon_from_control_dt=%s",
             env_cfg.get("steering_action_mode", "delta"),
-            float(env_cfg.get("steering_delta_max_rad", math.pi / 60.0)),
+            float(env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)),
             1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
             int(args.total_transitions),
             "first_projected_footprint_edge_intersects_mapped_wall",
@@ -2701,6 +2707,8 @@ def main():
             batch_size=args.batch_size,
             log=log,
             allow_fallback=True,
+            burn_in=qrsac_burn_in,
+            train_len=qrsac_train_len,
         )
         args.buffer_capacity = selected_capacity
     else:
@@ -2754,7 +2762,7 @@ def main():
                 env_cfg.get("steering_action_mode", STEERING_ACTION_MODE)
             ),
             expected_steering_delta_max_rad=float(
-                env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
+                env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)
             ),
         )
     elif getattr(args, "init_checkpoint", None) is not None:
@@ -2791,7 +2799,7 @@ def main():
                 env_cfg.get("steering_action_mode", STEERING_ACTION_MODE)
             ),
             expected_steering_delta_max_rad=float(
-                env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
+                env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)
             ),
             device=device,
             log=log,
@@ -2834,7 +2842,7 @@ def main():
                     env_cfg.get("steering_action_mode", STEERING_ACTION_MODE)
                 ),
                 expected_steering_delta_max_rad=float(
-                    env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
+                    env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)
                 ),
             )
 
@@ -2930,7 +2938,7 @@ def main():
     last_log_gradient_updates = 0
     last_log_sampled_rows = 0
     eval_state: dict = {}
-    num_sequences = max(1, int(args.batch_size) // REPLAY_TRAIN_LEN)
+    num_sequences = max(1, int(args.batch_size) // qrsac_train_len)
     # Cold-start only: one-shot flags begin unset; systemd restart => new process.
     protocol_state = initial_training_protocol_state(algorithm)
     lidar_aug_enabled = bool(cfg["model"]["lidar_aug_enabled"])
@@ -3276,7 +3284,7 @@ def main():
                             }
                         )
                     gradient_updates += 1
-                    sampled_replay_rows += num_sequences * REPLAY_TRAIN_LEN
+                    sampled_replay_rows += num_sequences * qrsac_train_len
                     policy_loss_accum += losses.policy_loss
                     critic_loss_accum += losses.critic_loss
                     loss_count += 1

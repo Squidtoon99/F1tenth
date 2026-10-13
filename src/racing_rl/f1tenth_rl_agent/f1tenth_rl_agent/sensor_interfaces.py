@@ -10,6 +10,8 @@ from f1tenth_policy.layout import (  # noqa: F401
     ARTIFACT_SCOPE_SIM_TRAINING,
     CONTROL_HZ,
     GRAVITY_MS2,
+    HISTORY_STRIDE,
+    LONG_HISTORY,
     GRU_HIDDEN_DIM,
     IMU_DIM,
     IMU_START,
@@ -33,6 +35,7 @@ from f1tenth_policy.layout import (  # noqa: F401
     STEER_T,
     STEER_T1,
     STEER_T2,
+    STEER_HISTORY as LAYOUT_STEER_HISTORY,
     STEERING_ACTION_MODE,
     STEERING_DELTA_MAX_RAD,
     THROTTLE_CURRENT,
@@ -57,7 +60,7 @@ TOPIC_SCAN = "/scan"
 TOPIC_IMU = "/sensors/imu/raw"
 TOPIC_ODOM = "/odom"
 
-STEER_HISTORY = 4
+STEER_HISTORY = LAYOUT_STEER_HISTORY
 HIDDEN_LAYERS = [1024, 1024, 1024]
 ACT_LIMIT = 1.0
 CLIP_ACTIONS = 1.0

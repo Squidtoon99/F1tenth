@@ -51,7 +51,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("i_slew_a_per_s", 200.0)
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
-        self.declare_parameter("steering_delta_max_rad", math.pi / 60.0)
+        self.declare_parameter("steering_delta_max_rad", si.STEERING_DELTA_MAX_RAD)
         self.declare_parameter("steering_angle_to_servo_gain", -1.2135)
         self.declare_parameter("steering_angle_to_servo_offset", 0.4495)
         self.declare_parameter("imu_accel_to_ms2", 9.80665)

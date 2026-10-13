@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 
 import torch
@@ -10,6 +9,7 @@ import torch.nn as nn
 
 from f1tenth_contract import validate_policy_artifact
 from f1tenth_policy import (
+    STEERING_DELTA_MAX_RAD,
     ObsNormalizer as SharedObsNormalizer,
     SquashedGaussianLidarGRUActor,
     actor_from_architecture,
@@ -126,7 +126,7 @@ def load_sensor_actor(
     device: torch.device,
     *,
     expected_steering_action_mode: str = "delta",
-    expected_steering_delta_max_rad: float | None = math.pi / 60.0,
+    expected_steering_delta_max_rad: float | None = STEERING_DELTA_MAX_RAD,
 ) -> SquashedGaussianLidarGRUActor:
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     architecture = payload.get("actor_architecture")
@@ -159,7 +159,7 @@ def load_sensor_obs_norm(
     clip: float,
     *,
     expected_steering_action_mode: str = "delta",
-    expected_steering_delta_max_rad: float | None = math.pi / 60.0,
+    expected_steering_delta_max_rad: float | None = STEERING_DELTA_MAX_RAD,
 ) -> ObsNormalizer:
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     architecture = payload.get("actor_architecture")

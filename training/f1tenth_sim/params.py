@@ -55,6 +55,7 @@ class SimParams:
     steering_action_mode: wp.int32
     steering_delta_max: wp.float32
     command_delay_substeps: wp.int32
+    history_stride: wp.int32
 
 
 @dataclass
@@ -86,7 +87,7 @@ class VehicleParams:
     t_delta: float = STEER_LAG_S
     steer_gain: float = STEER_GAIN_SKIDPAD
     steering_action_mode: str = "delta"
-    steering_delta_max: float = math.pi / 60.0
+    steering_delta_max: float = math.pi / 120.0
 
     gravity: float = GRAVITY
 
@@ -127,6 +128,9 @@ class VehicleParams:
         params.steering_action_mode = int(self.steering_action_mode == "delta")
         params.steering_delta_max = self.steering_delta_max
         params.command_delay_substeps = int(self.command_delay_substeps)
+        if control_dt <= 0.0:
+            raise ValueError("control_dt must be positive")
+        params.history_stride = max(1, int(round(0.1 / float(control_dt))))
         return params
 
     @classmethod

@@ -14,6 +14,7 @@ from f1tenth_policy.current import (
 )
 from f1tenth_policy.layout import (
     CONTROL_HZ,
+    HISTORY_STRIDE,
     LIDAR_ANGLE_INCREMENT,
     LIDAR_ANGLE_MIN,
     LIDAR_DIM,
@@ -24,6 +25,7 @@ from f1tenth_policy.layout import (
     STEER_DELTA0,
     STEER_DELTA1,
     STEER_DELTA2,
+    STEER_HISTORY,
     STEER_T,
     STEER_T1,
     STEER_T2,
@@ -51,8 +53,10 @@ from f1tenth_rl_agent.sensor_preprocessing import (
 
 def test_control_rate_and_preprocessing_version_match_training():
     assert CONTROL_HZ == pytest.approx(20.0)
-    assert OBS_PREPROCESSING_VERSION == 4
-    assert STEERING_DELTA_MAX_RAD == pytest.approx(math.pi / 60.0)
+    assert OBS_PREPROCESSING_VERSION == 5
+    assert HISTORY_STRIDE == 2
+    assert STEER_HISTORY == 7
+    assert STEERING_DELTA_MAX_RAD == pytest.approx(math.pi / 120.0)
     assert MAX_STEER_RAD == pytest.approx(0.33)
     assert TWIST_VX_SIGN_BODY_FORWARD == pytest.approx(1.0)
 
@@ -100,7 +104,10 @@ def test_vesc_speed_current_and_command_history_match_training_pack():
     vesc_current = applied_current_fraction(
         signed_a, TRAINING_I_DRIVE_MAX_A, TRAINING_I_BRAKE_MAX_A
     )
-    steer_hist = np.array([0.12, 0.09, 0.03, 0.00], dtype=np.float32)
+    steer_hist = np.array(
+        [0.12, 0.105, 0.09, 0.06, 0.03, 0.015, 0.00], dtype=np.float32
+    )
+    assert steer_hist.size == STEER_HISTORY
     obs = pack_actor_observation(
         lidar, imu, speed, vesc_current, 0.30, 0.10, steer_hist
     )

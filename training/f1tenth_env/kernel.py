@@ -24,7 +24,8 @@ OBS_LOAD_START = 380
 OBS_OPPONENT_START = 384
 MAX_FORWARD_SEGMENTS = 2048
 ACTION_HISTORY = 4
-STEER_HISTORY = 4
+STEER_HISTORY = 8
+LONG_HISTORY = 4
 
 
 @wp.struct
@@ -1112,7 +1113,7 @@ def reset_pair(
     long0 = wp.float32(0.0)
     if seed_brake_history:
         long0 = -1.0
-    for longitudinal_index in range(2):
+    for longitudinal_index in range(LONG_HISTORY):
         env.executed_longitudinal_history[env_id, longitudinal_index] = long0
         env.opponent_executed_longitudinal_history[env_id, longitudinal_index] = 0.0
     for steer_index in range(STEER_HISTORY):
@@ -1175,9 +1176,9 @@ def push_executed_steer(
     env_id: wp.int32,
     steer: wp.float32,
 ):
-    history[env_id, 3] = history[env_id, 2]
-    history[env_id, 2] = history[env_id, 1]
-    history[env_id, 1] = history[env_id, 0]
+    for shift in range(STEER_HISTORY - 1):
+        dst = STEER_HISTORY - 1 - shift
+        history[env_id, dst] = history[env_id, dst - 1]
     history[env_id, 0] = steer
 
 
@@ -1187,7 +1188,9 @@ def push_executed_longitudinal(
     env_id: wp.int32,
     longitudinal: wp.float32,
 ):
-    history[env_id, 1] = history[env_id, 0]
+    for shift in range(LONG_HISTORY - 1):
+        dst = LONG_HISTORY - 1 - shift
+        history[env_id, dst] = history[env_id, dst - 1]
     history[env_id, 0] = longitudinal
 
 

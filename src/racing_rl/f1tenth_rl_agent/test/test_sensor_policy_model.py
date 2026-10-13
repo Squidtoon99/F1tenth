@@ -134,7 +134,7 @@ def test_delta_sensor_loader_rejects_absolute_or_wrong_delta_metadata():
             absolute,
             expected_architecture=actor.actor_architecture,
             expected_steering_action_mode="delta",
-            expected_steering_delta_max_rad=0.05235987755982988,
+            expected_steering_delta_max_rad=float(si.STEERING_DELTA_MAX_RAD),
         )
     delta = _sensor_payload(
         actor,
@@ -146,7 +146,7 @@ def test_delta_sensor_loader_rejects_absolute_or_wrong_delta_metadata():
             delta,
             expected_architecture=actor.actor_architecture,
             expected_steering_action_mode="delta",
-            expected_steering_delta_max_rad=0.05235987755982988,
+            expected_steering_delta_max_rad=float(si.STEERING_DELTA_MAX_RAD),
         )
 
 

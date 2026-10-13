@@ -29,7 +29,7 @@ _C_D = 0.014
 _LAMBDA_S = 0.25
 _LAMBDA_H = 0.5
 _MAX_STEER = 0.33
-_DELTA_MAX = math.pi / 60.0
+_DELTA_MAX = math.pi / 120.0
 
 
 def _lee_terms_from_thetas(
@@ -126,6 +126,17 @@ def _step_steers(env: F1tenthEnv, steers: list[float]) -> list[tuple[float, floa
     return emitted
 
 
+def _cadence_lee_kwargs(control_dt: float) -> dict[str, float]:
+    cadence = float(control_dt) / 0.1
+    return {
+        "lambda_s": _LAMBDA_S,
+        "lambda_h": _LAMBDA_H,
+        "c_s": _C_S / cadence,
+        "c_o": _C_O * cadence,
+        "c_d": _C_D * cadence,
+    }
+
+
 def _assert_terms_match(
     emitted: list[tuple[float, float]],
     expected: list[tuple[float, float]],
@@ -151,7 +162,9 @@ def test_delta_lee_zero_and_constant_command(warp_runtime):
         env.reset(seed=0)
         actions = [0.0, 1.0, 1.0, 1.0, 0.0]
         emitted = _step_steers(env, actions)
-        expected = _lee_terms_from_thetas(_realized_thetas(actions))
+        expected = _lee_terms_from_thetas(
+            _realized_thetas(actions), **_cadence_lee_kwargs(env.control_dt)
+        )
         _assert_terms_match(emitted, expected)
         assert emitted[1][0] == pytest.approx(-_LAMBDA_S * _DELTA_MAX)
         assert emitted[2][0] == pytest.approx(-_LAMBDA_S * _DELTA_MAX)
@@ -168,7 +181,9 @@ def test_delta_lee_same_sign_does_not_activate_history(warp_runtime):
         env.reset(seed=1)
         actions = [1.0, 1.0]
         emitted = _step_steers(env, actions)
-        expected = _lee_terms_from_thetas(_realized_thetas(actions))
+        expected = _lee_terms_from_thetas(
+            _realized_thetas(actions), **_cadence_lee_kwargs(env.control_dt)
+        )
         _assert_terms_match(emitted, expected)
         assert all(h == pytest.approx(0.0) for _, h in emitted)
         assert emitted[0][0] < 0.0
@@ -186,7 +201,9 @@ def test_delta_lee_reversal_activates_history(warp_runtime):
         actions = [1.0, 1.0, -1.0, -1.0]
         emitted = _step_steers(env, actions)
         thetas = _realized_thetas(actions)
-        expected = _lee_terms_from_thetas(thetas)
+        expected = _lee_terms_from_thetas(
+            thetas, **_cadence_lee_kwargs(env.control_dt)
+        )
         _assert_terms_match(emitted, expected)
         assert emitted[0][1] == pytest.approx(0.0)
         assert emitted[2][1] < 0.0
@@ -206,7 +223,10 @@ def test_episode_reset_clears_steering_history(warp_runtime):
 
         env.reset(seed=5)
         after = _step_steers(env, [1.0, 1.0, -1.0])
-        expected = _lee_terms_from_thetas(_realized_thetas([1.0, 1.0, -1.0]))
+        expected = _lee_terms_from_thetas(
+            _realized_thetas([1.0, 1.0, -1.0]),
+            **_cadence_lee_kwargs(env.control_dt),
+        )
         _assert_terms_match(after, expected)
         assert after[0][1] == pytest.approx(0.0)
         assert after[0][0] == pytest.approx(-_LAMBDA_S * _DELTA_MAX)
@@ -214,7 +234,7 @@ def test_episode_reset_clears_steering_history(warp_runtime):
         env.close()
 
 
-def test_delta_steering_integrates_three_degrees_and_saturates(warp_runtime):
+def test_delta_steering_integrates_rate_limit_and_saturates(warp_runtime):
     cfg = _build_cfg()
     env = _make_env(cfg)
     try:
@@ -263,7 +283,8 @@ def test_delta_reset_clears_realized_steering_and_history(warp_runtime):
         env.reset(seed=9)
         assert float(env._ego.tensor["steer"][0]) == pytest.approx(0.0)
         assert torch.equal(
-            env._env.tensor["executed_steer_history"], torch.zeros(1, 4)
+            env._env.tensor["executed_steer_history"],
+            torch.zeros(1, env._env.tensor["executed_steer_history"].shape[1]),
         )
     finally:
         env.close()
@@ -276,7 +297,9 @@ def test_delta_lee_rewards_use_realized_absolute_steering(warp_runtime):
         env.reset(seed=10)
         actions = [1.0, 1.0, -1.0]
         emitted = _step_steers(env, actions)
-        expected = _lee_terms_from_thetas(_realized_thetas(actions))
+        expected = _lee_terms_from_thetas(
+            _realized_thetas(actions), **_cadence_lee_kwargs(env.control_dt)
+        )
         _assert_terms_match(emitted, expected)
         history = env._env.tensor["executed_steer_history"][0]
         assert history[0] == pytest.approx(_DELTA_MAX, abs=1e-6)

@@ -1,5 +1,7 @@
 """Default training configuration — sole Lee / ADR-0011 sensor path."""
 
+import math
+
 DEFAULT_CONFIG = {
     "config_version": 4,
     "policy_format_version": 4,
@@ -38,7 +40,7 @@ DEFAULT_CONFIG = {
         "sim_dt": 0.005,
         "clip_actions": 1.0,
         "steering_action_mode": "delta",
-        "steering_delta_max_rad": 0.05235987755982988,
+        "steering_delta_max_rad": math.pi / 120.0,
         "simulate_action_latency": False,
         "term_speed_threshold": 0.2,
         "term_not_moving_time_s": 2.0,
@@ -259,10 +261,32 @@ DEFAULT_CONFIG = {
 
 
 REFERENCE_CONTROL_DT_S = 0.1
+REFERENCE_STEERING_DELTA_MAX_RAD = math.pi / 60.0
+REFERENCE_QRSAC_BURN_IN = 16
+REFERENCE_QRSAC_TRAIN_LEN = 32
 
 
 def control_dt_s(env_cfg: dict) -> float:
     return float(env_cfg["sim_dt"]) * float(env_cfg["control_interval"])
+
+
+def history_stride_for_dt(
+    dt_s: float,
+    ref_dt_s: float = REFERENCE_CONTROL_DT_S,
+) -> int:
+    if dt_s <= 0.0 or ref_dt_s <= 0.0:
+        raise ValueError("control dt must be positive")
+    return max(1, int(round(float(ref_dt_s) / float(dt_s))))
+
+
+def steering_delta_max_for_dt(
+    dt_s: float,
+    ref_rad: float = REFERENCE_STEERING_DELTA_MAX_RAD,
+    ref_dt_s: float = REFERENCE_CONTROL_DT_S,
+) -> float:
+    if dt_s <= 0.0 or ref_dt_s <= 0.0:
+        raise ValueError("control dt must be positive")
+    return float(ref_rad) * (float(dt_s) / float(ref_dt_s))
 
 
 def rescale_gamma_for_dt(
@@ -292,6 +316,18 @@ def effective_qrsac_horizon(cfg: dict) -> tuple[float, int]:
         dt = control_dt_s(cfg["env"])
         return rescale_gamma_for_dt(gamma, dt), rescale_n_step_for_dt(n_step, dt)
     return gamma, n_step
+
+
+def effective_qrsac_sequence(cfg: dict) -> tuple[int, int]:
+    burn_in = REFERENCE_QRSAC_BURN_IN
+    train_len = REFERENCE_QRSAC_TRAIN_LEN
+    if bool(cfg["model"].get("horizon_from_control_dt", True)):
+        dt = control_dt_s(cfg["env"])
+        return (
+            rescale_n_step_for_dt(burn_in, dt),
+            rescale_n_step_for_dt(train_len, dt),
+        )
+    return burn_in, train_len
 
 
 def effective_ppo_horizon(cfg: dict) -> tuple[float, float]:

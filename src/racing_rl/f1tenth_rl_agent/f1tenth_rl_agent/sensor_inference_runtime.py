@@ -76,9 +76,9 @@ class SensorInferenceRuntime:
         )
         self.realized_steer_rad = 0.0
         self._lidar_buf = np.full(si.LIDAR_DIM, si.LIDAR_RANGE_MAX, dtype=np.float32)
-        self._steer_hist_view = np.zeros(4, dtype=np.float32)
+        self._steer_hist_view = np.zeros(si.STEER_HISTORY, dtype=np.float32)
         self._executed_steer_history = np.zeros(si.STEER_HISTORY, dtype=np.float32)
-        self._prev_applied_long = 0.0
+        self._executed_long_history = np.zeros(si.LONG_HISTORY, dtype=np.float32)
         self._action_host = np.zeros(si.NUM_ACTIONS, dtype=np.float32)
         self._hidden = actor.initial_hidden(1, device=device, dtype=torch.float32)
         self._obs_device = torch.zeros(
@@ -131,8 +131,8 @@ class SensorInferenceRuntime:
     def reset_hidden(self) -> None:
         self._hidden.zero_()
         self.realized_steer_rad = 0.0
-        self._prev_applied_long = 0.0
         self._executed_steer_history.fill(0.0)
+        self._executed_long_history.fill(0.0)
 
     def pack_observation(
         self,
@@ -160,28 +160,28 @@ class SensorInferenceRuntime:
             imu_interval, imu_cal, freeze_const_channels=True
         )
         hist = self._executed_steer_history
+        long_hist = self._executed_long_history
         self._steer_hist_view[0] = applied_steer_rad
-        self._steer_hist_view[1] = hist[0]
-        self._steer_hist_view[2] = hist[1]
-        self._steer_hist_view[3] = hist[2]
+        self._steer_hist_view[1:] = hist[: si.STEER_HISTORY - 1]
         raw_obs = self._obs_host_np
+        stride = max(1, int(si.HISTORY_STRIDE))
+        throttle_pred = float(long_hist[stride - 1])
         pack_actor_observation(
             self._lidar_buf,
             actor_imu,
             speed,
             vesc_current,
             applied_long,
-            self._prev_applied_long,
+            throttle_pred,
             self._steer_hist_view,
             out=raw_obs,
         )
         finite = bool(observation_is_finite(raw_obs))
         if finite:
-            hist[3] = hist[2]
-            hist[2] = hist[1]
-            hist[1] = hist[0]
+            hist[1:] = hist[:-1]
             hist[0] = applied_steer_rad
-            self._prev_applied_long = applied_long
+            long_hist[1:] = long_hist[:-1]
+            long_hist[0] = applied_long
         return raw_obs, actor_imu, raw_imu, finite
 
     def realize_action(self, action_np: np.ndarray) -> RealizedActuatorCommand:

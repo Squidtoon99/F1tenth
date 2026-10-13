@@ -113,7 +113,7 @@ def test_actor_observation_layout_offsets():
     imu = np.array([1, 2, 9.81, 0, 0, 0.3], dtype=np.float32)
     steer_hist = np.array([-0.2, 0.1, 0.0, 0.05], dtype=np.float32)
     obs = pack_actor_observation(
-        lidar, imu, 3.0, 0.4, 0.5, 0.1, steer_hist
+        lidar, imu, 3.0, 0.4, 0.5, 0.1, steer_hist, stride=1
     )
     assert obs.shape == (si.NUM_OBS,)
     np.testing.assert_allclose(obs[:si.LIDAR_DIM], lidar)
@@ -156,7 +156,7 @@ def test_actor_layout_offsets_match_training_fixture():
     assert si.STEER_DELTA0 == layout["steer_delta0"]
     assert si.STEER_DELTA1 == layout["steer_delta1"]
     assert si.STEER_DELTA2 == layout["steer_delta2"]
-    assert si.OBS_PREPROCESSING_VERSION == 4
+    assert si.OBS_PREPROCESSING_VERSION == 5
 
 
 def test_deploy_shaped_scan_replay_matches_training_layout():
@@ -174,7 +174,7 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     assert si.THROTTLE_CURRENT == 1089
     assert si.STEER_T == 1091
     assert si.STEER_DELTA2 == 1096
-    assert si.OBS_PREPROCESSING_VERSION == 4
+    assert si.OBS_PREPROCESSING_VERSION == 5
     assert si.ACTOR_LAYOUT_VERSION == 2
 
     rng = np.random.default_rng(0)
@@ -205,7 +205,9 @@ def test_deploy_shaped_scan_replay_matches_training_layout():
     odom_vx = 1.25
     speed = twist_vx_sign * odom_vx
     vesc_current_a = 1.75
-    steer_hist = np.array([-0.1, 0.15, 0.0, 0.0], dtype=np.float32)
+    steer_hist = np.array(
+        [-0.1, 0.0, 0.15, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+    )
     obs = pack_actor_observation(
         lidar, actor_imu, speed, vesc_current_a, 0.2, -0.05, steer_hist
     )
