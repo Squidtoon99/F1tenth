@@ -11,6 +11,7 @@
 # Commands:
 #   tools/sim.sh up        # import sources, build, launch the agent graph
 #   tools/sim.sh validate  # run the closed-loop acceptance gate (in the agent container)
+#   tools/sim.sh certify   # one-shot: up → score laps/crashes/lap time → down
 #   tools/sim.sh logs      # follow sim bridge logs
 #   tools/sim.sh down      # stop everything
 #
@@ -22,26 +23,38 @@
 #   MODE            "dev" (live source, default) or "release" (built runtime image)
 #   ROS_DOMAIN_ID   DDS domain shared by both containers (default: 42)
 #
-# The vehicle stack (default) is the release gate: it runs the exact on-car C++
-# autonomy graph (vehicle_obs -> policy_inference -> drive) against the gym's
-# ground-truth odom, with the 6-dim opponent block zeroed for solo racing.
-# STACK=sensor_policy is a courtyard smoke loop, not the 3-lap IV_2026 gate.
+# The vehicle stack is the legacy 392-D C++ gate (vehicle_obs -> policy_inference
+# -> drive). STACK=sensor_policy is the 1,097-D on-car graph
+# (sensor_racer -> rl_current_gate -> gym_sensor_bridge -> /drive) on courtyard_2.
 set -eo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
 COMPOSE_FILE="deploy/docker/docker-compose.sim.yml"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+# Keep gym inference off the training GPU (entropy-ab and overnight runs).
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 CKPT="${CKPT:-policy.pt}"
 STACK="${STACK:-vehicle}"
 MODE="${MODE:-dev}"
 
-# Observation dim the running graph must emit: solo racing uses the 390-dim 1v1
-# layout with the opponent block zeroed, so the validator expects 390.
-EXPECT_OBS_DIM="${EXPECT_OBS_DIM:-390}"
+# Observation dim: 392-D vehicle graph (legacy) or 1097-D sensor_racer.
+EXPECT_OBS_DIM="${EXPECT_OBS_DIM:-}"
 
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+stop_stray_agents() {
+  # compose run one-offs are not compose services; `compose down` leaves them
+  # on ROS_DOMAIN_ID and they steal /drive + validate's docker exec target.
+  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  local ids=""
+  ids="$(docker ps -aq --filter name=docker-agent-run 2>/dev/null || true)"
+  if [ -n "${ids}" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f ${ids} >/dev/null 2>&1 || true
+  fi
+}
 
 check_stack() {
   case "${STACK}" in
@@ -75,8 +88,14 @@ import_sim_sources() {
   else
     echo "==> Importing gym bridge + engine (vcs import sim < sim/f1tenth_gym_ros.repos)"
     # vcstool lives in the base image; run it there so the host needs nothing extra.
-    docker run --rm -v "${PWD}:/ws" -w /ws f1tenth-base:latest \
-      bash -lc "vcs import sim < sim/f1tenth_gym_ros.repos"
+    # Mount only sim/ so a git worktree's .git pointer (outside this tree) is not
+    # visible inside the container.
+    if [ -e sim/f1tenth_gym_ros ]; then
+      docker run --rm -v "${PWD}/sim:/sim" -w /sim f1tenth-base:latest \
+        bash -lc "rm -rf /sim/f1tenth_gym_ros"
+    fi
+    docker run --rm -v "${PWD}/sim:/sim" -w /sim f1tenth-base:latest \
+      bash -lc "vcs import . < f1tenth_gym_ros.repos"
   fi
   # vcs import via docker leaves root-owned files; map wiring needs to write.
   if [ ! -w sim/f1tenth_gym_ros/maps ] || [ ! -w sim/f1tenth_gym_ros/config ]; then
@@ -137,7 +156,7 @@ replacements = {
     "sx": f"{sx:.6f}",
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
-    "async_mode": "False",
+    "async_mode": "True",
     "kb_teleop": "False",
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
@@ -155,6 +174,23 @@ for key, value in replacements.items():
         raise SystemExit(f"{cfg_path}: failed to set {key}")
 open(cfg_path, "w", encoding="utf-8").write(text)
 print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
+PY
+  # The fork's async publisher runs at 250 Hz and starves the 20 Hz racer timer.
+  python3 - sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "self.timer = self.create_timer(0.004, self.timer_callback)"
+new = "self.timer = self.create_timer(0.05, self.timer_callback)"
+if old in text:
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print("==> gym lidar publish timer 250 Hz -> 20 Hz")
+elif new in text:
+    print("==> gym lidar publish timer already 20 Hz")
+else:
+    raise SystemExit(f"{path}: async lidar timer string not found")
 PY
 }
 
@@ -204,8 +240,9 @@ up() {
   echo "==> Building the agent workspace (racing_rl + control + bringup + common)"
   compose run --rm --entrypoint bash agent -lc "
     source /opt/ros/humble/setup.bash &&
-    colcon build --symlink-install \
-      --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control f1tenth_bringup f1tenth_common"
+    colcon build --symlink-install --base-paths src libs \
+      --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
+        f1tenth_bringup f1tenth_common f1tenth_policy"
   echo "==> Launching the ${STACK} agent graph (policy: /policies/${CKPT})"
   echo "    Foxglove: ws://localhost:8765   |   RViz over VNC: http://localhost:8080/vnc.html"
   compose run --rm --service-ports --entrypoint bash agent -lc "
@@ -215,25 +252,139 @@ up() {
 }
 
 validate() {
-  [ "${STACK}" = "vehicle" ] || \
-    die "validate is vehicle-only (got STACK=${STACK}); do not use it for sensor_policy"
-  echo "==> Closed-loop acceptance gate (${STACK} stack, expect ${EXPECT_OBS_DIM}-dim obs)"
-  compose run --rm --entrypoint bash agent -lc "
+  check_stack
+  local expect="${EXPECT_OBS_DIM}"
+  local script="src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_gym.py"
+  if [ "${STACK}" = "sensor_policy" ]; then
+    expect="${expect:-1097}"
+    script="src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_sensor_policy.py"
+  else
+    expect="${expect:-390}"
+  fi
+  echo "==> Closed-loop acceptance gate (${STACK} stack, expect ${expect}-dim obs)"
+  # Prefer the live graph container so DDS stays on-box. A second compose-run
+  # agent on the docker bridge only sees a few Hz of /desired.
+  local agent_cid=""
+  agent_cid="$(docker ps --filter name=f1tenth-gym-agent --filter status=running --format '{{.ID}}' | head -1)"
+  if [ -z "${agent_cid}" ]; then
+    agent_cid="$(docker ps --filter ancestor=f1tenth-dev:latest --filter status=running --format '{{.ID}}' | head -1)"
+  fi
+  if [ -n "${agent_cid}" ]; then
+    echo "==> Running gate inside agent container ${agent_cid}"
+    docker exec \
+      -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+      -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
+      "${agent_cid}" bash -lc "
+        source /opt/ros/humble/setup.bash &&
+        source /ws/install/setup.bash &&
+        python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
+    return
+  fi
+  compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+    --entrypoint bash agent -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
-    python3 src/racing_rl/f1tenth_rl_agent/test/validate_closed_loop_gym.py \
-      --expect-obs-dim ${EXPECT_OBS_DIM} \
-      ${VALIDATE_ARGS:-}"
+    python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
+}
+
+wait_sim_ready() {
+  echo "==> Waiting for gym bridge"
+  local cid=""
+  local i
+  for i in $(seq 1 90); do
+    cid="$(compose ps -q sim 2>/dev/null || true)"
+    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in asynchronous mode"; then
+      echo "==> Gym bridge ready"
+      return 0
+    fi
+    sleep 2
+  done
+  die "gym bridge did not become ready"
+}
+
+wait_graph_ready() {
+  local cid="$1"
+  local needle="sensor_racer 1097-D"
+  if [ "${STACK}" = "vehicle" ]; then
+    needle="policy_inference"
+  fi
+  echo "==> Waiting for graph (${needle})"
+  local i
+  for i in $(seq 1 90); do
+    if docker logs "${cid}" 2>&1 | grep -q "${needle}"; then
+      echo "==> Graph ready"
+      return 0
+    fi
+    sleep 2
+  done
+  die "agent graph did not become ready (${needle})"
+}
+
+certify() {
+  check_stack
+  check_mode
+  check_checkpoint
+  import_sim_sources
+  if [ "${STACK}" = "sensor_policy" ]; then
+    wire_courtyard_gym
+  else
+    restore_vehicle_gym
+    verify_track_assets
+  fi
+  echo "==> Certify ${STACK} ${CKPT} (CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES}')"
+  compose down >/dev/null 2>&1 || true
+  stop_stray_agents
+  compose up -d novnc sim
+  if [ "${MODE}" = "dev" ]; then
+    echo "==> Building the agent workspace"
+    compose run --rm --entrypoint bash agent -lc "
+      source /opt/ros/humble/setup.bash &&
+      colcon build --symlink-install --base-paths src libs \
+        --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
+          f1tenth_bringup f1tenth_common f1tenth_policy"
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint bash agent -lc "
+      source /opt/ros/humble/setup.bash &&
+      source install/setup.bash &&
+      $(agent_launch_cmd)"
+  else
+    compose run -d --name f1tenth-gym-agent --service-ports runtime \
+      ros2 launch f1tenth_bringup sim.launch.py \
+      stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
+  fi
+  # Start the agent while gym is still coming up so FastDDS meets the bridge
+  # as a late-starting publisher, then wait for both before scoring.
+  wait_graph_ready f1tenth-gym-agent
+  wait_sim_ready
+  local rc=0
+  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
+  validate || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "==> Certify failed; last gym / agent logs:" >&2
+    compose logs --tail 80 sim >&2 || true
+    docker logs --tail 80 f1tenth-gym-agent >&2 || true
+  fi
+  stop_stray_agents
+  compose down >/dev/null 2>&1 || true
+  if [ "${STACK}" != "sensor_policy" ]; then
+    restore_vehicle_gym
+  fi
+  return "${rc}"
+}
+
+down() {
+  stop_stray_agents
+  compose down
 }
 
 CMD="${1:-up}"
 case "${CMD}" in
   up)       up ;;
   validate) validate ;;
-  down)     compose down ;;
+  certify)  certify ;;
+  down)     down ;;
   logs)     compose logs -f sim ;;
   *)
-    echo "usage: tools/sim.sh [up|validate|logs|down]" >&2
+    echo "usage: tools/sim.sh [up|validate|certify|logs|down]" >&2
     echo "  env: STACK=vehicle|sensor_policy MODE=dev|release CHECKPOINT_DIR=/abs/dir CKPT=policy.pt" >&2
     exit 1
     ;;

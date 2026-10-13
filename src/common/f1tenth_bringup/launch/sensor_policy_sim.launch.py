@@ -51,6 +51,9 @@ def generate_launch_description() -> LaunchDescription:
                 "imu_gy_bias": 0.0,
                 "imu_gz_bias": 0.0,
                 "twist_vx_sign": 1.0,
+                "sensor_max_age_s": 1.0,
+                "publish_raw_observation": True,
+                "publish_diagnostics": True,
             },
         ],
     )
@@ -66,6 +69,7 @@ def generate_launch_description() -> LaunchDescription:
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
+                "rl_command_timeout_s": 1.0,
             },
         ],
     )
@@ -78,6 +82,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
+                "speed_scale": 5.0,
             },
         ],
     )

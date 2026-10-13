@@ -84,7 +84,8 @@ RUN mkdir -p src/localization/range_libc \
 RUN source /opt/ros/humble/setup.bash \
     && rosdep update \
     && (rosdep install --from-paths src libs --ignore-src -y -r || true) \
-    && colcon build --merge-install --packages-up-to f1tenth_bringup \
+    && colcon build --merge-install --base-paths src libs \
+      --packages-up-to f1tenth_bringup \
       --packages-ignore \
         range_lib particle_filter f1tenth_localization \
         f1tenth_rl_vehicle f1tenth_racing_algo f1tenth_planning \

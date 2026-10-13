@@ -113,14 +113,32 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    ./tools/test.sh --packages-select f1tenth_common f1tenth_rl_vehicle f1tenth_rl_agent f1tenth_control
    ```
 
-3. **Closed-loop gym gate (multi-container)** — the exact on-car C++ graph against
-   gym physics with a real checkpoint, then the automated acceptance validator:
+3. **Closed-loop gym gate (multi-container)** — pick the graph with `STACK`.
+   `STACK=vehicle` (default) is the 392-D C++ graph. `STACK=sensor_policy` is the
+   on-car 1,097-D graph (`sensor_racer` → `rl_current_gate` →
+   `gym_sensor_bridge` → `/drive`) on courtyard_2.
 
    ```bash
    CHECKPOINT_DIR=/abs/dir CKPT=policy.pt tools/sim.sh up      # (leave running)
    CHECKPOINT_DIR=/abs/dir CKPT=policy.pt \
      VALIDATE_ARGS="--duration-s 600 --min-samples 2000" tools/sim.sh validate
+   STACK=sensor_policy CHECKPOINT_DIR=/abs/dir CKPT=e2e_policy.pt tools/sim.sh up
+   STACK=sensor_policy CHECKPOINT_DIR=/abs/dir CKPT=e2e_policy.pt \
+     VALIDATE_ARGS="--duration-s 90 --min-samples 200" tools/sim.sh validate
    ```
+
+   Campaign winner, one command (checkpoint in, laps / crashes / lap times out):
+
+   ```bash
+   STACK=sensor_policy CHECKPOINT_DIR=/abs/dir CKPT=e2e_policy.pt tools/sim.sh certify
+   ```
+
+   `certify` waits for the gym bridge, scores the live graph, prints a
+   `SCORE_JSON` line (`laps`, `lap_times_s`, `mean_lap_s`, `crashes`,
+   `progress_m`, `desired_hz`), writes `gym_score.json`, then tears the stack
+   down. Gym SPEED mode maps normalized longitudinal × 5 onto m/s, so lap times
+   will not match the 80 A training plant (~5.3 s). Keep
+   `CUDA_VISIBLE_DEVICES=` so inference stays off the training GPU.
 
 4. **Runtime-image gym gate** — the same acceptance from the *built* generic image
    with the per-car overlay, so `/config` + `/policies` wiring is exercised:

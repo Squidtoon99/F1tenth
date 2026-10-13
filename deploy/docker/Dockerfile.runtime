@@ -21,7 +21,7 @@ RUN touch src/localization/range_libc/COLCON_IGNORE \
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && rosdep update \
     && rosdep install --from-paths src libs --ignore-src -y -r || true \
-    && colcon build --merge-install --packages-ignore range_lib
+    && colcon build --merge-install --base-paths src libs --packages-ignore range_lib
 
 # ---- runtime stage: only the built install + entrypoint ----
 FROM f1tenth-base:latest AS runtime

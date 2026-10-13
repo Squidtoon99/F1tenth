@@ -8,6 +8,7 @@ SENSOR_POLICY_SIM = BRINGUP / "launch" / "sensor_policy_sim.launch.py"
 SIM_LAUNCH = BRINGUP / "launch" / "sim.launch.py"
 SENSOR_POLICY_LAUNCH = BRINGUP / "launch" / "sensor_policy.launch.py"
 SIM_SH = REPO / "tools" / "sim.sh"
+COMPOSE_SIM = REPO / "deploy" / "docker" / "docker-compose.sim.yml"
 CENTERLINE = REPO / "training" / "assets" / "courtyard_2_centerline.csv"
 SETUP_PY = (
     REPO / "src" / "racing_rl" / "f1tenth_rl_agent" / "setup.py"
@@ -91,6 +92,12 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["imu_gyro_to_rads"] == 1.0
     assert racer["imu_ax_bias"] == 0.0
     assert racer["twist_vx_sign"] == 1.0
+    assert racer["sensor_max_age_s"] == 1.0
+    assert gate["rl_command_timeout_s"] == 1.0
+    bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
+    assert bridge["speed_scale"] == 5.0
+    assert racer["publish_raw_observation"] is True
+    assert racer["publish_diagnostics"] is True
     assert '"i_drive_max_a"' in source
     assert 'default_value="80.0"' in source
     assert 'default_value="40.0"' in source
@@ -125,7 +132,7 @@ def test_gym_sensor_bridge_is_registered():
     )
 
 
-def test_sim_sh_sensor_policy_wires_courtyard_and_keeps_validate_vehicle():
+def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     source = SIM_SH.read_text()
     sx, sy, stheta = _courtyard_spawn()
 
@@ -134,7 +141,27 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_keeps_validate_vehicle():
     assert "courtyard_2.yaml" in source
     assert "courtyard_2.png" in source
     assert "courtyard_2_centerline.csv" in source
-    assert "validate is vehicle-only" in source
+    assert "validate_closed_loop_sensor_policy.py" in source
+    assert "certify" in source
+    assert "1097" in source
+    assert "stop_stray_agents" in source
+    assert "wait_sim_ready" in source
+    assert "wait_graph_ready f1tenth-gym-agent" in source
+    assert "Running in asynchronous mode" in source
+    assert "name=f1tenth-gym-agent" in source
+    assert "name=docker-agent-run" in source
+    assert "--json-out /ws/gym_score.json" in source
+    validator = (
+        REPO
+        / "src"
+        / "racing_rl"
+        / "f1tenth_rl_agent"
+        / "test"
+        / "validate_closed_loop_sensor_policy.py"
+    )
+    assert "_spin_until" in validator.read_text()
+    assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
+    assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02
     assert abs(stheta + 0.909) < 0.01

@@ -92,3 +92,29 @@ def test_artifact_validation_rejects_missing_or_invalid_current_slew():
             invalid,
             expected_architecture=actor.actor_architecture,
         )
+
+
+def test_artifact_validation_accepts_v3_tag_at_20hz():
+    torch.manual_seed(3)
+    actor = make_actor(ACTOR_OBS_DIM, 2, [64, 64], activation=nn.ReLU)
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, torch.device("cpu"))
+    payload = build_sensor_artifact_payload(
+        actor_state_dict=actor.state_dict(),
+        obs_norm=normalizer.state_dict(),
+        actor_architecture=actor.actor_architecture,
+        env_transitions=1000,
+    )
+    tagged = dict(payload)
+    tagged["observation_preprocessing_version"] = 3
+    tagged["control_hz"] = 20.0
+    validate_sensor_policy_artifact(
+        tagged,
+        expected_architecture=actor.actor_architecture,
+    )
+    too_old = dict(payload)
+    too_old["observation_preprocessing_version"] = 2
+    with pytest.raises(ValueError, match="observation_preprocessing_version"):
+        validate_sensor_policy_artifact(
+            too_old,
+            expected_architecture=actor.actor_architecture,
+        )

@@ -13,6 +13,7 @@ from f1tenth_rl_agent.sensor_preprocessing import (
     RawImuSample,
     actor_imu_from_interval,
     beam_angles_rad,
+    body_accel_to_driver,
     convert_raw_imu,
     driver_accel_to_body,
     pack_actor_observation,
@@ -62,6 +63,9 @@ def test_driver_accel_rotates_to_body_frame():
     ax_body, ay_body = driver_accel_to_body(1.0, 2.0)
     assert ax_body == pytest.approx(-2.0)
     assert ay_body == pytest.approx(1.0)
+    ax_driver, ay_driver = body_accel_to_driver(ax_body, ay_body)
+    assert ax_driver == pytest.approx(1.0)
+    assert ay_driver == pytest.approx(2.0)
 
 
 def test_actor_imu_rotates_after_driver_bias_correction():

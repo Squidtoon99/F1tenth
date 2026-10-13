@@ -277,6 +277,7 @@ calibration/test_warp_physics_verifier.py
 /sim/f1tenth_gym_ros/
 /sim/f1tenth_gym_ros_official/
 /sim/f1tenth_racetracks/
+gym_score.json
 
 # Local research notes and plots (not the training or ROS stacks)
 docs/research/

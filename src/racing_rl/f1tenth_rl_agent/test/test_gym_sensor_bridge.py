@@ -15,6 +15,11 @@ from sensor_msgs.msg import Imu  # noqa: E402
 from f1tenth_rl_agent import interfaces as ifc  # noqa: E402
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
 from f1tenth_rl_agent.gym_sensor_bridge_node import GymSensorBridgeNode  # noqa: E402
+from f1tenth_rl_agent.sensor_preprocessing import (  # noqa: E402
+    ImuCalibration,
+    RawImuSample,
+    actor_imu_from_interval,
+)
 
 
 def _spin_until(nodes, predicate, timeout_s=3.0):
@@ -111,7 +116,8 @@ def test_gym_sensor_bridge_publishes_si_imu_from_odom():
             odom_pub.publish(first)
             odom_pub.publish(second)
             return any(
-                abs(m.linear_acceleration.x - 5.0) < 1e-6
+                abs(m.linear_acceleration.y + 5.0) < 1e-6
+                and abs(m.linear_acceleration.x) < 1e-6
                 and abs(m.angular_velocity.z + 0.4) < 1e-6
                 for m in imus
             )
@@ -120,10 +126,28 @@ def test_gym_sensor_bridge_publishes_si_imu_from_odom():
         matched = next(
             m
             for m in imus
-            if abs(m.linear_acceleration.x - 5.0) < 1e-6
+            if abs(m.linear_acceleration.y + 5.0) < 1e-6
         )
+        assert matched.linear_acceleration.x == pytest.approx(0.0)
         assert matched.linear_acceleration.z == pytest.approx(si.GRAVITY_MS2)
         assert matched.angular_velocity.z == pytest.approx(-0.4)
+        actor_imu, _ = actor_imu_from_interval(
+            [
+                RawImuSample(
+                    stamp_s=0.0,
+                    ax=matched.linear_acceleration.x,
+                    ay=matched.linear_acceleration.y,
+                    az=matched.linear_acceleration.z,
+                    gx=matched.angular_velocity.x,
+                    gy=matched.angular_velocity.y,
+                    gz=matched.angular_velocity.z,
+                )
+            ],
+            ImuCalibration(accel_to_ms2=1.0, gyro_to_rads=1.0),
+        )
+        assert actor_imu[0] == pytest.approx(5.0)
+        assert actor_imu[1] == pytest.approx(0.0)
+        assert actor_imu[5] == pytest.approx(-0.4)
     finally:
         if helper is not None:
             helper.destroy_node()
@@ -166,7 +190,7 @@ def test_gym_sensor_bridge_maps_applied_to_drive():
         assert _spin_until([node, helper], publish_applied)
         drive = next(d.drive for d in drives if abs(d.drive.acceleration - 0.4) < 1e-6)
         assert drive.acceleration == pytest.approx(0.4)
-        assert drive.steering_angle == pytest.approx(-0.2)
+        assert drive.steering_angle == pytest.approx(-0.2 * si.MAX_STEER_RAD)
         assert drive.speed == pytest.approx(0.4)
     finally:
         if helper is not None:
