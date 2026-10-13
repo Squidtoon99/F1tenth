@@ -115,6 +115,8 @@ class SensorPolicyValidator(Node):
         self._progress_m = 0.0
         self._offtrack = False
         self._lap_t0 = time.monotonic()
+        self._start_xy: tuple[float, float] | None = None
+        self._end_xy: tuple[float, float] | None = None
 
         self.create_subscription(
             Float32MultiArray, si.TOPIC_OBSERVATION, self._on_obs, 10
@@ -169,10 +171,13 @@ class SensorPolicyValidator(Node):
         self.max_speed = max(self.max_speed, speed)
         if speed > self.move_speed_floor:
             self.moving_count += 1
-        if self.xy is None:
-            return
         x = float(msg.pose.pose.position.x)
         y = float(msg.pose.pose.position.y)
+        if self._start_xy is None:
+            self._start_xy = (x, y)
+        self._end_xy = (x, y)
+        if self.xy is None:
+            return
         s, dist = _project_s(x, y, self.xy, self.cum)
         if dist > self.offtrack_m:
             self.offtrack_samples += 1
@@ -281,6 +286,16 @@ class SensorPolicyValidator(Node):
             "duration_s": duration_s,
             "loop_length_m": round(self.loop_length, 3),
             "training_lap_s": TRAINING_LAP_S,
+            "start_xy": (
+                None
+                if self._start_xy is None
+                else [round(self._start_xy[0], 3), round(self._start_xy[1], 3)]
+            ),
+            "end_xy": (
+                None
+                if self._end_xy is None
+                else [round(self._end_xy[0], 3), round(self._end_xy[1], 3)]
+            ),
         }
         print("SCORE_JSON", json.dumps(score))
         if json_out:
@@ -328,14 +343,6 @@ def main() -> int:
         warmup_deadline = time.monotonic() + max(float(args.warmup_s), 0.0)
         while time.monotonic() < warmup_deadline and node.odom_count == 0:
             rclpy.spin_once(node, timeout_sec=0.05)
-        if node.odom_count == 0:
-            print("FAIL: gym odom never arrived during warmup", file=sys.stderr)
-            return node.report(
-                min_samples=args.min_samples,
-                min_laps=args.min_laps,
-                duration_s=args.duration_s,
-                json_out=args.json_out,
-            )
         node._lap_t0 = time.monotonic()
         deadline = time.monotonic() + float(args.duration_s)
         while time.monotonic() < deadline:

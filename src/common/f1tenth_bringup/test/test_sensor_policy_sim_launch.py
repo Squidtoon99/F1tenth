@@ -8,6 +8,7 @@ SENSOR_POLICY_SIM = BRINGUP / "launch" / "sensor_policy_sim.launch.py"
 SIM_LAUNCH = BRINGUP / "launch" / "sim.launch.py"
 SENSOR_POLICY_LAUNCH = BRINGUP / "launch" / "sensor_policy.launch.py"
 SIM_SH = REPO / "tools" / "sim.sh"
+COMPOSE_SIM = REPO / "deploy" / "docker" / "docker-compose.sim.yml"
 CENTERLINE = REPO / "training" / "assets" / "courtyard_2_centerline.csv"
 SETUP_PY = (
     REPO / "src" / "racing_rl" / "f1tenth_rl_agent" / "setup.py"
@@ -145,10 +146,12 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "1097" in source
     assert "stop_stray_agents" in source
     assert "wait_sim_ready" in source
+    assert "wait_graph_ready f1tenth-gym-agent" in source
     assert "Running in asynchronous mode" in source
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source
     assert "--json-out /ws/gym_score.json" in source
+    assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02

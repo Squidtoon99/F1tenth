@@ -335,7 +335,6 @@ certify() {
   compose down >/dev/null 2>&1 || true
   stop_stray_agents
   compose up -d novnc sim
-  wait_sim_ready
   if [ "${MODE}" = "dev" ]; then
     echo "==> Building the agent workspace"
     compose run --rm --entrypoint bash agent -lc "
@@ -352,10 +351,18 @@ certify() {
       ros2 launch f1tenth_bringup sim.launch.py \
       stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
   fi
+  # Start the agent while gym is still coming up so FastDDS meets the bridge
+  # as a late-starting publisher, then wait for both before scoring.
   wait_graph_ready f1tenth-gym-agent
+  wait_sim_ready
   local rc=0
   VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
   validate || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "==> Certify failed; last gym / agent logs:" >&2
+    compose logs --tail 80 sim >&2 || true
+    docker logs --tail 80 f1tenth-gym-agent >&2 || true
+  fi
   stop_stray_agents
   compose down >/dev/null 2>&1 || true
   if [ "${STACK}" != "sensor_policy" ]; then
