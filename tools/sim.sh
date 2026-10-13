@@ -258,6 +258,14 @@ def patch_gym_bridge(path: Path) -> None:
     if old_sync_drive in text:
         text = text.replace(old_sync_drive, new_sync_drive, 1)
         print("==> lockstep: one physics step per unique /drive stamp")
+    ready = "        self.sim_paused = False"
+    ready_log = (
+        "        self.sim_paused = False\n"
+        "        self.get_logger().info('GymBridge ready')"
+    )
+    if "GymBridge ready" not in text and ready in text:
+        text = text.replace(ready, ready_log, 1)
+        print("==> log GymBridge ready after publishers exist")
     old_odom_pub = (
         "self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)"
     )
@@ -518,18 +526,14 @@ def patch_gym_bridge(path: Path) -> None:
         text = text.replace(clock_after_scan, clock_pub_scan, 1)
         print("==> publish /clock from the scan timer so lockstep can bootstrap")
     clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
-    clock_init = (
-        "            self.clock_pub = self.create_publisher(\n"
-        "                Clock, '/clock', qos_profile_sensor_data)\n"
-        "            clock_msg = Clock()\n"
-        "            sim_time = float(self.env.unwrapped.sim_time)\n"
-        "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
-        "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
-        "            self.clock_pub.publish(clock_msg)\n"
-    )
-    if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
-        text = text.replace(clock_create, clock_init, 1)
-        print("==> publish initial /clock at sim t=0")
+    if clock_create in text and "Clock, '/clock', qos_profile_sensor_data)" not in text:
+        text = text.replace(
+            clock_create,
+            "            self.clock_pub = self.create_publisher(\n"
+            "                Clock, '/clock', qos_profile_sensor_data)\n",
+            1,
+        )
+        print("==> publish /clock best-effort")
     if text != orig:
         path.write_text(text, encoding="utf-8")
     else:
@@ -686,7 +690,7 @@ wait_sim_ready() {
   local i
   for i in $(seq 1 150); do
     cid="$(compose ps -q sim 2>/dev/null || true)"
-    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in synchronous mode"; then
+    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "GymBridge ready"; then
       echo "==> Gym bridge ready"
       return 0
     fi
