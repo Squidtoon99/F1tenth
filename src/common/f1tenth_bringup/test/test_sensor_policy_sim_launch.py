@@ -96,9 +96,10 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["twist_vx_sign"] == 1.0
     assert racer["sensor_max_age_s"] == 1.0
     assert racer["use_sim_time"] is True
-    assert racer["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
-    assert racer["history_stride"] == 1
+    assert "steering_delta_max_rad" not in racer
+    assert "history_stride" not in racer
     assert racer["tick_on_scan"] is True
+    assert "0.05235987755982988" not in source
     assert gate["use_sim_time"] is True
     assert gate["rl_command_timeout_s"] == 1.0
     assert gate["publish_on_desired"] is True
@@ -137,6 +138,7 @@ def test_on_car_sensor_policy_launch_unchanged_defaults():
     assert "tick_on_scan" not in source
     assert "publish_on_desired" not in source
     assert "0.05235987755982988" not in source
+    assert "0.02617993877991494" not in source
 
 
 def test_gym_sensor_bridge_is_registered():
