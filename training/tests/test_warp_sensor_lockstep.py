@@ -29,9 +29,13 @@ _CKPT = Path(
 def test_warp_ros_packing_clears_first_austin_corner(warp_runtime):
     del warp_runtime
     result = run_lockstep(_CKPT, steps=160)
-    first = result["first_offtrack"]
+    first = result["first_crash"] or result["first_offtrack"]
     if first is not None:
         assert first["s_m"] > 8.0, first
         assert first["t_s"] > 4.0, first
+    assert result["spawn_speed_mps"] == pytest.approx(3.5)
     assert result["progress_m"] > 12.0
     assert result["crashes"] == 0 or result["progress_m"] > 12.0
+    assert result["laps"] == 0
+    assert result["lap_times_s"] == []
+    assert result["steps"] == 160
