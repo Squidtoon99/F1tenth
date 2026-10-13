@@ -433,7 +433,17 @@ def patch_gym_bridge(path: Path) -> None:
 
 bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
 sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
+launch = Path("sim/f1tenth_gym_ros/launch/rl_agent_sim_launch.py")
 patch_gym_bridge(bridge)
+if launch.exists():
+    launch_text = launch.read_text(encoding="utf-8")
+    fox = "    ld.add_action(foxglove_bridge_node)\n"
+    if fox in launch_text:
+        launch.write_text(
+            launch_text.replace(fox, "    # foxglove omitted: reliable scan/odom stalls gym\n", 1),
+            encoding="utf-8",
+        )
+        print("==> disable foxglove so reliable odom cannot block the gym executor")
 apply(
     sim,
     (

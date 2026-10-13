@@ -173,6 +173,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "disable gym lidar thread" in source
     assert "raycast gym lidar on the 20 Hz publish timer" in source
     assert "publish gym /scan best-effort so foxglove cannot stall physics" in source
+    assert "disable foxglove so reliable odom cannot block the gym executor" in source
     assert "publish odom from physics timer" in source
     assert "gym timestep 0.05 (20 Hz, 1.0x realtime)" in source
     bridge_src = (
