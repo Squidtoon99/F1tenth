@@ -488,7 +488,8 @@ def test_sensor_racer_post_gate_history_in_observation():
             return _pred
 
         assert _spin_until([node, helper], saw_obs(1, 0.4, 0.1))
-        assert _spin_until([node, helper], saw_obs(2, -0.3, -0.2))
+        assert _spin_until([node, helper], saw_obs(2, 0.2, 0.05))
+        assert _spin_until([node, helper], saw_obs(3, -0.3, -0.2))
 
         obs = np.asarray(raw_obs[-1], dtype=np.float32)
         assert obs[si.THROTTLE_CURRENT] == pytest.approx(-0.3, abs=1e-5)
