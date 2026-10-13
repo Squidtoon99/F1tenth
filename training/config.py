@@ -226,6 +226,7 @@ DEFAULT_CONFIG = {
         "value_huber_delta": 0.0,
         "entropy_coef": 0.01,
         "caps_coef": 0.0,
+        "residual_base_enabled": False,
         "advantage_filter_enabled": True,
         "advantage_filter_discard_fraction": 0.05,
         "policy_mean_init_scale": None,

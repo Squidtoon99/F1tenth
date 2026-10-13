@@ -57,7 +57,12 @@ from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
-from ppo import PPOTrainer, pure_timeout_mask
+from ppo import (
+    PPOTrainer,
+    mix_residual_actions,
+    pure_timeout_mask,
+    residual_alpha,
+)
 from selfplay import SelfPlayManager
 from run_layout import (
     checkpoint_dir,
@@ -954,6 +959,11 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.caps_coef must be a finite number >= 0, got "
             f"{caps_coef!r}"
         )
+    if not isinstance(ppo.get("residual_base_enabled"), bool):
+        raise ValueError(
+            "ppo.residual_base_enabled must be a bool, got "
+            f"{ppo.get('residual_base_enabled')!r}"
+        )
 
 
 def _validate_ppo_init_lr_schedule(cfg: dict, ppo: dict) -> None:
@@ -1300,6 +1310,12 @@ def collect_sensor_step(envs, actions, counts, control_interval):
         torch.cat(done_parts, dim=0),
         cat_nested(extras_parts),
     )
+
+
+def collect_residual_base_actions(envs):
+    if len(envs) == 1:
+        return envs[0].centerline_base_action()
+    return torch.cat([env.centerline_base_action() for env in envs], dim=0)
 
 
 def update_episode_lap_counts(
@@ -3019,6 +3035,18 @@ def main():
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
 
+            residual_alpha_value = 0.0
+            if algorithm == "ppo" and bool(cfg["ppo"]["residual_base_enabled"]):
+                residual_alpha_value = residual_alpha(
+                    env_transitions, args.total_transitions
+                )
+                actions = mix_residual_actions(
+                    actions,
+                    collect_residual_base_actions(train_envs),
+                    residual_alpha_value,
+                    clip_actions,
+                )
+
             next_actor_obs, next_critic_obs, reward, done, extras = collect_sensor_step(
                 train_envs,
                 actions.to(rt.tc_float),
@@ -3604,6 +3632,10 @@ def main():
                                     f"ppo/{key}": value / loss_count
                                     for key, value in ppo_metric_accum.items()
                                 }
+                            )
+                        if bool(cfg["ppo"]["residual_base_enabled"]):
+                            wandb_metrics["ppo/residual_alpha"] = (
+                                residual_alpha_value
                             )
                     if scenario_names:
                         wandb_metrics.update(
