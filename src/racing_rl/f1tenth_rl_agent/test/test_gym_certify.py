@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+
+import numpy as np
 
 from f1tenth_rl_agent.gym_certify import (
+    GYM_LIDAR_TF_XYYAW,
     PROGRESS_EPS_M,
     NetLapCounter,
     WarpLongitudinalParams,
     WarpLongitudinalPlant,
+    lidar_frame_pose,
+    load_centerline,
+    project_s,
+    spawn_pose_from_centerline,
     wrapped_delta_s,
 )
+
+_REPO = Path(__file__).resolve().parents[4]
+_AUSTIN_CL = _REPO / "training" / "assets" / "Austin_centerline.csv"
+_SIM_SH = _REPO / "tools" / "sim.sh"
 
 
 def test_wrapped_delta_forward_wrap():
@@ -145,3 +157,71 @@ def test_progress_eps_matches_eval():
         counter.update(s, False, t)
     assert counter.laps == 1
     assert counter.lap_times[0] == 20.0
+
+
+def test_austin_spawn_matches_first_centerline_segment():
+    x, y, yaw = spawn_pose_from_centerline(_AUSTIN_CL)
+    assert x == 0.0
+    assert y == 0.0
+    assert yaw == math.atan2(-0.2321189023617661, 0.3038214682081728)
+    assert abs(yaw + 0.6524) < 1e-3
+
+
+def test_lidar_frame_pose_shifts_forward_along_heading():
+    x, y, yaw = lidar_frame_pose(0.0, 0.0, 0.0, GYM_LIDAR_TF_XYYAW)
+    assert x == 0.27
+    assert y == 0.0
+    assert yaw == 0.0
+    x, y, yaw = lidar_frame_pose(1.0, 2.0, math.pi / 2.0, (0.27, 0.0, 0.0))
+    assert abs(x - 1.0) < 1e-9
+    assert abs(y - 2.27) < 1e-9
+    assert abs(yaw - math.pi / 2.0) < 1e-9
+
+
+def test_gym_scan_patch_uses_lidar_mount_frame():
+    text = _SIM_SH.read_text(encoding="utf-8")
+    assert "sim._lidar_pose_from_base(pose)" in text
+    assert "scan_sims[0].scan(pose" in text
+    assert '"lidar_noise_std": "0.0"' in text
+    assert '"lidar_base_link_to_lidar_tf": "[0.27, 0.0, 0.0]"' in text
+    assert "occupancy_map[unknown] = 205.0" in text
+    assert "self.dt[self.map_img == 205] = self.max_range" in text
+
+
+def test_scripted_centerline_pure_pursuit_accumulates_progress():
+    xy, cum, length = load_centerline(_AUSTIN_CL)
+    counter = NetLapCounter(length)
+    speed = 3.0
+    dt = 0.05
+    lookahead = 1.2
+    wheelbase = 0.33
+    x, y, yaw = spawn_pose_from_centerline(_AUSTIN_CL)
+    t = 0.0
+    s, dist = project_s(x, y, xy, cum)
+    assert dist < 0.05
+    counter.update(s, False, t)
+    for _ in range(200):
+        target_s = (s + lookahead) % length
+        idx = int(np.searchsorted(cum, target_s, side="right") - 1)
+        idx = max(0, min(idx, xy.shape[0] - 2))
+        alpha = 0.0
+        span = float(cum[idx + 1] - cum[idx])
+        if span > 1e-9:
+            alpha = (target_s - float(cum[idx])) / span
+        tx = float(xy[idx, 0] + alpha * (xy[idx + 1, 0] - xy[idx, 0]))
+        ty = float(xy[idx, 1] + alpha * (xy[idx + 1, 1] - xy[idx, 1]))
+        dx = tx - x
+        dy = ty - y
+        heading = math.atan2(dy, dx) - yaw
+        heading = math.atan2(math.sin(heading), math.cos(heading))
+        steer = math.atan2(2.0 * wheelbase * math.sin(heading), lookahead)
+        yaw += (speed / wheelbase) * math.tan(steer) * dt
+        x += speed * math.cos(yaw) * dt
+        y += speed * math.sin(yaw) * dt
+        t += dt
+        s, dist = project_s(x, y, xy, cum)
+        counter.update(s, dist > 1.2, t)
+    progress = counter.laps * length + counter.progress
+    assert counter.crashes == 0
+    assert progress > 25.0
+    assert dist < 1.2

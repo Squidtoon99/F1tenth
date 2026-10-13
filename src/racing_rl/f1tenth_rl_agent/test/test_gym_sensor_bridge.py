@@ -202,6 +202,78 @@ def test_gym_sensor_bridge_maps_applied_to_drive():
         rclpy.shutdown()
 
 
+def test_gym_sensor_bridge_one_second_full_throttle_matches_plant():
+    rclpy.init()
+    node = helper = None
+    try:
+        node = GymSensorBridgeNode(
+            parameter_overrides=[
+                Parameter("seed_applied_count", Parameter.Type.INTEGER, 0),
+                Parameter("odom_topic", Parameter.Type.STRING, "/parity_test/odom"),
+                Parameter("drive_topic", Parameter.Type.STRING, "/parity_test/drive"),
+                Parameter("applied_topic", Parameter.Type.STRING, "/parity_test/applied"),
+                Parameter("imu_topic", Parameter.Type.STRING, "/parity_test/imu"),
+            ]
+        )
+        helper = rclpy.create_node("gym_sensor_bridge_throttle_helper")
+        drives = []
+        helper.create_subscription(
+            AckermannDriveStamped,
+            "/parity_test/drive",
+            lambda m: drives.append(m),
+            10,
+        )
+        odom_pub = helper.create_publisher(Odometry, "/parity_test/odom", 10)
+        applied_pub = helper.create_publisher(
+            ActuatorCommand, "/parity_test/applied", 10
+        )
+        plant = WarpLongitudinalPlant()
+        vx = 0.0
+        expected = []
+        from rclpy.executors import SingleThreadedExecutor
+
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        executor.add_node(helper)
+        try:
+            for step in range(20):
+                nsec = (step + 1) * 50_000_000
+                before = len(drives)
+                odom = Odometry()
+                odom.header.stamp.sec = nsec // 1_000_000_000
+                odom.header.stamp.nanosec = nsec % 1_000_000_000
+                odom.twist.twist.linear.x = vx
+                odom_pub.publish(odom)
+                msg = ActuatorCommand()
+                msg.header.stamp = odom.header.stamp
+                msg.longitudinal = 1.0
+                msg.steering = 0.0
+                msg.drive_current_a = 80.0
+                msg.source = ActuatorCommand.SOURCE_RL
+                applied_pub.publish(msg)
+                end = node.get_clock().now().nanoseconds + int(2.0 * 1e9)
+                while len(drives) <= before:
+                    if node.get_clock().now().nanoseconds >= end:
+                        raise AssertionError("drive command did not arrive")
+                    executor.spin_once(timeout_sec=0.05)
+                vx = plant.step(vx, 80.0, 0.0)
+                expected.append(vx)
+        finally:
+            executor.remove_node(helper)
+            executor.remove_node(node)
+        speeds = [float(d.drive.speed) for d in drives[-20:]]
+        steers = [float(d.drive.steering_angle) for d in drives[-20:]]
+        assert abs(speeds[-1] - expected[-1]) < 1.0
+        assert 4.0 < speeds[-1] < 8.0
+        assert max(abs(s) for s in steers) < 1e-9
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_gym_sensor_bridge_drive_stamps_are_monotonic():
     rclpy.init()
     node = helper = None

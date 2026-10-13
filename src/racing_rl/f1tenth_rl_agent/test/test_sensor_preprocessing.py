@@ -45,6 +45,37 @@ def test_lidar_packing_clamps_and_maps_no_return():
     assert np.all(packed <= si.LIDAR_RANGE_MAX)
 
 
+def test_matching_hokuyo_scan_packs_as_identity():
+    scan_min = math.radians(-135.0)
+    inc = math.radians(0.25)
+    ranges = np.linspace(0.2, 12.0, si.LIDAR_DIM).astype(np.float32)
+    packed = pack_lidar_from_scan(scan_min, inc, ranges, scan_range_min=0.06)
+    np.testing.assert_allclose(packed, ranges, atol=1e-5)
+
+
+def test_si_gym_imu_roundtrip_keeps_body_forward_accel_and_yaw_rate():
+    cal = ImuCalibration(accel_to_ms2=1.0, gyro_to_rads=1.0)
+    ax_driver, ay_driver = body_accel_to_driver(5.0, 0.0)
+    samples = [RawImuSample(0.0, ax_driver, ay_driver, 9.81, 0.0, 0.0, -0.4)]
+    actor_imu, _ = actor_imu_from_interval(samples, cal, freeze_const_channels=True)
+    assert actor_imu[0] == pytest.approx(5.0)
+    assert actor_imu[1] == pytest.approx(0.0)
+    assert actor_imu[2] == pytest.approx(si.GRAVITY_MS2)
+    assert actor_imu[5] == pytest.approx(-0.4)
+
+
+def test_body_forward_odom_vx_packs_positive_vesc_speed():
+    lidar = np.full(si.LIDAR_DIM, 3.0, dtype=np.float32)
+    imu = np.array([0.0, 0.0, si.GRAVITY_MS2, 0.0, 0.0, 0.0], dtype=np.float32)
+    hist = np.zeros(si.STEER_HISTORY, dtype=np.float32)
+    speed = si.TWIST_VX_SIGN_BODY_FORWARD * 2.5
+    obs = pack_actor_observation(lidar, imu, speed, 0.0, 0.0, 0.0, hist)
+    assert obs[si.VESC_SPEED] == pytest.approx(2.5)
+    assert obs[si.VESC_CURRENT] == pytest.approx(0.0)
+    assert obs[si.STEER_T] == pytest.approx(0.0)
+    assert obs[si.STEER_DELTA0] == pytest.approx(0.0)
+
+
 def test_lidar_packing_too_close_and_urg_sentinel_are_range_max():
     scan_min = math.radians(-135.0)
     inc = math.radians(0.25)
