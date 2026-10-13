@@ -255,4 +255,14 @@ def test_sim_sh_sensor_policy_wires_austin_and_validates_1097d():
     assert abs(sy - 0.0) < 0.02
     assert abs(stheta + 0.652) < 0.02
     assert "--duration-s 180" in source
+    assert "--repeats 3" in source
     assert "maps/Austin" in source
+    assert "paused at spawn" in source
+    assert "publish observations while lockstep is paused" in source
+    assert "unpause resets the car to the configured spawn" in source
+    assert "/initialpose resets spawn even while paused" in source
+    assert "--max-deadline-misses" in validator_src
+    assert "/pause_sim" in validator_src
+    assert "/initialpose" in validator_src
+    assert "summarize_repeat_scores" in validator_src
+    assert "REPEAT_JSON" in validator_src

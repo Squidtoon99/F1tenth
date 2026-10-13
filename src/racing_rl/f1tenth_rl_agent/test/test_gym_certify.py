@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from f1tenth_rl_agent.gym_certify import (
     GYM_LIDAR_TF_XYYAW,
@@ -15,9 +16,12 @@ from f1tenth_rl_agent.gym_certify import (
     WarpLongitudinalPlant,
     lidar_frame_pose,
     load_centerline,
+    pose_error_xy_yaw,
     project_s,
     spawn_pose_from_centerline,
+    summarize_repeat_scores,
     wrapped_delta_s,
+    yaw_from_quat,
 )
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -186,6 +190,9 @@ def test_gym_scan_patch_uses_lidar_mount_frame():
     assert '"lidar_base_link_to_lidar_tf": "[0.27, 0.0, 0.0]"' in text
     assert "occupancy_map[unknown] = 205.0" in text
     assert "self.dt[self.map_img == 205] = self.max_range" in text
+    assert "paused at spawn" in text
+    assert "was_paused = self.sim_paused" in text
+    assert "--repeats 3" in text
 
 
 def test_scripted_centerline_pure_pursuit_accumulates_progress():
@@ -225,3 +232,69 @@ def test_scripted_centerline_pure_pursuit_accumulates_progress():
     assert counter.crashes == 0
     assert progress > 25.0
     assert dist < 1.2
+
+
+def test_pose_error_is_zero_at_spawn():
+    x, y, yaw = spawn_pose_from_centerline(_AUSTIN_CL)
+    xy_err, yaw_err = pose_error_xy_yaw(x, y, yaw, x, y, yaw)
+    assert xy_err == 0.0
+    assert yaw_err == 0.0
+    xy_err, yaw_err = pose_error_xy_yaw(6.3, -5.6, yaw, x, y, yaw)
+    assert xy_err > 5.0
+    qz = math.sin(yaw / 2.0)
+    qw = math.cos(yaw / 2.0)
+    assert yaw_from_quat(0.0, 0.0, qz, qw) == pytest.approx(yaw)
+
+
+def test_net_lap_clear_drops_laps_and_crashes():
+    counter = NetLapCounter(length=100.0)
+    counter.update(0.0, False, 0.0)
+    counter.update(50.0, True, 1.0)
+    assert counter.crashes == 1
+    counter.clear()
+    assert counter.crashes == 0
+    assert counter.laps == 0
+    assert counter.prev_s is None
+
+
+def test_summarize_repeat_scores_reports_mean_and_var():
+    scores = [
+        {
+            "pass": True,
+            "progress_m": 10.0,
+            "laps": 0,
+            "crashes": 1,
+            "deadline_misses": 0,
+            "max_speed_mps": 2.0,
+            "offtrack_samples": 4,
+            "desired_hz": 20.0,
+        },
+        {
+            "pass": True,
+            "progress_m": 14.0,
+            "laps": 0,
+            "crashes": 1,
+            "deadline_misses": 0,
+            "max_speed_mps": 2.4,
+            "offtrack_samples": 8,
+            "desired_hz": 20.0,
+        },
+        {
+            "pass": False,
+            "progress_m": 12.0,
+            "laps": 0,
+            "crashes": 3,
+            "deadline_misses": 0,
+            "max_speed_mps": 2.2,
+            "offtrack_samples": 6,
+            "desired_hz": 20.0,
+        },
+    ]
+    summary = summarize_repeat_scores(scores)
+    assert summary["repeats"] == 3
+    assert summary["pass"] is False
+    assert summary["progress_m_mean"] == pytest.approx(12.0)
+    assert summary["progress_m_var"] == pytest.approx(4.0)
+    assert summary["deadline_misses_mean"] == 0.0
+    assert summary["deadline_misses_var"] == 0.0
+    assert summary["crashes_mean"] == pytest.approx(5.0 / 3.0)

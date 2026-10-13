@@ -72,3 +72,5 @@ trade-off. Routine work is captured by the PR instead (see
   sensor cadence).
 - [0034](0034-gym-warp-plant-and-net-progress-laps.md) — Gym certify uses Warp
   current→vx and eval_full_lap net-progress laps on Austin.
+- [0035](0035-gym-lockstep-paused-spawn.md) — Gym certify starts paused at spawn,
+  fails on lockstep misses, and reports 3-repeat mean/var.
