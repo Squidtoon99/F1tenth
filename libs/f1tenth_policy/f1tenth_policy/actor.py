@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -34,6 +35,33 @@ def mlp(sizes, activation, output_activation=nn.Identity):
         act = activation if j < len(sizes) - 2 else output_activation
         layers += [nn.Linear(sizes[j], sizes[j + 1]), act()]
     return nn.Sequential(*layers)
+
+
+def apply_policy_output_init(
+    actor,
+    policy_mean_init_scale=None,
+    policy_init_log_std=None,
+):
+    if policy_mean_init_scale is not None:
+        scale = float(policy_mean_init_scale)
+        if not math.isfinite(scale) or scale < 0.0:
+            raise ValueError(
+                "policy_mean_init_scale must be a finite number >= 0, got "
+                f"{policy_mean_init_scale!r}"
+            )
+        with torch.no_grad():
+            actor.mu_layer.weight.mul_(scale)
+            if actor.mu_layer.bias is not None:
+                actor.mu_layer.bias.mul_(scale)
+    if policy_init_log_std is not None:
+        log_std = float(policy_init_log_std)
+        if not math.isfinite(log_std):
+            raise ValueError(
+                "policy_init_log_std must be a finite number, got "
+                f"{policy_init_log_std!r}"
+            )
+        nn.init.zeros_(actor.log_std_layer.weight)
+        nn.init.constant_(actor.log_std_layer.bias, log_std)
 
 
 def _squashed_gaussian_distribution(net, mu_layer, log_std_layer, obs):
@@ -191,6 +219,8 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         pool_bins=32,
         projection_dim=CNN_PROJECTION_DIM,
         gru_hidden_dim=GRU_HIDDEN_DIM,
+        policy_mean_init_scale=None,
+        policy_init_log_std=None,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -247,6 +277,11 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             "activation": "relu",
             "action_dim": self.act_dim,
         }
+        apply_policy_output_init(
+            self,
+            policy_mean_init_scale=policy_mean_init_scale,
+            policy_init_log_std=policy_init_log_std,
+        )
 
     def initial_hidden(self, batch_size, *, device=None, dtype=None):
         return torch.zeros(
@@ -545,6 +580,8 @@ def make_actor(
     proprio_dim=PROPRIO_DIM,
     gru_hidden_dim=GRU_HIDDEN_DIM,
     actor_type=ACTOR_ARCHITECTURE_NAME,
+    policy_mean_init_scale=None,
+    policy_init_log_std=None,
 ):
     if actor_type != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
@@ -562,6 +599,8 @@ def make_actor(
         pool_bins=lidar_pool_bins,
         projection_dim=lidar_projection_dim,
         gru_hidden_dim=gru_hidden_dim,
+        policy_mean_init_scale=policy_mean_init_scale,
+        policy_init_log_std=policy_init_log_std,
     )
 
 

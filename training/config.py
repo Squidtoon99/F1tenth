@@ -223,6 +223,11 @@ DEFAULT_CONFIG = {
         "entropy_coef": 0.01,
         "advantage_filter_enabled": True,
         "advantage_filter_discard_fraction": 0.05,
+        "policy_mean_init_scale": None,
+        "policy_init_log_std": None,
+        "lr_schedule": "constant",
+        "lr_final": 0.0,
+        "desired_kl": 0.01,
     },
     "schedule": {
         "total_transitions": 500_000_000,

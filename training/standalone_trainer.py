@@ -38,6 +38,7 @@ from f1tenth_policy import (
     build_sensor_artifact_payload,
     validate_sensor_policy_artifact,
 )
+from f1tenth_policy.actor import apply_policy_output_init
 from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     SENSOR_POLICY_FORMAT_VERSION,
@@ -903,6 +904,66 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.advantage_filter_discard_fraction must be a finite number in "
             f"[0.0, 1.0), got {discard_fraction!r}"
         )
+    lr_schedule = ppo.get("lr_schedule", "constant")
+    if lr_schedule not in ("constant", "linear", "cosine", "adaptive_kl"):
+        raise ValueError(
+            "ppo.lr_schedule must be 'constant', 'linear', 'cosine', or "
+            f"'adaptive_kl', got {lr_schedule!r}"
+        )
+    lr_final = ppo.get("lr_final", 0.0)
+    if (
+        not isinstance(lr_final, (int, float))
+        or isinstance(lr_final, bool)
+        or not math.isfinite(float(lr_final))
+        or float(lr_final) < 0.0
+    ):
+        raise ValueError(
+            f"ppo.lr_final must be a finite number >= 0, got {lr_final!r}"
+        )
+    if lr_schedule in ("linear", "cosine"):
+        total_transitions = cfg.get("schedule", {}).get("total_transitions")
+        if (
+            not isinstance(total_transitions, int)
+            or isinstance(total_transitions, bool)
+            or total_transitions <= 0
+        ):
+            raise ValueError(
+                "schedule.total_transitions must be a positive int when "
+                f"ppo.lr_schedule={lr_schedule!r}, got {total_transitions!r}"
+            )
+    desired_kl = ppo.get("desired_kl", 0.01)
+    if (
+        not isinstance(desired_kl, (int, float))
+        or isinstance(desired_kl, bool)
+        or not math.isfinite(float(desired_kl))
+        or float(desired_kl) <= 0.0
+    ):
+        raise ValueError(
+            f"ppo.desired_kl must be a positive finite number, got {desired_kl!r}"
+        )
+    mean_scale = ppo.get("policy_mean_init_scale")
+    if mean_scale is not None:
+        if (
+            not isinstance(mean_scale, (int, float))
+            or isinstance(mean_scale, bool)
+            or not math.isfinite(float(mean_scale))
+            or float(mean_scale) < 0.0
+        ):
+            raise ValueError(
+                "ppo.policy_mean_init_scale must be None or a finite number "
+                f">= 0, got {mean_scale!r}"
+            )
+    init_log_std = ppo.get("policy_init_log_std")
+    if init_log_std is not None:
+        if (
+            not isinstance(init_log_std, (int, float))
+            or isinstance(init_log_std, bool)
+            or not math.isfinite(float(init_log_std))
+        ):
+            raise ValueError(
+                "ppo.policy_init_log_std must be None or a finite number, got "
+                f"{init_log_std!r}"
+            )
 
 
 def make_policy_network(cfg: dict):
@@ -1630,6 +1691,11 @@ def build_ppo_models(
     ppo_cfg = cfg["ppo"]
     env_minibatches = min(int(num_envs), int(ppo_cfg["env_minibatches"]))
     actor = make_policy_network(cfg).to(device=device, dtype=torch.float32)
+    apply_policy_output_init(
+        actor,
+        policy_mean_init_scale=ppo_cfg.get("policy_mean_init_scale"),
+        policy_init_log_std=ppo_cfg.get("policy_init_log_std"),
+    )
     models = ActorModels(actor=actor)
     gamma, gae_lambda = effective_ppo_horizon(cfg)
     trainer = PPOTrainer(
@@ -1659,6 +1725,10 @@ def build_ppo_models(
         ),
         lidar_aug_enabled=bool(cfg["model"]["lidar_aug_enabled"]),
         lidar_aug_max_shift_beams=int(cfg["model"]["lidar_aug_max_shift_beams"]),
+        lr_schedule=str(ppo_cfg.get("lr_schedule", "constant")),
+        lr_final=float(ppo_cfg.get("lr_final", 0.0)),
+        total_transitions=int(cfg["schedule"]["total_transitions"]),
+        desired_kl=float(ppo_cfg.get("desired_kl", 0.01)),
     )
     return models, trainer
 
@@ -1837,6 +1907,7 @@ def save_resume_state(
         payload["critic_obs_norm"] = critic_normalizer.state_dict()
         payload["actor_optimizer"] = trainer.actor_optimizer.state_dict()
         payload["value_optimizer"] = trainer.value_optimizer.state_dict()
+        payload["lr_schedule_state"] = trainer.lr_schedule_state()
     else:
         raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
     path = Path(path)
@@ -1874,6 +1945,7 @@ def load_resume_state(
         critic_normalizer.load_state_dict(payload["critic_obs_norm"])
         trainer.actor_optimizer.load_state_dict(payload["actor_optimizer"])
         trainer.value_optimizer.load_state_dict(payload["value_optimizer"])
+        trainer.load_lr_schedule_state(payload.get("lr_schedule_state"))
     restore_rng_state(payload["rng_state"], device)
     logging.getLogger(LOGGER_NAME).info(
         "Resumed from %s (env_transitions=%d gradient_updates=%d)",
@@ -2712,14 +2784,16 @@ def main():
         log.info(
             "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
             "env_minibatches=%d env_minibatch_size=%d actor_lr=%.3e value_lr=%.3e "
-            "compile=%s compile_mode=%s lidar_aug_enabled=%s "
-            "lidar_aug_max_shift_beams=%d",
+            "lr_schedule=%s lr_final=%.3e compile=%s compile_mode=%s "
+            "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
             trainer.rollout_steps,
             trainer.num_epochs,
             args.num_envs // trainer.env_minibatch_size,
             trainer.env_minibatch_size,
             float(cfg["ppo"]["actor_lr"]),
             float(cfg["ppo"]["value_lr"]),
+            trainer.lr_schedule,
+            trainer.lr_final,
             trainer.compile,
             trainer.compile_mode,
             lidar_aug_enabled,
@@ -2800,6 +2874,7 @@ def main():
             env_transitions += args.num_envs
             ppo_metrics = None
             if algorithm == "ppo":
+                trainer.set_schedule_transitions(env_transitions)
                 ppo_timed_out = pure_timeout_mask(extras["termination"])
                 ppo_metrics = trainer.observe(
                     next_actor_obs,
