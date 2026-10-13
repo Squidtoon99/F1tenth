@@ -187,6 +187,68 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
         rclpy.shutdown()
 
 
+def test_sensor_racer_tick_on_scan_infers_without_timer():
+    rclpy.init()
+    node = helper = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt)
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter("sensor_max_age_s", Parameter.Type.DOUBLE, 1.0),
+                    Parameter("tick_on_scan", Parameter.Type.BOOL, True),
+                    Parameter("publish_raw_observation", Parameter.Type.BOOL, True),
+                ]
+            )
+        helper = rclpy.create_node("sensor_racer_lockstep_helper")
+        desired = []
+        helper.create_subscription(
+            ActuatorCommand,
+            si.TOPIC_DESIRED_ACTUATOR,
+            lambda m: desired.append(m),
+            10,
+        )
+        scan_pub = helper.create_publisher(LaserScan, si.TOPIC_SCAN, 10)
+        imu_pub = helper.create_publisher(Imu, si.TOPIC_IMU, 10)
+        odom_pub = helper.create_publisher(Odometry, si.TOPIC_ODOM, 10)
+        applied_pub = helper.create_publisher(
+            ActuatorCommand, si.TOPIC_APPLIED_ACTUATOR, 10
+        )
+        scan = LaserScan()
+        scan.angle_min = float(si.LIDAR_ANGLE_MIN)
+        scan.angle_increment = float(si.LIDAR_ANGLE_INCREMENT)
+        scan.range_min = 0.05
+        scan.ranges = [1.0] * si.LIDAR_DIM
+        odom = Odometry()
+        odom.twist.twist.linear.x = 2.0
+        imu = Imu()
+        applied = _applied_rl(0.2, 0.0)
+
+        def publish_all():
+            now = helper.get_clock().now().to_msg()
+            scan.header.stamp = now
+            imu.header.stamp = now
+            odom.header.stamp = now
+            applied.header.stamp = now
+            scan_pub.publish(scan)
+            imu_pub.publish(imu)
+            odom_pub.publish(odom)
+            applied_pub.publish(applied)
+            return bool(desired)
+
+        assert _spin_until([node, helper], publish_all, timeout_s=2.0)
+        assert desired[-1].source == ActuatorCommand.SOURCE_RL
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_sensor_racer_fail_closed_without_sensors():
     rclpy.init()
     node = helper = None

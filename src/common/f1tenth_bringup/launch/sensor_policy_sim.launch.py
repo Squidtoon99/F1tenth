@@ -55,6 +55,7 @@ def generate_launch_description() -> LaunchDescription:
                 "sensor_max_age_s": 1.0,
                 "steering_delta_max_rad": 0.05235987755982988,
                 "history_stride": 1,
+                "tick_on_scan": True,
                 "publish_raw_observation": True,
                 "publish_diagnostics": True,
             },
@@ -74,7 +75,8 @@ def generate_launch_description() -> LaunchDescription:
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
                 "rl_command_timeout_s": 1.0,
-                "publish_rate_hz": 20.0,
+                "publish_on_desired": True,
+                "publish_rate_hz": 0.0,
             },
         ],
     )

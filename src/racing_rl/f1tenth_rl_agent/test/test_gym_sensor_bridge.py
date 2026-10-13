@@ -198,3 +198,44 @@ def test_gym_sensor_bridge_maps_applied_to_drive():
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+def test_gym_sensor_bridge_drive_stamps_are_monotonic():
+    rclpy.init()
+    node = helper = None
+    try:
+        node = GymSensorBridgeNode(
+            parameter_overrides=[
+                Parameter("seed_applied_count", Parameter.Type.INTEGER, 0),
+            ]
+        )
+        helper = rclpy.create_node("gym_sensor_bridge_stamp_helper")
+        stamps = []
+        helper.create_subscription(
+            AckermannDriveStamped,
+            ifc.TOPIC_DRIVE,
+            lambda m: stamps.append(
+                int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec)
+            ),
+            10,
+        )
+        applied_pub = helper.create_publisher(
+            ActuatorCommand, si.TOPIC_APPLIED_ACTUATOR, 10
+        )
+
+        def publish_same_stamp():
+            msg = ActuatorCommand()
+            msg.header.stamp.sec = 0
+            msg.header.stamp.nanosec = 0
+            msg.longitudinal = 0.1
+            applied_pub.publish(msg)
+            return len(stamps) >= 2
+
+        assert _spin_until([node, helper], publish_same_stamp)
+        assert stamps[0] < stamps[1]
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()

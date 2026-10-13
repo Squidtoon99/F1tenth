@@ -98,9 +98,11 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["use_sim_time"] is True
     assert racer["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
     assert racer["history_stride"] == 1
+    assert racer["tick_on_scan"] is True
     assert gate["use_sim_time"] is True
     assert gate["rl_command_timeout_s"] == 1.0
-    assert gate["publish_rate_hz"] == 20.0
+    assert gate["publish_on_desired"] is True
+    assert gate["publish_rate_hz"] == 0.0
     bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
     assert bridge["use_sim_time"] is True
     assert bridge["speed_scale"] == 5.0
@@ -132,6 +134,8 @@ def test_on_car_sensor_policy_launch_unchanged_defaults():
     assert 'default_value="true"' in source
     assert "gym_sensor_bridge" not in source
     assert "history_stride" not in source
+    assert "tick_on_scan" not in source
+    assert "publish_on_desired" not in source
     assert "0.05235987755982988" not in source
 
 
@@ -164,7 +168,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "gym node stays wall-clock; always publish /clock" in source
     assert "git -C sim/f1tenth_gym_ros checkout --" in source
     assert "lockstep: one physics step per unique /drive stamp" in source
-    assert "self.timer.cancel()" in source
+    assert "self.timer.cancel()" not in source
+    assert "DurabilityPolicy.TRANSIENT_LOCAL" in source
     assert "publish /clock from the scan timer so lockstep can bootstrap" in source
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source
@@ -202,6 +207,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "create_timer(1.0 / 20.0, self._on_imu_hold)" in bridge_src
     assert "ClockType.STEADY_TIME" in bridge_src
     assert "qos_profile_sensor_data" in bridge_src
+    assert "_drive_seq" in bridge_src
     racer_src = (
         REPO
         / "src"
@@ -212,6 +218,17 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     ).read_text()
     assert "MultiThreadedExecutor" in racer_src
     assert "qos_profile_sensor_data" in racer_src
+    assert "tick_on_scan" in racer_src
+    assert "_maybe_lockstep_tick" in racer_src
+    gate_src = (
+        REPO
+        / "src"
+        / "control"
+        / "f1tenth_control"
+        / "f1tenth_control"
+        / "rl_current_gate_node.py"
+    ).read_text()
+    assert "publish_on_desired" in gate_src
     compose_src = COMPOSE_SIM.read_text()
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in compose_src
     assert "ROS_LOCALHOST_ONLY=0" in compose_src

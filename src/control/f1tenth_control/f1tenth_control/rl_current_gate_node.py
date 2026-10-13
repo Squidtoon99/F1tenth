@@ -51,6 +51,9 @@ class RlCurrentGateNode(Node):
         self._publish_rate_hz = float(
             self.declare_parameter("publish_rate_hz", 50.0).value
         )
+        self._publish_on_desired = bool(
+            self.declare_parameter("publish_on_desired", False).value
+        )
         self._publish_servo = bool(
             self.declare_parameter("publish_servo", True).value
         )
@@ -97,8 +100,8 @@ class RlCurrentGateNode(Node):
             AckermannDriveStamped, brake_topic, self._on_brake, 10
         )
 
-        period = 1.0 / max(self._publish_rate_hz, 1.0)
-        self.create_timer(period, self._on_timer)
+        if self._publish_rate_hz > 0.0:
+            self.create_timer(1.0 / self._publish_rate_hz, self._on_timer)
 
         self.get_logger().info(
             "rl_current_gate: sole VESC owner "
@@ -125,6 +128,8 @@ class RlCurrentGateNode(Node):
             observation_stamp_sec=int(msg.observation_stamp.sec),
             observation_stamp_nanosec=int(msg.observation_stamp.nanosec),
         )
+        if self._publish_on_desired:
+            self._on_timer()
 
     def _on_teleop(self, msg: AckermannDriveStamped) -> None:
         self._teleop = AckermannInput(

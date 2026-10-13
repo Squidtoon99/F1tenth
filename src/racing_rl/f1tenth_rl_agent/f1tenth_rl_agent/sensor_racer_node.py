@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 
 import numpy as np
@@ -75,6 +76,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("recording_mode", False)
         self.declare_parameter("publish_raw_observation", False)
         self.declare_parameter("publish_diagnostics", True)
+        self.declare_parameter("tick_on_scan", False)
         self.declare_parameter("inference_warmup_iters", 5)
         self.declare_parameter("use_torch_compile", False)
 
@@ -129,6 +131,9 @@ class SensorRacerNode(Node):
         self.publish_diagnostics = (
             gp("publish_diagnostics").get_parameter_value().bool_value
         )
+        self.tick_on_scan = gp("tick_on_scan").get_parameter_value().bool_value
+        self._last_lockstep_scan: tuple[int, int] | None = None
+        self._tick_lock = threading.Lock() if self.tick_on_scan else None
         warmup_iters = int(gp("inference_warmup_iters").get_parameter_value().integer_value)
         use_torch_compile = gp("use_torch_compile").get_parameter_value().bool_value
 
@@ -238,7 +243,8 @@ class SensorRacerNode(Node):
             self._imu_actor_pub = None
 
         period = 1.0 / max(self.control_hz, 1.0)
-        self.create_timer(period, self._on_timer)
+        if not self.tick_on_scan:
+            self.create_timer(period, self._on_timer)
 
         self.get_logger().info(
             f"sensor_racer {si.NUM_OBS}-D @ {self.control_hz:.1f} Hz "
@@ -329,17 +335,33 @@ class SensorRacerNode(Node):
         self._diag_buf[si.DIAG_GRU_RESET] = 1.0
         self._diag_buf[si.DIAG_GRU_RESET_REASON] = float(reason)
 
+    def _maybe_lockstep_tick(self) -> None:
+        if not self.tick_on_scan or self._tick_lock is None:
+            return
+        with self._tick_lock:
+            if self._tick_unusable():
+                return
+            stamp = self._scan.header.stamp
+            key = (int(stamp.sec), int(stamp.nanosec))
+            if key == self._last_lockstep_scan:
+                return
+            self._last_lockstep_scan = key
+            self._on_timer()
+
     def _on_scan(self, msg: LaserScan) -> None:
         self._scan = msg
         self._scan_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_odom(self, msg: Odometry) -> None:
         self._odom = msg
         self._odom_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_applied(self, msg: ActuatorCommand) -> None:
         self._applied = msg
         self._applied_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _on_imu(self, msg: Imu) -> None:
         stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -354,6 +376,7 @@ class SensorRacerNode(Node):
         )
         self._imu_interval.append(sample)
         self._imu_time = self.get_clock().now()
+        self._maybe_lockstep_tick()
 
     def _sensors_fresh(self) -> bool:
         ages = (

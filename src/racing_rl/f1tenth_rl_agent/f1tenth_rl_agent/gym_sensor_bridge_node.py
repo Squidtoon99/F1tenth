@@ -53,6 +53,7 @@ class GymSensorBridgeNode(Node):
         self._seed_msg = ActuatorCommand()
         self._seed_msg.source = ActuatorCommand.SOURCE_SAFE
         self._seed_ns = 0
+        self._drive_seq = 0
 
         self.create_subscription(
             Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
@@ -150,7 +151,13 @@ class GymSensorBridgeNode(Node):
 
     def _on_applied(self, msg: ActuatorCommand) -> None:
         drive = self._drive_msg
-        drive.header.stamp = msg.header.stamp
+        incoming = int(msg.header.stamp.sec) * 1_000_000_000 + int(
+            msg.header.stamp.nanosec
+        )
+        self._drive_seq = max(self._drive_seq + 1, incoming)
+        sec, nsec = divmod(self._drive_seq, 1_000_000_000)
+        drive.header.stamp.sec = int(sec)
+        drive.header.stamp.nanosec = int(nsec)
         drive.header.frame_id = msg.header.frame_id or self._imu_frame_id
         drive.drive = AckermannDrive()
         long_cmd = float(msg.longitudinal)

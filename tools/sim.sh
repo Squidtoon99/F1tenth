@@ -217,13 +217,29 @@ def patch_gym_bridge(path: Path) -> None:
     if "import threading" not in text:
         text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
         print("==> import threading for off-executor lidar")
-    if "from rclpy.qos import qos_profile_sensor_data" not in text:
-        text = text.replace(
-            "from rclpy.node import Node\n",
-            "from rclpy.node import Node\nfrom rclpy.qos import qos_profile_sensor_data\n",
-            1,
-        )
-        print("==> import sensor-data QoS for gym scan")
+    qos_import = (
+        "from rclpy.qos import (\n"
+        "    DurabilityPolicy,\n"
+        "    HistoryPolicy,\n"
+        "    QoSProfile,\n"
+        "    ReliabilityPolicy,\n"
+        "    qos_profile_sensor_data,\n"
+        ")\n"
+    )
+    if "DurabilityPolicy" not in text:
+        if "from rclpy.qos import qos_profile_sensor_data" in text:
+            text = text.replace(
+                "from rclpy.qos import qos_profile_sensor_data\n",
+                qos_import,
+                1,
+            )
+        else:
+            text = text.replace(
+                "from rclpy.node import Node\n",
+                "from rclpy.node import Node\n" + qos_import,
+                1,
+            )
+        print("==> import scan QoS and reliable /clock QoS")
     old_scan_pub = (
         "self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)"
     )
@@ -251,9 +267,6 @@ def patch_gym_bridge(path: Path) -> None:
             "            self._last_drive_stamp = stamp\n"
             "            self.drive_timer_callback()\n"
             "            self.timer_callback()\n"
-            "            if getattr(self, 'timer', None) is not None:\n"
-            "                self.timer.cancel()\n"
-            "                self.timer = None\n"
     )
     if old_sync_drive in text:
         text = text.replace(old_sync_drive, new_sync_drive, 1)
@@ -528,15 +541,24 @@ def patch_gym_bridge(path: Path) -> None:
         text = text.replace(clock_after_scan, clock_pub_scan, 1)
         print("==> publish /clock from the scan timer so lockstep can bootstrap")
     clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
-    clock_init = (
+    clock_best_effort = (
         "            self.clock_pub = self.create_publisher(\n"
         "                Clock, '/clock', qos_profile_sensor_data)\n"
+    )
+    clock_qos = (
+        "            self.clock_pub = self.create_publisher(\n"
+        "                Clock, '/clock', QoSProfile(\n"
+        "                    reliability=ReliabilityPolicy.RELIABLE,\n"
+        "                    durability=DurabilityPolicy.TRANSIENT_LOCAL,\n"
+        "                    history=HistoryPolicy.KEEP_LAST,\n"
+        "                    depth=1))\n"
         "            clock_msg = Clock()\n"
         "            sim_time = float(self.env.unwrapped.sim_time)\n"
         "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
         "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
         "            self.clock_pub.publish(clock_msg)\n"
     )
+    clock_init = clock_qos
     old_clock_if = (
         "        if self.get_parameter('use_sim_time_bridge').value:\n"
         "            self.get_logger().info('Using simulation time. "
@@ -553,6 +575,9 @@ def patch_gym_bridge(path: Path) -> None:
         print("==> always publish /clock in lockstep mode")
     if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
         text = text.replace(clock_create, clock_init, 1)
+        print("==> publish initial /clock at sim t=0")
+    elif clock_best_effort in text:
+        text = text.replace(clock_best_effort, clock_init, 1)
         print("==> publish initial /clock at sim t=0")
     if text != orig:
         path.write_text(text, encoding="utf-8")
