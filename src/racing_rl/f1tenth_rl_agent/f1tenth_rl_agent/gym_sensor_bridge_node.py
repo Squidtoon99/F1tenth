@@ -43,6 +43,7 @@ class GymSensorBridgeNode(Node):
         self._prev_t: float | None = None
         self._prev_vx = 0.0
         self._prev_vy = 0.0
+        self._have_imu = False
         self._imu_msg = Imu()
         self._imu_msg.orientation_covariance[0] = -1.0
         self._drive_msg = AckermannDriveStamped()
@@ -69,6 +70,7 @@ class GymSensorBridgeNode(Node):
             self._seed_timer = self.create_timer(period, self._on_seed_timer)
         else:
             self._seed_timer = None
+        self._imu_hold_timer = self.create_timer(1.0 / 20.0, self._on_imu_hold)
 
         self.get_logger().info(
             f"gym_sensor_bridge odom={odom_topic} → imu={imu_topic}; "
@@ -124,6 +126,14 @@ class GymSensorBridgeNode(Node):
         imu.angular_velocity.x = float(msg.twist.twist.angular.x)
         imu.angular_velocity.y = float(msg.twist.twist.angular.y)
         imu.angular_velocity.z = float(msg.twist.twist.angular.z)
+        self._have_imu = True
+        self._imu_pub.publish(imu)
+
+    def _on_imu_hold(self) -> None:
+        if not self._have_imu:
+            return
+        imu = self._imu_msg
+        imu.header.stamp = self.get_clock().now().to_msg()
         self._imu_pub.publish(imu)
 
     def _on_applied(self, msg: ActuatorCommand) -> None:

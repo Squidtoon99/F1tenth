@@ -91,6 +91,8 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["imu_gyro_to_rads"] == 1.0
     assert racer["imu_ax_bias"] == 0.0
     assert racer["twist_vx_sign"] == 1.0
+    assert racer["sensor_max_age_s"] == 1.0
+    assert gate["rl_command_timeout_s"] == 1.0
     assert racer["publish_raw_observation"] is True
     assert racer["publish_diagnostics"] is True
     assert '"i_drive_max_a"' in source
