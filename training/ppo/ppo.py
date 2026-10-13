@@ -7,53 +7,6 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 
-LR_SCHEDULES = ("constant", "linear", "cosine", "adaptive_kl")
-ADAPTIVE_KL_LR_MIN = 1e-5
-ADAPTIVE_KL_LR_MAX = 1e-2
-
-
-def scheduled_learning_rate(progress, lr0, lr_final, schedule):
-    if schedule == "constant":
-        return float(lr0)
-    if schedule not in ("linear", "cosine"):
-        raise ValueError(
-            f"schedule must be 'constant', 'linear', or 'cosine', got {schedule!r}"
-        )
-    progress = min(max(float(progress), 0.0), 1.0)
-    lr0 = float(lr0)
-    lr_final = float(lr_final)
-    if schedule == "linear":
-        return lr0 + (lr_final - lr0) * progress
-    return lr_final + 0.5 * (lr0 - lr_final) * (1.0 + math.cos(math.pi * progress))
-
-
-def adapt_kl_learning_rate(
-    lr,
-    approx_kl,
-    desired_kl,
-    *,
-    lo=ADAPTIVE_KL_LR_MIN,
-    hi=ADAPTIVE_KL_LR_MAX,
-):
-    kl = float(approx_kl)
-    target = float(desired_kl)
-    lr = float(lr)
-    if kl > 2.0 * target:
-        return max(float(lo), lr / 1.5)
-    if kl < 0.5 * target:
-        return min(float(hi), lr * 1.5)
-    return lr
-
-
-def _optimizer_lr(optimizer):
-    return float(optimizer.param_groups[0]["lr"])
-
-
-def _set_optimizer_lr(optimizer, lr):
-    lr = float(lr)
-    for group in optimizer.param_groups:
-        group["lr"] = lr
-
 
 class ValueCritic(nn.Module):
     def __init__(self, obs_dim, hidden_sizes, activation=nn.ReLU):
@@ -283,6 +236,23 @@ class PPOTrainer:
 
         self.actor_optimizer = Adam(self.actor.parameters(), lr=actor_lr)
         self.value_optimizer = Adam(self.value_critic.parameters(), lr=value_lr)
+        self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
+        self._update_value_forward = self.value_critic
+        if self.compile:
+            self._evaluate_actions_sequence = torch.compile(
+                self._evaluate_actions_sequence, mode=self.compile_mode
+            )
+            self._update_value_forward = torch.compile(
+                self._update_value_forward, mode=self.compile_mode
+            )
+        self._live_hidden = None
+        self._reset_mask = None
+        self._rollout = None
+        self._num_envs = None
+        self._step = 0
+        self._initialized = False
+        self._awaiting_observe = False
+        self.last_rollout = None
         self.actor_lr0 = float(actor_lr)
         self.value_lr0 = float(value_lr)
         self.lr_schedule = str(lr_schedule)
@@ -315,23 +285,6 @@ class PPOTrainer:
                 f"desired_kl must be a positive finite number, got {desired_kl!r}"
             )
         self._schedule_transitions = 0
-        self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
-        self._update_value_forward = self.value_critic
-        if self.compile:
-            self._evaluate_actions_sequence = torch.compile(
-                self._evaluate_actions_sequence, mode=self.compile_mode
-            )
-            self._update_value_forward = torch.compile(
-                self._update_value_forward, mode=self.compile_mode
-            )
-        self._live_hidden = None
-        self._reset_mask = None
-        self._rollout = None
-        self._num_envs = None
-        self._step = 0
-        self._initialized = False
-        self._awaiting_observe = False
-        self.last_rollout = None
 
     def current_actor_lr(self):
         return _optimizer_lr(self.actor_optimizer)
@@ -793,3 +746,51 @@ class PPOTrainer:
         metrics["actor_lr"] = self.current_actor_lr()
         metrics["value_lr"] = self.current_value_lr()
         return metrics
+
+
+LR_SCHEDULES = ("constant", "linear", "cosine", "adaptive_kl")
+ADAPTIVE_KL_LR_MIN = 1e-5
+ADAPTIVE_KL_LR_MAX = 1e-2
+
+
+def scheduled_learning_rate(progress, lr0, lr_final, schedule):
+    if schedule == "constant":
+        return float(lr0)
+    if schedule not in ("linear", "cosine"):
+        raise ValueError(
+            f"schedule must be 'constant', 'linear', or 'cosine', got {schedule!r}"
+        )
+    progress = min(max(float(progress), 0.0), 1.0)
+    lr0 = float(lr0)
+    lr_final = float(lr_final)
+    if schedule == "linear":
+        return lr0 + (lr_final - lr0) * progress
+    return lr_final + 0.5 * (lr0 - lr_final) * (1.0 + math.cos(math.pi * progress))
+
+
+def adapt_kl_learning_rate(
+    lr,
+    approx_kl,
+    desired_kl,
+    *,
+    lo=ADAPTIVE_KL_LR_MIN,
+    hi=ADAPTIVE_KL_LR_MAX,
+):
+    kl = float(approx_kl)
+    target = float(desired_kl)
+    lr = float(lr)
+    if kl > 2.0 * target:
+        return max(float(lo), lr / 1.5)
+    if kl < 0.5 * target:
+        return min(float(hi), lr * 1.5)
+    return lr
+
+
+def _optimizer_lr(optimizer):
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def _set_optimizer_lr(optimizer, lr):
+    lr = float(lr)
+    for group in optimizer.param_groups:
+        group["lr"] = lr

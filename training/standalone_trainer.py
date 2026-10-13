@@ -1907,9 +1907,9 @@ def save_resume_state(
         payload["critic_obs_norm"] = critic_normalizer.state_dict()
         payload["actor_optimizer"] = trainer.actor_optimizer.state_dict()
         payload["value_optimizer"] = trainer.value_optimizer.state_dict()
-        payload["lr_schedule_state"] = trainer.lr_schedule_state()
     else:
         raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
+    payload["lr_schedule_state"] = trainer.lr_schedule_state()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -1945,8 +1945,9 @@ def load_resume_state(
         critic_normalizer.load_state_dict(payload["critic_obs_norm"])
         trainer.actor_optimizer.load_state_dict(payload["actor_optimizer"])
         trainer.value_optimizer.load_state_dict(payload["value_optimizer"])
-        trainer.load_lr_schedule_state(payload.get("lr_schedule_state"))
     restore_rng_state(payload["rng_state"], device)
+    if hasattr(trainer, "load_lr_schedule_state"):
+        trainer.load_lr_schedule_state(payload.get("lr_schedule_state"))
     logging.getLogger(LOGGER_NAME).info(
         "Resumed from %s (env_transitions=%d gradient_updates=%d)",
         path,
@@ -2784,16 +2785,14 @@ def main():
         log.info(
             "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
             "env_minibatches=%d env_minibatch_size=%d actor_lr=%.3e value_lr=%.3e "
-            "lr_schedule=%s lr_final=%.3e compile=%s compile_mode=%s "
-            "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
+            "compile=%s compile_mode=%s lidar_aug_enabled=%s "
+            "lidar_aug_max_shift_beams=%d",
             trainer.rollout_steps,
             trainer.num_epochs,
             args.num_envs // trainer.env_minibatch_size,
             trainer.env_minibatch_size,
             float(cfg["ppo"]["actor_lr"]),
             float(cfg["ppo"]["value_lr"]),
-            trainer.lr_schedule,
-            trainer.lr_final,
             trainer.compile,
             trainer.compile_mode,
             lidar_aug_enabled,

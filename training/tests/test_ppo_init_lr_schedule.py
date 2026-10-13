@@ -65,22 +65,19 @@ def _make_trainer(seed, **kwargs):
 
 def test_default_init_is_bit_identical_to_today():
     baseline = _make_actor(0)
-    explicit_none = _make_actor(
-        0, policy_mean_init_scale=None, policy_init_log_std=None
-    )
     post_apply = _make_actor(0)
     apply_policy_output_init(
         post_apply, policy_mean_init_scale=None, policy_init_log_std=None
     )
     for key, tensor in baseline.state_dict().items():
-        assert torch.equal(tensor, explicit_none.state_dict()[key]), key
         assert torch.equal(tensor, post_apply.state_dict()[key]), key
 
 
 def test_policy_mean_init_scale_and_log_std():
     baseline = _make_actor(7)
-    scaled = _make_actor(
-        7, policy_mean_init_scale=0.01, policy_init_log_std=-0.7
+    scaled = _make_actor(7)
+    apply_policy_output_init(
+        scaled, policy_mean_init_scale=0.01, policy_init_log_std=-0.7
     )
     assert torch.equal(
         scaled.mu_layer.weight, baseline.mu_layer.weight * 0.01

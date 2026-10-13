@@ -1,5 +1,6 @@
 from .ppo import (
     PPOTrainer,
+    scheduled_learning_rate,
     Rollout,
     ValueCritic,
     adapt_kl_learning_rate,
@@ -7,11 +8,11 @@ from .ppo import (
     apply_timeout_bootstrap_rewards,
     compute_gae,
     pure_timeout_mask,
-    scheduled_learning_rate,
 )
 
 __all__ = [
     "PPOTrainer",
+    "scheduled_learning_rate",
     "Rollout",
     "ValueCritic",
     "adapt_kl_learning_rate",
@@ -19,5 +20,4 @@ __all__ = [
     "apply_timeout_bootstrap_rewards",
     "compute_gae",
     "pure_timeout_mask",
-    "scheduled_learning_rate",
 ]
