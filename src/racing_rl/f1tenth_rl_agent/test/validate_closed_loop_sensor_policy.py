@@ -26,9 +26,10 @@ from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
 from f1tenth_rl_agent import sensor_interfaces as si
+from f1tenth_rl_agent.gym_certify import NetLapCounter, load_centerline, project_s
 
-COURTYARD_LENGTH_M = 17.62
-TRAINING_LAP_S = 5.3
+AUSTIN_LENGTH_M = 421.04
+TRAINING_LAP_S = 78.3
 
 
 def _now_s(node: Node) -> float:
@@ -62,50 +63,6 @@ def _spin_until(
         executor.remove_node(node)
 
 
-def _load_centerline(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
-    pts = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#") or line.lower().startswith("x_m"):
-                continue
-            parts = line.split(",")
-            pts.append((float(parts[0]), float(parts[1])))
-    xy = np.asarray(pts, dtype=np.float64)
-    if xy.shape[0] < 2:
-        raise SystemExit(f"{path}: need at least two centerline rows")
-    deltas = np.diff(xy, axis=0)
-    seglen = np.hypot(deltas[:, 0], deltas[:, 1])
-    cum = np.concatenate([[0.0], np.cumsum(seglen)])
-    return xy, cum, float(cum[-1])
-
-
-def _project_s(x: float, y: float, xy: np.ndarray, cum: np.ndarray) -> tuple[float, float]:
-    dxy = xy - np.array([x, y], dtype=np.float64)
-    dist = np.hypot(dxy[:, 0], dxy[:, 1])
-    i = int(np.argmin(dist))
-    i0 = max(i - 1, 0)
-    i1 = min(i + 1, xy.shape[0] - 1)
-    best_s = float(cum[i])
-    best_d = float(dist[i])
-    for a, b in ((i0, i), (i, i1)):
-        if a == b:
-            continue
-        p0 = xy[a]
-        p1 = xy[b]
-        span = p1 - p0
-        denom = float(span @ span)
-        if denom < 1e-12:
-            continue
-        t = float(np.clip(((np.array([x, y]) - p0) @ span) / denom, 0.0, 1.0))
-        proj = p0 + t * span
-        d = float(np.hypot(proj[0] - x, proj[1] - y))
-        if d < best_d:
-            best_d = d
-            best_s = float(cum[a] + t * (cum[b] - cum[a]))
-    return best_s, best_d
-
-
 class SensorPolicyValidator(Node):
     def __init__(
         self,
@@ -127,9 +84,10 @@ class SensorPolicyValidator(Node):
         self.move_speed_floor = move_speed_floor
         self.offtrack_m = offtrack_m
         self.xy = self.cum = None
-        self.loop_length = COURTYARD_LENGTH_M
+        self.loop_length = AUSTIN_LENGTH_M
         if centerline is not None and centerline.is_file():
-            self.xy, self.cum, self.loop_length = _load_centerline(centerline)
+            self.xy, self.cum, self.loop_length = load_centerline(centerline)
+        self._laps = NetLapCounter(self.loop_length)
 
         self.obs_count = 0
         self.obs_bad_dim = 0
@@ -144,15 +102,8 @@ class SensorPolicyValidator(Node):
         self.deadline_misses = 0
         self.valid_ticks = 0
         self.diag_count = 0
-        self.laps = 0
         self.offtrack_samples = 0
-        self.crashes = 0
-        self.lap_times: list[float] = []
         self.max_speed = 0.0
-        self._prev_s: float | None = None
-        self._progress_m = 0.0
-        self._offtrack = False
-        self._lap_t0 = 0.0
         self._start_xy: tuple[float, float] | None = None
         self._end_xy: tuple[float, float] | None = None
 
@@ -218,27 +169,11 @@ class SensorPolicyValidator(Node):
         self._end_xy = (x, y)
         if self.xy is None:
             return
-        s, dist = _project_s(x, y, self.xy, self.cum)
-        if dist > self.offtrack_m:
+        s, dist = project_s(x, y, self.xy, self.cum)
+        offtrack = dist > self.offtrack_m
+        if offtrack:
             self.offtrack_samples += 1
-            if not self._offtrack:
-                self.crashes += 1
-                self._offtrack = True
-        else:
-            self._offtrack = False
-        if self._prev_s is not None:
-            delta = s - self._prev_s
-            if delta < -0.5 * self.loop_length:
-                delta += self.loop_length
-                now = _now_s(self)
-                self.laps += 1
-                self.lap_times.append(now - self._lap_t0)
-                self._lap_t0 = now
-            elif delta > 0.5 * self.loop_length:
-                delta -= self.loop_length
-            if delta > 0.0:
-                self._progress_m += delta
-        self._prev_s = s
+        self._laps.update(s, offtrack, _now_s(self))
 
     def _desired_hz(self) -> float:
         if len(self.desired_stamps) < 4:
@@ -259,9 +194,11 @@ class SensorPolicyValidator(Node):
         hz = self._desired_hz()
         mean_infer = float(np.mean(self.infer_ms)) if self.infer_ms else float("nan")
         p95_infer = float(np.percentile(self.infer_ms, 95)) if self.infer_ms else float("nan")
-        mean_lap_s = (
-            float(np.mean(self.lap_times)) if self.lap_times else float("nan")
-        )
+        laps = self._laps.laps
+        lap_times = self._laps.lap_times
+        crashes = self._laps.crashes
+        progress_m = laps * self.loop_length + self._laps.progress
+        mean_lap_s = float(np.mean(lap_times)) if lap_times else float("nan")
         failures: list[str] = []
         if self.desired_count < min_samples:
             failures.append(f"desired cmds {self.desired_count} < {min_samples}")
@@ -286,9 +223,9 @@ class SensorPolicyValidator(Node):
             )
         if abs(hz - si.CONTROL_HZ) > 4.0 and self.desired_count >= min_samples:
             failures.append(f"policy rate {hz:.2f} Hz; expected ~{si.CONTROL_HZ:.0f}")
-        if self.laps < min_laps and self._progress_m < 0.8 * self.loop_length:
+        if laps < min_laps and progress_m < 0.8 * self.loop_length:
             failures.append(
-                f"insufficient progress: laps={self.laps} progress={self._progress_m:.2f} m"
+                f"insufficient progress: laps={laps} progress={progress_m:.2f} m"
             )
 
         print("Closed-loop sensor-policy gym validation:")
@@ -303,18 +240,18 @@ class SensorPolicyValidator(Node):
             f"max_speed={self.max_speed:.2f} m/s"
         )
         print(
-            f"  laps={self.laps} lap_times_s={self.lap_times} "
-            f"mean_lap_s={mean_lap_s:.2f} crashes={self.crashes} "
-            f"progress_m={self._progress_m:.2f} offtrack={self.offtrack_samples} "
-            f"(training courtyard ~{TRAINING_LAP_S:.1f} s / {COURTYARD_LENGTH_M:.2f} m)"
+            f"  laps={laps} lap_times_s={lap_times} "
+            f"mean_lap_s={mean_lap_s:.2f} crashes={crashes} "
+            f"progress_m={progress_m:.2f} offtrack={self.offtrack_samples} "
+            f"(training Austin ~{TRAINING_LAP_S:.1f} s / {AUSTIN_LENGTH_M:.2f} m)"
         )
         score = {
             "pass": not failures,
-            "laps": self.laps,
-            "lap_times_s": [round(t, 3) for t in self.lap_times],
+            "laps": laps,
+            "lap_times_s": [round(t, 3) for t in lap_times],
             "mean_lap_s": None if math.isnan(mean_lap_s) else round(mean_lap_s, 3),
-            "crashes": self.crashes,
-            "progress_m": round(self._progress_m, 3),
+            "crashes": crashes,
+            "progress_m": round(progress_m, 3),
             "offtrack_samples": self.offtrack_samples,
             "max_speed_mps": round(self.max_speed, 3),
             "desired_hz": round(hz, 2),
@@ -350,7 +287,7 @@ class SensorPolicyValidator(Node):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sensor-policy closed-loop gym gate")
-    parser.add_argument("--duration-s", type=float, default=90.0)
+    parser.add_argument("--duration-s", type=float, default=180.0)
     parser.add_argument("--wall-timeout-s", type=float, default=600.0)
     parser.add_argument("--expect-obs-dim", type=int, default=si.NUM_OBS)
     parser.add_argument("--max-steer", type=float, default=si.MAX_STEER_RAD)
@@ -366,7 +303,7 @@ def main() -> int:
             Path(__file__).resolve().parents[4]
             / "training"
             / "assets"
-            / "courtyard_2_centerline.csv"
+            / "Austin_centerline.csv"
         ),
     )
     args = parser.parse_args()
@@ -385,7 +322,7 @@ def main() -> int:
         while time.monotonic() < warmup_deadline and node.odom_count == 0:
             rclpy.spin_once(node, timeout_sec=0.01)
         sim_start = _now_s(node)
-        node._lap_t0 = sim_start
+        node._laps.lap_t0 = sim_start
         wall_deadline = time.monotonic() + max(float(args.wall_timeout_s), 1.0)
         _spin_until(
             node,

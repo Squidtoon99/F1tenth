@@ -53,8 +53,6 @@ def generate_launch_description() -> LaunchDescription:
                 "imu_gz_bias": 0.0,
                 "twist_vx_sign": 1.0,
                 "sensor_max_age_s": 1.0,
-                "steering_delta_max_rad": 0.05235987755982988,
-                "history_stride": 1,
                 "tick_on_scan": True,
                 "publish_raw_observation": True,
                 "publish_diagnostics": True,
@@ -90,7 +88,6 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "use_sim_time": True,
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
-                "speed_scale": 5.0,
             },
         ],
     )

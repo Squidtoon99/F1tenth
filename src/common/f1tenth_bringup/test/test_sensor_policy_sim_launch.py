@@ -11,7 +11,7 @@ SIM_LAUNCH = BRINGUP / "launch" / "sim.launch.py"
 SENSOR_POLICY_LAUNCH = BRINGUP / "launch" / "sensor_policy.launch.py"
 SIM_SH = REPO / "tools" / "sim.sh"
 COMPOSE_SIM = REPO / "deploy" / "docker" / "docker-compose.sim.yml"
-CENTERLINE = REPO / "training" / "assets" / "courtyard_2_centerline.csv"
+CENTERLINE = REPO / "training" / "assets" / "Austin_centerline.csv"
 SETUP_PY = (
     REPO / "src" / "racing_rl" / "f1tenth_rl_agent" / "setup.py"
 )
@@ -60,7 +60,7 @@ def _node_inline_parameters(launch_file: Path, variable_name: str) -> dict:
     raise AssertionError(f"Node assignment {variable_name!r} not found")
 
 
-def _courtyard_spawn():
+def _austin_spawn():
     rows = []
     for line in CENTERLINE.read_text().splitlines():
         line = line.strip()
@@ -96,16 +96,17 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["twist_vx_sign"] == 1.0
     assert racer["sensor_max_age_s"] == 1.0
     assert racer["use_sim_time"] is True
-    assert racer["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
-    assert racer["history_stride"] == 1
+    assert "steering_delta_max_rad" not in racer
+    assert "history_stride" not in racer
     assert racer["tick_on_scan"] is True
+    assert "0.05235987755982988" not in source
     assert gate["use_sim_time"] is True
     assert gate["rl_command_timeout_s"] == 1.0
     assert gate["publish_on_desired"] is True
     assert gate["publish_rate_hz"] == 0.0
     bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
     assert bridge["use_sim_time"] is True
-    assert bridge["speed_scale"] == 5.0
+    assert "speed_scale" not in bridge
     assert racer["publish_raw_observation"] is True
     assert racer["publish_diagnostics"] is True
     assert '"i_drive_max_a"' in source
@@ -137,6 +138,7 @@ def test_on_car_sensor_policy_launch_unchanged_defaults():
     assert "tick_on_scan" not in source
     assert "publish_on_desired" not in source
     assert "0.05235987755982988" not in source
+    assert "0.02617993877991494" not in source
 
 
 def test_gym_sensor_bridge_is_registered():
@@ -146,15 +148,17 @@ def test_gym_sensor_bridge_is_registered():
     )
 
 
-def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
+def test_sim_sh_sensor_policy_wires_austin_and_validates_1097d():
     source = SIM_SH.read_text()
-    sx, sy, stheta = _courtyard_spawn()
+    sx, sy, stheta = _austin_spawn()
 
     assert "sensor_policy" in source
-    assert "wire_courtyard_gym" in source
-    assert "courtyard_2.yaml" in source
-    assert "courtyard_2.png" in source
-    assert "courtyard_2_centerline.csv" in source
+    assert "wire_austin_gym" in source
+    assert "Austin.yaml" in source
+    assert "Austin.png" in source
+    assert "Austin_centerline.csv" in source
+    assert "wire_courtyard_gym" not in source
+    assert "courtyard_2.yaml" not in source
     assert "validate_closed_loop_sensor_policy.py" in source
     assert "certify" in source
     assert "1097" in source
@@ -190,6 +194,9 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "--wall-timeout-s" in validator_src
     assert "use_sim_time" in validator_src
     assert "qos_profile_sensor_data" in validator_src
+    assert "NetLapCounter" in validator_src
+    assert "Austin_centerline.csv" in validator_src
+    assert "COURTYARD_LENGTH_M" not in validator_src
     assert "scan_every_step" in source
     assert "skip lidar raycast on physics steps" in source
     assert "disable gym lidar thread" in source
@@ -210,6 +217,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "ClockType.STEADY_TIME" in bridge_src
     assert "qos_profile_sensor_data" in bridge_src
     assert "_drive_seq" in bridge_src
+    assert "WarpLongitudinalPlant" in bridge_src
+    assert "speed_scale" not in bridge_src
     racer_src = (
         REPO
         / "src"
@@ -242,6 +251,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "network_mode: \"service:sim\"" in compose_src
     assert "entrypoint taskset" in source
     assert "validate is vehicle-only" not in source
-    assert abs(sx - 0.89) < 0.02
-    assert abs(sy - (-3.37)) < 0.02
-    assert abs(stheta + 0.909) < 0.01
+    assert abs(sx - 0.0) < 0.02
+    assert abs(sy - 0.0) < 0.02
+    assert abs(stheta + 0.652) < 0.02
+    assert "--duration-s 180" in source
+    assert "maps/Austin" in source

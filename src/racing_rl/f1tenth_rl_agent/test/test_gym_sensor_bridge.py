@@ -14,6 +14,7 @@ from sensor_msgs.msg import Imu  # noqa: E402
 
 from f1tenth_rl_agent import interfaces as ifc  # noqa: E402
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
+from f1tenth_rl_agent.gym_certify import WarpLongitudinalPlant  # noqa: E402
 from f1tenth_rl_agent.gym_sensor_bridge_node import GymSensorBridgeNode  # noqa: E402
 from f1tenth_rl_agent.sensor_preprocessing import (  # noqa: E402
     ImuCalibration,
@@ -191,7 +192,8 @@ def test_gym_sensor_bridge_maps_applied_to_drive():
         drive = next(d.drive for d in drives if abs(d.drive.acceleration - 0.4) < 1e-6)
         assert drive.acceleration == pytest.approx(0.4)
         assert drive.steering_angle == pytest.approx(-0.2 * si.MAX_STEER_RAD)
-        assert drive.speed == pytest.approx(0.4)
+        assert drive.speed == pytest.approx(WarpLongitudinalPlant().step(0.0, 26.0, 0.0))
+        assert drive.speed < 0.05
     finally:
         if helper is not None:
             helper.destroy_node()

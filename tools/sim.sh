@@ -25,7 +25,7 @@
 #
 # The vehicle stack is the legacy 392-D C++ gate (vehicle_obs -> policy_inference
 # -> drive). STACK=sensor_policy is the 1,097-D on-car graph
-# (sensor_racer -> rl_current_gate -> gym_sensor_bridge -> /drive) on courtyard_2.
+# (sensor_racer -> rl_current_gate -> gym_sensor_bridge -> /drive) on Austin.
 set -eo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
@@ -104,18 +104,18 @@ import_sim_sources() {
   fi
 }
 
-wire_courtyard_gym() {
+wire_austin_gym() {
   local maps="sim/f1tenth_gym_ros/maps"
   local cfg="sim/f1tenth_gym_ros/config/sim.yaml"
   local assets="training/assets"
   [ -f "${cfg}" ] || die "gym sim.yaml missing (${cfg}); import gym sources first"
-  [ -f "${assets}/courtyard_2.yaml" ] || die "missing ${assets}/courtyard_2.yaml"
-  [ -f "${assets}/courtyard_2.png" ] || die "missing ${assets}/courtyard_2.png"
-  [ -f "${assets}/courtyard_2_centerline.csv" ] || \
-    die "missing ${assets}/courtyard_2_centerline.csv"
-  cp -f "${assets}/courtyard_2.png" "${assets}/courtyard_2_centerline.csv" "${maps}/"
+  [ -f "${assets}/Austin.yaml" ] || die "missing ${assets}/Austin.yaml"
+  [ -f "${assets}/Austin.png" ] || die "missing ${assets}/Austin.png"
+  [ -f "${assets}/Austin_centerline.csv" ] || \
+    die "missing ${assets}/Austin_centerline.csv"
+  cp -f "${assets}/Austin.png" "${assets}/Austin_centerline.csv" "${maps}/"
   # Gym TrackSpec rejects ROS map keys like mode:; keep occupancy fields only.
-  python3 - "${assets}/courtyard_2.yaml" "${maps}/courtyard_2.yaml" <<'PY'
+  python3 - "${assets}/Austin.yaml" "${maps}/Austin.yaml" <<'PY'
 import sys
 
 src, dst = sys.argv[1], sys.argv[2]
@@ -126,11 +126,11 @@ for line in open(src, encoding="utf-8"):
     if key in keep:
         out.append(line if line.endswith("\n") else line + "\n")
 open(dst, "w", encoding="utf-8").write("".join(out))
-open(dst.replace("courtyard_2.yaml", "courtyard_2_map.yaml"), "w", encoding="utf-8").write(
+open(dst.replace("Austin.yaml", "Austin_map.yaml"), "w", encoding="utf-8").write(
     "".join(out)
 )
 PY
-  python3 - "${cfg}" "${assets}/courtyard_2_centerline.csv" <<'PY'
+  python3 - "${cfg}" "${assets}/Austin_centerline.csv" <<'PY'
 import math
 import re
 import sys
@@ -152,7 +152,7 @@ sx, sy = rows[0]
 stheta = math.atan2(rows[1][1] - rows[0][1], rows[1][0] - rows[0][0])
 text = open(cfg_path, encoding="utf-8").read()
 replacements = {
-    "map_path": "'maps/courtyard_2'",
+    "map_path": "'maps/Austin'",
     "sx": f"{sx:.6f}",
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
@@ -174,7 +174,7 @@ for key, value in replacements.items():
     if n != 1:
         raise SystemExit(f"{cfg_path}: failed to set {key}")
 open(cfg_path, "w", encoding="utf-8").write(text)
-print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
+print(f"==> Austin gym map Austin spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
 PY
   # 1081-beam lidar inside every physics step caps the graph at ~2.5 Hz.
   # Skip raycast on ST steps; snapshot-scan on a 20 Hz Python thread.
@@ -637,7 +637,7 @@ restore_vehicle_gym() {
 
 agent_launch_cmd() {
   # The command the agent container runs to bring up the selected graph.
-  # vehicle reads IV_2026; sensor_policy uses the courtyard map wired below.
+  # vehicle reads IV_2026; sensor_policy uses the Austin map wired below.
   echo "ros2 launch f1tenth_bringup sim.launch.py \
     stack:=${STACK} \
     checkpoint_path:=/policies/${CKPT}"
@@ -656,7 +656,7 @@ up() {
   check_checkpoint
   import_sim_sources
   if [ "${STACK}" = "sensor_policy" ]; then
-    wire_courtyard_gym
+    wire_austin_gym
   else
     restore_vehicle_gym
     verify_track_assets
@@ -762,7 +762,7 @@ certify() {
   check_checkpoint
   import_sim_sources
   if [ "${STACK}" = "sensor_policy" ]; then
-    wire_courtyard_gym
+    wire_austin_gym
   else
     restore_vehicle_gym
     verify_track_assets
@@ -790,7 +790,7 @@ certify() {
   fi
   wait_graph_ready f1tenth-gym-agent
   local rc=0
-  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
+  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 180 --min-laps 1 --json-out /ws/gym_score.json}"
   validate || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "==> Certify failed; last gym / agent logs:" >&2
