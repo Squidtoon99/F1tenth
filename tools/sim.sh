@@ -217,29 +217,13 @@ def patch_gym_bridge(path: Path) -> None:
     if "import threading" not in text:
         text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
         print("==> import threading for off-executor lidar")
-    qos_import = (
-        "from rclpy.qos import (\n"
-        "    DurabilityPolicy,\n"
-        "    HistoryPolicy,\n"
-        "    QoSProfile,\n"
-        "    ReliabilityPolicy,\n"
-        "    qos_profile_sensor_data,\n"
-        ")\n"
-    )
-    if "DurabilityPolicy" not in text:
-        if "from rclpy.qos import qos_profile_sensor_data" in text:
-            text = text.replace(
-                "from rclpy.qos import qos_profile_sensor_data\n",
-                qos_import,
-                1,
-            )
-        else:
-            text = text.replace(
-                "from rclpy.node import Node\n",
-                "from rclpy.node import Node\n" + qos_import,
-                1,
-            )
-        print("==> import scan QoS and reliable /clock QoS")
+    if "from rclpy.qos import qos_profile_sensor_data" not in text:
+        text = text.replace(
+            "from rclpy.node import Node\n",
+            "from rclpy.node import Node\nfrom rclpy.qos import qos_profile_sensor_data\n",
+            1,
+        )
+        print("==> import sensor-data QoS for gym scan")
     old_scan_pub = (
         "self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)"
     )
@@ -540,25 +524,35 @@ def patch_gym_bridge(path: Path) -> None:
     if clock_after_scan in text and "clock_msg.clock = ts" not in text:
         text = text.replace(clock_after_scan, clock_pub_scan, 1)
         print("==> publish /clock from the scan timer so lockstep can bootstrap")
+    scan_only = (
+        "        scan.ranges = self.ego_scan\n"
+        "        self.ego_scan_pub.publish(scan)\n"
+        "\n"
+        "        if self.has_opp:\n"
+    )
+    scan_and_odom = (
+        "        scan.ranges = self.ego_scan\n"
+        "        self.ego_scan_pub.publish(scan)\n"
+        "        self._publish_odom(ts)\n"
+        "\n"
+        "        if self.has_opp:\n"
+    )
+    if scan_only in text and "self.ego_scan_pub.publish(scan)\n        self._publish_odom(ts)" not in text:
+        text = text.replace(scan_only, scan_and_odom, 1)
+        print("==> heartbeat last odom with the scan timer")
     clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
     clock_best_effort = (
         "            self.clock_pub = self.create_publisher(\n"
         "                Clock, '/clock', qos_profile_sensor_data)\n"
     )
-    clock_qos = (
-        "            self.clock_pub = self.create_publisher(\n"
-        "                Clock, '/clock', QoSProfile(\n"
-        "                    reliability=ReliabilityPolicy.RELIABLE,\n"
-        "                    durability=DurabilityPolicy.TRANSIENT_LOCAL,\n"
-        "                    history=HistoryPolicy.KEEP_LAST,\n"
-        "                    depth=1))\n"
+    clock_init = (
+        "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
         "            clock_msg = Clock()\n"
         "            sim_time = float(self.env.unwrapped.sim_time)\n"
         "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
         "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
         "            self.clock_pub.publish(clock_msg)\n"
     )
-    clock_init = clock_qos
     old_clock_if = (
         "        if self.get_parameter('use_sim_time_bridge').value:\n"
         "            self.get_logger().info('Using simulation time. "

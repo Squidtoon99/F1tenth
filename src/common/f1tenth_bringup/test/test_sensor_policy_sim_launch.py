@@ -169,7 +169,9 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "git -C sim/f1tenth_gym_ros checkout --" in source
     assert "lockstep: one physics step per unique /drive stamp" in source
     assert "self.timer.cancel()" not in source
-    assert "DurabilityPolicy.TRANSIENT_LOCAL" in source
+    assert "DurabilityPolicy.TRANSIENT_LOCAL" not in source
+    assert "create_publisher(Clock, '/clock', 10)" in source
+    assert "heartbeat last odom with the scan timer" in source
     assert "publish /clock from the scan timer so lockstep can bootstrap" in source
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source

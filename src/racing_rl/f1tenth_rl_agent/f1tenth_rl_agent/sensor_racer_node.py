@@ -457,7 +457,10 @@ class SensorRacerNode(Node):
             diag[si.DIAG_GRU_RESET] = float(timings["gru_reset"])
         diag[si.DIAG_GRU_RESETS] = float(self._gru_resets)
         self._publish_diagnostics()
-        self._imu_interval.clear()
+        if self.tick_on_scan and self._imu_interval:
+            self._imu_interval[:] = self._imu_interval[-1:]
+        else:
+            self._imu_interval.clear()
         self._last_tick_time = now
 
     def _on_timer(self) -> None:
