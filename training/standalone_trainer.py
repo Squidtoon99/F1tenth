@@ -943,6 +943,17 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.value_normalization must be a bool, got "
             f"{ppo.get('value_normalization')!r}"
         )
+    caps_coef = ppo.get("caps_coef")
+    if (
+        not isinstance(caps_coef, (int, float))
+        or isinstance(caps_coef, bool)
+        or not math.isfinite(float(caps_coef))
+        or float(caps_coef) < 0.0
+    ):
+        raise ValueError(
+            "ppo.caps_coef must be a finite number >= 0, got "
+            f"{caps_coef!r}"
+        )
 
 
 def _validate_ppo_init_lr_schedule(cfg: dict, ppo: dict) -> None:
@@ -1807,6 +1818,7 @@ def build_ppo_models(
         lr_final=float(ppo_cfg.get("lr_final", 0.0)),
         total_transitions=int(cfg["schedule"]["total_transitions"]),
         desired_kl=float(ppo_cfg.get("desired_kl", 0.01)),
+        caps_coef=float(ppo_cfg["caps_coef"]),
     )
     return models, trainer
 

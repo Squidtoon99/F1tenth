@@ -225,6 +225,7 @@ DEFAULT_CONFIG = {
         "value_max_grad_norm": None,
         "value_huber_delta": 0.0,
         "entropy_coef": 0.01,
+        "caps_coef": 0.0,
         "advantage_filter_enabled": True,
         "advantage_filter_discard_fraction": 0.05,
         "policy_mean_init_scale": None,
