@@ -101,6 +101,18 @@ def test_plus_one_throttle_is_not_five_mps():
     assert vx > 0.0
 
 
+def test_plant_reset_zeros_slew_so_next_step_matches_fresh_plant():
+    plant = WarpLongitudinalPlant()
+    plant.step(0.0, i_drive_cmd=80.0, i_brake_cmd=0.0)
+    assert plant.i_drive > 0.0
+    plant.reset()
+    assert plant.i_drive == 0.0
+    assert plant.i_brake == 0.0
+    vx = plant.step(0.0, i_drive_cmd=80.0, i_brake_cmd=0.0)
+    fresh = WarpLongitudinalPlant()
+    assert vx == pytest.approx(fresh.step(0.0, i_drive_cmd=80.0, i_brake_cmd=0.0))
+
+
 def test_full_throttle_accel_matches_80a_force():
     params = WarpLongitudinalParams()
     plant = WarpLongitudinalPlant(params)
@@ -193,6 +205,9 @@ def test_gym_scan_patch_uses_lidar_mount_frame():
     assert "paused at spawn" in text
     assert "was_paused = self.sim_paused" in text
     assert "--repeats 3" in text
+    assert "_awaiting_drive = False" in text
+    assert "await drive before the next lockstep observation" in text
+    assert "self._awaiting_drive = True" in text
 
 
 def test_scripted_centerline_pure_pursuit_accumulates_progress():

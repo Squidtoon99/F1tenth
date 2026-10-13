@@ -10,11 +10,12 @@ import numpy as np
 import rclpy
 import torch
 from f1tenth_interfaces.msg import ActuatorCommand
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray
 
 from f1tenth_policy import assert_artifact_current_limits_match
 
@@ -189,6 +190,7 @@ class SensorRacerNode(Node):
         self._imu_interval: list[RawImuSample] = []
         self._imu_time = None
         self._last_tick_time = self.get_clock().now()
+        self._last_tick_scan_s: float | None = None
         self._deadline_misses = 0
         self._gru_resets = 0
         self._consecutive_safe_ticks = 0
@@ -215,6 +217,10 @@ class SensorRacerNode(Node):
             Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
         )
         self.create_subscription(ActuatorCommand, applied_topic, self._on_applied, 10)
+        self.create_subscription(Bool, "/pause_sim", self._on_pause_sim, 10)
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/initialpose", self._on_initialpose, 10
+        )
 
         self._desired_pub = self.create_publisher(
             ActuatorCommand, si.TOPIC_DESIRED_ACTUATOR, 10
@@ -335,6 +341,45 @@ class SensorRacerNode(Node):
         self._diag_buf[si.DIAG_GRU_RESET] = 1.0
         self._diag_buf[si.DIAG_GRU_RESET_REASON] = float(reason)
 
+    def _reset_episode(self, reason: int) -> None:
+        lock = self._tick_lock
+        if lock is not None:
+            lock.acquire()
+        try:
+            if self._runtime is not None:
+                self._runtime.warmup(1)
+            self._reset_runtime(reason)
+            self._last_tick_time = self.get_clock().now()
+            self._last_tick_scan_s = None
+            self._last_lockstep_scan = None
+            self._last_applied_source = None
+            self._unusable_reset_active = False
+            self._imu_interval.clear()
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _on_pause_sim(self, msg: Bool) -> None:
+        if not bool(msg.data):
+            self._reset_episode(si.GRU_RESET_EPISODE)
+
+    def _on_initialpose(self, _msg: PoseWithCovarianceStamped) -> None:
+        self._reset_episode(si.GRU_RESET_EPISODE)
+
+    def _scan_stamp_s(self) -> float | None:
+        if self._scan is None:
+            return None
+        stamp = self._scan.header.stamp
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    def _deadline_elapsed_s(self, now) -> float:
+        if self.tick_on_scan:
+            stamp_s = self._scan_stamp_s()
+            if stamp_s is None or self._last_tick_scan_s is None:
+                return 0.0
+            return stamp_s - self._last_tick_scan_s
+        return (now - self._last_tick_time).nanoseconds * 1e-9
+
     def _maybe_lockstep_tick(self) -> None:
         if not self.tick_on_scan or self._tick_lock is None:
             return
@@ -401,8 +446,10 @@ class SensorRacerNode(Node):
         source = int(self._applied.source)
         source_changed = source != self._last_applied_source
         self._last_applied_source = source
-        if deadline_miss:
+        if deadline_miss and not self.tick_on_scan:
             return si.GRU_RESET_DEADLINE_MISS
+        if source_changed and source == ActuatorCommand.SOURCE_RL:
+            return si.GRU_RESET_MODE_ENGAGE
         if source == ActuatorCommand.SOURCE_RL or not source_changed:
             return si.GRU_RESET_NONE
         return {
@@ -462,12 +509,13 @@ class SensorRacerNode(Node):
         else:
             self._imu_interval.clear()
         self._last_tick_time = now
+        self._last_tick_scan_s = self._scan_stamp_s()
 
     def _on_timer(self) -> None:
         t0 = time.perf_counter()
         now = self.get_clock().now()
         period_s = 1.0 / max(self.control_hz, 1.0)
-        elapsed = (now - self._last_tick_time).nanoseconds * 1e-9
+        elapsed = self._deadline_elapsed_s(now)
         deadline_miss = elapsed > (1.25 * period_s)
         if deadline_miss:
             self._deadline_misses += 1

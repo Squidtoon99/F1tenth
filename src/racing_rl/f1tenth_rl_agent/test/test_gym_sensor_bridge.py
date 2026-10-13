@@ -11,6 +11,7 @@ from nav_msgs.msg import Odometry  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
 from rclpy.qos import qos_profile_sensor_data  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
+from std_msgs.msg import Bool  # noqa: E402
 
 from f1tenth_rl_agent import interfaces as ifc  # noqa: E402
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
@@ -307,6 +308,40 @@ def test_gym_sensor_bridge_drive_stamps_are_monotonic():
 
         assert _spin_until([node, helper], publish_same_stamp)
         assert stamps[0] < stamps[1]
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_gym_sensor_bridge_unpause_resets_plant_and_speed():
+    rclpy.init()
+    node = helper = None
+    try:
+        node = GymSensorBridgeNode(
+            parameter_overrides=[
+                Parameter("seed_applied_count", Parameter.Type.INTEGER, 0),
+            ]
+        )
+        helper = rclpy.create_node("gym_sensor_bridge_unpause_helper")
+        pause_pub = helper.create_publisher(Bool, "/pause_sim", 10)
+        node._plant.step(0.0, 80.0, 0.0)
+        node._vx = 3.0
+        node._prev_vx = 2.5
+        node._drive_seq = 9
+        assert node._plant.i_drive > 0.0
+
+        def unpause():
+            msg = Bool()
+            msg.data = False
+            pause_pub.publish(msg)
+            return node._plant.i_drive == 0.0 and node._vx == 0.0
+
+        assert _spin_until([node, helper], unpause)
+        assert node._plant.i_brake == 0.0
+        assert node._prev_vx == 0.0
     finally:
         if helper is not None:
             helper.destroy_node()

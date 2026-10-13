@@ -291,6 +291,10 @@ class WarpLongitudinalPlant:
         self.i_drive = 0.0
         self.i_brake = 0.0
 
+    def reset(self) -> None:
+        self.i_drive = 0.0
+        self.i_brake = 0.0
+
     def step(
         self,
         vx: float,

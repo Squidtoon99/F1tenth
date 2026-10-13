@@ -76,3 +76,6 @@ trade-off. Routine work is captured by the PR instead (see
   fails on lockstep misses, and reports 3-repeat mean/var.
 - [0036](0036-per-episode-warp-dynamics-dr.md) — Opt-in per-episode Warp
   Izz / μ / C_α / mass / steer-lag / drive-scale DR covering gym ST.
+- [0037](0037-gym-harness-episode-reset.md) — Gym certify resets GRU /
+  command history per episode, warms up before unpause, and waits for
+  `/drive` before the next lockstep observation.
