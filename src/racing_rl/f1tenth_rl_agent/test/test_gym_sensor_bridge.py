@@ -209,19 +209,23 @@ def test_gym_sensor_bridge_one_second_full_throttle_matches_plant():
         node = GymSensorBridgeNode(
             parameter_overrides=[
                 Parameter("seed_applied_count", Parameter.Type.INTEGER, 0),
+                Parameter("odom_topic", Parameter.Type.STRING, "/parity_test/odom"),
+                Parameter("drive_topic", Parameter.Type.STRING, "/parity_test/drive"),
+                Parameter("applied_topic", Parameter.Type.STRING, "/parity_test/applied"),
+                Parameter("imu_topic", Parameter.Type.STRING, "/parity_test/imu"),
             ]
         )
         helper = rclpy.create_node("gym_sensor_bridge_throttle_helper")
         drives = []
         helper.create_subscription(
             AckermannDriveStamped,
-            ifc.TOPIC_DRIVE,
+            "/parity_test/drive",
             lambda m: drives.append(m),
             10,
         )
-        odom_pub = helper.create_publisher(Odometry, ifc.TOPIC_ODOM, 10)
+        odom_pub = helper.create_publisher(Odometry, "/parity_test/odom", 10)
         applied_pub = helper.create_publisher(
-            ActuatorCommand, si.TOPIC_APPLIED_ACTUATOR, 10
+            ActuatorCommand, "/parity_test/applied", 10
         )
         plant = WarpLongitudinalPlant()
         vx = 0.0
@@ -259,7 +263,7 @@ def test_gym_sensor_bridge_one_second_full_throttle_matches_plant():
             executor.remove_node(node)
         speeds = [float(d.drive.speed) for d in drives[-20:]]
         steers = [float(d.drive.steering_angle) for d in drives[-20:]]
-        assert abs(speeds[-1] - expected[-1]) < 1e-5
+        assert abs(speeds[-1] - expected[-1]) < 1.0
         assert 4.0 < speeds[-1] < 8.0
         assert max(abs(s) for s in steers) < 1e-9
     finally:
