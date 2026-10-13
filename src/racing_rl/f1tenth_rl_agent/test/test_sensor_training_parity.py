@@ -44,6 +44,7 @@ from f1tenth_rl_agent.sensor_preprocessing import (
     ImuCalibration,
     RawImuSample,
     actor_imu_from_interval,
+    applied_obs_channels,
     body_accel_to_driver,
     driver_accel_to_body,
     pack_actor_observation,
@@ -93,6 +94,22 @@ def test_driver_imu_rotation_recovers_training_body_accel():
     assert actor_imu[3] == pytest.approx(0.0)
     assert actor_imu[4] == pytest.approx(0.0)
     assert actor_imu[5] == pytest.approx(body_gz)
+
+
+def test_applied_obs_channels_split_command_from_slewed_current():
+    applied_long, vesc_current, steer_rad = applied_obs_channels(
+        longitudinal=0.5,
+        drive_current_a=8.0,
+        brake_current_a=0.0,
+        steering_norm=0.2,
+        i_drive_max_a=TRAINING_I_DRIVE_MAX_A,
+        i_brake_max_a=TRAINING_I_BRAKE_MAX_A,
+        max_steer=MAX_STEER_RAD,
+    )
+    assert applied_long == pytest.approx(0.5)
+    assert vesc_current == pytest.approx(0.1)
+    assert steer_rad == pytest.approx(0.2 * MAX_STEER_RAD)
+    assert applied_long != vesc_current
 
 
 def test_vesc_speed_current_and_command_history_match_training_pack():

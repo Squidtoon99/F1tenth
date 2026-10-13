@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from f1tenth_policy.current import applied_current_fraction
 from f1tenth_policy.steering import steer_history_angles_and_deltas
 from f1tenth_rl_agent.sensor_interfaces import (
     GRAVITY_MS2,
@@ -193,6 +194,26 @@ def actor_imu_from_interval(
     else:
         actor = raw_mean.copy()
     return actor, raw_mean
+
+
+def applied_obs_channels(
+    *,
+    longitudinal: float,
+    drive_current_a: float,
+    brake_current_a: float,
+    steering_norm: float,
+    i_drive_max_a: float,
+    i_brake_max_a: float,
+    max_steer: float,
+) -> tuple[float, float, float]:
+    applied_long = float(longitudinal)
+    vesc_current = applied_current_fraction(
+        float(drive_current_a) - float(brake_current_a),
+        i_drive_max_a,
+        i_brake_max_a,
+    )
+    applied_steer_rad = float(steering_norm) * float(max_steer)
+    return applied_long, vesc_current, applied_steer_rad
 
 
 def pack_actor_observation(
