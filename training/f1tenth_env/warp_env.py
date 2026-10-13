@@ -120,6 +120,7 @@ class _EnvironmentStorage:
         "reward_passing",
         "reward_collision",
         "reward_rear_end",
+        "reward_tal",
         "prev_s",
         "prev_opponent_s",
         "prev_steer_delta",
@@ -680,6 +681,14 @@ class WarpF1tenthEnv:
             "continuous": 1,
             "continuous_quadratic": 2,
         }[wall_cost_mode]
+        params.tal_scale = float(scales.get("tal", 0.0))
+        params.tal_v_ref = float(
+            self.env_cfg.get("expected_lap_speed_mps", 3.5)
+        )
+        params.tal_kp_lateral = float(self.env_cfg.get("opponent_kp_ey", 1.0))
+        params.tal_kp_heading = float(
+            self.env_cfg.get("opponent_kh_heading", 1.0)
+        )
         return params
 
     def _build_termination_params(self):
@@ -906,6 +915,7 @@ class WarpF1tenthEnv:
                     "passing": tensors["reward_passing"],
                     "collision": tensors["reward_collision"],
                     "rear_end": tensors["reward_rear_end"],
+                    "tal": tensors["reward_tal"],
                 },
             },
             "termination": {

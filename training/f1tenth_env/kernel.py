@@ -432,6 +432,10 @@ class RewardParams:
     global_scale: wp.float32
     rear_end_any_contact: wp.int32
     wall_cost_mode: wp.int32
+    tal_scale: wp.float32
+    tal_v_ref: wp.float32
+    tal_kp_lateral: wp.float32
+    tal_kp_heading: wp.float32
 
 
 @wp.struct
@@ -541,6 +545,7 @@ class EnvBuffers:
     reward_passing: wp.array(dtype=wp.float32)
     reward_collision: wp.array(dtype=wp.float32)
     reward_rear_end: wp.array(dtype=wp.float32)
+    reward_tal: wp.array(dtype=wp.float32)
     done: wp.array(dtype=wp.bool)
     done_flags: wp.array(dtype=wp.int32)
     term_timeout: wp.array(dtype=wp.bool)
@@ -659,6 +664,7 @@ class RewardResult:
     passing: wp.float32
     collision: wp.float32
     rear_end: wp.float32
+    tal: wp.float32
     done: wp.bool
     done_flags: wp.int32
 
@@ -1383,6 +1389,30 @@ def compute_reward_and_done(
     if first_wall_contact:
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
+    out.tal = 0.0
+    if reward.tal_scale != 0.0:
+        track_speed = wp.dot(vel_world, ego_frenet.tangent)
+        lookahead = wp.float32(0.5) * wp.abs(track_speed)
+        if lookahead < 0.05:
+            ahead = wp.atan2(ego_frenet.tangent[1], ego_frenet.tangent[0])
+        else:
+            ahead = track_heading_ahead(ego_frenet, track, lookahead)
+        heading_err = wrap_angle(ego.yaw - ahead)
+        cross_track = wp.atan(
+            reward.tal_kp_lateral
+            * ego_frenet.ey
+            / wp.max(wp.abs(track_speed) + 0.5, 0.5)
+        )
+        delta_ref = wp.clamp(
+            -(reward.tal_kp_heading * heading_err + cross_track),
+            -reward.max_steer,
+            reward.max_steer,
+        )
+        out.tal = reward.tal_scale * (
+            1.0
+            - wp.abs(track_speed - reward.tal_v_ref)
+            - wp.abs(ego.steer_logical - delta_ref)
+        )
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
     delta_t = theta_t - theta_prev
@@ -1460,6 +1490,7 @@ def compute_reward_and_done(
         + out.passing
         + out.collision
         + out.rear_end
+        + out.tal
     )
 
     out.done = (
@@ -1714,6 +1745,7 @@ def store_reward(
     env.reward_passing[env_id] = result.passing
     env.reward_collision[env_id] = result.collision
     env.reward_rear_end[env_id] = result.rear_end
+    env.reward_tal[env_id] = result.tal
     env.done[env_id] = result.done
     env.done_flags[env_id] = result.done_flags
     env.term_timeout[env_id] = (result.done_flags & 1) != 0
