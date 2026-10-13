@@ -147,6 +147,8 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
    the gym fork to skip lidar on physics steps and raycast 1081-beam lidar from
    a snapshot pose on a Python thread so 20 Hz physics/odom never wait on scan.
+   The gym image imports `/sim_ws/f1tenth_gym` (build-time copy); compose prepends
+   `PYTHONPATH` to the live mounted engine so that skip actually applies.
 
    Overnight `policy_317440000.pt` is preprocessing **v3 @ 20 Hz** with
    π/60 rad/tick (3°/tick) consecutive history. Car defaults after v5 are

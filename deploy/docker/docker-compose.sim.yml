@@ -49,6 +49,7 @@ services:
        rm -rf build/f1tenth_gym_ros install/f1tenth_gym_ros &&
        colcon build --symlink-install &&
        source install/setup.bash &&
+       export PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym:${PYTHONPATH:-} &&
        ros2 launch f1tenth_gym_ros rl_agent_sim_launch.py"
 
   agent:

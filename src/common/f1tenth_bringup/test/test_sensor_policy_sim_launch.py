@@ -195,6 +195,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     ).read_text()
     assert "MultiThreadedExecutor" in racer_src
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
+    assert "PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym" in COMPOSE_SIM.read_text()
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02
