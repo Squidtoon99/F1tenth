@@ -675,6 +675,21 @@ class PPOTrainer:
                     if self.value_normalizer is not None:
                         post_raw = post_raw * sigma + mu
                     post_values[:, env_index] = post_raw
+                if self.value_clip > 0.0:
+                    value_clip_hit = (
+                        (new_values - old_n).abs() > self.value_clip
+                    ).to(dtype=mb_keep.dtype)
+                else:
+                    value_clip_hit = torch.zeros_like(mb_keep)
+                clip_frac_sum += float(
+                    (value_clip_hit * mb_keep).sum().div(keep_denom).detach()
+                )
+                clip_active_sum += float(
+                    (clip_active.to(dtype=mb_keep.dtype) * mb_keep)
+                    .sum()
+                    .div(keep_denom)
+                    .detach()
+                )
 
                 self.value_optimizer.zero_grad(set_to_none=True)
                 value_loss.backward()
@@ -683,6 +698,9 @@ class PPOTrainer:
                 )
                 self.value_optimizer.step()
                 value_updates += 1
+                value_grad_clip_sum += float(
+                    float(value_grad_norm) > self.value_max_grad_norm
+                )
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 policy_loss.backward()
@@ -726,22 +744,6 @@ class PPOTrainer:
                 metric_sums["value_grad_clip_fraction"] += float(
                     value_grad > self.max_grad_norm
                 )
-                if self.value_clip > 0.0:
-                    value_clip_hit = (
-                        (new_values - old_n).abs() > self.value_clip
-                    ).to(dtype=mb_keep.dtype)
-                else:
-                    value_clip_hit = torch.zeros_like(mb_keep)
-                clip_frac_sum += float(
-                    (value_clip_hit * mb_keep).sum().div(keep_denom).detach()
-                )
-                clip_active_sum += float(
-                    (clip_active.to(dtype=mb_keep.dtype) * mb_keep)
-                    .sum()
-                    .div(keep_denom)
-                    .detach()
-                )
-                value_grad_clip_sum += float(value_grad > self.value_max_grad_norm)
                 updates += 1
             epochs_completed = epoch + 1
 
