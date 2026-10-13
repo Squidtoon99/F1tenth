@@ -70,3 +70,5 @@ trade-off. Routine work is captured by the PR instead (see
 - [0033](0033-reduced-bicycle-simulator.md) — Reduced bicycle plant, occupancy
   contact, and 20 Hz sensor-policy cadence (supersedes 0002 plant and 0010
   sensor cadence).
+- [0034](0034-gym-warp-plant-and-net-progress-laps.md) — Gym certify uses Warp
+  current→vx and eval_full_lap net-progress laps on Austin.

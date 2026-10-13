@@ -13,6 +13,7 @@ from sensor_msgs.msg import Imu
 
 from f1tenth_rl_agent import interfaces as ifc
 from f1tenth_rl_agent import sensor_interfaces as si
+from f1tenth_rl_agent.gym_certify import WarpLongitudinalPlant, WarpLongitudinalParams
 from f1tenth_rl_agent.sensor_preprocessing import body_accel_to_driver
 
 
@@ -28,7 +29,13 @@ class GymSensorBridgeNode(Node):
         self.declare_parameter("seed_applied_hz", 20.0)
         self.declare_parameter("seed_applied_count", 5)
         self.declare_parameter("max_steer", float(si.MAX_STEER_RAD))
-        self.declare_parameter("speed_scale", 1.0)
+        self.declare_parameter("mass", 3.444)
+        self.declare_parameter("f_drive_max", 26.5)
+        self.declare_parameter("f_brake_max", 23.1)
+        self.declare_parameter("i_drive_max_a", 80.0)
+        self.declare_parameter("i_brake_max_a", 40.0)
+        self.declare_parameter("i_slew_a_per_s", 200.0)
+        self.declare_parameter("control_dt", 0.05)
 
         gp = self.get_parameter
         odom_topic = gp("odom_topic").get_parameter_value().string_value
@@ -41,9 +48,20 @@ class GymSensorBridgeNode(Node):
             gp("seed_applied_count").get_parameter_value().integer_value
         )
         self._max_steer = float(gp("max_steer").get_parameter_value().double_value)
-        self._speed_scale = float(gp("speed_scale").get_parameter_value().double_value)
+        self._plant = WarpLongitudinalPlant(
+            WarpLongitudinalParams(
+                mass=float(gp("mass").get_parameter_value().double_value),
+                f_drive_max=float(gp("f_drive_max").get_parameter_value().double_value),
+                f_brake_max=float(gp("f_brake_max").get_parameter_value().double_value),
+                i_drive_max=float(gp("i_drive_max_a").get_parameter_value().double_value),
+                i_brake_max=float(gp("i_brake_max_a").get_parameter_value().double_value),
+                i_slew=float(gp("i_slew_a_per_s").get_parameter_value().double_value),
+                control_dt=float(gp("control_dt").get_parameter_value().double_value),
+            )
+        )
 
         self._prev_t: float | None = None
+        self._vx = 0.0
         self._prev_vx = 0.0
         self._prev_vy = 0.0
         self._have_imu = False
@@ -118,6 +136,7 @@ class GymSensorBridgeNode(Node):
         t = stamp.sec + stamp.nanosec * 1e-9
         vx = float(msg.twist.twist.linear.x)
         vy = float(msg.twist.twist.linear.y)
+        self._vx = vx
         ax = 0.0
         ay = 0.0
         if self._prev_t is not None:
@@ -163,8 +182,11 @@ class GymSensorBridgeNode(Node):
         long_cmd = float(msg.longitudinal)
         drive.drive.acceleration = long_cmd
         drive.drive.steering_angle = float(msg.steering) * self._max_steer
-        # Gym fork steps on speed (SPEED mode), not the 80 A current plant.
-        drive.drive.speed = long_cmd * self._speed_scale
+        drive.drive.speed = self._plant.step(
+            self._vx,
+            float(msg.drive_current_a),
+            float(msg.brake_current_a),
+        )
         self._drive_pub.publish(drive)
 
 

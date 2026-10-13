@@ -88,7 +88,6 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "use_sim_time": True,
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
-                "speed_scale": 5.0,
             },
         ],
     )
