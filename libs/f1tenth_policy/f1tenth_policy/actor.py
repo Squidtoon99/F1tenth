@@ -525,6 +525,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         actions,
         reset_mask=None,
         pre_tanh_actions=None,
+        return_mean=False,
     ):
         if obs.dim() != 3 or obs.shape[-1] != self.obs_dim:
             raise ValueError(
@@ -551,7 +552,16 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                 f"expected ({batch}, {steps})"
             )
         if steps == 0:
-            return obs.new_zeros(batch, 0), hidden, obs.new_zeros(batch, 0)
+            empty_logp = obs.new_zeros(batch, 0)
+            empty_entropy = obs.new_zeros(batch, 0)
+            if return_mean:
+                return (
+                    empty_logp,
+                    hidden,
+                    empty_entropy,
+                    obs.new_zeros(batch, 0, self.act_dim),
+                )
+            return empty_logp, hidden, empty_entropy
 
         flat_obs = obs.reshape(batch * steps, self.obs_dim)
         features, _ = self.encode(flat_obs)
@@ -576,11 +586,16 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             )
             logp = self.log_prob_from_pre_tanh(flat_h, flat_pre_tanh)
         entropy = distribution.entropy().sum(dim=-1)
-        return (
+        result = (
             logp.view(steps, batch).transpose(0, 1),
             next_hidden,
             entropy.view(steps, batch).transpose(0, 1),
         )
+        if not return_mean:
+            return result
+        mean_action = self.act_limit * torch.tanh(distribution.mean)
+        mean_action = mean_action.view(steps, batch, self.act_dim).transpose(0, 1)
+        return result + (mean_action,)
 
     def forward(self, obs, deterministic=False, with_logprob=True):
         if obs.dim() != 2:

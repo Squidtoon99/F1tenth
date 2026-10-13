@@ -78,6 +78,14 @@ def compute_gae(
     return advantages, advantages + values
 
 
+def caps_temporal_loss(mean_actions, reset_mask):
+    if mean_actions.shape[1] < 2:
+        return mean_actions.new_zeros(())
+    delta = mean_actions[:, 1:] - mean_actions[:, :-1]
+    valid = (~reset_mask[:, 1:]).to(dtype=delta.dtype)
+    return (delta.square().sum(dim=-1) * valid).sum() / valid.sum().clamp(min=1.0)
+
+
 def advantage_filter_keep_mask(
     advantages,
     *,
@@ -219,6 +227,7 @@ class PPOTrainer:
         lr_final=0.0,
         total_transitions=0,
         desired_kl=0.01,
+        caps_coef=0.0,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -269,6 +278,11 @@ class PPOTrainer:
         )
         self.lidar_aug_enabled = bool(lidar_aug_enabled)
         self.lidar_aug_max_shift_beams = int(lidar_aug_max_shift_beams)
+        self.caps_coef = float(caps_coef)
+        if not math.isfinite(self.caps_coef) or self.caps_coef < 0.0:
+            raise ValueError(
+                f"caps_coef must be a finite number >= 0, got {caps_coef!r}"
+            )
         if self.lidar_aug_max_shift_beams < 0:
             raise ValueError(
                 "lidar_aug_max_shift_beams must be a non-negative int, got "
@@ -651,6 +665,7 @@ class PPOTrainer:
                 "value_grad_norm": 0.0,
                 "actor_grad_clip_fraction": 0.0,
                 "value_grad_clip_fraction": 0.0,
+                "caps_loss": 0.0,
                 "epochs": 0,
                 "minibatches": 0,
                 "actor_updates": 0,
@@ -701,6 +716,7 @@ class PPOTrainer:
                 "value_grad_norm",
                 "actor_grad_clip_fraction",
                 "value_grad_clip_fraction",
+                "caps_loss",
             )
         }
         clip_active_sum = 0.0
@@ -738,13 +754,19 @@ class PPOTrainer:
                 )
                 reset_seq = rollout.reset_masks[:, env_index].transpose(0, 1)
                 hidden = rollout.rollout_start_hidden[env_index]
-                new_logp, _, new_entropy = self._evaluate_actions_sequence(
+                eval_out = self._evaluate_actions_sequence(
                     actor_seq,
                     hidden,
                     action_seq,
                     reset_mask=reset_seq,
                     pre_tanh_actions=pre_tanh_seq,
+                    return_mean=self.caps_coef > 0.0,
                 )
+                if self.caps_coef > 0.0:
+                    new_logp, _, new_entropy, new_mean = eval_out
+                else:
+                    new_logp, _, new_entropy = eval_out
+                    new_mean = None
                 new_logp = new_logp.transpose(0, 1)
                 new_entropy = new_entropy.transpose(0, 1)
                 old_logp = rollout.old_logp[:, env_index]
@@ -761,6 +783,10 @@ class PPOTrainer:
                 policy_loss = (policy_loss_per * mb_keep).sum() / keep_denom
                 policy_entropy = (new_entropy * mb_keep).sum() / keep_denom
                 policy_loss = policy_loss - self.entropy_coef * policy_entropy
+                caps_loss = policy_loss.new_zeros(())
+                if new_mean is not None:
+                    caps_loss = caps_temporal_loss(new_mean, reset_seq)
+                    policy_loss = policy_loss + self.caps_coef * caps_loss
                 approx_kl = (((ratio - 1.0) - log_ratio) * mb_keep).sum() / keep_denom
 
                 critic_obs = self._normalize(self.critic_normalizer, critic_raw)
@@ -834,6 +860,7 @@ class PPOTrainer:
                 )
                 metric_sums["approx_kl"] += approx_kl.detach()
                 metric_sums["policy_entropy"] += policy_entropy.detach()
+                metric_sums["caps_loss"] += caps_loss.detach()
                 metric_sums["policy_clip_fraction"] += (
                     (
                         ((ratio - 1.0).abs() > self.clip_ratio).to(
