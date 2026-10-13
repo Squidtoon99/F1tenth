@@ -284,6 +284,8 @@ def patch_gym_bridge(path: Path) -> None:
     text = text.replace(", callback_group=self._physics_cg", "")
     text = text.replace("self.timer = self.create_timer(0.004, self.timer_callback)",
                         "self.timer = self.create_timer(0.05, self.timer_callback)")
+    text = text.replace("self.timer = self.create_timer(1, self.timer_callback)",
+                        "self.timer = self.create_timer(0.05, self.timer_callback)")
     text = text.replace("self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
                         "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)")
     if "timestep=0.05,\n" not in text:
@@ -526,14 +528,18 @@ def patch_gym_bridge(path: Path) -> None:
         text = text.replace(clock_after_scan, clock_pub_scan, 1)
         print("==> publish /clock from the scan timer so lockstep can bootstrap")
     clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
-    if clock_create in text and "Clock, '/clock', qos_profile_sensor_data)" not in text:
-        text = text.replace(
-            clock_create,
-            "            self.clock_pub = self.create_publisher(\n"
-            "                Clock, '/clock', qos_profile_sensor_data)\n",
-            1,
-        )
-        print("==> publish /clock best-effort")
+    clock_init = (
+        "            self.clock_pub = self.create_publisher(\n"
+        "                Clock, '/clock', qos_profile_sensor_data)\n"
+        "            clock_msg = Clock()\n"
+        "            sim_time = float(self.env.unwrapped.sim_time)\n"
+        "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
+        "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+    )
+    if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
+        text = text.replace(clock_create, clock_init, 1)
+        print("==> publish initial /clock at sim t=0")
     if text != orig:
         path.write_text(text, encoding="utf-8")
     else:
