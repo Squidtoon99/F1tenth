@@ -26,7 +26,7 @@ services:
       - ../../sim/f1tenth_gym_ros:/sim_ws/src/f1tenth_gym_ros
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=1
+      - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
     cpuset: "0-3"
@@ -68,7 +68,7 @@ services:
     environment:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=1
+      - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
@@ -98,7 +98,7 @@ services:
     environment:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=1
+      - ROS_LOCALHOST_ONLY=0
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
     cpuset: "0-3"

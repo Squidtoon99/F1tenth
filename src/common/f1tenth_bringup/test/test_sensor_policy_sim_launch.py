@@ -212,7 +212,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "qos_profile_sensor_data" in racer_src
     compose_src = COMPOSE_SIM.read_text()
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in compose_src
-    assert "ROS_LOCALHOST_ONLY=1" in compose_src
+    assert "ROS_LOCALHOST_ONLY=0" in compose_src
     assert 'cpuset: "0-3"' in compose_src
     assert "taskset" in compose_src
     assert "PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym" in compose_src

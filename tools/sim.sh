@@ -665,7 +665,7 @@ validate() {
     docker exec \
       -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
       -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
-      -e ROS_LOCALHOST_ONLY=1 \
+      -e ROS_LOCALHOST_ONLY=0 \
       "${agent_cid}" bash -lc "
         source /opt/ros/humble/setup.bash &&
         source /ws/install/setup.bash &&
