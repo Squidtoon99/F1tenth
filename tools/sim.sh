@@ -246,11 +246,14 @@ def patch_gym_bridge(path: Path) -> None:
         "                drive_msg.header.stamp.sec\n"
         "                + drive_msg.header.stamp.nanosec * 1e-9\n"
         "            )\n"
-            "            if stamp < getattr(self, '_last_drive_stamp', -1.0):\n"
+            "            if stamp <= getattr(self, '_last_drive_stamp', -1.0):\n"
             "                return\n"
-        "            self._last_drive_stamp = stamp\n"
-        "            self.drive_timer_callback()\n"
-        "            self.timer_callback()\n"
+            "            self._last_drive_stamp = stamp\n"
+            "            self.drive_timer_callback()\n"
+            "            self.timer_callback()\n"
+            "            if getattr(self, 'timer', None) is not None:\n"
+            "                self.timer.cancel()\n"
+            "                self.timer = None\n"
     )
     if old_sync_drive in text:
         text = text.replace(old_sync_drive, new_sync_drive, 1)
@@ -272,8 +275,6 @@ def patch_gym_bridge(path: Path) -> None:
     text = text.replace(", callback_group=self._lidar_cg", "")
     text = text.replace(", callback_group=self._physics_cg", "")
     text = text.replace("self.timer = self.create_timer(0.004, self.timer_callback)",
-                        "self.timer = self.create_timer(0.05, self.timer_callback)")
-    text = text.replace("self.timer = self.create_timer(1, self.timer_callback)",
                         "self.timer = self.create_timer(0.05, self.timer_callback)")
     text = text.replace("self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
                         "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)")

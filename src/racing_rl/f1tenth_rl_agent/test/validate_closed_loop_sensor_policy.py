@@ -358,7 +358,7 @@ def main() -> int:
     parser.add_argument("--min-samples", type=int, default=200)
     parser.add_argument("--min-laps", type=float, default=1.0)
     parser.add_argument("--offtrack-m", type=float, default=1.2)
-    parser.add_argument("--warmup-s", type=float, default=30.0)
+    parser.add_argument("--warmup-s", type=float, default=5.0)
     parser.add_argument("--json-out", default="")
     parser.add_argument(
         "--centerline",

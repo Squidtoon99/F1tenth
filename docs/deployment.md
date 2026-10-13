@@ -151,7 +151,9 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    publishes `/clock`, and the agent graph runs `use_sim_time:=true`. The
    validator scores `desired_hz` from sim time, so the gate does not depend on
    WSL/DDS wall throughput. Gym + agent are pinned to cores 0–3
-   (`taskset` / compose `cpuset`) with `ROS_LOCALHOST_ONLY=1`. The gym image
+   (`taskset` / compose `cpuset`). `ROS_LOCALHOST_ONLY=1` hung FastDDS on
+   `/clock` on this host (CycloneDDS is not in the images), so certify uses
+   shared netns + FastDDS UDPv4. The gym image
    imports `/sim_ws/f1tenth_gym` (build-time copy); compose prepends
    `PYTHONPATH` to the live mounted engine so that skip actually applies.
 

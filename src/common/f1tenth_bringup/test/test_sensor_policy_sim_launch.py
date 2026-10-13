@@ -163,6 +163,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "gym node stays wall-clock; always publish /clock" in source
     assert "git -C sim/f1tenth_gym_ros checkout --" in source
     assert "lockstep: one physics step per unique /drive stamp" in source
+    assert "self.timer.cancel()" in source
     assert "publish /clock from the scan timer so lockstep can bootstrap" in source
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source
