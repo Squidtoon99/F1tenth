@@ -152,6 +152,7 @@ class SensorInferenceRuntime:
         applied_long: float,
         applied_steer_rad: float,
         vesc_current: float,
+        scan_range_max: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
         """Pack lidar/IMU/applied history into the host obs buffer."""
         pack_lidar_from_scan(
@@ -159,6 +160,7 @@ class SensorInferenceRuntime:
             scan_angle_increment,
             scan_ranges,
             scan_range_min=scan_range_min,
+            scan_range_max=scan_range_max,
             out=self._lidar_buf,
         )
         actor_imu, raw_imu = actor_imu_from_interval(

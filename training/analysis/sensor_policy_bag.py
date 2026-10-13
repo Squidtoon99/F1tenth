@@ -633,6 +633,7 @@ def synchronize_observations(
             float(scans[scan_index, 3]),
             scans[scan_index, 6:],
             scan_range_min=float(scans[scan_index, 4]),
+            scan_range_max=float(scans[scan_index, 5]),
         )
         lidar[frame] = packed_lidar
 
