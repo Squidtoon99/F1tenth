@@ -183,11 +183,16 @@ from pathlib import Path
 def apply(path, replacements):
     text = path.read_text(encoding="utf-8")
     changed = False
-    for old, new, label in replacements:
-        if new in text and old not in text:
+    for item in replacements:
+        old, new, label, *rest = item
+        optional = bool(rest[0]) if rest else False
+        if new in text:
             print(f"==> already patched: {label}")
             continue
         if old not in text:
+            if optional:
+                print(f"==> skip (not applicable): {label}")
+                continue
             raise SystemExit(f"{path}: string not found for: {label}")
         text = text.replace(old, new, 1)
         print(f"==> {label}")
@@ -201,26 +206,66 @@ apply(
     bridge,
     (
         (
+            "from rclpy.node import Node\n",
+            "from rclpy.node import Node\n"
+            "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n"
+            "from rclpy.executors import MultiThreadedExecutor\n",
+            "import gym callback groups + MT executor",
+        ),
+        (
             "self.timer = self.create_timer(0.004, self.timer_callback)",
-            "self.timer = self.create_timer(0.05, self.timer_callback)",
+            "self.timer = self.create_timer(0.05, self.timer_callback, callback_group=self._lidar_cg)",
             "gym lidar publish timer 250 Hz -> 20 Hz",
+            True,
+        ),
+        (
+            "self.timer = self.create_timer(0.05, self.timer_callback)",
+            "self.timer = self.create_timer(0.05, self.timer_callback, callback_group=self._lidar_cg)",
+            "bind lidar timer to lidar callback group",
         ),
         (
             "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
-            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=self._physics_cg)",
             "restore gym physics timer 100 Hz",
+            True,
+        ),
+        (
+            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=self._physics_cg)",
+            "bind physics timer to physics callback group",
         ),
         (
             "timestep=0.05,",
             "timestep=0.01,",
             "restore gym timestep 0.01",
+            True,
         ),
         (
             "            self._update_sim_state()\n\n        if not self.get_parameter('async_mode').value:",
             "            self._update_sim_state()\n"
-            "        self.env.unwrapped.sim.scan_every_step = False\n\n"
+            "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
+            "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
+            "        self.env.unwrapped.sim.scan_every_step = False\n"
+            "        if self.env.unwrapped.sim.scan_enabled:\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self._update_sim_state()\n\n"
             "        if not self.get_parameter('async_mode').value:",
             "defer gym lidar to 20 Hz publish timer",
+            True,
+        ),
+        (
+            "        self.env.unwrapped.sim.scan_every_step = False\n\n"
+            "        if not self.get_parameter('async_mode').value:",
+            "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
+            "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
+            "        self.env.unwrapped.sim.scan_every_step = False\n"
+            "        if self.env.unwrapped.sim.scan_enabled:\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self.env.unwrapped.sim._update_scans()\n"
+            "            self._update_sim_state()\n\n"
+            "        if not self.get_parameter('async_mode').value:",
+            "warm numba lidar and split callback groups",
         ),
         (
             "        if self.sim_paused:\n"
@@ -236,6 +281,28 @@ apply(
             "            self._update_sim_state()\n"
             "        ts = self.get_clock().now().to_msg()",
             "raycast 1081-beam lidar only when publishing",
+        ),
+        (
+            "        self._update_sim_state()\n"
+            "        if self.get_parameter('use_sim_time_bridge').value:\n"
+            "            clock_msg = Clock()",
+            "        self._update_sim_state()\n"
+            "        ts = self.get_clock().now().to_msg()\n"
+            "        self._publish_odom(ts)\n"
+            "        self._publish_transforms(ts)\n"
+            "        self._publish_laser_transforms(ts)\n"
+            "        self._publish_wheel_transforms(ts)\n"
+            "        if self.get_parameter('use_sim_time_bridge').value:\n"
+            "            clock_msg = Clock()",
+            "publish odom from physics timer without waiting for lidar",
+        ),
+        (
+            "    gym_bridge = GymBridge()\n    rclpy.spin(gym_bridge)",
+            "    gym_bridge = GymBridge()\n"
+            "    executor = MultiThreadedExecutor(num_threads=2)\n"
+            "    executor.add_node(gym_bridge)\n"
+            "    executor.spin()",
+            "spin gym bridge on two threads",
         ),
     ),
 )
