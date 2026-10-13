@@ -25,6 +25,7 @@ from .kernel import (
     SensorParams,
     TerminationParams,
     TrackData,
+    ego_base_action_kernel,
     observation_stage_kernel,
     physics_solo_kernel,
     physics_stage_kernel,
@@ -456,6 +457,8 @@ class WarpF1tenthEnv:
         self._termination_params = self._build_termination_params()
         self._reset_params = self._build_reset_params()
         self._opponent_params = self._build_opponent_params()
+        self._base_action = None
+        self._base_action_wp = None
 
         self._obs = [
             torch.zeros(
@@ -1533,6 +1536,35 @@ class WarpF1tenthEnv:
     @property
     def base_ang_vel(self):
         return self.read_state()["base_ang_vel"]
+
+    def centerline_base_action(self, target_speed=None):
+        if target_speed is None:
+            target_speed = float(
+                self.env_cfg.get("expected_lap_speed_mps", 3.5)
+            )
+        if self._base_action is None:
+            self._base_action = torch.zeros(
+                self.num_envs, 2, device=self.device, dtype=torch.float32
+            )
+            self._base_action_wp = wp.from_torch(
+                self._base_action, dtype=wp.vec2f
+            )
+        wp.launch(
+            ego_base_action_kernel,
+            dim=self.num_envs,
+            inputs=[
+                self._ego.buffers,
+                self._env.buffers,
+                self._track.data,
+                self._sim_params,
+                self._opponent_params,
+                float(target_speed),
+                self._base_action_wp,
+            ],
+            device=self.wp_device,
+            stream=self._stream(),
+        )
+        return self._base_action.clamp(-1.0, 1.0)
 
     def close(self):
         return None

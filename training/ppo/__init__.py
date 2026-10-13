@@ -11,6 +11,7 @@ from .ppo import (
     pure_timeout_mask,
     value_prediction_loss,
 )
+from .residual import mix_residual_actions, residual_alpha
 
 __all__ = [
     "PPOTrainer",
@@ -22,6 +23,8 @@ __all__ = [
     "apply_timeout_bootstrap_rewards",
     "compute_gae",
     "explained_variance",
+    "mix_residual_actions",
     "pure_timeout_mask",
+    "residual_alpha",
     "value_prediction_loss",
 ]

@@ -1186,6 +1186,48 @@ def push_executed_longitudinal(
 
 
 @wp.func
+def centerline_tracking_action(
+    vehicle: VehicleLocal,
+    frenet: FrenetState,
+    track: TrackData,
+    sim: SimParams,
+    kp_lateral: wp.float32,
+    kp_heading: wp.float32,
+    kp_speed: wp.float32,
+    target_speed: wp.float32,
+    lateral_offset: wp.float32,
+) -> wp.vec2f:
+    track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
+    lookahead = wp.float32(0.5) * wp.abs(track_speed)
+    if lookahead < 0.05:
+        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    else:
+        heading = track_heading_ahead(frenet, track, lookahead)
+    heading_error = wrap_angle(vehicle.yaw - heading)
+    ey_corr = frenet.ey - lateral_offset
+    cross_track = wp.atan(
+        kp_lateral
+        * ey_corr
+        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
+    )
+    steering_target = wp.clamp(
+        -(kp_heading * heading_error + cross_track),
+        -sim.max_steer,
+        sim.max_steer,
+    )
+    steering = (steering_target - vehicle.steer_logical) / wp.max(
+        sim.steering_delta_max, 1.0e-6
+    )
+    speed_scale = wp.max(
+        wp.float32(0.3),
+        1.0
+        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
+    )
+    throttle = kp_speed * (speed_scale * target_speed - track_speed)
+    return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
+
+
+@wp.func
 def scripted_opponent_action(
     env_id: wp.int32,
     opponent: VehicleLocal,
@@ -1195,36 +1237,17 @@ def scripted_opponent_action(
     sim: SimParams,
     params: OpponentParams,
 ) -> wp.vec2f:
-    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
-    lookahead = wp.float32(0.5) * wp.abs(track_speed)
-    if lookahead < 0.05:
-        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    else:
-        heading = track_heading_ahead(frenet, track, lookahead)
-    heading_error = wrap_angle(opponent.yaw - heading)
-    ey_corr = frenet.ey - env.opponent_lateral_offset[env_id]
-    cross_track = wp.atan(
-        params.kp_lateral
-        * ey_corr
-        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
+    return centerline_tracking_action(
+        opponent,
+        frenet,
+        track,
+        sim,
+        params.kp_lateral,
+        params.kp_heading,
+        params.kp_speed,
+        env.opponent_target_speed[env_id],
+        env.opponent_lateral_offset[env_id],
     )
-    steering_target = wp.clamp(
-        -(params.kp_heading * heading_error + cross_track),
-        -sim.max_steer,
-        sim.max_steer,
-    )
-    steering = (steering_target - opponent.steer_logical) / wp.max(
-        sim.steering_delta_max, 1.0e-6
-    )
-    speed_scale = wp.max(
-        wp.float32(0.3),
-        1.0
-        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
-    )
-    throttle = params.kp_speed * (
-        speed_scale * env.opponent_target_speed[env_id] - track_speed
-    )
-    return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
 @wp.func
@@ -1237,36 +1260,45 @@ def scripted_physics_opponent_action(
     sim: SimParams,
     params: OpponentParams,
 ) -> wp.vec2f:
-    track_speed = wp.dot(body_velocity_world(opponent), frenet.tangent)
-    lookahead = wp.float32(0.5) * wp.abs(track_speed)
-    if lookahead < 0.05:
-        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    else:
-        heading = track_heading_ahead(frenet, track, lookahead)
-    heading_error = wrap_angle(opponent.yaw - heading)
-    ey_corr = frenet.ey - buffers.opponent_lateral_offset[env_id]
-    cross_track = wp.atan(
-        params.kp_lateral
-        * ey_corr
-        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
+    return centerline_tracking_action(
+        opponent,
+        frenet,
+        track,
+        sim,
+        params.kp_lateral,
+        params.kp_heading,
+        params.kp_speed,
+        buffers.opponent_target_speed[env_id],
+        buffers.opponent_lateral_offset[env_id],
     )
-    steering_target = wp.clamp(
-        -(params.kp_heading * heading_error + cross_track),
-        -sim.max_steer,
-        sim.max_steer,
+
+
+@wp.kernel
+def ego_base_action_kernel(
+    ego_buffers: VehicleBuffers,
+    env: EnvBuffers,
+    track: TrackData,
+    sim: SimParams,
+    params: OpponentParams,
+    target_speed: wp.float32,
+    out_actions: wp.array(dtype=wp.vec2f),
+):
+    env_id = wp.tid()
+    ego = load_vehicle(ego_buffers, env_id)
+    frenet = project_track(
+        wp.vec2f(ego.x, ego.y), env.ego_segment[env_id], track
     )
-    steering = (steering_target - opponent.steer_logical) / wp.max(
-        sim.steering_delta_max, 1.0e-6
+    out_actions[env_id] = centerline_tracking_action(
+        ego,
+        frenet,
+        track,
+        sim,
+        params.kp_lateral,
+        params.kp_heading,
+        params.kp_speed,
+        target_speed,
+        0.0,
     )
-    speed_scale = wp.max(
-        wp.float32(0.3),
-        1.0
-        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
-    )
-    throttle = params.kp_speed * (
-        speed_scale * buffers.opponent_target_speed[env_id] - track_speed
-    )
-    return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
 @wp.func
