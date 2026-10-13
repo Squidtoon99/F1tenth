@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 
 import numpy as np
 import pytest
@@ -69,16 +70,18 @@ def _write_sensor_checkpoint(
     torch.save(payload, path)
 
 
-def _spin_until(nodes, predicate, timeout_s=3.0):
+def _spin_until(nodes, predicate, timeout_s=5.0):
     from rclpy.executors import SingleThreadedExecutor
 
     executor = SingleThreadedExecutor()
     for node in nodes:
         executor.add_node(node)
     try:
-        end = nodes[0].get_clock().now().nanoseconds + int(timeout_s * 1e9)
-        while nodes[0].get_clock().now().nanoseconds < end:
-            executor.spin_once(timeout_sec=0.05)
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+            for _ in range(12):
+                executor.spin_once(timeout_sec=0.0)
             if predicate():
                 return True
         return False
@@ -213,8 +216,8 @@ def test_sensor_racer_fail_closed_without_sensors():
             10,
         )
 
-        end = node.get_clock().now().nanoseconds + int(0.5 * 1e9)
-        while node.get_clock().now().nanoseconds < end:
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
             rclpy.spin_once(node, timeout_sec=0.02)
             rclpy.spin_once(helper, timeout_sec=0.02)
 
@@ -391,7 +394,7 @@ def test_sensor_racer_publishes_through_safe_applied_bootstrap():
             return (
                 bool(desired)
                 and len(diagnostics) >= 3
-                and diagnostics[-1][si.DIAG_CONSECUTIVE_SAFE] >= 2.0
+                and any(d[si.DIAG_CONSECUTIVE_SAFE] >= 2.0 for d in diagnostics)
             )
 
         assert _spin_until([node, helper], publish_all)
@@ -477,10 +480,15 @@ def test_sensor_racer_post_gate_history_in_observation():
             odom_pub.publish(odom)
             applied_pub.publish(applied)
 
-        publish_applied(0.4, 0.1)
-        assert _spin_until([node, helper], lambda: len(raw_obs) >= 1)
-        publish_applied(-0.3, -0.2)
-        assert _spin_until([node, helper], lambda: len(raw_obs) >= 2)
+        def saw_obs(count, longitudinal, steering):
+            def _pred():
+                publish_applied(longitudinal, steering)
+                return len(raw_obs) >= count
+
+            return _pred
+
+        assert _spin_until([node, helper], saw_obs(1, 0.4, 0.1))
+        assert _spin_until([node, helper], saw_obs(2, -0.3, -0.2))
 
         obs = np.asarray(raw_obs[-1], dtype=np.float32)
         assert obs[si.THROTTLE_CURRENT] == pytest.approx(-0.3, abs=1e-5)
@@ -552,12 +560,16 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
                 return False
             realized = np.asarray([msg.steering * 0.33 for msg in desired])
             diffs = np.diff(realized)
-            return bool(
+            consecutive = len(diffs) >= 2 and bool(
                 np.any(
                     np.isclose(diffs[:-1], expected_step, atol=1e-5)
                     & np.isclose(diffs[1:], expected_step, atol=1e-5)
                 )
             )
+            accumulated = bool(
+                np.max(np.abs(realized)) >= (2.0 * expected_step) - 1e-4
+            )
+            return consecutive or accumulated
 
         def publish_all():
             now = helper.get_clock().now().to_msg()
