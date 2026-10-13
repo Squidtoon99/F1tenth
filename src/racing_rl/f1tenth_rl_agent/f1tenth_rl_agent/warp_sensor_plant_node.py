@@ -45,18 +45,19 @@ class WarpSensorPlantNode(Node):
         ):
             if str(path) not in sys.path:
                 sys.path.insert(0, str(path))
-        from analysis.warp_sensor_lockstep import make_austin_env
+        from analysis.warp_sensor_lockstep import flying_spawn_speed, make_austin_env
 
         self._env = make_austin_env()
         pose = spawn_pose_from_centerline(cl_csv) if cl_csv else (0.0, 0.0, -0.6524)
-        self._env.reset_to([pose[0], pose[1]], pose[2], 0.0, seed=0, with_sensors=True)
+        self._spawn_speed = flying_spawn_speed(self._env.env_cfg)
+        self._env.reset_to(
+            [pose[0], pose[1]], pose[2], self._spawn_speed, seed=0, with_sensors=True
+        )
         self._angles = beam_angles_rad()
         self._paused = True
         self._awaiting_drive = False
         self._last_drive_stamp = -1.0
         self._sim_t = 0.0
-        self._prev_vx = 0.0
-        self._prev_vy = 0.0
         self._steer_rad = 0.0
 
         self._scan_pub = self.create_publisher(
@@ -89,6 +90,7 @@ class WarpSensorPlantNode(Node):
         vx = float(ego["vx"][0])
         vy = float(ego["vy"][0])
         yaw_rate = float(ego["yaw_rate"][0])
+        ax_d, ay_d = body_accel_to_driver(float(ego["ax"][0]), float(ego["ay"][0]))
         lidar = self._env.actor_obs_buf[0, :LIDAR_DIM].detach().cpu().numpy()
         stamp = self._stamp()
         scan = LaserScan()
@@ -102,10 +104,6 @@ class WarpSensorPlantNode(Node):
         scan.ranges = [float(v) for v in lidar]
         self._scan_pub.publish(scan)
 
-        dt = 1.0 / float(si.CONTROL_HZ)
-        ax = 0.0 if self._sim_t <= 0.0 else (vx - self._prev_vx) / dt
-        ay = 0.0 if self._sim_t <= 0.0 else (vy - self._prev_vy) / dt
-        ax_d, ay_d = body_accel_to_driver(ax, ay)
         imu = Imu()
         imu.header.stamp = stamp
         imu.header.frame_id = ifc.FRAME_BASE_LINK
@@ -113,7 +111,7 @@ class WarpSensorPlantNode(Node):
         imu.linear_acceleration.x = ax_d
         imu.linear_acceleration.y = ay_d
         imu.linear_acceleration.z = float(si.GRAVITY_MS2)
-        imu.angular_velocity.z = yaw_rate
+        imu.angular_velocity.z = float(ego["imu_gz"][0])
         self._imu_pub.publish(imu)
 
         odom = Odometry()
@@ -128,8 +126,6 @@ class WarpSensorPlantNode(Node):
         odom.twist.twist.linear.y = vy
         odom.twist.twist.angular.z = yaw_rate
         self._odom_pub.publish(odom)
-        self._prev_vx = vx
-        self._prev_vy = vy
         if not self._paused:
             self._awaiting_drive = True
 
@@ -141,11 +137,13 @@ class WarpSensorPlantNode(Node):
             cl = self.get_parameter("centerline_csv").get_parameter_value().string_value
             pose = spawn_pose_from_centerline(cl) if cl else (0.0, 0.0, -0.6524)
             self._env.reset_to(
-                [pose[0], pose[1]], pose[2], 0.0, seed=0, with_sensors=True
+                [pose[0], pose[1]],
+                pose[2],
+                self._spawn_speed,
+                seed=0,
+                with_sensors=True,
             )
             self._sim_t = 0.0
-            self._prev_vx = 0.0
-            self._prev_vy = 0.0
             self._awaiting_drive = False
             self._publish_observations()
         self._paused = pausing
