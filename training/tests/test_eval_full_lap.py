@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,13 +14,20 @@ from eval_full_lap import (
     classify_terminations,
     even_spawn_s,
     evaluate_policy_on_env,
+    load_actor_bundle,
     pose_at_s,
+    resolve_eval_config,
     spawn_speed_mps,
     summarize_episodes,
     wandb_metrics,
     wrapped_delta_s,
 )
 from f1tenth_env.utils import build_warp_track_data
+
+_OVERNIGHT_CKPT = Path(
+    "/home/ubuntu/projects/F1tenth-overnight/outputs/runs/"
+    "overnight-20261012/checkpoints/policy_320000000.pt"
+)
 
 try:
     import warp  # noqa: F401
@@ -31,7 +39,8 @@ except ImportError:
 class ZeroPolicy:
     def __call__(self, obs, deterministic=True, with_logprob=False):
         del deterministic, with_logprob
-        return torch.zeros(obs.shape[0], 2, device=obs.device, dtype=torch.float32), None
+        zeros = torch.zeros(obs.shape[0], 2, device=obs.device, dtype=torch.float32)
+        return zeros, None
 
 
 def test_wrapped_delta_s_wraps_forward_across_finish_line():
@@ -183,6 +192,26 @@ def _tiny_standing_cfg():
     cfg["sensor"]["lidar_map_yaml"] = None
     cfg["sensor"]["lidar_map_sha256"] = None
     return cfg
+
+
+@pytest.mark.skipif(not _OVERNIGHT_CKPT.is_file(), reason="overnight ckpt absent")
+def test_load_overnight_actor_bundle_mean_action():
+    cfg, _source = resolve_eval_config(_OVERNIGHT_CKPT, None)
+    actor, normalizer, architecture, _payload = load_actor_bundle(
+        _OVERNIGHT_CKPT, torch.device("cpu"), cfg
+    )
+    assert architecture["name"] == "lidar_cnn_gru"
+    obs = torch.zeros(2, int(cfg["obs"]["num_actor_obs"]))
+    hidden = actor.initial_hidden(2, device=obs.device, dtype=torch.float32)
+    action, _, _hidden = actor.step(
+        normalizer.normalize(obs),
+        hidden,
+        deterministic=True,
+        with_logprob=False,
+    )
+    assert action.shape == (2, 2)
+    assert torch.isfinite(action).all()
+    assert action.abs().max() <= 1.0 + 1e-5
 
 
 @pytest.mark.skipif(not HAS_WARP, reason="warp-lang not installed")

@@ -411,6 +411,53 @@ def _identity_normalize(obs):
     return obs
 
 
+def load_actor_bundle(checkpoint: Path, device: torch.device, cfg: dict):
+    """Load a sensor-policy actor + obs normalizer from checkpoint metadata.
+
+    Uses the artifact's own ``actor_architecture`` rather than the installed
+    package's current format constants, so older run directories still eval.
+    """
+    from f1tenth_policy import (
+        ObsNormalizer,
+        actor_from_architecture,
+        normalize_actor_architecture,
+    )
+
+    payload = torch.load(checkpoint, map_location=device, weights_only=False)
+    architecture = payload.get("actor_architecture")
+    if not isinstance(architecture, dict):
+        raise ValueError(
+            f"{checkpoint.name}: missing actor_architecture metadata"
+        )
+    architecture = normalize_actor_architecture(architecture)
+    actor_obs_dim = int(payload.get("actor_obs_dim", cfg["obs"]["num_actor_obs"]))
+    expected_obs = int(cfg["obs"]["num_actor_obs"])
+    if actor_obs_dim != expected_obs:
+        raise ValueError(
+            f"{checkpoint.name}: actor_obs_dim={actor_obs_dim} "
+            f"!= config {expected_obs}"
+        )
+    if "actor" not in payload:
+        raise ValueError(f"{checkpoint.name}: missing actor weights")
+    if "obs_norm" not in payload:
+        raise ValueError(
+            f"{checkpoint.name}: sensor policy artifact is missing obs_norm"
+        )
+    actor = actor_from_architecture(architecture).to(
+        device=device, dtype=torch.float32
+    )
+    actor.load_state_dict(payload["actor"], strict=True)
+    actor.eval()
+    normalizer = ObsNormalizer(
+        obs_dim=actor_obs_dim,
+        device=device,
+        eps=float(cfg["obs"].get("norm_eps", 1e-8)),
+        clip=float(cfg["obs"].get("norm_clip", 10.0)),
+    )
+    normalizer.load_state_dict(payload["obs_norm"])
+    return actor, normalizer, architecture, payload
+
+
 def evaluate_checkpoint(
     checkpoint: str | Path | None,
     *,
@@ -424,7 +471,6 @@ def evaluate_checkpoint(
     actor=None,
     normalize=None,
 ) -> dict:
-    from evaluation import load_sensor_actor_bundle
     from f1tenth_env import runtime as rt
     from standalone_trainer import resolve_training_scenarios, select_device
 
@@ -443,16 +489,8 @@ def evaluate_checkpoint(
     if actor is None:
         if ckpt_path is None or not ckpt_path.is_file():
             raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
-        actor, normalizer, _arch, _payload = load_sensor_actor_bundle(
-            ckpt_path,
-            device,
-            expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
-            expected_action_dim=int(cfg["env"]["num_actions"]),
-            expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
-            norm_eps=float(cfg["obs"].get("norm_eps", 1e-8)),
-            norm_clip=float(cfg["obs"].get("norm_clip", 10.0)),
-            expected_critic_obs_dim=int(cfg["obs"]["num_obs"]),
-            require_obs_norm=True,
+        actor, normalizer, _arch, _payload = load_actor_bundle(
+            ckpt_path, device, cfg
         )
         normalize = normalizer.normalize
     elif normalize is None:
