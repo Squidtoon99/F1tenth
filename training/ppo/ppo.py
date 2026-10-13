@@ -48,43 +48,6 @@ class Rollout:
     optimized: bool = False
 
 
-def explained_variance(returns, values):
-    var_r = returns.var(unbiased=False)
-    return 1.0 - (returns - values).var(unbiased=False) / var_r.clamp_min(1e-8)
-
-
-def value_prediction_loss(
-    new_values,
-    old_values,
-    returns,
-    *,
-    value_clip,
-    huber_delta,
-):
-    if huber_delta > 0.0:
-        unclipped = F.huber_loss(
-            new_values, returns, reduction="none", delta=huber_delta
-        )
-    else:
-        unclipped = 0.5 * (new_values - returns).square()
-    if value_clip > 0.0:
-        clipped_values = old_values + (new_values - old_values).clamp(
-            -value_clip, value_clip
-        )
-        if huber_delta > 0.0:
-            clipped = F.huber_loss(
-                clipped_values, returns, reduction="none", delta=huber_delta
-            )
-        else:
-            clipped = 0.5 * (clipped_values - returns).square()
-        per_row = torch.maximum(unclipped, clipped)
-        active = clipped > unclipped
-    else:
-        per_row = unclipped
-        active = torch.zeros_like(unclipped, dtype=torch.bool)
-    return per_row, active
-
-
 def compute_gae(
     rewards,
     values,
@@ -182,6 +145,43 @@ def apply_timeout_bootstrap_rewards(
         augmented = reward.clone()
         augmented[timed_out] = reward[timed_out] + gamma * terminal_values[timed_out]
     return augmented
+
+
+def explained_variance(returns, values):
+    var_r = returns.var(unbiased=False)
+    return 1.0 - (returns - values).var(unbiased=False) / var_r.clamp_min(1e-8)
+
+
+def value_prediction_loss(
+    new_values,
+    old_values,
+    returns,
+    *,
+    value_clip,
+    huber_delta,
+):
+    if huber_delta > 0.0:
+        unclipped = F.huber_loss(
+            new_values, returns, reduction="none", delta=huber_delta
+        )
+    else:
+        unclipped = 0.5 * (new_values - returns).square()
+    if value_clip > 0.0:
+        clipped_values = old_values + (new_values - old_values).clamp(
+            -value_clip, value_clip
+        )
+        if huber_delta > 0.0:
+            clipped = F.huber_loss(
+                clipped_values, returns, reduction="none", delta=huber_delta
+            )
+        else:
+            clipped = 0.5 * (clipped_values - returns).square()
+        per_row = torch.maximum(unclipped, clipped)
+        active = clipped > unclipped
+    else:
+        per_row = unclipped
+        active = torch.zeros_like(unclipped, dtype=torch.bool)
+    return per_row, active
 
 
 class PPOTrainer:
@@ -538,16 +538,10 @@ class PPOTrainer:
                 "policy_entropy": 0.0,
                 "policy_clip_fraction": 0.0,
                 "value_clip_fraction": 0.0,
-                "value_clip_active_fraction": 0.0,
                 "actor_grad_norm": 0.0,
                 "value_grad_norm": 0.0,
                 "actor_grad_clip_fraction": 0.0,
                 "value_grad_clip_fraction": 0.0,
-                "explained_variance": 0.0,
-                "explained_variance_post": 0.0,
-                "return_mean": 0.0,
-                "return_std": 0.0,
-                "value_mean": 0.0,
                 "epochs": 0,
                 "minibatches": 0,
                 "actor_updates": 0,
@@ -555,6 +549,12 @@ class PPOTrainer:
                 "advantage_filter_discard_rate": 1.0,
                 "advantage_filter_retained": 0,
                 "advantage_filter_eta": float(eta),
+                "value_clip_active_fraction": 0.0,
+                "explained_variance": 0.0,
+                "explained_variance_post": 0.0,
+                "return_mean": 0.0,
+                "return_std": 0.0,
+                "value_mean": 0.0,
             }
         if self.advantage_filter_enabled:
             kept_adv = raw_advantages[keep_mask]
@@ -586,12 +586,14 @@ class PPOTrainer:
             "policy_entropy": 0.0,
             "policy_clip_fraction": 0.0,
             "value_clip_fraction": 0.0,
-            "value_clip_active_fraction": 0.0,
             "actor_grad_norm": 0.0,
             "value_grad_norm": 0.0,
             "actor_grad_clip_fraction": 0.0,
             "value_grad_clip_fraction": 0.0,
         }
+        clip_active_sum = 0.0
+        clip_frac_sum = 0.0
+        value_grad_clip_sum = 0.0
         updates = 0
         actor_updates = 0
         value_updates = 0
@@ -710,17 +712,11 @@ class PPOTrainer:
                     .div(keep_denom)
                     .detach()
                 )
-                if self.value_clip > 0.0:
-                    value_clip_hit = (
-                        (new_values - old_n).abs() > self.value_clip
-                    ).to(dtype=mb_keep.dtype)
-                else:
-                    value_clip_hit = torch.zeros_like(mb_keep)
                 metric_sums["value_clip_fraction"] += float(
-                    (value_clip_hit * mb_keep).sum().div(keep_denom).detach()
-                )
-                metric_sums["value_clip_active_fraction"] += float(
-                    (clip_active.to(dtype=mb_keep.dtype) * mb_keep)
+                    (
+                        ((new_values - old_values).abs() > self.value_clip).float()
+                        * mb_keep
+                    )
                     .sum()
                     .div(keep_denom)
                     .detach()
@@ -728,8 +724,24 @@ class PPOTrainer:
                 value_grad = float(value_grad_norm)
                 metric_sums["value_grad_norm"] += value_grad
                 metric_sums["value_grad_clip_fraction"] += float(
-                    value_grad > self.value_max_grad_norm
+                    value_grad > self.max_grad_norm
                 )
+                if self.value_clip > 0.0:
+                    value_clip_hit = (
+                        (new_values - old_n).abs() > self.value_clip
+                    ).to(dtype=mb_keep.dtype)
+                else:
+                    value_clip_hit = torch.zeros_like(mb_keep)
+                clip_frac_sum += float(
+                    (value_clip_hit * mb_keep).sum().div(keep_denom).detach()
+                )
+                clip_active_sum += float(
+                    (clip_active.to(dtype=mb_keep.dtype) * mb_keep)
+                    .sum()
+                    .div(keep_denom)
+                    .detach()
+                )
+                value_grad_clip_sum += float(value_grad > self.value_max_grad_norm)
                 updates += 1
             epochs_completed = epoch + 1
 
@@ -743,8 +755,6 @@ class PPOTrainer:
                 rollout.critic_obs.reshape(-1, self.critic_obs_dim)
             )
         metrics = {key: value / updates for key, value in metric_sums.items()}
-        with torch.no_grad():
-            ev_post = explained_variance(kept_returns, post_values[keep_mask])
         metrics.update(
             {
                 "epochs": epochs_completed,
@@ -754,11 +764,16 @@ class PPOTrainer:
                 "advantage_filter_discard_rate": discard_rate,
                 "advantage_filter_retained": retained,
                 "advantage_filter_eta": float(eta),
-                "explained_variance": float(ev_pre),
-                "explained_variance_post": float(ev_post),
-                "return_mean": float(return_mean),
-                "return_std": float(return_std),
-                "value_mean": float(value_mean),
             }
         )
+        with torch.no_grad():
+            ev_post = explained_variance(kept_returns, post_values[keep_mask])
+        metrics["value_clip_fraction"] = clip_frac_sum / updates
+        metrics["value_grad_clip_fraction"] = value_grad_clip_sum / updates
+        metrics["value_clip_active_fraction"] = clip_active_sum / updates
+        metrics["explained_variance"] = float(ev_pre)
+        metrics["explained_variance_post"] = float(ev_post)
+        metrics["return_mean"] = float(return_mean)
+        metrics["return_std"] = float(return_std)
+        metrics["value_mean"] = float(value_mean)
         return metrics

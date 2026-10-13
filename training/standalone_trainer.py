@@ -877,6 +877,31 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             or float(value) <= 0.0
         ):
             raise ValueError(f"ppo.{key} must be a positive finite number, got {value!r}")
+    for key in ("gamma", "gae_lambda"):
+        if float(ppo[key]) > 1.0:
+            raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
+    if not isinstance(ppo.get("horizon_from_control_dt"), bool):
+        raise ValueError(
+            "ppo.horizon_from_control_dt must be a bool, got "
+            f"{ppo.get('horizon_from_control_dt')!r}"
+        )
+    if not isinstance(ppo.get("advantage_filter_enabled"), bool):
+        raise ValueError(
+            "ppo.advantage_filter_enabled must be a bool, got "
+            f"{ppo.get('advantage_filter_enabled')!r}"
+        )
+    discard_fraction = ppo.get("advantage_filter_discard_fraction")
+    if (
+        not isinstance(discard_fraction, (int, float))
+        or isinstance(discard_fraction, bool)
+        or not math.isfinite(float(discard_fraction))
+        or float(discard_fraction) < 0.0
+        or float(discard_fraction) >= 1.0
+    ):
+        raise ValueError(
+            "ppo.advantage_filter_discard_fraction must be a finite number in "
+            f"[0.0, 1.0), got {discard_fraction!r}"
+        )
     value_clip = ppo.get("value_clip")
     if value_clip is not None and (
         not isinstance(value_clip, (int, float))
@@ -914,31 +939,6 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         raise ValueError(
             "ppo.value_normalization must be a bool, got "
             f"{ppo.get('value_normalization')!r}"
-        )
-    for key in ("gamma", "gae_lambda"):
-        if float(ppo[key]) > 1.0:
-            raise ValueError(f"ppo.{key} must be <= 1.0, got {ppo[key]!r}")
-    if not isinstance(ppo.get("horizon_from_control_dt"), bool):
-        raise ValueError(
-            "ppo.horizon_from_control_dt must be a bool, got "
-            f"{ppo.get('horizon_from_control_dt')!r}"
-        )
-    if not isinstance(ppo.get("advantage_filter_enabled"), bool):
-        raise ValueError(
-            "ppo.advantage_filter_enabled must be a bool, got "
-            f"{ppo.get('advantage_filter_enabled')!r}"
-        )
-    discard_fraction = ppo.get("advantage_filter_discard_fraction")
-    if (
-        not isinstance(discard_fraction, (int, float))
-        or isinstance(discard_fraction, bool)
-        or not math.isfinite(float(discard_fraction))
-        or float(discard_fraction) < 0.0
-        or float(discard_fraction) >= 1.0
-    ):
-        raise ValueError(
-            "ppo.advantage_filter_discard_fraction must be a finite number in "
-            f"[0.0, 1.0), got {discard_fraction!r}"
         )
 
 
