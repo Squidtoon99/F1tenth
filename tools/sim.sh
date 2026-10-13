@@ -143,7 +143,7 @@ replacements = {
     "sx": f"{sx:.6f}",
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
-    "async_mode": "False",
+    "async_mode": "True",
     "kb_teleop": "False",
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
