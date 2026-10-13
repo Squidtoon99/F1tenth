@@ -157,7 +157,7 @@ replacements = {
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
     "async_mode": "False",
-    "use_sim_time": "True",
+    "use_sim_time": "False",
     "kb_teleop": "False",
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
@@ -542,11 +542,22 @@ if launch.exists():
     launch_text = launch.read_text(encoding="utf-8")
     fox = "    ld.add_action(foxglove_bridge_node)\n"
     if fox in launch_text:
-        launch.write_text(
-            launch_text.replace(fox, "    # foxglove omitted: reliable scan/odom stalls gym\n", 1),
-            encoding="utf-8",
+        launch_text = launch_text.replace(
+            fox, "    # foxglove omitted: reliable scan/odom stalls gym\n", 1
         )
         print("==> disable foxglove so reliable odom cannot block the gym executor")
+    old_clock = (
+        "            'use_sim_time': False,\n"
+        "            'use_sim_time_bridge': use_sim_time,\n"
+    )
+    new_clock = (
+        "            'use_sim_time': False,\n"
+        "            'use_sim_time_bridge': True,\n"
+    )
+    if old_clock in launch_text:
+        launch_text = launch_text.replace(old_clock, new_clock, 1)
+        print("==> gym node stays wall-clock; always publish /clock")
+    launch.write_text(launch_text, encoding="utf-8")
 apply(
     sim,
     (
