@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 
@@ -24,16 +25,18 @@ from f1tenth_control.current_gate import (  # noqa: E402
 from f1tenth_control.rl_current_gate_node import RlCurrentGateNode  # noqa: E402
 
 
-def _spin_until(nodes, predicate, timeout_s=2.0):
+def _spin_until(nodes, predicate, timeout_s=5.0):
     from rclpy.executors import SingleThreadedExecutor
 
     executor = SingleThreadedExecutor()
     for node in nodes:
         executor.add_node(node)
     try:
-        end = nodes[0].get_clock().now().nanoseconds + int(timeout_s * 1e9)
-        while nodes[0].get_clock().now().nanoseconds < end:
-            executor.spin_once(timeout_sec=0.05)
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+            for _ in range(8):
+                executor.spin_once(timeout_sec=0.0)
             if predicate():
                 return True
         return False

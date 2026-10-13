@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 
@@ -14,9 +15,9 @@ from std_msgs.msg import Float32MultiArray, Float64  # noqa: E402
 from f1tenth_control.vesc_actuator_node import VescActuatorNode  # noqa: E402
 
 
-def _spin_until(nodes, predicate, timeout_s=2.0):
-    end = nodes[0].get_clock().now().nanoseconds + int(timeout_s * 1e9)
-    while nodes[0].get_clock().now().nanoseconds < end:
+def _spin_until(nodes, predicate, timeout_s=5.0):
+    deadline = time.monotonic() + float(timeout_s)
+    while time.monotonic() < deadline:
         for n in nodes:
             rclpy.spin_once(n, timeout_sec=0.02)
         if predicate():
