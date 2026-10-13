@@ -268,20 +268,18 @@ def patch_gym_bridge(path: Path) -> None:
             1,
         )
         print("==> defer gym lidar and warm numba")
-    early_start = (
-        "        self._scan_lock = threading.Lock()\n"
-        "        self._scan_stop = False\n"
+    thread_start = (
         "        self._scan_thread = threading.Thread("
         "target=self._lidar_loop, daemon=True)\n"
         "        self._scan_thread.start()\n"
     )
+    if thread_start in text:
+        text = text.replace(thread_start, "", 1)
+        print("==> disable gym lidar thread")
     lock_only = (
         "        self._scan_lock = threading.Lock()\n"
         "        self._scan_stop = False\n"
     )
-    if early_start in text:
-        text = text.replace(early_start, lock_only, 1)
-        print("==> defer lidar thread until sim_paused exists")
     if "self._scan_lock" not in text:
         start = (
             "        self.env.unwrapped.sim.scan_every_step = False\n"
@@ -294,62 +292,33 @@ def patch_gym_bridge(path: Path) -> None:
             start = "        self.env.unwrapped.sim.scan_every_step = False\n"
         text = text.replace(start, start + lock_only, 1)
         print("==> allocate gym lidar lock before physics timers")
-    late_start = (
-        "        self._scan_thread = threading.Thread("
-        "target=self._lidar_loop, daemon=True)\n"
-        "        self._scan_thread.start()\n"
-        "        self.pause_subscriber"
+    timer_scan = (
+        "        sim = self.env.unwrapped.sim\n"
+        "        if sim.scan_enabled and sim.scan_sims:\n"
+        "            pose = np.array(sim.state.poses[0], copy=True)\n"
+        "            self.ego_scan = [float(x) for x in sim.scan_sims[0].scan(pose, None)]\n"
     )
-    if late_start not in text:
-        paused = "        self.sim_paused = False"
-        idx = text.find(paused)
-        if idx < 0:
-            raise SystemExit(f"{path}: sim_paused assignment missing")
-        end = idx + len(paused)
-        while end < len(text) and text[end] in " \t":
-            end += 1
-        if end < len(text) and text[end] == "\n":
-            end += 1
-        text = (
-            text[:idx]
-            + "        self.sim_paused = False\n"
-            + "        self._scan_thread = threading.Thread("
-            + "target=self._lidar_loop, daemon=True)\n"
-            + "        self._scan_thread.start()\n"
-            + text[end:]
+    if timer_scan not in text:
+        needle = (
+            "    def timer_callback(self):\n"
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            "        ts = self.get_clock().now().to_msg()\n"
         )
-        print("==> start lidar thread after sim_paused")
-    if "def _lidar_loop(self)" not in text:
-        needle = "    def drive_timer_callback(self):"
         if needle not in text:
-            raise SystemExit(f"{path}: drive_timer_callback missing")
+            raise SystemExit(f"{path}: timer_callback insert missing")
         text = text.replace(
             needle,
-            "    def _lidar_loop(self):\n"
-            "        sim = self.env.unwrapped.sim\n"
-            "        scanner = sim.scan_sims[0] if sim.scan_enabled and sim.scan_sims else None\n"
-            "        while rclpy.ok() and not self._scan_stop:\n"
-            "            if getattr(self, \"sim_paused\", True) or scanner is None:\n"
-            "                time.sleep(0.05)\n"
-            "                continue\n"
-            "            with self._scan_lock:\n"
-            "                pose = np.array(sim.state.poses[0], copy=True)\n"
-            "            t0 = time.perf_counter()\n"
-            "            scan = scanner.scan(pose, None)\n"
-            "            self.ego_scan = [float(x) for x in scan]\n"
-            "            time.sleep(max(0.0, 0.05 - (time.perf_counter() - t0)))\n"
-            "\n"
-            + needle,
+            "    def timer_callback(self):\n"
+            "        if self.sim_paused:\n"
+            "            return  # Skip stepping the sim if paused\n"
+            "        \n"
+            + timer_scan
+            + "        ts = self.get_clock().now().to_msg()\n",
             1,
         )
-        print("==> snapshot-pose lidar loop off the ROS executor")
-    old_lidar_guard = "            if self.sim_paused or scanner is None:\n"
-    new_lidar_guard = (
-        "            if getattr(self, \"sim_paused\", True) or scanner is None:\n"
-    )
-    if old_lidar_guard in text:
-        text = text.replace(old_lidar_guard, new_lidar_guard, 1)
-        print("==> guard lidar thread until sim_paused exists")
+        print("==> raycast gym lidar on the 20 Hz publish timer")
     if "with self._scan_lock:" not in text.split("def drive_timer_callback", 1)[-1][:800]:
         old = (
             "        if not self.has_opp:\n"

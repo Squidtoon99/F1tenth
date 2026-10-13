@@ -170,10 +170,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "timeout_sec=0.005" in validator_src
     assert "scan_every_step" in source
     assert "skip lidar raycast on physics steps" in source
-    assert "def _lidar_loop(self)" in source
-    assert "snapshot-pose lidar loop off the ROS executor" in source
-    assert "start lidar thread after sim_paused" in source
-    assert r'getattr(self, \"sim_paused\", True)' in source
+    assert "disable gym lidar thread" in source
+    assert "raycast gym lidar on the 20 Hz publish timer" in source
     assert "publish gym /scan best-effort so foxglove cannot stall physics" in source
     assert "publish odom from physics timer" in source
     assert "gym timestep 0.05 (20 Hz, 1.0x realtime)" in source
