@@ -206,6 +206,23 @@ def patch_gym_bridge(path: Path) -> None:
     if "import threading" not in text:
         text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
         print("==> import threading for off-executor lidar")
+    if "from rclpy.qos import qos_profile_sensor_data" not in text:
+        text = text.replace(
+            "from rclpy.node import Node\n",
+            "from rclpy.node import Node\nfrom rclpy.qos import qos_profile_sensor_data\n",
+            1,
+        )
+        print("==> import sensor-data QoS for gym scan")
+    old_scan_pub = (
+        "self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)"
+    )
+    new_scan_pub = (
+        "self.ego_scan_pub = self.create_publisher("
+        "LaserScan, ego_scan_topic, qos_profile_sensor_data)"
+    )
+    if old_scan_pub in text:
+        text = text.replace(old_scan_pub, new_scan_pub, 1)
+        print("==> publish gym /scan best-effort so foxglove cannot stall physics")
     text = text.replace(
         "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n", ""
     )
