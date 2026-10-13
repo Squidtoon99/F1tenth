@@ -37,10 +37,17 @@ def mlp(sizes, activation, output_activation=nn.Identity):
     return nn.Sequential(*layers)
 
 
-def _squashed_gaussian_distribution(net, mu_layer, log_std_layer, obs):
+def _squashed_gaussian_distribution(
+    net,
+    mu_layer,
+    log_std_layer,
+    obs,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
+):
     net_out = net(obs)
     mu = mu_layer(net_out)
-    log_std = torch.clamp(log_std_layer(net_out), LOG_STD_MIN, LOG_STD_MAX)
+    log_std = torch.clamp(log_std_layer(net_out), log_std_min, log_std_max)
     return Normal(mu, torch.exp(log_std))
 
 
@@ -72,9 +79,16 @@ def _squashed_gaussian_forward(
     with_logprob,
     standard_normal=None,
     return_pre_tanh=False,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
 ):
     pi_distribution = _squashed_gaussian_distribution(
-        net, mu_layer, log_std_layer, obs
+        net,
+        mu_layer,
+        log_std_layer,
+        obs,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
     )
     if deterministic:
         pre_tanh = pi_distribution.mean
@@ -192,10 +206,25 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         pool_bins=32,
         projection_dim=CNN_PROJECTION_DIM,
         gru_hidden_dim=GRU_HIDDEN_DIM,
+        log_std_min=LOG_STD_MIN,
+        log_std_max=LOG_STD_MAX,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
+        log_std_min = float(log_std_min)
+        log_std_max = float(log_std_max)
+        if not math.isfinite(log_std_min) or not math.isfinite(log_std_max):
+            raise ValueError(
+                f"log_std_min and log_std_max must be finite, got "
+                f"{log_std_min!r}, {log_std_max!r}"
+            )
+        if log_std_min >= log_std_max:
+            raise ValueError(
+                f"log_std_min={log_std_min} must be < log_std_max={log_std_max}"
+            )
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
         self.lidar_dim = int(lidar_dim)
         self.proprio_dim = int(proprio_dim)
         self.pool_bins = int(pool_bins)
@@ -319,6 +348,8 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                 )
             ),
             return_pre_tanh=return_pre_tanh,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
         )
         if return_pre_tanh:
             pi_action, logp_pi, pre_tanh = result
@@ -342,7 +373,12 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         features, _ = self.encode(obs)
         out, h_n = self.gru(features.unsqueeze(1), hidden.unsqueeze(0).contiguous())
         distribution = _squashed_gaussian_distribution(
-            self.net, self.mu_layer, self.log_std_layer, out.squeeze(1)
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            out.squeeze(1),
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
         )
         logp = _squashed_gaussian_log_prob(
             distribution, actions, self.act_limit
@@ -449,6 +485,8 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             self.mu_layer,
             self.log_std_layer,
             recurrent_features,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
         )
         return _squashed_gaussian_log_prob_from_pre_tanh(
             distribution, pre_tanh_actions, self.act_limit
@@ -509,6 +547,8 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                     flat_h.new_empty(flat_h.shape[0], self.act_dim)
                 )
             ),
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
         )
         stacked_actions = pi_action.view(steps, batch, self.act_dim).transpose(0, 1)
         stacked_logp = (
@@ -571,7 +611,12 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             steps * batch, self.gru_hidden_dim
         )
         distribution = _squashed_gaussian_distribution(
-            self.net, self.mu_layer, self.log_std_layer, flat_h
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            flat_h,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
         )
         if pre_tanh_actions is None:
             flat_actions = actions.transpose(0, 1).reshape(
@@ -629,6 +674,8 @@ def make_actor(
     proprio_dim=PROPRIO_DIM,
     gru_hidden_dim=GRU_HIDDEN_DIM,
     actor_type=ACTOR_ARCHITECTURE_NAME,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
 ):
     if actor_type != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
@@ -646,6 +693,8 @@ def make_actor(
         pool_bins=lidar_pool_bins,
         projection_dim=lidar_projection_dim,
         gru_hidden_dim=gru_hidden_dim,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
     )
 
 

@@ -38,6 +38,8 @@ def make_actor(
     lidar_dim=LIDAR_DIM,
     proprio_dim=PROPRIO_DIM,
     gru_hidden_dim=GRU_HIDDEN_DIM,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
 ):
     import torch.nn as nn
 
@@ -57,6 +59,8 @@ def make_actor(
         proprio_dim=proprio_dim,
         gru_hidden_dim=gru_hidden_dim,
         actor_type=actor_type,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
     )
 
 
