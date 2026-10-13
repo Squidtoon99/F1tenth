@@ -170,11 +170,10 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "timeout_sec=0.005" in validator_src
     assert "scan_every_step" in source
     assert "skip lidar raycast on physics steps" in source
-    assert "callback_group=self._lidar_cg" in source
-    assert "callback_group=self._physics_cg" in source
-    assert "MultiThreadedExecutor(num_threads=2)" in source
+    assert "def _lidar_loop(self)" in source
+    assert "snapshot-pose lidar loop off the ROS executor" in source
     assert "publish odom from physics timer" in source
-    assert "gym physics timer 20 Hz without lidar" in source
+    assert "gym timestep 0.05 (20 Hz, 1.0x realtime)" in source
     bridge_src = (
         REPO
         / "src"

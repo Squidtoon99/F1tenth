@@ -200,99 +200,180 @@ def apply(path, replacements):
     if changed:
         path.write_text(text, encoding="utf-8")
 
-bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
-sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
-apply(
-    bridge,
-    (
-        (
-            "from rclpy.node import Node\n",
-            "from rclpy.node import Node\n"
-            "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n"
-            "from rclpy.executors import MultiThreadedExecutor\n",
-            "import gym callback groups + MT executor",
-        ),
-        (
-            "self.timer = self.create_timer(0.004, self.timer_callback)",
-            "self.timer = self.create_timer(0.05, self.timer_callback, callback_group=self._lidar_cg)",
-            "gym lidar publish timer 250 Hz -> 20 Hz",
-            True,
-        ),
-        (
-            "self.timer = self.create_timer(0.05, self.timer_callback)",
-            "self.timer = self.create_timer(0.05, self.timer_callback, callback_group=self._lidar_cg)",
-            "bind lidar timer to lidar callback group",
-        ),
-        (
-            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback, callback_group=self._physics_cg)",
-            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
-            "gym physics timer 20 Hz without lidar",
-            True,
-        ),
-        (
-            "self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
-            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
-            "bind physics timer to physics callback group",
-            True,
-        ),
-        (
-            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)",
-            "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback, callback_group=self._physics_cg)",
-            "bind 20 Hz physics timer callback group",
-            True,
-        ),
-        (
-            "timestep=0.01,\n",
-            "timestep=0.05,\n",
-            "gym timestep 0.05 (20 Hz, 1.0x realtime)",
-            True,
-        ),
-        (
-            "            self._update_sim_state()\n\n        if not self.get_parameter('async_mode').value:",
+def patch_gym_bridge(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    orig = text
+    if "import threading" not in text:
+        text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
+        print("==> import threading for off-executor lidar")
+    text = text.replace(
+        "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n", ""
+    )
+    text = text.replace("from rclpy.executors import MultiThreadedExecutor\n", "")
+    text = text.replace(", callback_group=self._lidar_cg", "")
+    text = text.replace(", callback_group=self._physics_cg", "")
+    text = text.replace("self.timer = self.create_timer(0.004, self.timer_callback)",
+                        "self.timer = self.create_timer(0.05, self.timer_callback)")
+    text = text.replace("self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
+                        "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)")
+    if "timestep=0.05,\n" not in text:
+        text = text.replace("timestep=0.01,\n", "timestep=0.05,\n", 1)
+        print("==> gym timestep 0.05 (20 Hz, 1.0x realtime)")
+    mt = (
+        "    gym_bridge = GymBridge()\n"
+        "    executor = MultiThreadedExecutor(num_threads=2)\n"
+        "    executor.add_node(gym_bridge)\n"
+        "    executor.spin()"
+    )
+    if mt in text:
+        text = text.replace(mt, "    gym_bridge = GymBridge()\n    rclpy.spin(gym_bridge)", 1)
+        print("==> spin gym bridge single-threaded")
+    cg_block = (
+        "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
+        "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
+    )
+    if cg_block in text:
+        text = text.replace(cg_block, "", 1)
+        print("==> drop unused gym callback groups")
+    if "scan_every_step = False" not in text:
+        needle = "            self._update_sim_state()\n\n        if not self.get_parameter('async_mode').value:"
+        if needle not in text:
+            raise SystemExit(f"{path}: async_mode insert point missing")
+        text = text.replace(
+            needle,
             "            self._update_sim_state()\n"
-            "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
-            "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
             "        self.env.unwrapped.sim.scan_every_step = False\n"
             "        if self.env.unwrapped.sim.scan_enabled:\n"
             "            self.env.unwrapped.sim._update_scans()\n"
             "            self.env.unwrapped.sim._update_scans()\n"
             "            self._update_sim_state()\n\n"
             "        if not self.get_parameter('async_mode').value:",
-            "defer gym lidar to 20 Hz publish timer",
-            True,
-        ),
-        (
-            "        self.env.unwrapped.sim.scan_every_step = False\n\n"
-            "        if not self.get_parameter('async_mode').value:",
-            "        self._physics_cg = MutuallyExclusiveCallbackGroup()\n"
-            "        self._lidar_cg = MutuallyExclusiveCallbackGroup()\n"
+            1,
+        )
+        print("==> defer gym lidar and warm numba")
+    if "self._scan_thread" not in text:
+        start = (
             "        self.env.unwrapped.sim.scan_every_step = False\n"
             "        if self.env.unwrapped.sim.scan_enabled:\n"
             "            self.env.unwrapped.sim._update_scans()\n"
             "            self.env.unwrapped.sim._update_scans()\n"
-            "            self._update_sim_state()\n\n"
-            "        if not self.get_parameter('async_mode').value:",
-            "warm numba lidar and split callback groups",
-        ),
-        (
-            "        if self.sim_paused:\n"
-            "            return  # Skip stepping the sim if paused\n"
-            "        \n"
-            "        ts = self.get_clock().now().to_msg()",
-            "        if self.sim_paused:\n"
-            "            return  # Skip stepping the sim if paused\n"
-            "        \n"
+            "            self._update_sim_state()\n"
+        )
+        if start not in text:
+            start = "        self.env.unwrapped.sim.scan_every_step = False\n"
+        text = text.replace(
+            start,
+            start
+            + "        self._scan_lock = threading.Lock()\n"
+            + "        self._scan_stop = False\n"
+            + "        self._scan_thread = threading.Thread("
+            + "target=self._lidar_loop, daemon=True)\n"
+            + "        self._scan_thread.start()\n",
+            1,
+        )
+        print("==> start background lidar thread")
+    if "def _lidar_loop(self)" not in text:
+        needle = "    def drive_timer_callback(self):"
+        if needle not in text:
+            raise SystemExit(f"{path}: drive_timer_callback missing")
+        text = text.replace(
+            needle,
+            "    def _lidar_loop(self):\n"
             "        sim = self.env.unwrapped.sim\n"
-            "        if not getattr(sim, 'scan_every_step', True) and sim.scan_enabled:\n"
-            "            sim._update_scans()\n"
+            "        scanner = sim.scan_sims[0] if sim.scan_enabled and sim.scan_sims else None\n"
+            "        while rclpy.ok() and not self._scan_stop:\n"
+            "            if self.sim_paused or scanner is None:\n"
+            "                time.sleep(0.05)\n"
+            "                continue\n"
+            "            with self._scan_lock:\n"
+            "                pose = np.array(sim.state.poses[0], copy=True)\n"
+            "            scan = scanner.scan(pose, None)\n"
+            "            self.ego_scan = [float(x) for x in scan]\n"
+            "            time.sleep(0.0)\n"
+            "\n"
+            + needle,
+            1,
+        )
+        print("==> snapshot-pose lidar loop off the ROS executor")
+    if "with self._scan_lock:" not in text.split("def drive_timer_callback", 1)[-1][:800]:
+        old = (
+            "        if not self.has_opp:\n"
+            "            _, _, self.done, _, _ = self.env.step(\n"
+            "                np.array([[self.ego_steer, self.ego_requested_speed]])\n"
+            "            )\n"
+        )
+        new = (
+            "        with self._scan_lock:\n"
+            "            if not self.has_opp:\n"
+            "                _, _, self.done, _, _ = self.env.step(\n"
+            "                    np.array([[self.ego_steer, self.ego_requested_speed]])\n"
+            "                )\n"
+        )
+        if old not in text:
+            raise SystemExit(f"{path}: drive step insert missing")
+        text = text.replace(old, new, 1)
+        old_else = (
+            "        else:\n"
+            "            _, _, self.done, _, _ = self.env.step(\n"
+            "                np.array(\n"
+            "                    [\n"
+            "                        [self.ego_steer, self.ego_requested_speed],\n"
+            "                        [self.opp_steer, self.opp_requested_speed],\n"
+            "                    ]\n"
+            "                )\n"
+            "            )\n"
+            "        self._update_sim_state()\n"
+        )
+        new_else = (
+            "            else:\n"
+            "                _, _, self.done, _, _ = self.env.step(\n"
+            "                    np.array(\n"
+            "                        [\n"
+            "                            [self.ego_steer, self.ego_requested_speed],\n"
+            "                            [self.opp_steer, self.opp_requested_speed],\n"
+            "                        ]\n"
+            "                    )\n"
+            "                )\n"
             "            self._update_sim_state()\n"
+        )
+        if old_else not in text:
+            raise SystemExit(f"{path}: drive opp-step insert missing")
+        text = text.replace(old_else, new_else, 1)
+        print("==> hold pose lock only around physics step")
+    ray = (
+        "        sim = self.env.unwrapped.sim\n"
+        "        if not getattr(sim, 'scan_every_step', True) and sim.scan_enabled:\n"
+        "            sim._update_scans()\n"
+        "            self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()"
+    )
+    if ray in text:
+        text = text.replace(
+            ray,
             "        ts = self.get_clock().now().to_msg()",
-            "raycast 1081-beam lidar only when publishing",
-        ),
-        (
+            1,
+        )
+        print("==> publish cached scan without blocking physics")
+    stale = "        self.ego_scan = list(scans[0])"
+    fresh = (
+        "        if getattr(self.env.unwrapped.sim, 'scan_every_step', True):\n"
+        "            self.ego_scan = list(scans[0])"
+    )
+    if stale in text and fresh not in text:
+        text = text.replace(stale, fresh, 1)
+        print("==> do not clobber thread lidar from physics")
+    odom_from_phys = (
+        "        self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        self._publish_odom(ts)\n"
+    )
+    if odom_from_phys not in text:
+        old = (
             "        self._update_sim_state()\n"
             "        if self.get_parameter('use_sim_time_bridge').value:\n"
-            "            clock_msg = Clock()",
+            "            clock_msg = Clock()"
+        )
+        new = (
             "        self._update_sim_state()\n"
             "        ts = self.get_clock().now().to_msg()\n"
             "        self._publish_odom(ts)\n"
@@ -300,19 +381,21 @@ apply(
             "        self._publish_laser_transforms(ts)\n"
             "        self._publish_wheel_transforms(ts)\n"
             "        if self.get_parameter('use_sim_time_bridge').value:\n"
-            "            clock_msg = Clock()",
-            "publish odom from physics timer without waiting for lidar",
-        ),
-        (
-            "    gym_bridge = GymBridge()\n    rclpy.spin(gym_bridge)",
-            "    gym_bridge = GymBridge()\n"
-            "    executor = MultiThreadedExecutor(num_threads=2)\n"
-            "    executor.add_node(gym_bridge)\n"
-            "    executor.spin()",
-            "spin gym bridge on two threads",
-        ),
-    ),
-)
+            "            clock_msg = Clock()"
+        )
+        if old not in text:
+            print("==> already patched: publish odom from physics timer")
+        else:
+            text = text.replace(old, new, 1)
+            print("==> publish odom from physics timer without waiting for lidar")
+    if text != orig:
+        path.write_text(text, encoding="utf-8")
+    else:
+        print("==> gym_bridge already patched")
+
+bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
+sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
+patch_gym_bridge(bridge)
 apply(
     sim,
     (
