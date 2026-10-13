@@ -12,6 +12,9 @@ PROGRESS_EPS_M = 1e-4
 DEFAULT_MAX_STEP_FRAC = 0.1
 WARP_LIDAR_TF_XYYAW = (0.27, 0.0, 0.0)
 GYM_LIDAR_TF_XYYAW = (0.27, 0.0, 0.0)
+GYM_OCCUPIED_PIXEL = 0.0
+GYM_UNKNOWN_PIXEL = 205.0
+GYM_FREE_PIXEL = 255.0
 
 
 def lidar_frame_pose(
@@ -36,6 +39,45 @@ def spawn_pose_from_centerline(path: str | Path) -> tuple[float, float, float]:
     xy, _cum, _length = load_centerline(path)
     heading = math.atan2(float(xy[1, 1] - xy[0, 1]), float(xy[1, 0] - xy[0, 0]))
     return float(xy[0, 0]), float(xy[0, 1]), heading
+
+
+def pose_along_heading(
+    pose_xyyaw: tuple[float, float, float], distance_m: float
+) -> tuple[float, float, float]:
+    x, y, yaw = (float(v) for v in pose_xyyaw)
+    return (
+        x + float(distance_m) * math.cos(yaw),
+        y + float(distance_m) * math.sin(yaw),
+        yaw,
+    )
+
+
+def ros_trinary_occupancy(
+    image: np.ndarray,
+    occupied_thresh: float,
+    free_thresh: float,
+    negate: int = 0,
+) -> np.ndarray:
+    """0 occupied, 205 unknown, 255 free — same ROS rules Warp uses."""
+    pixels = np.asarray(image, dtype=np.float32)
+    probability = pixels / 255.0
+    if int(negate) == 0:
+        probability = 1.0 - probability
+    occupied = probability >= float(occupied_thresh)
+    free = probability <= float(free_thresh)
+    unknown = ~occupied & ~free
+    out = np.full(pixels.shape, GYM_FREE_PIXEL, dtype=np.float32)
+    out[occupied] = GYM_OCCUPIED_PIXEL
+    out[unknown] = GYM_UNKNOWN_PIXEL
+    return out
+
+
+def gym_midgrey_occupancy(image: np.ndarray) -> np.ndarray:
+    """f1tenth_gym Track default: split at 128, wiping ROS unknown cells to free."""
+    pixels = np.asarray(image, dtype=np.float32)
+    out = np.zeros_like(pixels)
+    out[pixels > 128.0] = GYM_FREE_PIXEL
+    return out
 
 
 def yaw_from_quat(x: float, y: float, z: float, w: float) -> float:

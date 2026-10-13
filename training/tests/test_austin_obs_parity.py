@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import math
 import sys
 from pathlib import Path
 
@@ -10,6 +12,8 @@ import numpy as np
 import pytest
 import torch
 import warp as wp
+import yaml
+from PIL import Image
 
 _ROOT = Path(__file__).resolve().parents[2]
 _TRAINING = _ROOT / "training"
@@ -51,7 +55,10 @@ from f1tenth_rl_agent.gym_certify import (  # noqa: E402
     GYM_LIDAR_TF_XYYAW,
     WARP_LIDAR_TF_XYYAW,
     WarpLongitudinalPlant,
+    gym_midgrey_occupancy,
     lidar_frame_pose,
+    pose_along_heading,
+    ros_trinary_occupancy,
     spawn_pose_from_centerline,
 )
 from f1tenth_rl_agent.sensor_preprocessing import (  # noqa: E402
@@ -115,6 +122,43 @@ def _unknown_as_free_field() -> CorridorDistanceData:
         origin=(float(assets.origin[0]), float(assets.origin[1])),
         resolution=float(assets.resolution),
     )
+
+
+def _austin_raw():
+    metadata = yaml.safe_load(_AUSTIN_YAML.read_text())
+    image_path = _AUSTIN_YAML.parent / metadata["image"]
+    raw = np.flipud(np.array(Image.open(image_path).convert("L")))
+    return raw, metadata
+
+
+def _field_from_occupancy(occupancy: np.ndarray, metadata: dict) -> CorridorDistanceData:
+    occupied = occupancy == 0.0
+    unknown = occupancy == 205.0
+    from scipy.ndimage import distance_transform_edt
+
+    distance = distance_transform_edt(~occupied).astype(np.float32)
+    distance *= float(metadata["resolution"])
+    if unknown.any():
+        distance = distance.copy()
+        distance[unknown] = -1.0
+    origin = metadata["origin"]
+    return CorridorDistanceData(
+        distance=np.ascontiguousarray(distance.reshape(-1)),
+        width=int(occupancy.shape[1]),
+        height=int(occupancy.shape[0]),
+        origin=(float(origin[0]), float(origin[1])),
+        resolution=float(metadata["resolution"]),
+    )
+
+
+def _best_circular_shift(a: np.ndarray, b: np.ndarray, limit: int = 20) -> tuple[int, float]:
+    best_k = 0
+    best_mae = float(np.mean(np.abs(a - b)))
+    for k in range(-limit, limit + 1):
+        mae = float(np.mean(np.abs(a - np.roll(b, k))))
+        if mae < best_mae:
+            best_k, best_mae = k, mae
+    return best_k, best_mae
 
 
 def _raycast(field, pose_xyyaw, lidar_tf):
@@ -213,6 +257,69 @@ def test_gym_occupancy_matches_warp_trinary_at_spawn(warp_runtime):
     assert abs(float(warp_scan[_LEFT]) - float(gym_scan[_LEFT])) < 0.05
     unknown_free = _raycast(_unknown_as_free_field(), pose, GYM_LIDAR_TF_XYYAW)
     assert float(np.mean(np.abs(warp_scan - unknown_free))) > 1.0
+
+
+def test_austin_map_origin_resolution_and_png_hash():
+    metadata = yaml.safe_load(_AUSTIN_YAML.read_text())
+    assert float(metadata["resolution"]) == pytest.approx(0.08089)
+    assert metadata["origin"][0] == pytest.approx(-21.25772567260448)
+    assert metadata["origin"][1] == pytest.approx(-70.80398789934522)
+    assert abs(float(metadata["origin"][2])) < 1e-9
+    image_bytes = (_AUSTIN_YAML.parent / metadata["image"]).read_bytes()
+    assert hashlib.sha256(image_bytes).hexdigest() == _AUSTIN_SHA
+
+
+def test_austin_spawn_yaw_matches_first_centerline_segment():
+    x, y, yaw = _spawn()
+    assert (x, y) == (0.0, 0.0)
+    rows = []
+    for line in _AUSTIN_CL.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.lower().startswith("x_m"):
+            continue
+        parts = line.split(",")
+        rows.append((float(parts[0]), float(parts[1])))
+        if len(rows) == 2:
+            break
+    heading = math.atan2(rows[1][1] - rows[0][1], rows[1][0] - rows[0][0])
+    assert yaw == pytest.approx(heading)
+    assert abs(yaw + 0.6524) < 1e-3
+
+
+def test_gym_midgrey_split_misses_warp_right_beam(warp_runtime):
+    del warp_runtime
+    raw, metadata = _austin_raw()
+    warp_field = _warp_field()
+    midgrey = _field_from_occupancy(gym_midgrey_occupancy(raw), metadata)
+    trinary = _field_from_occupancy(
+        ros_trinary_occupancy(
+            raw,
+            float(metadata["occupied_thresh"]),
+            float(metadata["free_thresh"]),
+            int(metadata.get("negate", 0)),
+        ),
+        metadata,
+    )
+    for pose in (_spawn(), pose_along_heading(_spawn(), 3.0)):
+        warp_scan = _raycast(warp_field, pose, WARP_LIDAR_TF_XYYAW)
+        gym_scan = _raycast(midgrey, pose, GYM_LIDAR_TF_XYYAW)
+        fixed = _raycast(trinary, pose, GYM_LIDAR_TF_XYYAW)
+        mae = float(np.mean(np.abs(gym_scan - warp_scan)))
+        shift_k, shift_mae = _best_circular_shift(warp_scan, gym_scan)
+        mirror_mae = float(np.mean(np.abs(warp_scan - gym_scan[::-1])))
+        assert mae > 5.0
+        assert float(gym_scan[_RIGHT]) < 2.0
+        assert float(warp_scan[_RIGHT]) > 20.0
+        assert shift_k == 0
+        assert shift_mae == pytest.approx(mae)
+        assert mirror_mae > 5.0
+        assert float(np.mean(np.abs(fixed - warp_scan))) < 0.05
+        unmounted = _raycast(warp_field, pose, (0.0, 0.0, 0.0))
+        double = _raycast(warp_field, pose, (0.54, 0.0, 0.0))
+        opposite = _raycast(warp_field, pose, (-0.27, 0.0, 0.0))
+        assert float(np.mean(np.abs(unmounted - warp_scan))) > 5.0
+        assert float(np.mean(np.abs(double - warp_scan))) > 5.0
+        assert float(np.mean(np.abs(opposite - warp_scan))) > 5.0
 
 
 def test_warp_kernel_matches_occupancy_raycast_at_spawn(warp_runtime):
