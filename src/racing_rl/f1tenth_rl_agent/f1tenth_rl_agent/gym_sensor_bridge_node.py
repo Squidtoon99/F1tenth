@@ -27,6 +27,7 @@ class GymSensorBridgeNode(Node):
         self.declare_parameter("seed_applied_hz", 20.0)
         self.declare_parameter("seed_applied_count", 5)
         self.declare_parameter("max_steer", float(si.MAX_STEER_RAD))
+        self.declare_parameter("speed_scale", 1.0)
 
         gp = self.get_parameter
         odom_topic = gp("odom_topic").get_parameter_value().string_value
@@ -39,6 +40,7 @@ class GymSensorBridgeNode(Node):
             gp("seed_applied_count").get_parameter_value().integer_value
         )
         self._max_steer = float(gp("max_steer").get_parameter_value().double_value)
+        self._speed_scale = float(gp("speed_scale").get_parameter_value().double_value)
 
         self._prev_t: float | None = None
         self._prev_vx = 0.0
@@ -70,7 +72,7 @@ class GymSensorBridgeNode(Node):
             self._seed_timer = self.create_timer(period, self._on_seed_timer)
         else:
             self._seed_timer = None
-        self._imu_hold_timer = self.create_timer(1.0 / 20.0, self._on_imu_hold)
+        self._imu_hold_timer = self.create_timer(1.0 / 50.0, self._on_imu_hold)
 
         self.get_logger().info(
             f"gym_sensor_bridge odom={odom_topic} → imu={imu_topic}; "
@@ -145,7 +147,7 @@ class GymSensorBridgeNode(Node):
         drive.drive.acceleration = long_cmd
         drive.drive.steering_angle = float(msg.steering) * self._max_steer
         # Gym fork steps on speed (SPEED mode), not the 80 A current plant.
-        drive.drive.speed = long_cmd
+        drive.drive.speed = long_cmd * self._speed_scale
         self._drive_pub.publish(drive)
 
 

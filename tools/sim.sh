@@ -11,6 +11,7 @@
 # Commands:
 #   tools/sim.sh up        # import sources, build, launch the agent graph
 #   tools/sim.sh validate  # run the closed-loop acceptance gate (in the agent container)
+#   tools/sim.sh certify   # one-shot: up → score laps/crashes/lap time → down
 #   tools/sim.sh logs      # follow sim bridge logs
 #   tools/sim.sh down      # stop everything
 #
@@ -162,6 +163,23 @@ for key, value in replacements.items():
 open(cfg_path, "w", encoding="utf-8").write(text)
 print(f"==> courtyard gym map courtyard_2 spawn=({sx:.3f}, {sy:.3f}, {stheta:.3f})")
 PY
+  # The fork's async publisher runs at 250 Hz and starves the 20 Hz racer timer.
+  python3 - sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "self.timer = self.create_timer(0.004, self.timer_callback)"
+new = "self.timer = self.create_timer(0.05, self.timer_callback)"
+if old in text:
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print("==> gym lidar publish timer 250 Hz -> 20 Hz")
+elif new in text:
+    print("==> gym lidar publish timer already 20 Hz")
+else:
+    raise SystemExit(f"{path}: async lidar timer string not found")
+PY
 }
 
 restore_vehicle_gym() {
@@ -254,14 +272,77 @@ validate() {
     python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
 }
 
+wait_graph_ready() {
+  local cid="$1"
+  local needle="sensor_racer 1097-D"
+  if [ "${STACK}" = "vehicle" ]; then
+    needle="policy_inference"
+  fi
+  echo "==> Waiting for graph (${needle})"
+  local i
+  for i in $(seq 1 90); do
+    if docker logs "${cid}" 2>&1 | grep -q "${needle}"; then
+      echo "==> Graph ready"
+      return 0
+    fi
+    sleep 2
+  done
+  die "agent graph did not become ready (${needle})"
+}
+
+certify() {
+  check_stack
+  check_mode
+  check_checkpoint
+  import_sim_sources
+  if [ "${STACK}" = "sensor_policy" ]; then
+    wire_courtyard_gym
+  else
+    restore_vehicle_gym
+    verify_track_assets
+  fi
+  echo "==> Certify ${STACK} ${CKPT} (CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES}')"
+  compose down >/dev/null 2>&1 || true
+  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  compose up -d novnc sim
+  if [ "${MODE}" = "dev" ]; then
+    echo "==> Building the agent workspace"
+    compose run --rm --entrypoint bash agent -lc "
+      source /opt/ros/humble/setup.bash &&
+      colcon build --symlink-install --base-paths src libs \
+        --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
+          f1tenth_bringup f1tenth_common f1tenth_policy"
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint bash agent -lc "
+      source /opt/ros/humble/setup.bash &&
+      source install/setup.bash &&
+      $(agent_launch_cmd)"
+  else
+    compose run -d --name f1tenth-gym-agent --service-ports runtime \
+      ros2 launch f1tenth_bringup sim.launch.py \
+      stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
+  fi
+  wait_graph_ready f1tenth-gym-agent
+  local rc=0
+  VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1}"
+  validate || rc=$?
+  docker stop f1tenth-gym-agent >/dev/null 2>&1 || true
+  docker rm -f f1tenth-gym-agent >/dev/null 2>&1 || true
+  compose down >/dev/null 2>&1 || true
+  if [ "${STACK}" != "sensor_policy" ]; then
+    restore_vehicle_gym
+  fi
+  return "${rc}"
+}
+
 CMD="${1:-up}"
 case "${CMD}" in
   up)       up ;;
   validate) validate ;;
+  certify)  certify ;;
   down)     compose down ;;
   logs)     compose logs -f sim ;;
   *)
-    echo "usage: tools/sim.sh [up|validate|logs|down]" >&2
+    echo "usage: tools/sim.sh [up|validate|certify|logs|down]" >&2
     echo "  env: STACK=vehicle|sensor_policy MODE=dev|release CHECKPOINT_DIR=/abs/dir CKPT=policy.pt" >&2
     exit 1
     ;;

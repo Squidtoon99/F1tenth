@@ -93,6 +93,8 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["twist_vx_sign"] == 1.0
     assert racer["sensor_max_age_s"] == 1.0
     assert gate["rl_command_timeout_s"] == 1.0
+    bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
+    assert bridge["speed_scale"] == 5.0
     assert racer["publish_raw_observation"] is True
     assert racer["publish_diagnostics"] is True
     assert '"i_drive_max_a"' in source
@@ -139,6 +141,7 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "courtyard_2.png" in source
     assert "courtyard_2_centerline.csv" in source
     assert "validate_closed_loop_sensor_policy.py" in source
+    assert "certify" in source
     assert "1097" in source
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02

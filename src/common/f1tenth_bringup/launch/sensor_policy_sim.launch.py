@@ -82,6 +82,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
+                "speed_scale": 5.0,
             },
         ],
     )

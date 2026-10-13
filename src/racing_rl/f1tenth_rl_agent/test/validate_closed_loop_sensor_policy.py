@@ -8,6 +8,7 @@ Does not require the 392-D evaluation node or /rl/metrics.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -107,9 +108,13 @@ class SensorPolicyValidator(Node):
         self.diag_count = 0
         self.laps = 0
         self.offtrack_samples = 0
+        self.crashes = 0
+        self.lap_times: list[float] = []
         self.max_speed = 0.0
         self._prev_s: float | None = None
         self._progress_m = 0.0
+        self._offtrack = False
+        self._lap_t0 = time.monotonic()
 
         self.create_subscription(
             Float32MultiArray, si.TOPIC_OBSERVATION, self._on_obs, 10
@@ -171,11 +176,19 @@ class SensorPolicyValidator(Node):
         s, dist = _project_s(x, y, self.xy, self.cum)
         if dist > self.offtrack_m:
             self.offtrack_samples += 1
+            if not self._offtrack:
+                self.crashes += 1
+                self._offtrack = True
+        else:
+            self._offtrack = False
         if self._prev_s is not None:
             delta = s - self._prev_s
             if delta < -0.5 * self.loop_length:
                 delta += self.loop_length
+                now = time.monotonic()
                 self.laps += 1
+                self.lap_times.append(now - self._lap_t0)
+                self._lap_t0 = now
             elif delta > 0.5 * self.loop_length:
                 delta -= self.loop_length
             if delta > 0.0:
@@ -190,12 +203,19 @@ class SensorPolicyValidator(Node):
             return 0.0
         return (len(self.desired_stamps) - 1) / span
 
-    def report(self, *, min_samples: int, min_laps: float, duration_s: float) -> int:
+    def report(
+        self,
+        *,
+        min_samples: int,
+        min_laps: float,
+        duration_s: float,
+        json_out: str = "",
+    ) -> int:
         hz = self._desired_hz()
         mean_infer = float(np.mean(self.infer_ms)) if self.infer_ms else float("nan")
         p95_infer = float(np.percentile(self.infer_ms, 95)) if self.infer_ms else float("nan")
         mean_lap_s = (
-            duration_s / self.laps if self.laps > 0 else float("nan")
+            float(np.mean(self.lap_times)) if self.lap_times else float("nan")
         )
         failures: list[str] = []
         if self.desired_count < min_samples:
@@ -236,10 +256,32 @@ class SensorPolicyValidator(Node):
             f"max_speed={self.max_speed:.2f} m/s"
         )
         print(
-            f"  laps={self.laps} progress_m={self._progress_m:.2f} "
-            f"offtrack={self.offtrack_samples} mean_lap_s={mean_lap_s:.2f} "
+            f"  laps={self.laps} lap_times_s={self.lap_times} "
+            f"mean_lap_s={mean_lap_s:.2f} crashes={self.crashes} "
+            f"progress_m={self._progress_m:.2f} offtrack={self.offtrack_samples} "
             f"(training courtyard ~{TRAINING_LAP_S:.1f} s / {COURTYARD_LENGTH_M:.2f} m)"
         )
+        score = {
+            "pass": not failures,
+            "laps": self.laps,
+            "lap_times_s": [round(t, 3) for t in self.lap_times],
+            "mean_lap_s": None if math.isnan(mean_lap_s) else round(mean_lap_s, 3),
+            "crashes": self.crashes,
+            "progress_m": round(self._progress_m, 3),
+            "offtrack_samples": self.offtrack_samples,
+            "max_speed_mps": round(self.max_speed, 3),
+            "desired_hz": round(hz, 2),
+            "desired": self.desired_count,
+            "deadline_misses": self.deadline_misses,
+            "infer_ms_mean": None if math.isnan(mean_infer) else round(mean_infer, 2),
+            "infer_ms_p95": None if math.isnan(p95_infer) else round(p95_infer, 2),
+            "duration_s": duration_s,
+            "loop_length_m": round(self.loop_length, 3),
+            "training_lap_s": TRAINING_LAP_S,
+        }
+        print("SCORE_JSON", json.dumps(score))
+        if json_out:
+            Path(json_out).write_text(json.dumps(score, indent=2) + "\n")
 
         if failures:
             print("FAIL:", "; ".join(failures), file=sys.stderr)
@@ -257,6 +299,7 @@ def main() -> int:
     parser.add_argument("--min-samples", type=int, default=200)
     parser.add_argument("--min-laps", type=float, default=1.0)
     parser.add_argument("--offtrack-m", type=float, default=1.2)
+    parser.add_argument("--json-out", default="")
     parser.add_argument(
         "--centerline",
         default=str(
@@ -285,6 +328,7 @@ def main() -> int:
             min_samples=args.min_samples,
             min_laps=args.min_laps,
             duration_s=args.duration_s,
+            json_out=args.json_out,
         )
     finally:
         node.destroy_node()
