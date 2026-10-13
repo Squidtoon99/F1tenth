@@ -67,13 +67,15 @@ def test_short_training_loop_keeps_every_policy_checkpoint(tmp_path, monkeypatch
     main()
 
     ckpt_dir = checkpoint_dir(run_dir)
-    names = sorted(p.name for p in ckpt_dir.glob("policy_*.pt"))
-    assert names == [
+    names = {
+        path.name for path in ckpt_dir.glob("policy_*.pt")
+    }
+    assert names == {
         "policy_4.pt",
         "policy_8.pt",
         "policy_12.pt",
         "policy_16.pt",
-    ]
+    }
     for name in names:
         assert (ckpt_dir / name).stat().st_size > 0
     resume = resume_state_path(run_dir)
