@@ -1,0 +1,8 @@
+# Source: https://github.com/f1tenth/f1tenth_racetracks (Austin), GPL-3.0, 1:10 scale.
+image: Austin.png
+mode: trinary
+resolution: 0.08089
+origin: [-21.25772567260448, -70.80398789934522, 0.0]
+negate: 0
+occupied_thresh: 0.45
+free_thresh: 0.196

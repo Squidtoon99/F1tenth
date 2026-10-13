@@ -2044,6 +2044,42 @@ def load_resume_state(
     }
 
 
+def load_init_checkpoint(
+    path: str,
+    *,
+    algorithm: str,
+    models,
+    trainer,
+    actor_normalizer: ObsNormalizer,
+    critic_normalizer: ObsNormalizer | None,
+    device: torch.device,
+) -> None:
+    """Load actor, critic, and normalizer stats; leave optimizers and step at 0."""
+    payload = torch.load(path, map_location=device, weights_only=False)
+    if payload.get("format") != "training_resume":
+        raise ValueError(
+            "--init-checkpoint expects a PPO resume_state checkpoint "
+            f"(format=training_resume), got {path}"
+        )
+    if payload.get("algorithm") != algorithm:
+        raise ValueError(
+            f"Init checkpoint algorithm={payload.get('algorithm')!r} "
+            f"does not match requested {algorithm!r}"
+        )
+    if algorithm != "ppo":
+        raise ValueError("--init-checkpoint is only supported for PPO")
+    models.actor.load_state_dict(payload["actor"], strict=True)
+    actor_normalizer.load_state_dict(payload["actor_obs_norm"])
+    trainer.value_critic.load_state_dict(payload["value_critic"], strict=True)
+    if critic_normalizer is None:
+        raise ValueError("critic_normalizer is required for --init-checkpoint")
+    critic_normalizer.load_state_dict(payload["critic_obs_norm"])
+    logging.getLogger(LOGGER_NAME).info(
+        "Loaded init checkpoint %s (fresh optimizers, env_transitions=0)",
+        path,
+    )
+
+
 def run_eval_video(
     eval_state: dict,
     env_cfg: dict,
@@ -2276,6 +2312,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Warm-start actor + obs-normalizer from a sensor policy artifact.",
     )
     parser.add_argument(
+        "--init-checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Load PPO actor, value critic, and observation-normalizer stats "
+            "from a resume_state checkpoint; start fresh optimizers and step=0."
+        ),
+    )
+    parser.add_argument(
         "--resume-ckpt",
         type=str,
         default=None,
@@ -2334,6 +2379,11 @@ def run_identity_fingerprint(args: argparse.Namespace) -> dict:
             if getattr(args, "init_ckpt", None)
             else None
         ),
+        "init_checkpoint": (
+            str(Path(args.init_checkpoint).resolve())
+            if getattr(args, "init_checkpoint", None)
+            else None
+        ),
         "seed": int(args.seed),
         "num_envs": int(args.num_envs),
     }
@@ -2348,6 +2398,7 @@ def fingerprint_from_snapshot(snapshot: dict) -> dict:
         "config": args.get("config"),
         "total_transitions": int(args.get("total_transitions", 0)),
         "init_ckpt": args.get("init_ckpt"),
+        "init_checkpoint": args.get("init_checkpoint"),
         "seed": int(args.get("seed", 0)),
         "num_envs": int(args.get("num_envs", 0)),
     }
@@ -2639,8 +2690,17 @@ def main():
         replay_estimate = None
 
     resume_counters = None
-    if args.resume_ckpt is not None and args.init_ckpt is not None:
-        raise ValueError("Cannot use both --init-ckpt and --resume-ckpt")
+    init_flags = [
+        name
+        for name, value in (
+            ("--init-ckpt", args.init_ckpt),
+            ("--init-checkpoint", getattr(args, "init_checkpoint", None)),
+            ("--resume-ckpt", args.resume_ckpt),
+        )
+        if value is not None
+    ]
+    if len(init_flags) > 1:
+        raise ValueError("Cannot use " + " and ".join(init_flags) + " together")
     if args.resume_ckpt is not None:
         if algorithm != "ppo":
             raise ValueError("--resume-ckpt is only supported for PPO")
@@ -2669,6 +2729,19 @@ def main():
                 env_cfg.get("steering_delta_max_rad", math.pi / 60.0)
             ),
         )
+    elif getattr(args, "init_checkpoint", None) is not None:
+        if algorithm != "ppo":
+            raise ValueError("--init-checkpoint is only supported for PPO")
+        load_init_checkpoint(
+            args.init_checkpoint,
+            algorithm=algorithm,
+            models=models,
+            trainer=trainer,
+            actor_normalizer=actor_normalizer,
+            critic_normalizer=critic_normalizer,
+            device=device,
+        )
+        init_transitions = 0
     else:
         init_transitions = 0
 
