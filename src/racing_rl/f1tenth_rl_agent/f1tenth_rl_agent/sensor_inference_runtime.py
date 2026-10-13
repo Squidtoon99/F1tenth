@@ -136,6 +136,7 @@ class SensorInferenceRuntime:
     def reset_hidden(self) -> None:
         self._hidden.zero_()
         self.realized_steer_rad = 0.0
+        self._steer_hist_view.fill(0.0)
         self._executed_steer_history.fill(0.0)
         self._executed_long_history.fill(0.0)
 

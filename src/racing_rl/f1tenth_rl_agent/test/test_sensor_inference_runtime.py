@@ -123,8 +123,16 @@ def test_runtime_reset_zeros_hidden():
         obs = np.ones(si.NUM_OBS, dtype=np.float32)
         runtime.infer_from_host_obs(obs)
         assert float(runtime.hidden.abs().sum()) > 0.0
+        runtime._executed_steer_history[:] = 0.2
+        runtime._executed_long_history[:] = 0.3
+        runtime._steer_hist_view[:] = 0.4
+        runtime.realized_steer_rad = 0.15
         runtime.reset_hidden()
         assert float(runtime.hidden.abs().sum()) == 0.0
+        assert runtime.realized_steer_rad == 0.0
+        assert float(np.abs(runtime._steer_hist_view).sum()) == 0.0
+        assert float(np.abs(runtime._executed_steer_history).sum()) == 0.0
+        assert float(np.abs(runtime._executed_long_history).sum()) == 0.0
 
 
 def test_runtime_reuses_host_obs_buffer():

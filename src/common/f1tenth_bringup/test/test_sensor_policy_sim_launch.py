@@ -266,3 +266,13 @@ def test_sim_sh_sensor_policy_wires_austin_and_validates_1097d():
     assert "/initialpose" in validator_src
     assert "summarize_repeat_scores" in validator_src
     assert "REPEAT_JSON" in validator_src
+    assert "warmup_ready" in validator_src
+    assert "--warmup-scans" in validator_src
+    assert "--spawn-wait-s" in validator_src
+    assert "default=60.0" in validator_src
+    assert "await drive before the next lockstep observation" in source
+    assert "_awaiting_drive" in source
+    assert "GRU_RESET_EPISODE" in racer_src
+    assert "GRU_RESET_MODE_ENGAGE" in racer_src
+    assert "_deadline_elapsed_s" in racer_src
+    assert "_plant.reset()" in bridge_src

@@ -23,6 +23,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
@@ -93,6 +94,8 @@ class SensorPolicyValidator(Node):
         spawn_tol_m: float,
         spawn_yaw_tol_rad: float,
         max_deadline_misses: int,
+        min_warmup_scans: int = 5,
+        min_warmup_diags: int = 1,
     ):
         super().__init__(
             "sensor_policy_closed_loop_validator",
@@ -108,6 +111,8 @@ class SensorPolicyValidator(Node):
         self.spawn_tol_m = spawn_tol_m
         self.spawn_yaw_tol_rad = spawn_yaw_tol_rad
         self.max_deadline_misses = max_deadline_misses
+        self.min_warmup_scans = int(min_warmup_scans)
+        self.min_warmup_diags = int(min_warmup_diags)
         self.xy = self.cum = None
         self.loop_length = AUSTIN_LENGTH_M
         if centerline is not None and centerline.is_file():
@@ -134,6 +139,9 @@ class SensorPolicyValidator(Node):
         self.max_speed = 0.0
         self._start_xy: tuple[float, float] | None = None
         self._end_xy: tuple[float, float] | None = None
+        self._warmup_scans = 0
+        self._warmup_diags = 0
+        self._warmup_obs = 0
 
         self.create_subscription(
             Float32MultiArray, si.TOPIC_OBSERVATION, self._on_obs, 10
@@ -147,6 +155,9 @@ class SensorPolicyValidator(Node):
         self.create_subscription(AckermannDriveStamped, ifc.TOPIC_DRIVE, self._on_drive, 10)
         self.create_subscription(
             Odometry, ifc.TOPIC_ODOM, self._on_odom, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            LaserScan, si.TOPIC_SCAN, self._on_scan, qos_profile_sensor_data
         )
         self._pause_pub = self.create_publisher(Bool, "/pause_sim", 10)
         self._reset_pub = self.create_publisher(
@@ -173,7 +184,17 @@ class SensorPolicyValidator(Node):
         self._start_xy = None
         self._start_yaw = None
         self._end_xy = None
+        self._warmup_scans = 0
+        self._warmup_diags = 0
+        self._warmup_obs = 0
         self._laps.clear()
+
+    def warmup_ready(self) -> bool:
+        return (
+            self.at_spawn()
+            and self._warmup_scans >= self.min_warmup_scans
+            and self._warmup_diags >= self.min_warmup_diags
+        )
 
     def at_spawn(self) -> bool:
         if self._latest_xyyaw is None:
@@ -197,7 +218,11 @@ class SensorPolicyValidator(Node):
         msg.pose.pose.orientation.w = math.cos(self.spawn_yaw / 2.0)
         self._reset_pub.publish(msg)
 
+    def _on_scan(self, _msg: LaserScan) -> None:
+        self._warmup_scans += 1
+
     def _on_obs(self, msg: Float32MultiArray) -> None:
+        self._warmup_obs += 1
         if not self._scoring:
             return
         self.obs_count += 1
@@ -214,6 +239,7 @@ class SensorPolicyValidator(Node):
         self.desired_stamps.append(_stamp_s(msg.header.stamp))
 
     def _on_diag(self, msg: Float32MultiArray) -> None:
+        self._warmup_diags += 1
         if not self._scoring:
             return
         self.diag_count += 1
@@ -432,10 +458,14 @@ def _run_one(
     spawn_deadline = min(wall_deadline, time.monotonic() + spawn_wait_s)
     if not _spin_while(node, node.at_spawn, spawn_deadline):
         raise TimeoutError("timed out waiting for exact spawn pose")
+    warm_deadline = min(wall_deadline, time.monotonic() + spawn_wait_s)
+    if not _spin_while(node, node.warmup_ready, warm_deadline):
+        raise TimeoutError("timed out waiting for warmup scans")
     node.reset_run()
     node._scoring = True
     node.set_paused(False)
-    if not _spin_while(node, lambda: node._start_xy is not None, spawn_deadline):
+    start_deadline = min(wall_deadline, time.monotonic() + spawn_wait_s)
+    if not _spin_while(node, lambda: node._start_xy is not None, start_deadline):
         raise TimeoutError("timed out waiting for scored start pose")
     sim_start = _now_s(node)
     node._laps.lap_t0 = sim_start
@@ -463,7 +493,8 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--spawn-tol-m", type=float, default=0.15)
     parser.add_argument("--spawn-yaw-tol-rad", type=float, default=0.15)
-    parser.add_argument("--spawn-wait-s", type=float, default=15.0)
+    parser.add_argument("--spawn-wait-s", type=float, default=60.0)
+    parser.add_argument("--warmup-scans", type=int, default=5)
     parser.add_argument("--max-deadline-misses", type=int, default=0)
     parser.add_argument("--json-out", default="")
     parser.add_argument(
@@ -495,6 +526,7 @@ def main() -> int:
         spawn_tol_m=float(args.spawn_tol_m),
         spawn_yaw_tol_rad=float(args.spawn_yaw_tol_rad),
         max_deadline_misses=int(args.max_deadline_misses),
+        min_warmup_scans=int(args.warmup_scans),
     )
     try:
         warmup_deadline = time.monotonic() + max(float(args.warmup_s), 0.0)

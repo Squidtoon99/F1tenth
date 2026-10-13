@@ -10,6 +10,7 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool
 
 from f1tenth_rl_agent import interfaces as ifc
 from f1tenth_rl_agent import sensor_interfaces as si
@@ -79,6 +80,7 @@ class GymSensorBridgeNode(Node):
         self.create_subscription(
             ActuatorCommand, applied_topic, self._on_applied, 10
         )
+        self.create_subscription(Bool, "/pause_sim", self._on_pause_sim, 10)
         self._imu_pub = self.create_publisher(
             Imu, imu_topic, qos_profile_sensor_data
         )
@@ -120,6 +122,19 @@ class GymSensorBridgeNode(Node):
         msg.source = ActuatorCommand.SOURCE_SAFE
         self._applied_pub.publish(msg)
         self._on_applied(msg)
+
+    def _reset_episode(self) -> None:
+        self._plant.reset()
+        self._vx = 0.0
+        self._prev_vx = 0.0
+        self._prev_vy = 0.0
+        self._prev_t = None
+        self._drive_seq = 0
+        self._publish_safe_zero_applied()
+
+    def _on_pause_sim(self, msg: Bool) -> None:
+        if not bool(msg.data):
+            self._reset_episode()
 
     def _on_seed_timer(self) -> None:
         if self._seed_remaining <= 0:

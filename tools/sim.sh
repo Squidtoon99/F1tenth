@@ -265,6 +265,7 @@ def patch_gym_bridge(path: Path) -> None:
             "            if stamp <= getattr(self, '_last_drive_stamp', -1.0):\n"
             "                return\n"
             "            self._last_drive_stamp = stamp\n"
+            "            self._awaiting_drive = False\n"
             "            self.drive_timer_callback()\n"
             "            self.timer_callback()\n"
     )
@@ -276,6 +277,7 @@ def patch_gym_bridge(path: Path) -> None:
         "        self.sim_paused = not (self.get_parameter('async_mode').value)\n"
         "        self._spawn_pose = list(self.ego_pose)\n"
         "        self._force_obs_ns = 0\n"
+        "        self._awaiting_drive = False\n"
         "        self.get_logger().info(\n"
         "            'GymBridge ready (paused at spawn)' if self.sim_paused\n"
         "            else 'GymBridge ready')\n"
@@ -622,10 +624,17 @@ def patch_gym_bridge(path: Path) -> None:
     pause_pub = (
         "    def timer_callback(self):\n"
         "        # Lockstep pause still publishes scan/odom; physics does not step.\n"
+        "        if (\n"
+        "            not self.get_parameter('async_mode').value\n"
+        "            and getattr(self, '_awaiting_drive', False)\n"
+        "            and not self.sim_paused\n"
+        "        ):\n"
+        "            return\n"
     )
     if pause_skip in text:
         text = text.replace(pause_skip, pause_pub, 1)
         print("==> publish observations while lockstep is paused")
+        print("==> await drive before the next lockstep observation")
     reset_skip = (
         "    def ego_reset_callback(self, pose_msg):\n"
         "        if self.sim_paused:\n"
@@ -660,7 +669,7 @@ def patch_gym_bridge(path: Path) -> None:
         "            self.ego_requested_speed = 0.0\n"
         "            self.ego_steer = 0.0\n"
         "            self._force_obs_ns = 1\n"
-        "            self.timer_callback()\n"
+        "            self._awaiting_drive = False\n"
         "        self.get_logger().info("
         "f\"Simulation {'paused' if self.sim_paused else 'resumed'}\")\n"
     )
@@ -714,6 +723,8 @@ def patch_gym_bridge(path: Path) -> None:
         "                clock_msg = Clock()\n"
         "                clock_msg.clock = ts\n"
         "                self.clock_pub.publish(clock_msg)\n"
+        "            if not self.sim_paused:\n"
+        "                self._awaiting_drive = True\n"
         "        elif self.get_parameter('use_sim_time_bridge').value:\n"
     )
     if "if not self.get_parameter('async_mode').value:" not in text.split(

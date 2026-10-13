@@ -13,10 +13,12 @@ import torch.nn as nn
 
 rclpy = pytest.importorskip("rclpy")
 from f1tenth_interfaces.msg import ActuatorCommand  # noqa: E402
+from geometry_msgs.msg import PoseWithCovarianceStamped  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
+from rclpy.time import Time  # noqa: E402
 from sensor_msgs.msg import Imu, LaserScan  # noqa: E402
-from std_msgs.msg import Float32MultiArray  # noqa: E402
+from std_msgs.msg import Bool, Float32MultiArray  # noqa: E402
 
 from f1tenth_rl_agent import sensor_interfaces as si  # noqa: E402
 from f1tenth_rl_agent.policy_model import SquashedGaussianLidarGRUActor  # noqa: E402
@@ -479,9 +481,10 @@ def test_sensor_racer_publishes_through_safe_applied_bootstrap():
             )
 
         assert _spin_until([node, helper], saw_rl_ownership)
-        assert diagnostics[-1][si.DIAG_GRU_RESETS] == safe_reset_total
-        assert diagnostics[-1][si.DIAG_GRU_RESET_REASON] == float(
-            si.GRU_RESET_NONE
+        assert diagnostics[-1][si.DIAG_GRU_RESETS] > safe_reset_total
+        assert any(
+            diag[si.DIAG_GRU_RESET_REASON] == float(si.GRU_RESET_MODE_ENGAGE)
+            for diag in diagnostics
         )
     finally:
         if helper is not None:
@@ -652,6 +655,172 @@ def test_sensor_racer_integrates_delta_policy_and_resets_accumulator():
         assert two_consecutive_delta_steps()
         node._reset_runtime(si.GRU_RESET_APPLIED_SAFETY)
         assert node._runtime.realized_steer_rad == pytest.approx(0.0)
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_sensor_racer_unpause_resets_hidden_and_command_history():
+    rclpy.init()
+    node = helper = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt)
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter("sensor_max_age_s", Parameter.Type.DOUBLE, 1.0),
+                    Parameter("tick_on_scan", Parameter.Type.BOOL, True),
+                ]
+            )
+        helper = rclpy.create_node("sensor_racer_unpause_helper")
+        desired = []
+        helper.create_subscription(
+            ActuatorCommand,
+            si.TOPIC_DESIRED_ACTUATOR,
+            lambda m: desired.append(m),
+            10,
+        )
+        scan_pub = helper.create_publisher(LaserScan, si.TOPIC_SCAN, 10)
+        imu_pub = helper.create_publisher(Imu, si.TOPIC_IMU, 10)
+        odom_pub = helper.create_publisher(Odometry, si.TOPIC_ODOM, 10)
+        applied_pub = helper.create_publisher(
+            ActuatorCommand, si.TOPIC_APPLIED_ACTUATOR, 10
+        )
+        pause_pub = helper.create_publisher(Bool, "/pause_sim", 10)
+        scan = LaserScan()
+        scan.angle_min = float(si.LIDAR_ANGLE_MIN)
+        scan.angle_increment = float(si.LIDAR_ANGLE_INCREMENT)
+        scan.range_min = 0.05
+        scan.ranges = [1.0] * si.LIDAR_DIM
+        odom = Odometry()
+        imu = Imu()
+        applied = _applied_rl(0.4, 0.2)
+        nsec = 0
+
+        def publish_all():
+            nonlocal nsec
+            nsec += 50_000_000
+            stamp = Time(nanoseconds=nsec).to_msg()
+            scan.header.stamp = stamp
+            imu.header.stamp = stamp
+            odom.header.stamp = stamp
+            applied.header.stamp = stamp
+            scan_pub.publish(scan)
+            imu_pub.publish(imu)
+            odom_pub.publish(odom)
+            applied_pub.publish(applied)
+            return (
+                bool(desired)
+                and float(node._runtime.hidden.abs().sum()) > 0.0
+            )
+
+        assert _spin_until([node, helper], publish_all)
+        node._runtime._executed_steer_history[:] = 0.2
+        node._runtime._executed_long_history[:] = 0.3
+        resets_before = node._gru_resets
+
+        def unpause():
+            msg = Bool()
+            msg.data = False
+            pause_pub.publish(msg)
+            return float(node._runtime.hidden.abs().sum()) == 0.0
+
+        assert _spin_until([node, helper], unpause)
+        assert node._gru_resets == resets_before + 1
+        assert node._diag_buf[si.DIAG_GRU_RESET_REASON] == float(
+            si.GRU_RESET_EPISODE
+        )
+        assert node._last_lockstep_scan is None
+        assert node._last_tick_scan_s is None
+        assert node._runtime.realized_steer_rad == 0.0
+        assert float(np.abs(node._runtime._executed_steer_history).sum()) == 0.0
+        assert float(np.abs(node._runtime._executed_long_history).sum()) == 0.0
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_sensor_racer_tick_on_scan_deadline_uses_scan_stamp():
+    rclpy.init()
+    node = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt)
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter("tick_on_scan", Parameter.Type.BOOL, True),
+                ]
+            )
+        scan = LaserScan()
+        scan.header.stamp.sec = 1
+        scan.header.stamp.nanosec = 50_000_000
+        node._scan = scan
+        node._last_tick_scan_s = 1.0
+        node._last_tick_time = Time(seconds=0, nanoseconds=0)
+        now = node.get_clock().now()
+        elapsed = node._deadline_elapsed_s(now)
+        assert elapsed == pytest.approx(0.05)
+        period_s = 1.0 / max(node.control_hz, 1.0)
+        assert elapsed <= 1.25 * period_s
+        node._applied = _applied_rl()
+        node._last_applied_source = ActuatorCommand.SOURCE_RL
+        assert node._ownership_reset_reason(deadline_miss=True) == si.GRU_RESET_NONE
+        node.tick_on_scan = False
+        node._last_applied_source = ActuatorCommand.SOURCE_RL
+        assert node._ownership_reset_reason(
+            deadline_miss=True
+        ) == si.GRU_RESET_DEADLINE_MISS
+        node.tick_on_scan = True
+        node._last_tick_scan_s = None
+        assert node._deadline_elapsed_s(now) == 0.0
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_sensor_racer_initialpose_resets_episode():
+    rclpy.init()
+    node = helper = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt)
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter("tick_on_scan", Parameter.Type.BOOL, True),
+                ]
+            )
+        helper = rclpy.create_node("sensor_racer_initialpose_helper")
+        pose_pub = helper.create_publisher(
+            PoseWithCovarianceStamped, "/initialpose", 10
+        )
+        node._runtime._hidden.fill_(0.5)
+        node._runtime._executed_steer_history[:] = 0.2
+
+        def publish_pose():
+            pose_pub.publish(PoseWithCovarianceStamped())
+            return float(node._runtime.hidden.abs().sum()) == 0.0
+
+        assert _spin_until([node, helper], publish_pose)
+        assert node._diag_buf[si.DIAG_GRU_RESET_REASON] == float(
+            si.GRU_RESET_EPISODE
+        )
+        assert float(np.abs(node._runtime._executed_steer_history).sum()) == 0.0
     finally:
         if helper is not None:
             helper.destroy_node()
