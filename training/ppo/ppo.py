@@ -215,6 +215,10 @@ class PPOTrainer:
         advantage_filter_discard_fraction=0.05,
         lidar_aug_enabled=False,
         lidar_aug_max_shift_beams=0,
+        lr_schedule="constant",
+        lr_final=0.0,
+        total_transitions=0,
+        desired_kl=0.01,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -309,6 +313,103 @@ class PPOTrainer:
         self._initialized = False
         self._awaiting_observe = False
         self.last_rollout = None
+        self.actor_lr0 = float(actor_lr)
+        self.value_lr0 = float(value_lr)
+        self.lr_schedule = str(lr_schedule)
+        if self.lr_schedule not in LR_SCHEDULES:
+            raise ValueError(
+                f"lr_schedule must be one of {sorted(LR_SCHEDULES)}, got "
+                f"{lr_schedule!r}"
+            )
+        self.lr_final = float(lr_final)
+        if not math.isfinite(self.lr_final) or self.lr_final < 0.0:
+            raise ValueError(
+                f"lr_final must be a finite number >= 0, got {lr_final!r}"
+            )
+        self.total_transitions = int(total_transitions)
+        if self.total_transitions < 0:
+            raise ValueError(
+                "total_transitions must be a non-negative int, got "
+                f"{total_transitions!r}"
+            )
+        if (
+            self.lr_schedule in ("linear", "cosine")
+            and self.total_transitions <= 0
+        ):
+            raise ValueError(
+                f"lr_schedule={self.lr_schedule!r} requires total_transitions > 0"
+            )
+        self.desired_kl = float(desired_kl)
+        if not math.isfinite(self.desired_kl) or self.desired_kl <= 0.0:
+            raise ValueError(
+                f"desired_kl must be a positive finite number, got {desired_kl!r}"
+            )
+        self._schedule_transitions = 0
+
+    def current_actor_lr(self):
+        return _optimizer_lr(self.actor_optimizer)
+
+    def current_value_lr(self):
+        return _optimizer_lr(self.value_optimizer)
+
+    def set_schedule_transitions(self, env_transitions):
+        self._schedule_transitions = int(env_transitions)
+        if self.lr_schedule in ("linear", "cosine"):
+            self.apply_progress_schedule()
+
+    def apply_progress_schedule(self):
+        if self.lr_schedule not in ("linear", "cosine"):
+            return
+        progress = (
+            self._schedule_transitions / self.total_transitions
+            if self.total_transitions > 0
+            else 0.0
+        )
+        _set_optimizer_lr(
+            self.actor_optimizer,
+            scheduled_learning_rate(
+                progress, self.actor_lr0, self.lr_final, self.lr_schedule
+            ),
+        )
+        _set_optimizer_lr(
+            self.value_optimizer,
+            scheduled_learning_rate(
+                progress, self.value_lr0, self.lr_final, self.lr_schedule
+            ),
+        )
+
+    def adapt_kl_learning_rates(self, approx_kl):
+        _set_optimizer_lr(
+            self.actor_optimizer,
+            adapt_kl_learning_rate(
+                self.current_actor_lr(), approx_kl, self.desired_kl
+            ),
+        )
+        _set_optimizer_lr(
+            self.value_optimizer,
+            adapt_kl_learning_rate(
+                self.current_value_lr(), approx_kl, self.desired_kl
+            ),
+        )
+
+    def lr_schedule_state(self):
+        return {
+            "actor_lr": self.current_actor_lr(),
+            "value_lr": self.current_value_lr(),
+            "schedule_transitions": int(self._schedule_transitions),
+        }
+
+    def load_lr_schedule_state(self, state):
+        if not state:
+            return
+        actor_lr = state.get("actor_lr")
+        value_lr = state.get("value_lr")
+        if actor_lr is not None:
+            _set_optimizer_lr(self.actor_optimizer, actor_lr)
+        if value_lr is not None:
+            _set_optimizer_lr(self.value_optimizer, value_lr)
+        if "schedule_transitions" in state:
+            self._schedule_transitions = int(state["schedule_transitions"])
 
     def _normalize(self, normalizer, obs):
         obs = obs.to(device=self.device, dtype=torch.float32)
@@ -507,6 +608,10 @@ class PPOTrainer:
             self._rollout.advantages.copy_(advantages)
             self._rollout.returns.copy_(returns)
         metrics = self.update(self._rollout)
+        if self.lr_schedule == "adaptive_kl":
+            self.adapt_kl_learning_rates(metrics["approx_kl"])
+        metrics["actor_lr"] = self.current_actor_lr()
+        metrics["value_lr"] = self.current_value_lr()
         self.last_rollout = self._rollout
         self._step = 0
         self._live_hidden.zero_()
@@ -514,6 +619,8 @@ class PPOTrainer:
         return metrics
 
     def update(self, rollout):
+        if self.lr_schedule in ("linear", "cosine"):
+            self.apply_progress_schedule()
         if rollout.optimized:
             raise ValueError("rollout has already been optimized")
         steps, num_envs = rollout.rewards.shape
@@ -789,3 +896,51 @@ class PPOTrainer:
         metrics["return_std"] = float(return_std)
         metrics["value_mean"] = float(value_mean)
         return metrics
+
+
+LR_SCHEDULES = ("constant", "linear", "cosine", "adaptive_kl")
+ADAPTIVE_KL_LR_MIN = 1e-5
+ADAPTIVE_KL_LR_MAX = 1e-2
+
+
+def scheduled_learning_rate(progress, lr0, lr_final, schedule):
+    if schedule == "constant":
+        return float(lr0)
+    if schedule not in ("linear", "cosine"):
+        raise ValueError(
+            f"schedule must be 'constant', 'linear', or 'cosine', got {schedule!r}"
+        )
+    progress = min(max(float(progress), 0.0), 1.0)
+    lr0 = float(lr0)
+    lr_final = float(lr_final)
+    if schedule == "linear":
+        return lr0 + (lr_final - lr0) * progress
+    return lr_final + 0.5 * (lr0 - lr_final) * (1.0 + math.cos(math.pi * progress))
+
+
+def adapt_kl_learning_rate(
+    lr,
+    approx_kl,
+    desired_kl,
+    *,
+    lo=ADAPTIVE_KL_LR_MIN,
+    hi=ADAPTIVE_KL_LR_MAX,
+):
+    kl = float(approx_kl)
+    target = float(desired_kl)
+    lr = float(lr)
+    if kl > 2.0 * target:
+        return max(float(lo), lr / 1.5)
+    if kl < 0.5 * target:
+        return min(float(hi), lr * 1.5)
+    return lr
+
+
+def _optimizer_lr(optimizer):
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def _set_optimizer_lr(optimizer, lr):
+    lr = float(lr)
+    for group in optimizer.param_groups:
+        group["lr"] = lr
