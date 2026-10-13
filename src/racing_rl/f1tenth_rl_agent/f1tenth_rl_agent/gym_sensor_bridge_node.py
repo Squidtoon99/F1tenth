@@ -52,6 +52,7 @@ class GymSensorBridgeNode(Node):
         self._drive_msg = AckermannDriveStamped()
         self._seed_msg = ActuatorCommand()
         self._seed_msg.source = ActuatorCommand.SOURCE_SAFE
+        self._seed_ns = 0
 
         self.create_subscription(
             Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
@@ -88,7 +89,9 @@ class GymSensorBridgeNode(Node):
 
     def _publish_safe_zero_applied(self) -> None:
         msg = self._seed_msg
-        msg.header.stamp = self.get_clock().now().to_msg()
+        self._seed_ns += 1000
+        msg.header.stamp.sec = 0
+        msg.header.stamp.nanosec = self._seed_ns
         msg.header.frame_id = self._imu_frame_id
         msg.drive_current_a = 0.0
         msg.brake_current_a = 0.0

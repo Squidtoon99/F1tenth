@@ -246,8 +246,8 @@ def patch_gym_bridge(path: Path) -> None:
         "                drive_msg.header.stamp.sec\n"
         "                + drive_msg.header.stamp.nanosec * 1e-9\n"
         "            )\n"
-        "            if stamp <= getattr(self, '_last_drive_stamp', -1.0) + 1e-6:\n"
-        "                return\n"
+            "            if stamp < getattr(self, '_last_drive_stamp', -1.0):\n"
+            "                return\n"
         "            self._last_drive_stamp = stamp\n"
         "            self.drive_timer_callback()\n"
         "            self.timer_callback()\n"
@@ -518,7 +518,8 @@ def patch_gym_bridge(path: Path) -> None:
         print("==> publish /clock from the scan timer so lockstep can bootstrap")
     clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
     clock_init = (
-        "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
+        "            self.clock_pub = self.create_publisher(\n"
+        "                Clock, '/clock', qos_profile_sensor_data)\n"
         "            clock_msg = Clock()\n"
         "            sim_time = float(self.env.unwrapped.sim_time)\n"
         "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
