@@ -110,6 +110,22 @@ python standalone_trainer.py --num-envs 1024 \
     --eval-video-num-envs 16
 ```
 
+### Full-lap eval (deterministic)
+
+`eval_full_lap.py` scores a `policy_*.pt` checkpoint with the **mean action** on
+each scenario of `configs/courtyard_2_e2e_ppo_multi_scenario.json`. A full lap
+is net along-track progress ≥ one track length from that episode's spawn, not a
+start/finish line crossing. JSON is written next to the checkpoint (or to
+`--out-dir`). Optional `--wandb-run-id` logs `eval/<scenario>/...` onto an
+existing W&B run. CUDA memory is capped at 0.15 by default.
+
+```bash
+python eval_full_lap.py --checkpoint outputs/runs/<id>/checkpoints/policy_320000000.pt
+
+python eval_full_lap.py --run-dir outputs/runs/<id> --out-dir /tmp/full-lap \
+    --wandb-run-id <run-id>
+```
+
 Live view needs `rerun-sdk`; mp4 needs `opencv-python` + `imageio[ffmpeg]` (all in
 the requirements files).
 
