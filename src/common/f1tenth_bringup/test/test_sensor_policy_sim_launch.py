@@ -2,8 +2,6 @@ import ast
 import math
 from pathlib import Path
 
-import pytest
-
 BRINGUP = Path(__file__).resolve().parents[1]
 REPO = BRINGUP.parents[2]
 SENSOR_POLICY_SIM = BRINGUP / "launch" / "sensor_policy_sim.launch.py"
@@ -146,6 +144,26 @@ def test_gym_sensor_bridge_is_registered():
         "gym_sensor_bridge = f1tenth_rl_agent.gym_sensor_bridge_node:main"
         in SETUP_PY.read_text()
     )
+
+
+def test_warp_sensor_plant_is_registered():
+    assert (
+        "warp_sensor_plant = f1tenth_rl_agent.warp_sensor_plant_node:main"
+        in SETUP_PY.read_text()
+    )
+
+
+def test_warp_sensor_policy_sim_graph_keeps_racer_and_adds_plant():
+    launch = BRINGUP / "launch" / "warp_sensor_policy_sim.launch.py"
+    executables = _launch_executables(launch)
+    assert executables == {
+        "sensor_racer",
+        "rl_current_gate",
+        "gym_sensor_bridge",
+        "warp_sensor_plant",
+    }
+    on_car = SENSOR_POLICY_LAUNCH.read_text()
+    assert "warp_sensor_plant" not in on_car
 
 
 def test_sim_sh_sensor_policy_wires_austin_and_validates_1097d():

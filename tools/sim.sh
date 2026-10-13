@@ -189,7 +189,8 @@ PY
   if [ -d sim/f1tenth_gym_ros/f1tenth_gym/.git ]; then
     git -C sim/f1tenth_gym_ros/f1tenth_gym checkout -- \
       f1tenth_gym/envs/simulator.py \
-      f1tenth_gym/envs/lidar/laser_models.py
+      f1tenth_gym/envs/lidar/laser_models.py \
+      f1tenth_gym/envs/track/track.py
   fi
   python3 - <<'PY'
 from pathlib import Path
@@ -221,15 +222,31 @@ def patch_gym_bridge(path: Path) -> None:
         "    occupancy_map[occupancy_map <= 128] = 0.0\n"
         "    occupancy_map[occupancy_map > 128] = 255.0\n"
     )
-    new_occ = (
+    midgrey_occ = (
         "    unknown = occupancy_map == 205\n"
         "    occupancy_map[occupancy_map <= 128] = 0.0\n"
         "    occupancy_map[occupancy_map > 128] = 255.0\n"
         "    occupancy_map[unknown] = 205.0\n"
     )
-    if new_occ not in text and old_occ in text:
-        text = text.replace(old_occ, new_occ, 1)
-        print("==> keep ROS unknown cells so gym LiDAR matches Warp trinary")
+    new_occ = (
+        "    if int(track_spec.negate) == 0:\n"
+        "        probability = 1.0 - occupancy_map / 255.0\n"
+        "    else:\n"
+        "        probability = occupancy_map / 255.0\n"
+        "    occupied = probability >= float(track_spec.occupied_thresh)\n"
+        "    free = probability <= float(track_spec.free_thresh)\n"
+        "    unknown = ~occupied & ~free\n"
+        "    occupancy_map = np.full_like(occupancy_map, 255.0)\n"
+        "    occupancy_map[occupied] = 0.0\n"
+        "    occupancy_map[unknown] = 205.0\n"
+    )
+    if new_occ not in text:
+        if midgrey_occ in text:
+            text = text.replace(midgrey_occ, new_occ, 1)
+            print("==> gym fallback occupancy uses ROS occupied/free thresholds")
+        elif old_occ in text:
+            text = text.replace(old_occ, new_occ, 1)
+            print("==> gym fallback occupancy uses ROS occupied/free thresholds")
     if "import threading" not in text:
         text = text.replace("import pathlib\n", "import pathlib\nimport threading\nimport time\n", 1)
         print("==> import threading for off-executor lidar")
@@ -751,11 +768,54 @@ def patch_gym_bridge(path: Path) -> None:
     else:
         print("==> gym_bridge already patched")
 
+def patch_track_occupancy(path: Path) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    orig = text
+    helper = (
+        "def ros_trinary_occupancy_map(image, spec):\n"
+        "    occupancy_map = np.array(image).astype(np.float32)\n"
+        "    if int(getattr(spec, 'negate', 0) or 0) == 0:\n"
+        "        probability = 1.0 - occupancy_map / 255.0\n"
+        "    else:\n"
+        "        probability = occupancy_map / 255.0\n"
+        "    occupied = probability >= float(spec.occupied_thresh)\n"
+        "    free = probability <= float(spec.free_thresh)\n"
+        "    unknown = np.logical_and(~occupied, ~free)\n"
+        "    out = np.full_like(occupancy_map, 255.0)\n"
+        "    out[occupied] = 0.0\n"
+        "    out[unknown] = 205.0\n"
+        "    return out\n\n\n"
+    )
+    if "def ros_trinary_occupancy_map(" not in text:
+        needle = "@dataclass\nclass Track:\n"
+        if needle not in text:
+            raise SystemExit(f"{path}: Track class insert point missing")
+        text = text.replace(needle, helper + needle, 1)
+        print("==> gym Track occupancy helper uses ROS occupied/free thresholds")
+    old_occ = (
+        "            occupancy_map = np.array(image).astype(np.float32)\n"
+        "            occupancy_map[occupancy_map <= 128] = 0.0\n"
+        "            occupancy_map[occupancy_map > 128] = 255.0\n"
+    )
+    new_occ = (
+        "            occupancy_map = ros_trinary_occupancy_map(image, track_spec)\n"
+    )
+    if old_occ in text:
+        text = text.replace(old_occ, new_occ)
+        print("==> gym Track occupancy keeps ROS unknown cells")
+    if text != orig:
+        path.write_text(text, encoding="utf-8")
+
+
 bridge = Path("sim/f1tenth_gym_ros/f1tenth_gym_ros/gym_bridge.py")
 sim = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/simulator.py")
 lidar = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/lidar/laser_models.py")
+track = Path("sim/f1tenth_gym_ros/f1tenth_gym/f1tenth_gym/envs/track/track.py")
 launch = Path("sim/f1tenth_gym_ros/launch/rl_agent_sim_launch.py")
 patch_gym_bridge(bridge)
+patch_track_occupancy(track)
 if lidar.exists():
     apply(
         lidar,

@@ -14,10 +14,13 @@ from f1tenth_rl_agent.gym_certify import (
     NetLapCounter,
     WarpLongitudinalParams,
     WarpLongitudinalPlant,
+    gym_midgrey_occupancy,
     lidar_frame_pose,
     load_centerline,
+    pose_along_heading,
     pose_error_xy_yaw,
     project_s,
+    ros_trinary_occupancy,
     spawn_pose_from_centerline,
     summarize_repeat_scores,
     wrapped_delta_s,
@@ -201,6 +204,9 @@ def test_gym_scan_patch_uses_lidar_mount_frame():
     assert '"lidar_noise_std": "0.0"' in text
     assert '"lidar_base_link_to_lidar_tf": "[0.27, 0.0, 0.0]"' in text
     assert "occupancy_map[unknown] = 205.0" in text
+    assert "ros_trinary_occupancy_map(image, track_spec)" in text
+    assert "probability >= float(spec.occupied_thresh)" in text
+    assert "f1tenth_gym/envs/track/track.py" in text
     assert "self.dt[self.map_img == 205] = self.max_range" in text
     assert "paused at spawn" in text
     assert "was_paused = self.sim_paused" in text
@@ -313,3 +319,22 @@ def test_summarize_repeat_scores_reports_mean_and_var():
     assert summary["deadline_misses_mean"] == 0.0
     assert summary["deadline_misses_var"] == 0.0
     assert summary["crashes_mean"] == pytest.approx(5.0 / 3.0)
+
+
+def test_ros_trinary_occupancy_keeps_unknown_band():
+    image = np.array([[0.0, 140.0, 180.0, 255.0]], dtype=np.float32)
+    out = ros_trinary_occupancy(image, 0.45, 0.196, 0)
+    assert float(out[0, 0]) == 0.0
+    assert float(out[0, 1]) == 0.0
+    assert float(out[0, 2]) == 205.0
+    assert float(out[0, 3]) == 255.0
+    midgrey = gym_midgrey_occupancy(image)
+    assert float(midgrey[0, 1]) == 255.0
+    assert float(midgrey[0, 2]) == 255.0
+
+
+def test_pose_along_heading_moves_three_meters():
+    x, y, yaw = spawn_pose_from_centerline(_AUSTIN_CL)
+    ahead = pose_along_heading((x, y, yaw), 3.0)
+    assert math.hypot(ahead[0] - x, ahead[1] - y) == pytest.approx(3.0)
+    assert ahead[2] == yaw
