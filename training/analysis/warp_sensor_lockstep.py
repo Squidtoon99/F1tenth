@@ -98,11 +98,17 @@ def load_runtime(checkpoint: str | Path) -> SensorInferenceRuntime:
     )
 
 
+def _spawn_reset(env: F1tenthEnv, runtime: SensorInferenceRuntime, pose) -> None:
+    env.reset_to([pose[0], pose[1]], pose[2], 0.0, seed=0, with_sensors=True)
+    runtime.reset_hidden()
+
+
 def run_lockstep(
     checkpoint: str | Path,
     *,
     steps: int = 160,
     offtrack_m: float = 1.2,
+    stop_on_lap: bool = False,
 ) -> dict:
     """Warp physics + sensor_racer packing; one inference per control tick."""
     pose = spawn_pose_from_centerline(_AUSTIN_CL)
@@ -115,10 +121,7 @@ def run_lockstep(
     dt = 1.0 / float(si.CONTROL_HZ)
     counter = NetLapCounter(length)
     try:
-        env.reset_to(
-            [pose[0], pose[1]], pose[2], 0.0, seed=0, with_sensors=True
-        )
-        runtime.reset_hidden()
+        _spawn_reset(env, runtime, pose)
         prev_vx = 0.0
         prev_vy = 0.0
         applied_long = 0.0
@@ -127,6 +130,10 @@ def run_lockstep(
         first_offtrack = None
         max_speed = 0.0
         t = 0.0
+        x = float(pose[0])
+        y = float(pose[1])
+        s = 0.0
+        step = -1
         for step in range(int(steps)):
             ego = env._ego.tensor
             x = float(ego["x"][0])
@@ -147,6 +154,8 @@ def run_lockstep(
                     "y": y,
                     "dist_m": dist,
                 }
+            if stop_on_lap and counter.laps >= 1:
+                break
             ax = 0.0 if step == 0 else (vx - prev_vx) / dt
             ay = 0.0 if step == 0 else (vy - prev_vy) / dt
             ax_d, ay_d = body_accel_to_driver(ax, ay)
@@ -190,27 +199,71 @@ def run_lockstep(
             prev_vx = vx
             prev_vy = vy
             t += dt
-            if bool(reset[0]) and first_offtrack is None:
-                first_offtrack = {
-                    "step": step,
-                    "t_s": t,
-                    "s_m": s,
-                    "x": x,
-                    "y": y,
-                    "dist_m": dist,
-                }
-                break
+            if bool(reset[0]):
+                if first_offtrack is None:
+                    first_offtrack = {
+                        "step": step,
+                        "t_s": t,
+                        "s_m": s,
+                        "x": x,
+                        "y": y,
+                        "dist_m": dist,
+                    }
+                _spawn_reset(env, runtime, pose)
+                applied_long = 0.0
+                applied_steer = 0.0
+                vesc_current = 0.0
+                prev_vx = 0.0
+                prev_vy = 0.0
+                spawn_s, _dist = project_s(pose[0], pose[1], xy, cum)
+                if not offtrack:
+                    counter.crashes += 1
+                counter.reset_progress(spawn_s, t)
         progress = counter.laps * length + counter.progress
         return {
             "steps": step + 1,
+            "duration_s": float((step + 1) * dt) if step >= 0 else 0.0,
             "progress_m": float(progress),
             "laps": int(counter.laps),
+            "lap_times_s": [float(v) for v in counter.lap_times],
             "crashes": int(counter.crashes),
             "x": x,
             "y": y,
             "s_m": s,
             "max_speed_mps": float(max_speed),
             "first_offtrack": first_offtrack,
+            "track_length_m": float(length),
         }
     finally:
         env.close()
+
+
+def main() -> int:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Warp plant + sensor_racer packing lockstep on Austin"
+    )
+    parser.add_argument("--ckpt", required=True)
+    parser.add_argument("--steps", type=int, default=3600)
+    parser.add_argument("--offtrack-m", type=float, default=1.2)
+    parser.add_argument("--stop-on-lap", action="store_true")
+    parser.add_argument("--json-out", default="")
+    args = parser.parse_args()
+    result = run_lockstep(
+        args.ckpt,
+        steps=int(args.steps),
+        offtrack_m=float(args.offtrack_m),
+        stop_on_lap=bool(args.stop_on_lap),
+    )
+    print("WARP_ROS_JSON", json.dumps(result))
+    if args.json_out:
+        out = Path(args.json_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
