@@ -29,6 +29,17 @@ COURTYARD_LENGTH_M = 17.62
 TRAINING_LAP_S = 5.3
 
 
+def _spin_until(node: Node, deadline: float) -> None:
+    # Drain every pending callback. spin_once(..., 0.05) once per loop only
+    # counts ~2 Hz of a 20 Hz graph with five subscriptions.
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.0)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            break
+        time.sleep(min(0.001, remaining))
+
+
 def _load_centerline(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
     pts = []
     with path.open(encoding="utf-8") as handle:
@@ -342,11 +353,9 @@ def main() -> int:
     try:
         warmup_deadline = time.monotonic() + max(float(args.warmup_s), 0.0)
         while time.monotonic() < warmup_deadline and node.odom_count == 0:
-            rclpy.spin_once(node, timeout_sec=0.05)
+            rclpy.spin_once(node, timeout_sec=0.01)
         node._lap_t0 = time.monotonic()
-        deadline = time.monotonic() + float(args.duration_s)
-        while time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.05)
+        _spin_until(node, time.monotonic() + float(args.duration_s))
         return node.report(
             min_samples=args.min_samples,
             min_laps=args.min_laps,

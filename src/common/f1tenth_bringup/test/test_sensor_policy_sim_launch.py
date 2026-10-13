@@ -151,6 +151,15 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source
     assert "--json-out /ws/gym_score.json" in source
+    validator = (
+        REPO
+        / "src"
+        / "racing_rl"
+        / "f1tenth_rl_agent"
+        / "test"
+        / "validate_closed_loop_sensor_policy.py"
+    )
+    assert "_spin_until" in validator.read_text()
     assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
