@@ -146,8 +146,13 @@ real 392-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
    lap-*time* comparison to the Warp ~5.3 s courtyard. At ~2.5 Hz the score is
    meaningless (GRU dt / delta-steer are ~8× too slow). `tools/sim.sh` patches
    the gym fork to skip lidar on physics steps and raycast 1081-beam lidar from
-   a snapshot pose on a Python thread so 20 Hz physics/odom never wait on scan.
-   The gym image imports `/sim_ws/f1tenth_gym` (build-time copy); compose prepends
+   a snapshot pose on the publish timer. Certify is **lockstep**: gym
+   `async_mode=False` advances one 50 ms physics step per unique `/drive` stamp,
+   publishes `/clock`, and the agent graph runs `use_sim_time:=true`. The
+   validator scores `desired_hz` from sim time, so the gate does not depend on
+   WSL/DDS wall throughput. Gym + agent are pinned to cores 0–3
+   (`taskset` / compose `cpuset`) with `ROS_LOCALHOST_ONLY=1`. The gym image
+   imports `/sim_ws/f1tenth_gym` (build-time copy); compose prepends
    `PYTHONPATH` to the live mounted engine so that skip actually applies.
 
    Overnight `policy_317440000.pt` is preprocessing **v3 @ 20 Hz** with

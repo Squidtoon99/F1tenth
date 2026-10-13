@@ -156,7 +156,8 @@ replacements = {
     "sx": f"{sx:.6f}",
     "sy": f"{sy:.6f}",
     "stheta": f"{stheta:.6f}",
-    "async_mode": "True",
+    "async_mode": "False",
+    "use_sim_time": "True",
     "kb_teleop": "False",
     "scan_num_beams": "1081",
     "scan_range_min": "0.06",
@@ -223,6 +224,37 @@ def patch_gym_bridge(path: Path) -> None:
     if old_scan_pub in text:
         text = text.replace(old_scan_pub, new_scan_pub, 1)
         print("==> publish gym /scan best-effort so foxglove cannot stall physics")
+    old_sync_drive = (
+        "        if not self.get_parameter('async_mode').value:\n"
+        "            # step the sim immediately and publish odom and scan\n"
+        "            self.drive_timer_callback()\n"
+        "            self.timer_callback()\n"
+    )
+    new_sync_drive = (
+        "        if not self.get_parameter('async_mode').value:\n"
+        "            stamp = (\n"
+        "                drive_msg.header.stamp.sec\n"
+        "                + drive_msg.header.stamp.nanosec * 1e-9\n"
+        "            )\n"
+        "            if stamp <= getattr(self, '_last_drive_stamp', -1.0) + 1e-6:\n"
+        "                return\n"
+        "            self._last_drive_stamp = stamp\n"
+        "            self.drive_timer_callback()\n"
+        "            self.timer_callback()\n"
+    )
+    if old_sync_drive in text:
+        text = text.replace(old_sync_drive, new_sync_drive, 1)
+        print("==> lockstep: one physics step per unique /drive stamp")
+    old_odom_pub = (
+        "self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)"
+    )
+    new_odom_pub = (
+        "self.ego_odom_pub = self.create_publisher("
+        "Odometry, ego_odom_topic, qos_profile_sensor_data)"
+    )
+    if old_odom_pub in text:
+        text = text.replace(old_odom_pub, new_odom_pub, 1)
+        print("==> publish gym odom best-effort to match scan QoS")
     text = text.replace(
         "from rclpy.callback_groups import MutuallyExclusiveCallbackGroup\n", ""
     )
@@ -230,6 +262,8 @@ def patch_gym_bridge(path: Path) -> None:
     text = text.replace(", callback_group=self._lidar_cg", "")
     text = text.replace(", callback_group=self._physics_cg", "")
     text = text.replace("self.timer = self.create_timer(0.004, self.timer_callback)",
+                        "self.timer = self.create_timer(0.05, self.timer_callback)")
+    text = text.replace("self.timer = self.create_timer(1, self.timer_callback)",
                         "self.timer = self.create_timer(0.05, self.timer_callback)")
     text = text.replace("self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)",
                         "self.drive_timer = self.create_timer(0.05, self.drive_timer_callback)")
@@ -426,6 +460,61 @@ def patch_gym_bridge(path: Path) -> None:
     if busy in text:
         text = text.replace(busy, paced, 1)
         print("==> pace lidar thread at 20 Hz")
+    sim_stamp = (
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        if self.get_parameter('use_sim_time_bridge').value:\n"
+        "            sim_time = self.env.unwrapped.sim_time\n"
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+    )
+    wall_odom = "        ts = self.get_clock().now().to_msg()\n        t_pub = time.perf_counter()\n        self._publish_odom(ts)\n"
+    sim_odom = sim_stamp + "        t_pub = time.perf_counter()\n        self._publish_odom(ts)\n"
+    if wall_odom in text and sim_stamp not in text.split("def drive_timer_callback", 1)[-1][:2500]:
+        text = text.replace(wall_odom, sim_odom, 1)
+        print("==> stamp physics odom with sim time")
+    wall_odom2 = (
+        "        self._update_sim_state()\n"
+        "        ts = self.get_clock().now().to_msg()\n"
+        "        self._publish_odom(ts)\n"
+    )
+    sim_odom2 = (
+        "        self._update_sim_state()\n"
+        + sim_stamp
+        + "        self._publish_odom(ts)\n"
+    )
+    if wall_odom2 in text:
+        text = text.replace(wall_odom2, sim_odom2, 1)
+        print("==> stamp physics odom with sim time")
+    clock_after_scan = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    clock_pub_scan = (
+        "            ts.sec = int(sim_time // 1.0)\n"
+        "            ts.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            clock_msg = Clock()\n"
+        "            clock_msg.clock = ts\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+        "\n"
+        "        # pub scans\n"
+    )
+    if clock_after_scan in text and "clock_msg.clock = ts" not in text:
+        text = text.replace(clock_after_scan, clock_pub_scan, 1)
+        print("==> publish /clock from the scan timer so lockstep can bootstrap")
+    clock_create = "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
+    clock_init = (
+        "            self.clock_pub = self.create_publisher(Clock, '/clock', 10)\n"
+        "            clock_msg = Clock()\n"
+        "            sim_time = float(self.env.unwrapped.sim_time)\n"
+        "            clock_msg.clock.sec = int(sim_time // 1.0)\n"
+        "            clock_msg.clock.nanosec = int((sim_time % 1.0) * 1e9)\n"
+        "            self.clock_pub.publish(clock_msg)\n"
+    )
+    if clock_create in text and "sim_time = float(self.env.unwrapped.sim_time)" not in text:
+        text = text.replace(clock_create, clock_init, 1)
+        print("==> publish initial /clock at sim t=0")
     if text != orig:
         path.write_text(text, encoding="utf-8")
     else:
@@ -505,6 +594,7 @@ up() {
   fi
   echo "==> Starting novnc + gym bridge (ROS_DOMAIN_ID=${ROS_DOMAIN_ID})"
   compose up -d novnc sim
+  wait_sim_ready
   if [ "${MODE}" = "release" ]; then
     echo "==> Launching ${STACK} graph from the generic runtime image (/config + /policies)"
     # Override the image CMD (race.launch.py) so no hardware drivers start in sim.
@@ -514,14 +604,14 @@ up() {
     return
   fi
   echo "==> Building the agent workspace (racing_rl + control + bringup + common)"
-  compose run --rm --entrypoint bash agent -lc "
+  compose run --rm --entrypoint taskset agent -c 0-3 bash -lc "
     source /opt/ros/humble/setup.bash &&
     colcon build --symlink-install --base-paths src libs \
       --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
         f1tenth_bringup f1tenth_common f1tenth_policy"
   echo "==> Launching the ${STACK} agent graph (policy: /policies/${CKPT})"
   echo "    Foxglove: ws://localhost:8765   |   RViz over VNC: http://localhost:8080/vnc.html"
-  compose run --rm --service-ports --entrypoint bash agent -lc "
+    compose run --rm --service-ports --entrypoint taskset agent -c 0-3 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     $(agent_launch_cmd)"
@@ -550,6 +640,7 @@ validate() {
     docker exec \
       -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
       -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
+      -e ROS_LOCALHOST_ONLY=1 \
       "${agent_cid}" bash -lc "
         source /opt/ros/humble/setup.bash &&
         source /ws/install/setup.bash &&
@@ -557,7 +648,7 @@ validate() {
     return
   fi
   compose run --rm -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
-    --entrypoint bash agent -lc "
+    --entrypoint taskset agent -c 0-3 bash -lc "
     source /opt/ros/humble/setup.bash &&
     source install/setup.bash &&
     python3 ${script} --expect-obs-dim ${expect} ${VALIDATE_ARGS:-}"
@@ -567,9 +658,9 @@ wait_sim_ready() {
   echo "==> Waiting for gym bridge"
   local cid=""
   local i
-  for i in $(seq 1 90); do
+  for i in $(seq 1 150); do
     cid="$(compose ps -q sim 2>/dev/null || true)"
-    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in asynchronous mode"; then
+    if [ -n "${cid}" ] && docker logs "${cid}" 2>&1 | grep -q "Running in synchronous mode"; then
       echo "==> Gym bridge ready"
       return 0
     fi
@@ -611,26 +702,24 @@ certify() {
   compose down >/dev/null 2>&1 || true
   stop_stray_agents
   compose up -d novnc sim
+  wait_sim_ready
   if [ "${MODE}" = "dev" ]; then
     echo "==> Building the agent workspace"
-    compose run --rm --entrypoint bash agent -lc "
+    compose run --rm --entrypoint taskset agent -c 0-3 bash -lc "
       source /opt/ros/humble/setup.bash &&
       colcon build --symlink-install --base-paths src libs \
         --packages-up-to f1tenth_rl_agent f1tenth_rl_vehicle f1tenth_control \
           f1tenth_bringup f1tenth_common f1tenth_policy"
-    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint bash agent -lc "
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset agent -c 0-3 bash -lc "
       source /opt/ros/humble/setup.bash &&
       source install/setup.bash &&
       $(agent_launch_cmd)"
   else
-    compose run -d --name f1tenth-gym-agent --service-ports runtime \
+    compose run -d --name f1tenth-gym-agent --service-ports --entrypoint taskset runtime -c 0-3 \
       ros2 launch f1tenth_bringup sim.launch.py \
       stack:="${STACK}" checkpoint_path:="/policies/${CKPT}"
   fi
-  # Start the agent while gym is still coming up so FastDDS meets the bridge
-  # as a late-starting publisher, then wait for both before scoring.
   wait_graph_ready f1tenth-gym-agent
-  wait_sim_ready
   local rc=0
   VALIDATE_ARGS="${VALIDATE_ARGS:---duration-s 90 --min-laps 1 --json-out /ws/gym_score.json}"
   validate || rc=$?

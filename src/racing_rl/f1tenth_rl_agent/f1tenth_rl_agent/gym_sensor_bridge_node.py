@@ -6,6 +6,7 @@ import rclpy
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from f1tenth_interfaces.msg import ActuatorCommand
 from nav_msgs.msg import Odometry
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
@@ -52,7 +53,9 @@ class GymSensorBridgeNode(Node):
         self._seed_msg = ActuatorCommand()
         self._seed_msg.source = ActuatorCommand.SOURCE_SAFE
 
-        self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(
+            Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
+        )
         self.create_subscription(
             ActuatorCommand, applied_topic, self._on_applied, 10
         )
@@ -69,7 +72,11 @@ class GymSensorBridgeNode(Node):
         self._publish_safe_zero_applied()
         if self._seed_remaining > 0:
             period = 1.0 / max(seed_hz, 1.0)
-            self._seed_timer = self.create_timer(period, self._on_seed_timer)
+            self._seed_timer = self.create_timer(
+                period,
+                self._on_seed_timer,
+                clock=Clock(clock_type=ClockType.STEADY_TIME),
+            )
         else:
             self._seed_timer = None
         self._imu_hold_timer = self.create_timer(1.0 / 20.0, self._on_imu_hold)

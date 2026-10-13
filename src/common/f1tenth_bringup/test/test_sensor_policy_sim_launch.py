@@ -95,10 +95,14 @@ def test_sensor_policy_sim_uses_si_imu_and_80_40():
     assert racer["imu_ax_bias"] == 0.0
     assert racer["twist_vx_sign"] == 1.0
     assert racer["sensor_max_age_s"] == 1.0
+    assert racer["use_sim_time"] is True
     assert racer["steering_delta_max_rad"] == pytest.approx(math.pi / 60.0)
     assert racer["history_stride"] == 1
+    assert gate["use_sim_time"] is True
     assert gate["rl_command_timeout_s"] == 1.0
+    assert gate["publish_rate_hz"] == 20.0
     bridge = _node_inline_parameters(SENSOR_POLICY_SIM, "gym_sensor_bridge")
+    assert bridge["use_sim_time"] is True
     assert bridge["speed_scale"] == 5.0
     assert racer["publish_raw_observation"] is True
     assert racer["publish_diagnostics"] is True
@@ -153,7 +157,11 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     assert "stop_stray_agents" in source
     assert "wait_sim_ready" in source
     assert "wait_graph_ready f1tenth-gym-agent" in source
-    assert "Running in asynchronous mode" in source
+    assert "Running in synchronous mode" in source
+    assert '"async_mode": "False"' in source
+    assert '"use_sim_time": "True"' in source
+    assert "lockstep: one physics step per unique /drive stamp" in source
+    assert "publish /clock from the scan timer so lockstep can bootstrap" in source
     assert "name=f1tenth-gym-agent" in source
     assert "name=docker-agent-run" in source
     assert "--json-out /ws/gym_score.json" in source
@@ -168,6 +176,9 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
     validator_src = validator.read_text()
     assert "_spin_until" in validator_src
     assert "timeout_sec=0.005" in validator_src
+    assert "--wall-timeout-s" in validator_src
+    assert "use_sim_time" in validator_src
+    assert "qos_profile_sensor_data" in validator_src
     assert "scan_every_step" in source
     assert "skip lidar raycast on physics steps" in source
     assert "disable gym lidar thread" in source
@@ -185,6 +196,8 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
         / "gym_sensor_bridge_node.py"
     ).read_text()
     assert "create_timer(1.0 / 20.0, self._on_imu_hold)" in bridge_src
+    assert "ClockType.STEADY_TIME" in bridge_src
+    assert "qos_profile_sensor_data" in bridge_src
     racer_src = (
         REPO
         / "src"
@@ -194,9 +207,15 @@ def test_sim_sh_sensor_policy_wires_courtyard_and_validates_1097d():
         / "sensor_racer_node.py"
     ).read_text()
     assert "MultiThreadedExecutor" in racer_src
-    assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in COMPOSE_SIM.read_text()
-    assert "PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym" in COMPOSE_SIM.read_text()
-    assert "network_mode: \"service:sim\"" in COMPOSE_SIM.read_text()
+    assert "qos_profile_sensor_data" in racer_src
+    compose_src = COMPOSE_SIM.read_text()
+    assert "FASTDDS_BUILTIN_TRANSPORTS=UDPv4" in compose_src
+    assert "ROS_LOCALHOST_ONLY=1" in compose_src
+    assert 'cpuset: "0-3"' in compose_src
+    assert "taskset" in compose_src
+    assert "PYTHONPATH=/sim_ws/src/f1tenth_gym_ros/f1tenth_gym" in compose_src
+    assert "network_mode: \"service:sim\"" in compose_src
+    assert "entrypoint taskset" in source
     assert "validate is vehicle-only" not in source
     assert abs(sx - 0.89) < 0.02
     assert abs(sy - (-3.37)) < 0.02

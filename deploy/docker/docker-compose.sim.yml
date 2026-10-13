@@ -26,9 +26,10 @@ services:
       - ../../sim/f1tenth_gym_ros:/sim_ws/src/f1tenth_gym_ros
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=0
+      - ROS_LOCALHOST_ONLY=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
+    cpuset: "0-3"
     networks:
       - rosnet
     ports:
@@ -42,7 +43,7 @@ services:
     # drivers are intentionally NOT launched so they do not fight our agent on /drive.
     # entrypoint override: the fork image's ENTRYPOINT is ["/bin/bash"], so we pass a
     # single -lc script string here rather than re-invoking bash in the command.
-    entrypoint: ["/bin/bash", "-lc"]
+    entrypoint: ["taskset", "-c", "0-3", "/bin/bash", "-lc"]
     command: >
       "source /opt/ros/humble/setup.bash &&
        cd /sim_ws &&
@@ -67,10 +68,11 @@ services:
     environment:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=0
+      - ROS_LOCALHOST_ONLY=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
+    cpuset: "0-3"
     network_mode: "service:sim"
     depends_on:
       - sim
@@ -96,9 +98,10 @@ services:
     environment:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
-      - ROS_LOCALHOST_ONLY=0
+      - ROS_LOCALHOST_ONLY=1
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - DISPLAY=novnc:0.0
+    cpuset: "0-3"
     networks:
       - rosnet
     depends_on:

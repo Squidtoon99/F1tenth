@@ -206,7 +206,9 @@ class SensorRacerNode(Node):
         self.create_subscription(
             Imu, imu_topic, self._on_imu, qos_profile_sensor_data
         )
-        self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(
+            Odometry, odom_topic, self._on_odom, qos_profile_sensor_data
+        )
         self.create_subscription(ActuatorCommand, applied_topic, self._on_applied, 10)
 
         self._desired_pub = self.create_publisher(

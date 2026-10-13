@@ -37,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             default_sensor_racer,
             {
+                "use_sim_time": True,
                 "checkpoint_path": ParameterValue(checkpoint_path, value_type=str),
                 "device": ParameterValue(device, value_type=str),
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
@@ -68,10 +69,12 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             default_gate,
             {
+                "use_sim_time": True,
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
                 "rl_command_timeout_s": 1.0,
+                "publish_rate_hz": 20.0,
             },
         ],
     )
@@ -83,6 +86,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {
+                "use_sim_time": True,
                 "odom_topic": ParameterValue(gym_odom_topic, value_type=str),
                 "speed_scale": 5.0,
             },
