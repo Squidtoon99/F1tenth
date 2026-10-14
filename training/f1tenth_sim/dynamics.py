@@ -62,6 +62,7 @@ class VehicleBuffers:
     c_r: wp.array(dtype=wp.float32)
     steer_lag: wp.array(dtype=wp.float32)
     steer_rate: wp.array(dtype=wp.float32)
+    steer_gain: wp.array(dtype=wp.float32)
 
 
 @wp.func
@@ -180,8 +181,9 @@ def apply_steering_lag(
     params: SimParams,
     steer_lag: wp.float32,
     steer_rate: wp.float32,
+    steer_gain: wp.float32,
 ) -> VehicleLocal:
-    target = params.steer_gain * vehicle.steer_logical
+    target = steer_gain * vehicle.steer_logical
     lag = wp.max(steer_lag, 0.0)
     alpha = params.sim_dt / (lag + params.sim_dt)
     next_steer = vehicle.steer + alpha * (target - vehicle.steer)
@@ -222,10 +224,13 @@ def integrate_vehicle_substep(
     c_r: wp.float32,
     steer_lag: wp.float32,
     steer_rate: wp.float32,
+    steer_gain: wp.float32,
     params: SimParams,
 ) -> VehicleLocal:
     vehicle = apply_current_slew(vehicle, params)
-    vehicle = apply_steering_lag(vehicle, params, steer_lag, steer_rate)
+    vehicle = apply_steering_lag(
+        vehicle, params, steer_lag, steer_rate, steer_gain
+    )
 
     weight = mass * params.gravity
     fz_f = weight * params.lr / params.wheelbase
@@ -318,6 +323,7 @@ def apply_command_and_integrate(
     c_r: wp.float32,
     steer_lag: wp.float32,
     steer_rate: wp.float32,
+    steer_gain: wp.float32,
     params: SimParams,
     substeps: wp.int32,
 ) -> VehicleLocal:
@@ -343,6 +349,7 @@ def apply_command_and_integrate(
             c_r,
             steer_lag,
             steer_rate,
+            steer_gain,
             params,
         )
     inv = 1.0 / wp.max(count, 1.0)
@@ -373,6 +380,7 @@ def apply_command_and_integrate_env(
         buffers.c_r[index],
         buffers.steer_lag[index],
         buffers.steer_rate[index],
+        buffers.steer_gain[index],
         params,
         substeps,
     )
@@ -395,6 +403,7 @@ def integrate_vehicle_substep_env(
         buffers.c_r[index],
         buffers.steer_lag[index],
         buffers.steer_rate[index],
+        buffers.steer_gain[index],
         params,
     )
 

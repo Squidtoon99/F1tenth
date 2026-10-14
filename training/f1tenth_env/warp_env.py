@@ -112,6 +112,12 @@ class _VehicleStorage:
                 device=device,
                 dtype=torch.float32,
             ),
+            "steer_gain": torch.full(
+                (num_envs,),
+                params.steer_gain,
+                device=device,
+                dtype=torch.float32,
+            ),
         }
         self.buffers = VehicleBuffers()
         vector_fields = {
@@ -861,6 +867,12 @@ class WarpF1tenthEnv:
         params.steer_rate_min = minimum
         params.steer_rate_max = maximum
         minimum, maximum = interval(
+            "steer_gain_range",
+            (self.vehicle_params.steer_gain, self.vehicle_params.steer_gain),
+        )
+        params.steer_gain_min = minimum
+        params.steer_gain_max = maximum
+        minimum, maximum = interval(
             "steer_bias_range", (0.0, 0.0)
         )
         params.steer_bias_min = minimum
@@ -1018,6 +1030,7 @@ class WarpF1tenthEnv:
                 "dr/cornering_stiffness_rear": self._ego.tensor["c_r"],
                 "dr/steer_time_constant": self._ego.tensor["steer_lag"],
                 "dr/steer_rate_max": self._ego.tensor["steer_rate"],
+                "dr/steer_gain": self._ego.tensor["steer_gain"],
                 "dr/action_latency_steps": tensors["action_latency"],
                 "dr/obs_latency_steps": tensors["observation_latency"],
                 "dr/obs_noise_std": tensors["observation_noise"],

@@ -100,6 +100,9 @@ class WarpVehicleSim:
             "steer_rate": torch.full(
                 (n,), STEER_RATE_UNBOUNDED, device=self.device
             ),
+            "steer_gain": torch.full(
+                (n,), self.params.steer_gain, device=self.device
+            ),
         }
         return state
 
@@ -131,6 +134,7 @@ class WarpVehicleSim:
             "c_r": "c_r",
             "steer_lag": "steer_lag",
             "steer_rate": "steer_rate",
+            "steer_gain": "steer_gain",
         }
         for field, key in scalar_fields.items():
             setattr(buffers, field, wp.from_torch(self.s[key]))
@@ -199,6 +203,7 @@ class WarpVehicleSim:
         c_r=None,
         steer_lag=None,
         steer_rate=None,
+        steer_gain=None,
     ):
         mass = mass.to(self.device, torch.float32)
         self.s["mass"].copy_(mass)
@@ -224,6 +229,9 @@ class WarpVehicleSim:
         if steer_rate is None:
             steer_rate = torch.full_like(mass, STEER_RATE_UNBOUNDED)
         self.s["steer_rate"].copy_(steer_rate.to(self.device, torch.float32))
+        if steer_gain is None:
+            steer_gain = torch.full_like(mass, self.params.steer_gain)
+        self.s["steer_gain"].copy_(steer_gain.to(self.device, torch.float32))
 
     def step(self, actions, n_steps: int = 10):
         actions = actions.to(device=self.device, dtype=torch.float32).contiguous()

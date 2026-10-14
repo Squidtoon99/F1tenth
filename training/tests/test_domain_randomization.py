@@ -160,6 +160,10 @@ def test_dr_disabled_matches_baseline(warp_runtime):
             metrics["dr/steer_rate_max"],
             torch.full((num_envs,), STEER_RATE_UNBOUNDED),
         )
+        assert torch.allclose(
+            metrics["dr/steer_gain"],
+            torch.full((num_envs,), params.steer_gain),
+        )
         assert metrics["dr/yaw_inertia"].device == env.device
     finally:
         env.close()
@@ -300,6 +304,10 @@ def test_default_dr_keeps_nominal_dynamics(warp_runtime):
             metrics["dr/drive_scale"],
             torch.ones(num_envs),
         )
+        assert torch.allclose(
+            metrics["dr/steer_gain"],
+            torch.full((num_envs,), params.steer_gain),
+        )
         assert metrics["dr/yaw_inertia"].device == env.device
         assert metrics["dr/cornering_stiffness_front"].device == env.device
     finally:
@@ -370,6 +378,8 @@ def test_austin_e2e_ppo_dr_config_enables_dynamics_ranges():
     assert dr["steer_time_constant_range"] == [0.03, 0.15]
     assert dr["steer_rate_max_range"] == [2.5, 5.0]
     assert dr["drive_scale_range"] == [0.8, 1.2]
+    assert dr["action_latency_steps_range"] == [0, 0]
+    assert "steer_gain_range" not in dr
     assert cfg["ppo"]["entropy_coef_end"] == 0.0
     assert cfg["ppo"]["entropy_coef_horizon_transitions"] == 32000000
     assert cfg["env"]["track"] == "Austin"
@@ -383,4 +393,87 @@ def test_austin_e2e_ppo_dr_config_is_a_valid_patch():
     assert patch["env"]["domain_randomization"]["yaw_inertia_range"] == [
         0.045,
         0.14,
+    ]
+
+
+def test_steer_gain_and_latency_dr_samples_vary_and_respect_bounds(warp_runtime):
+    num_envs = 8
+    extra = {
+        **_DYNAMICS_DR,
+        "steer_gain_range": [1.0, 1.10714],
+        "action_latency_steps_range": [0, 3],
+    }
+    env = _make_env(enable_dr=True, num_envs=num_envs, sensor_dr=extra)
+    keys = {
+        "dr/steer_gain": (1.0, 1.10714),
+        "dr/action_latency_steps": (0.0, 3.0),
+        "dr/yaw_inertia": (0.045, 0.14),
+        "dr/tire_friction": (0.65, 1.1),
+    }
+    try:
+        samples = {key: [] for key in keys}
+        for _ in range(8):
+            env.reset()
+            metrics = env.extras["metrics"]
+            for key in keys:
+                tensor = metrics[key]
+                assert tensor.device == env.device, key
+                samples[key].extend(tensor.detach().cpu().tolist())
+        for key, (lo, hi) in keys.items():
+            vals = samples[key]
+            assert len(set(round(v, 4) for v in vals)) > 1, f"{key} did not vary"
+            assert all(lo - 1e-5 <= v <= hi + 1e-5 for v in vals), key
+        assert env.env_cfg["t_delta"] == 0.09
+        from f1tenth_sim.dynamics import COMMAND_DELAY_SUBSTEPS
+
+        assert COMMAND_DELAY_SUBSTEPS == 2
+
+        control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
+        obs, _ = env.reset()
+        for _ in range(40):
+            actions = torch.rand(num_envs, 2, device=env.device) * 0.4
+            obs, reward, _, _ = env.step(actions, n_steps=control_interval)
+            assert torch.isfinite(obs).all()
+            assert torch.isfinite(reward).all()
+    finally:
+        env.close()
+
+
+def test_austin_e2e_ppo_baseline_v6_dr_config():
+    from standalone_trainer import load_config_patch
+
+    path = os.path.join(_REPO_ROOT, "configs", "austin_e2e_ppo_baseline_v6_dr.json")
+    with open(path, encoding="utf-8") as handle:
+        cfg = json.load(handle)
+    dr = cfg["env"]["domain_randomization"]
+    assert dr["enabled"] is True
+    assert dr["yaw_inertia_range"] == [0.045, 0.14]
+    assert dr["tire_friction_range"] == [0.65, 1.1]
+    assert dr["cornering_stiffness_front_range"] == [90.0, 200.0]
+    assert dr["cornering_stiffness_rear_range"] == [90.0, 200.0]
+    assert dr["vehicle_mass_range"] == [3.1, 3.79]
+    assert dr["steer_time_constant_range"] == [0.03, 0.15]
+    assert dr["steer_rate_max_range"] == [2.5, 5.0]
+    assert dr["drive_scale_range"] == [0.8, 1.2]
+    assert dr["steer_gain_range"] == [1.0, 1.10714]
+    assert dr["action_latency_steps_range"] == [0, 3]
+    assert cfg["env"]["t_delta"] == 0.09
+    assert cfg["env"]["steer_gain"] == 1.10714
+    assert cfg["reward"]["reward_scales"]["tal"] == 0.2
+    assert cfg["ppo"]["entropy_coef"] == 0.01
+    assert cfg["ppo"]["entropy_coef_end"] == 0.0
+    assert cfg["ppo"]["entropy_coef_horizon_transitions"] == 32000000
+    assert "caps_coef" not in cfg.get("ppo", {})
+    assert "reversal_coef_throttle" not in cfg.get("ppo", {})
+    assert "log_std_max" not in cfg.get("ppo", {})
+    assert "lr_schedule" not in cfg.get("ppo", {})
+    assert cfg["env"]["track"] == "Austin"
+    patch, _meta = load_config_patch(path)
+    assert patch["env"]["domain_randomization"]["steer_gain_range"] == [
+        1.0,
+        1.10714,
+    ]
+    assert patch["env"]["domain_randomization"]["action_latency_steps_range"] == [
+        0,
+        3,
     ]

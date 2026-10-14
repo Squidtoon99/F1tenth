@@ -287,6 +287,25 @@ def test_steer_lag_slows_wheel_angle():
     assert wheel(0.03) > wheel(0.15)
 
 
+def test_per_env_steer_gain_scales_wheel_angle():
+    def wheel(gain):
+        sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
+        _reset(sim, 1)
+        _set_domain(
+            sim,
+            1,
+            steer_lag=torch.tensor([0.0]),
+            steer_gain=torch.tensor([gain]),
+        )
+        sim.step(torch.tensor([[0.0, 0.5]]), n_steps=10)
+        return abs(sim.s["steer"][0].item())
+
+    low = wheel(1.0)
+    high = wheel(1.10714)
+    assert high > low
+    assert high == pytest.approx(1.10714 * low, rel=1e-4)
+
+
 def test_steer_rate_caps_wheel_angle():
     sim = WarpVehicleSim(_vp(), 1, device="cpu", sim_dt=0.005, control_dt=0.05)
     _reset(sim, 1)

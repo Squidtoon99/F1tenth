@@ -203,6 +203,7 @@ def test_default_sensor_dr_matches_measured_evidence():
     assert "cornering_stiffness_rear_range" not in dr
     assert "steer_time_constant_range" not in dr
     assert "steer_rate_max_range" not in dr
+    assert "steer_gain_range" not in dr
     assert dr["imu_accel_bias_range"] == [-0.15, 0.15]
     assert dr["imu_gyro_bias_range"] == [
         -0.006607313505033768,
