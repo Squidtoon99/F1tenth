@@ -99,6 +99,52 @@ def caps_temporal_loss(mean_actions, reset_mask):
     return (delta.square().sum(dim=-1) * valid).sum() / valid.sum().clamp(min=1.0)
 
 
+def _channel_weight_tensor(actions, channel_weights):
+    weights = torch.as_tensor(
+        channel_weights, device=actions.device, dtype=actions.dtype
+    ).reshape(-1)
+    packed = actions.new_zeros(actions.shape[-1])
+    n = min(weights.numel(), packed.numel())
+    if n:
+        packed[:n] = weights[:n]
+    return packed
+
+
+def action_reversal_penalty(
+    actions,
+    reset_mask,
+    *,
+    channel_weights,
+    deadband=0.0,
+    lag2=False,
+):
+    zero = actions.new_zeros(())
+    rates = actions.new_zeros(actions.shape[-1])
+    weights = _channel_weight_tensor(actions, channel_weights)
+    deadband = float(deadband)
+    if actions.shape[1] < 3:
+        return zero, rates
+    delta = actions[:, 1:] - actions[:, :-1]
+    prod = delta[:, 1:] * delta[:, :-1]
+    rev = F.relu(-prod - deadband)
+    valid = ((~reset_mask[:, 1:-1]) & (~reset_mask[:, 2:])).to(dtype=actions.dtype)
+    denom = valid.sum().clamp(min=1.0)
+    penalty = (rev * weights * valid.unsqueeze(-1)).sum() / denom
+    flipped = (prod < -deadband).to(dtype=actions.dtype) * valid.unsqueeze(-1)
+    rates = flipped.sum(dim=(0, 1)) / denom
+    if lag2 and actions.shape[1] >= 4:
+        prod2 = delta[:, 2:] * delta[:, :-2]
+        rev2 = F.relu(-prod2 - deadband)
+        valid2 = (
+            (~reset_mask[:, 1:-2])
+            & (~reset_mask[:, 2:-1])
+            & (~reset_mask[:, 3:])
+        ).to(dtype=actions.dtype)
+        denom2 = valid2.sum().clamp(min=1.0)
+        penalty = penalty + (rev2 * weights * valid2.unsqueeze(-1)).sum() / denom2
+    return penalty, rates
+
+
 def advantage_filter_keep_mask(
     advantages,
     *,
@@ -242,6 +288,10 @@ class PPOTrainer:
         total_transitions=0,
         desired_kl=0.01,
         caps_coef=0.0,
+        reversal_coef_throttle=0.0,
+        reversal_coef_steer=0.0,
+        reversal_deadband=0.0,
+        reversal_lag2=False,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -298,6 +348,24 @@ class PPOTrainer:
             raise ValueError(
                 f"caps_coef must be a finite number >= 0, got {caps_coef!r}"
             )
+        self.reversal_coef_throttle = float(reversal_coef_throttle)
+        self.reversal_coef_steer = float(reversal_coef_steer)
+        self.reversal_deadband = float(reversal_deadband)
+        self.reversal_lag2 = bool(reversal_lag2)
+        for name, value in (
+            ("reversal_coef_throttle", self.reversal_coef_throttle),
+            ("reversal_coef_steer", self.reversal_coef_steer),
+            ("reversal_deadband", self.reversal_deadband),
+        ):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} must be a finite number >= 0, got {value!r}"
+                )
+        self._need_action_mean = (
+            self.caps_coef > 0.0
+            or self.reversal_coef_throttle > 0.0
+            or self.reversal_coef_steer > 0.0
+        )
         if self.lidar_aug_max_shift_beams < 0:
             raise ValueError(
                 "lidar_aug_max_shift_beams must be a non-negative int, got "
@@ -684,6 +752,9 @@ class PPOTrainer:
                 "actor_grad_clip_fraction": 0.0,
                 "value_grad_clip_fraction": 0.0,
                 "caps_loss": 0.0,
+                "reversal_loss": 0.0,
+                "reversal_rate_throttle": 0.0,
+                "reversal_rate_steer": 0.0,
                 "epochs": 0,
                 "minibatches": 0,
                 "actor_updates": 0,
@@ -737,6 +808,9 @@ class PPOTrainer:
                 "actor_grad_clip_fraction",
                 "value_grad_clip_fraction",
                 "caps_loss",
+                "reversal_loss",
+                "reversal_rate_throttle",
+                "reversal_rate_steer",
             )
         }
         clip_active_sum = 0.0
@@ -780,9 +854,9 @@ class PPOTrainer:
                     action_seq,
                     reset_mask=reset_seq,
                     pre_tanh_actions=pre_tanh_seq,
-                    return_mean=self.caps_coef > 0.0,
+                    return_mean=self._need_action_mean,
                 )
-                if self.caps_coef > 0.0:
+                if self._need_action_mean:
                     new_logp, _, new_entropy, new_mean = eval_out
                 else:
                     new_logp, _, new_entropy = eval_out
@@ -813,9 +887,22 @@ class PPOTrainer:
                     gaussian_entropy / self.act_dim - _GAUSSIAN_ENTROPY_OFFSET
                 )
                 caps_loss = policy_loss.new_zeros(())
+                reversal_loss = policy_loss.new_zeros(())
+                reversal_rate = policy_loss.new_zeros((self.act_dim,))
                 if new_mean is not None:
                     caps_loss = caps_temporal_loss(new_mean, reset_seq)
                     policy_loss = policy_loss + self.caps_coef * caps_loss
+                    reversal_loss, reversal_rate = action_reversal_penalty(
+                        new_mean,
+                        reset_seq,
+                        channel_weights=(
+                            self.reversal_coef_throttle,
+                            self.reversal_coef_steer,
+                        ),
+                        deadband=self.reversal_deadband,
+                        lag2=self.reversal_lag2,
+                    )
+                    policy_loss = policy_loss + reversal_loss
                 approx_kl = (((ratio - 1.0) - log_ratio) * mb_keep).sum() / keep_denom
 
                 critic_obs = self._normalize(self.critic_normalizer, critic_raw)
@@ -892,6 +979,10 @@ class PPOTrainer:
                 metric_sums["policy_gaussian_entropy"] += gaussian_entropy.detach()
                 metric_sums["policy_log_std"] += mean_log_std.detach()
                 metric_sums["caps_loss"] += caps_loss.detach()
+                metric_sums["reversal_loss"] += reversal_loss.detach()
+                metric_sums["reversal_rate_throttle"] += reversal_rate[0].detach()
+                if reversal_rate.numel() > 1:
+                    metric_sums["reversal_rate_steer"] += reversal_rate[1].detach()
                 metric_sums["policy_clip_fraction"] += (
                     (
                         ((ratio - 1.0).abs() > self.clip_ratio).to(

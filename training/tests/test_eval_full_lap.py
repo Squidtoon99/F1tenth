@@ -11,6 +11,7 @@ import torch
 
 from config import DEFAULT_CONFIG
 from eval_full_lap import (
+    action_delta_metrics,
     classify_terminations,
     even_spawn_s,
     evaluate_policy_on_env,
@@ -41,6 +42,35 @@ class ZeroPolicy:
         del deterministic, with_logprob
         zeros = torch.zeros(obs.shape[0], 2, device=obs.device, dtype=torch.float32)
         return zeros, None
+
+
+def test_action_delta_metrics_ramp_brake_and_chatter():
+    ramp = np.stack(
+        [np.linspace(0.0, 1.0, 5), np.linspace(0.0, 0.4, 5)], axis=1
+    )
+    ramp_row = action_delta_metrics(ramp)
+    assert ramp_row["reversal_rate_throttle"] == pytest.approx(0.0)
+    assert ramp_row["reversal_rate_steer"] == pytest.approx(0.0)
+    assert ramp_row["mean_abs_delta_throttle"] == pytest.approx(0.25)
+
+    brake = np.array(
+        [[1.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [-1.0, 0.0], [-1.0, 0.0]],
+        dtype=np.float64,
+    )
+    brake_row = action_delta_metrics(brake)
+    assert brake_row["reversal_rate_throttle"] == pytest.approx(0.0)
+    assert brake_row["mean_abs_delta_throttle"] == pytest.approx(0.5)
+
+    chatter = np.array(
+        [[1.0, 0.2], [-1.0, 0.2], [1.0, 0.2], [-1.0, 0.2]],
+        dtype=np.float64,
+    )
+    chatter_row = action_delta_metrics(chatter)
+    assert chatter_row["reversal_rate_throttle"] == pytest.approx(1.0)
+    assert chatter_row["reversal_rate_steer"] == pytest.approx(0.0)
+    assert chatter_row["mean_abs_delta_throttle"] == pytest.approx(2.0)
+    dead = action_delta_metrics(chatter, deadband=5.0)
+    assert dead["reversal_rate_throttle"] == pytest.approx(0.0)
 
 
 def test_wrapped_delta_s_wraps_forward_across_finish_line():
@@ -245,6 +275,10 @@ def test_zero_action_standing_completes_no_laps(warp_runtime):
     spawn = [ep["spawn_s"] for ep in row["episodes"]]
     assert spawn[0] == pytest.approx(0.0)
     assert spawn[-1] == pytest.approx(0.75 * row["track_length_m"])
+    assert row["reversal_rate_throttle"] == pytest.approx(0.0)
+    assert row["reversal_rate_steer"] == pytest.approx(0.0)
+    assert row["mean_abs_delta_throttle"] == pytest.approx(0.0)
+    assert row["mean_abs_delta_steer"] == pytest.approx(0.0)
 
 
 @pytest.mark.skipif(not HAS_WARP, reason="warp-lang not installed")
