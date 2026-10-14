@@ -703,6 +703,9 @@ def main(argv: list[str] | None = None) -> None:
             "Refusing to record on a non-CPU device while a training arm may "
             "own the GPU. Pass --device cpu."
         )
+    if args.render:
+        # Hide the GPU before the first torch import in this process.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     release = resolve_release(args)
     files = named_files(release)
     missing = [path for _name, path in files if not path.is_file()]
