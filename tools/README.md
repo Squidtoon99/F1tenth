@@ -12,6 +12,12 @@ Helper scripts for building and developing the workspace.
 Lint configs live at the repo root: `.flake8` (Python) and `.clang-format` (C++).
 They match what `ament_flake8` / `ament_clang_format` enforce in CI.
 
+Policy releases are posted from `training/announce_model_release.py`. The
+webhook URL is the `DISCORD_MODEL_RELEASE_WEBHOOK` environment variable and
+is not stored in the repo. Dry-run first (`--dry-run`); the follow video is
+rendered by `training/render_follow.py`. See
+`.cursor/skills/model-release/SKILL.md`.
+
 Typical flow:
 
 ```bash

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from f1tenth_env.eval_viz import _C_OPP, _OPP_EGO_BLEND, _car_color, _opp_color
@@ -53,3 +55,116 @@ def test_visualizer_writes_finite_rollout_frames(tmp_path):
         )
     assert visualizer.close() == str(path)
     assert path.stat().st_size > 0
+
+
+def _follow_targets():
+    """Eight cars share a start. Seven keep moving; one crashes early."""
+    import numpy as np
+
+    frames = 24
+    step_m = 0.15
+    targets = []
+    crash_at = 4
+    for t in range(frames):
+        alive_x = step_m * t
+        targets.append(np.array([alive_x, 0.0]))
+    crash_xy = np.array([step_m * (crash_at - 1), 0.0])
+    return frames, crash_at, crash_xy, targets
+
+
+def _write_follow_npz(path):
+    import numpy as np
+
+    frames, crash_at, crash_xy, targets = _follow_targets()
+    square = np.array(
+        [[-8.0, -8.0], [8.0, -8.0], [8.0, 8.0], [-8.0, 8.0]],
+        dtype=np.float64,
+    )
+    payload = {
+        "lengths": np.array([frames] * 7 + [crash_at], dtype=np.int32),
+        "crashed": np.array([False] * 7 + [True]),
+        "car_length": np.float64(0.58),
+        "car_width": np.float64(0.30),
+        "left": square,
+        "right": square * 0.7,
+        "centerline": square * 0.85,
+    }
+    opp = np.array([0.0, 2.0])
+    for i in range(8):
+        n = int(payload["lengths"][i])
+        xy = np.array([targets[t] for t in range(n)], dtype=np.float64)
+        if i == 7:
+            xy[-1] = crash_xy
+        payload[f"ego_xy_{i}"] = xy
+        payload[f"ego_yaw_{i}"] = np.zeros(n, dtype=np.float64)
+        payload[f"ego_speed_{i}"] = np.full(n, 3.0, dtype=np.float64)
+        payload[f"opp_xy_{i}"] = np.repeat(opp[None, :], n, axis=0)
+        payload[f"opp_yaw_{i}"] = np.zeros(n, dtype=np.float64)
+    np.savez(path, **payload)
+
+
+def _eased_cameras(targets):
+    import numpy as np
+
+    cam = None
+    cams = []
+    for target in targets:
+        target = np.asarray(target, dtype=np.float64)
+        cam = target.copy() if cam is None else 0.82 * cam + 0.18 * target
+        cams.append(cam.copy())
+    return cams
+
+
+def test_follow_renderer_eases_keeps_trail_and_marks_crash(tmp_path):
+    """Drive the recovered renderer. Do not reimplement its camera."""
+    import subprocess
+    import sys
+
+    import imageio.v2 as imageio
+    import numpy as np
+
+    npz = tmp_path / "follow.npz"
+    mp4 = tmp_path / "overlay_follow.mp4"
+    _write_follow_npz(npz)
+    script = Path(__file__).resolve().parents[1] / "render_follow.py"
+    subprocess.run(
+        [sys.executable, str(script), "--npz", str(npz), "--mp4", str(mp4),
+         "--fps", "10", "--width", "1120", "--height", "700"],
+        check=True,
+    )
+    reader = imageio.get_reader(mp4)
+    frame = reader.get_data(reader.count_frames() - 1)
+    reader.close()
+    assert frame.shape == (700, 1120, 3)
+
+    _frames, _crash_at, crash_xy, targets = _follow_targets()
+    cam = _eased_cameras(targets)[-1]
+    scale = 1120 / 26.0
+    live_px = (targets[-1][0] - cam[0]) * scale + 1120 / 2
+    crash_px = (crash_xy[0] - cam[0]) * scale + 1120 / 2
+    crash_py = (cam[1] - crash_xy[1]) * scale + 700 / 2
+    static_px = (targets[-1][0] - targets[0][0]) * scale + 1120 / 2
+
+    live = np.argwhere(
+        (frame[:, :, 1] > 200) & (frame[:, :, 2] > 180) & (frame[:, :, 0] < 180)
+    )
+    assert len(live) > 20
+    centroid = live.mean(axis=0)
+    assert abs(centroid[1] - live_px) < 35
+    assert abs(centroid[1] - static_px) > 60
+
+    legend = frame[20, 1120 - 202]
+    assert legend.min() > 180
+
+    x0 = int(np.clip(crash_px, 0, 1119))
+    y0 = int(np.clip(crash_py, 0, 699))
+    window = frame[max(0, y0 - 18):y0 + 18, max(0, x0 - 18):x0 + 18]
+    background = np.array([16, 17, 20])
+    marked = np.abs(window.astype(int) - background).max(axis=2) > 25
+    assert marked.any()
+    filled = (
+        (window[:, :, 0] > 220)
+        & (window[:, :, 1] > 140)
+        & (window[:, :, 2] > 100)
+    )
+    assert int(filled.sum()) < 20
