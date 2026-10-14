@@ -35,6 +35,8 @@ DEFAULT_NUM_ENVS = 8
 DEFAULT_MEMORY_FRACTION = 0.15
 EVAL_VERSION = 1
 PROGRESS_EPS_M = 1e-4
+ACTION_CHANNEL_NAMES = ("throttle", "steer")
+DEFAULT_REVERSAL_DEADBAND = 0.0
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -119,6 +121,71 @@ def classify_terminations(done, extras) -> tuple[np.ndarray, np.ndarray]:
     return crash, timeout
 
 
+def action_delta_metrics(actions, *, deadband=DEFAULT_REVERSAL_DEADBAND):
+    """Per-channel reversal rate and mean |Δaction| for one episode.
+
+    Reversal rate is the fraction of consecutive first-difference pairs whose
+    product is strictly below ``-deadband`` (a sign flip above the deadband).
+    """
+    actions = np.asarray(actions, dtype=np.float64)
+    if actions.ndim != 2:
+        raise ValueError(
+            f"actions must have shape (T, C), got {tuple(actions.shape)}"
+        )
+    steps, channels = actions.shape
+    deadband = float(deadband)
+    names = ACTION_CHANNEL_NAMES[:channels]
+    if steps < 2:
+        out = {f"mean_abs_delta_{name}": 0.0 for name in names}
+        out.update({f"reversal_rate_{name}": 0.0 for name in names})
+        out["n_action_delta"] = 0
+        out["n_action_triplet"] = 0
+        return out
+    delta = np.diff(actions, axis=0)
+    mean_abs = np.mean(np.abs(delta), axis=0)
+    n_triplet = max(steps - 2, 0)
+    if n_triplet == 0:
+        rates = np.zeros(channels, dtype=np.float64)
+    else:
+        prod = delta[1:] * delta[:-1]
+        rates = np.mean(prod < -deadband, axis=0)
+    out = {f"mean_abs_delta_{name}": float(mean_abs[i]) for i, name in enumerate(names)}
+    out.update(
+        {f"reversal_rate_{name}": float(rates[i]) for i, name in enumerate(names)}
+    )
+    out["n_action_delta"] = int(steps - 1)
+    out["n_action_triplet"] = int(n_triplet)
+    return out
+
+
+def _combine_action_delta_metrics(rows):
+    names = ACTION_CHANNEL_NAMES
+    n_delta = 0
+    n_triplet = 0
+    abs_sum = {name: 0.0 for name in names}
+    flip_sum = {name: 0.0 for name in names}
+    for row in rows:
+        n_d = int(row.get("n_action_delta", 0))
+        n_t = int(row.get("n_action_triplet", 0))
+        n_delta += n_d
+        n_triplet += n_t
+        for name in names:
+            abs_sum[name] += float(row.get(f"mean_abs_delta_{name}", 0.0)) * n_d
+            flip_sum[name] += float(row.get(f"reversal_rate_{name}", 0.0)) * n_t
+    out = {
+        "n_action_delta": n_delta,
+        "n_action_triplet": n_triplet,
+    }
+    for name in names:
+        out[f"mean_abs_delta_{name}"] = (
+            abs_sum[name] / n_delta if n_delta else 0.0
+        )
+        out[f"reversal_rate_{name}"] = (
+            flip_sum[name] / n_triplet if n_triplet else 0.0
+        )
+    return out
+
+
 def summarize_episodes(
     episodes: list[dict],
     *,
@@ -158,6 +225,7 @@ def summarize_episodes(
         "spawn_speed_mps": float(spawn_speed_mps_value),
         "crash_breakdown": breakdown,
         "episodes": episodes,
+        **_combine_action_delta_metrics(episodes),
     }
 
 
@@ -236,6 +304,7 @@ def evaluate_policy_on_env(
     with_sensors: bool,
     clip_actions: float,
     spawn_speed: float,
+    reversal_deadband: float = DEFAULT_REVERSAL_DEADBAND,
 ) -> dict:
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
@@ -292,6 +361,7 @@ def evaluate_policy_on_env(
         timeout = np.zeros(num_envs, dtype=bool)
         crash_reason = [None] * num_envs
         steps_alive = np.zeros(num_envs, dtype=np.int32)
+        action_traj = [[] for _ in range(k)]
 
         with torch.no_grad():
             for step in range(max_steps):
@@ -311,6 +381,11 @@ def evaluate_policy_on_env(
                         model_obs, deterministic=True, with_logprob=False
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
+                alive_np = alive.detach().cpu().numpy()
+                act_np = actions.detach().cpu().numpy()
+                for i in range(k):
+                    if alive_np[i]:
+                        action_traj[i].append(np.asarray(act_np[i], dtype=np.float64))
                 raw_obs, _reward, done, extras = env.step(
                     actions.to(rt.tc_float),
                     n_steps=env.control_interval,
@@ -367,6 +442,15 @@ def evaluate_policy_on_env(
         completed_np = completed.detach().cpu().numpy()
         for i in range(k):
             lap = float(lap_np[i]) if completed_np[i] and math.isfinite(lap_np[i]) else None
+            traj = action_traj[i]
+            if traj:
+                act_stats = action_delta_metrics(
+                    np.stack(traj, axis=0), deadband=reversal_deadband
+                )
+            else:
+                act_stats = action_delta_metrics(
+                    np.zeros((0, 2), dtype=np.float64), deadband=reversal_deadband
+                )
             episodes.append(
                 {
                     "spawn_s": float(spawn_s[start + i]),
@@ -377,6 +461,7 @@ def evaluate_policy_on_env(
                     "timeout": bool(timeout[i]),
                     "crash_reason": crash_reason[i],
                     "steps": int(steps_alive[i]),
+                    **act_stats,
                 }
             )
 
@@ -470,6 +555,7 @@ def evaluate_checkpoint(
     with_sensors: bool = True,
     actor=None,
     normalize=None,
+    reversal_deadband: float | None = None,
 ) -> dict:
     from f1tenth_env import runtime as rt
     from standalone_trainer import resolve_training_scenarios, select_device
@@ -509,6 +595,10 @@ def evaluate_checkpoint(
         ]
 
     clip_actions = float(cfg["env"]["clip_actions"])
+    if reversal_deadband is None:
+        reversal_deadband = float(
+            cfg.get("ppo", {}).get("reversal_deadband", DEFAULT_REVERSAL_DEADBAND)
+        )
     scenarios = {}
     for spec in resolved:
         scn_cfg = _prepare_eval_cfg(spec["cfg"])
@@ -524,6 +614,7 @@ def evaluate_checkpoint(
                 with_sensors=with_sensors,
                 clip_actions=clip_actions,
                 spawn_speed=speed,
+                reversal_deadband=float(reversal_deadband),
             )
         finally:
             env.close()
@@ -566,6 +657,14 @@ def wandb_metrics(result: dict) -> dict:
             payload[f"{prefix}/mean_lap_time_s"] = row["mean_lap_time_s"]
         if row.get("best_lap_time_s") is not None:
             payload[f"{prefix}/best_lap_time_s"] = row["best_lap_time_s"]
+        for key in (
+            "reversal_rate_throttle",
+            "reversal_rate_steer",
+            "mean_abs_delta_throttle",
+            "mean_abs_delta_steer",
+        ):
+            if key in row:
+                payload[f"{prefix}/{key}"] = row[key]
     return payload
 
 
@@ -606,6 +705,13 @@ def _print_result(result: dict) -> None:
             f"mean_lap={mean_s} best_lap={best_s} "
             f"n={row['n_episodes']}"
         )
+        if "reversal_rate_throttle" in row:
+            print(
+                f"    reversal throttle={row['reversal_rate_throttle']:.4f} "
+                f"steer={row.get('reversal_rate_steer', 0.0):.4f} "
+                f"|Δa| throttle={row.get('mean_abs_delta_throttle', 0.0):.4f} "
+                f"steer={row.get('mean_abs_delta_steer', 0.0):.4f}"
+            )
 
 
 def discover_checkpoints(run_dir: Path) -> list[Path]:
@@ -640,6 +746,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run-dir mode: reuse JSON that already exists",
     )
+    p.add_argument(
+        "--reversal-deadband",
+        type=float,
+        default=None,
+        help="sign-flip deadband for eval reversal rate (default: config/0)",
+    )
     return p.parse_args(argv)
 
 
@@ -652,6 +764,7 @@ def _eval_one(args: argparse.Namespace, checkpoint: Path, out_path: Path) -> dic
         seed=args.seed,
         device_str=args.device,
         memory_fraction=args.memory_fraction,
+        reversal_deadband=args.reversal_deadband,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=2) + "\n")
