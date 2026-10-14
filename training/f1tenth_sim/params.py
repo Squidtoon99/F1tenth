@@ -1,9 +1,9 @@
 """Vehicle parameters for the reduced bicycle simulator.
 
 ``VehicleParams`` is a plain dataclass of scalar physical constants. Per-env
-randomized quantities (mass, friction, Izz, C_α, steer lag/rate, drive scale)
-live on the simulator state, not here. Yaw inertia is a labeled prior, not a
-bag measurement.
+randomized quantities (mass, friction, Izz, C_α, steer lag/rate/gain,
+drive scale) live on the simulator state, not here. Yaw inertia is a
+labeled prior, not a bag measurement.
 """
 
 from __future__ import annotations

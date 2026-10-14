@@ -483,6 +483,8 @@ class ResetParams:
     steer_lag_max: wp.float32
     steer_rate_min: wp.float32
     steer_rate_max: wp.float32
+    steer_gain_min: wp.float32
+    steer_gain_max: wp.float32
     sample_c_f: wp.int32
     sample_c_r: wp.int32
     action_latency_min: wp.int32
@@ -988,6 +990,9 @@ def reset_pair(
     steer_rate = random_range(
         random, reset.steer_rate_min, reset.steer_rate_max
     )
+    steer_gain = random_range(
+        random, reset.steer_gain_min, reset.steer_gain_max
+    )
     weight = mass * sim.gravity
     if reset.sample_c_f != 0:
         c_f = random_range(random, reset.c_f_min, reset.c_f_max)
@@ -1016,6 +1021,7 @@ def reset_pair(
     ego_buffers.c_r[env_id] = c_r
     ego_buffers.steer_lag[env_id] = steer_lag
     ego_buffers.steer_rate[env_id] = steer_rate
+    ego_buffers.steer_gain[env_id] = steer_gain
     opponent_buffers.mass[env_id] = mass
     opponent_buffers.mu[env_id] = friction
     opponent_buffers.drive_scale[env_id] = drive_scale
@@ -1025,6 +1031,7 @@ def reset_pair(
     opponent_buffers.c_r[env_id] = c_r
     opponent_buffers.steer_lag[env_id] = steer_lag
     opponent_buffers.steer_rate[env_id] = steer_rate
+    opponent_buffers.steer_gain[env_id] = steer_gain
 
     action_span = reset.action_latency_max - reset.action_latency_min + 1
     observation_span = (

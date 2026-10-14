@@ -1507,6 +1507,7 @@ _OPTIONAL_DR_RANGE_KEYS = frozenset(
         "cornering_stiffness_rear_range",
         "steer_time_constant_range",
         "steer_rate_max_range",
+        "steer_gain_range",
     }
 )
 

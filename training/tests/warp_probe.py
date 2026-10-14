@@ -41,7 +41,11 @@ def _probe_command_and_slew(
     vehicle = apply_command(vehicle, action[i], steer_bias[i], params)
     vehicle = apply_current_slew(vehicle, params)
     vehicle = apply_steering_lag(
-        vehicle, params, params.steer_time_constant, STEER_RATE_UNBOUNDED
+        vehicle,
+        params,
+        params.steer_time_constant,
+        STEER_RATE_UNBOUNDED,
+        params.steer_gain,
     )
     out_drive[i] = vehicle.i_drive
     out_brake[i] = vehicle.i_brake
