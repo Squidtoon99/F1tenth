@@ -33,10 +33,13 @@ DEFAULT_CONFIG_REL = Path("configs") / "courtyard_2_e2e_ppo_multi_scenario.json"
 DEFAULT_N_SPAWNS = 64
 DEFAULT_NUM_ENVS = 8
 DEFAULT_MEMORY_FRACTION = 0.15
-EVAL_VERSION = 1
+EVAL_VERSION = 2
 PROGRESS_EPS_M = 1e-4
 ACTION_CHANNEL_NAMES = ("throttle", "steer")
 DEFAULT_REVERSAL_DEADBAND = 0.0
+FOLLOW_OPPONENT_AHEAD_M = 3.0
+FOLLOW_OPPONENT_SPEED_MPS = 2.0
+SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -63,6 +66,46 @@ def wrapped_delta_torch(current, previous, length):
     half = 0.5 * length
     delta = torch.where(delta > half, delta - length, delta)
     return torch.where(delta < -half, delta + length, delta)
+
+
+def count_progress_overtakes(
+    prev_ego_s,
+    ego_s,
+    prev_opp_s,
+    opp_s,
+    both_on_track,
+    length,
+):
+    """1 where ego along-track s crosses opponent s from behind.
+
+    A pass is the wrapped gap ``opp_s - ego_s`` going from ``> 0`` (opponent
+    ahead) to ``<= 0`` (ego even or ahead) in one step, while both cars are on
+    track. Relative progress larger than ``0.1 L`` is ignored as a wrap artifact.
+    """
+    max_rel = 0.1 * length
+    if torch.is_tensor(ego_s):
+        prev_gap = wrapped_delta_torch(prev_opp_s, prev_ego_s, length)
+        gap = wrapped_delta_torch(opp_s, ego_s, length)
+        delta = prev_gap - gap
+        passed = (
+            both_on_track
+            & (prev_gap > 0)
+            & (gap <= 0)
+            & (delta > 0)
+            & (delta <= max_rel)
+        )
+        return passed.to(dtype=torch.int32)
+    prev_gap = wrapped_delta_s(prev_opp_s, prev_ego_s, length)
+    gap = wrapped_delta_s(opp_s, ego_s, length)
+    delta = prev_gap - gap
+    passed = (
+        np.asarray(both_on_track, dtype=bool)
+        & (prev_gap > 0)
+        & (gap <= 0)
+        & (delta > 0)
+        & (delta <= max_rel)
+    )
+    return passed.astype(np.int32)
 
 
 def even_spawn_s(length: float, n: int) -> np.ndarray:
@@ -203,6 +246,9 @@ def summarize_episodes(
         if ep.get("lap_time_s") is not None
     ]
     progress = np.asarray([ep["progress_m"] for ep in episodes], dtype=np.float64)
+    overtakes = np.asarray(
+        [ep.get("overtake_count", 0) for ep in episodes], dtype=np.float64
+    )
     n_crash = sum(1 for ep in episodes if ep["crash"])
     n_timeout = sum(1 for ep in episodes if ep["timeout"])
     breakdown = {key: 0 for key in CRASH_TERM_KEYS}
@@ -220,6 +266,7 @@ def summarize_episodes(
         "mean_progress_frac": float(progress.mean() / float(track_length_m)),
         "mean_lap_time_s": float(np.mean(lap_times)) if lap_times else None,
         "best_lap_time_s": float(np.min(lap_times)) if lap_times else None,
+        "mean_overtake_count": float(overtakes.mean()),
         "track": track,
         "track_length_m": float(track_length_m),
         "spawn_speed_mps": float(spawn_speed_mps_value),
@@ -294,6 +341,30 @@ def _prepare_eval_cfg(cfg: dict) -> dict:
     return cfg
 
 
+def _prepare_scripted_overtake_cfg(cfg: dict) -> dict:
+    cfg = _prepare_eval_cfg(cfg)
+    cfg["env"]["opponent_strategy"] = "scripted"
+    return cfg
+
+
+def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
+    """Follow-video scripted opponents on the flying (or first) track."""
+    if not resolved:
+        return None
+    if any(spec["name"] == SCRIPTED_OVERTAKE_NAME for spec in resolved):
+        return None
+    source = next(
+        (spec for spec in resolved if spec["name"] == "solo_flying"),
+        resolved[0],
+    )
+    return {
+        "name": SCRIPTED_OVERTAKE_NAME,
+        "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
+        "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
+        "opponent_speed_mps": FOLLOW_OPPONENT_SPEED_MPS,
+    }
+
+
 def evaluate_policy_on_env(
     env,
     actor,
@@ -305,6 +376,8 @@ def evaluate_policy_on_env(
     clip_actions: float,
     spawn_speed: float,
     reversal_deadband: float = DEFAULT_REVERSAL_DEADBAND,
+    opponent_ahead_m: float | None = None,
+    opponent_speed_mps: float | None = None,
 ) -> dict:
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
@@ -322,6 +395,22 @@ def evaluate_policy_on_env(
     poses = np.stack(poses, axis=0)
     yaws = np.asarray(yaws, dtype=np.float32)
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
+    opp_poses = None
+    opp_yaws = None
+    if opponent_ahead_m is not None:
+        ahead = []
+        ahead_yaw = []
+        for s_m in spawn_s:
+            xy, yaw = pose_at_s(env._track_host, float(s_m) + float(opponent_ahead_m))
+            ahead.append(xy)
+            ahead_yaw.append(yaw)
+        opp_poses = np.stack(ahead, axis=0)
+        opp_yaws = np.asarray(ahead_yaw, dtype=np.float32)
+    opp_speed = (
+        None
+        if opponent_speed_mps is None
+        else np.full(n_spawns, float(opponent_speed_mps), dtype=np.float32)
+    )
 
     recurrent = actor_is_recurrent(actor)
     num_envs = int(env.num_envs)
@@ -336,12 +425,20 @@ def evaluate_policy_on_env(
         batch_pose = _pad_batch(poses[sl], num_envs)
         batch_yaw = _pad_batch(yaws[sl], num_envs)
         batch_speed = _pad_batch(speeds[sl], num_envs)
+        reset_kwargs = {
+            "seed": int(seed + start),
+            "with_sensors": with_sensors,
+        }
+        if opp_poses is not None:
+            reset_kwargs["opponent_pose"] = _pad_batch(opp_poses[sl], num_envs)
+            reset_kwargs["opponent_yaw"] = _pad_batch(opp_yaws[sl], num_envs)
+            if opp_speed is not None:
+                reset_kwargs["opponent_speed"] = _pad_batch(opp_speed[sl], num_envs)
         raw_obs, extras = env.reset_to(
             batch_pose,
             batch_yaw,
             batch_speed,
-            seed=int(seed + start),
-            with_sensors=with_sensors,
+            **reset_kwargs,
         )
         obs = _actor_obs(raw_obs, with_sensors=with_sensors)
         hidden = None
@@ -350,7 +447,16 @@ def evaluate_policy_on_env(
                 num_envs, device=obs.device, dtype=torch.float32
             )
         prev_s = extras["metrics"]["s"].detach().to(torch.float32).clone()
+        opp_s_key = extras.get("metrics", {}).get("opponent_s")
+        has_opponent = bool(getattr(env, "has_opponent", False))
+        if has_opponent and opp_s_key is not None:
+            prev_opp_s = opp_s_key.detach().to(torch.float32).clone()
+        else:
+            prev_opp_s = None
         progress = torch.zeros(num_envs, device=obs.device, dtype=torch.float32)
+        overtake_count = torch.zeros(
+            num_envs, device=obs.device, dtype=torch.int32
+        )
         completed = torch.zeros(num_envs, device=obs.device, dtype=torch.bool)
         lap_time = torch.full(
             (num_envs,), float("nan"), device=obs.device, dtype=torch.float32
@@ -399,6 +505,20 @@ def evaluate_policy_on_env(
                 ds = wrapped_delta_torch(s_used, prev_s, length)
                 ds = ds.clamp(-max_ds, max_ds)
                 progress = torch.where(alive, progress + ds, progress)
+                if prev_opp_s is not None:
+                    opp_now = extras["metrics"]["opponent_s"].detach().to(
+                        torch.float32
+                    )
+                    passed = count_progress_overtakes(
+                        prev_s,
+                        s_used,
+                        prev_opp_s,
+                        opp_now,
+                        alive,
+                        length,
+                    )
+                    overtake_count = overtake_count + passed
+                    prev_opp_s = torch.where(alive, opp_now, prev_opp_s)
                 newly = (
                     alive
                     & ~completed
@@ -440,6 +560,7 @@ def evaluate_policy_on_env(
         progress_np = progress.detach().cpu().numpy()
         lap_np = lap_time.detach().cpu().numpy()
         completed_np = completed.detach().cpu().numpy()
+        overtake_np = overtake_count.detach().cpu().numpy()
         for i in range(k):
             lap = float(lap_np[i]) if completed_np[i] and math.isfinite(lap_np[i]) else None
             traj = action_traj[i]
@@ -457,6 +578,7 @@ def evaluate_policy_on_env(
                     "progress_m": float(progress_np[i]),
                     "full_lap": bool(completed_np[i]),
                     "lap_time_s": lap,
+                    "overtake_count": int(overtake_np[i]),
                     "crash": bool(crash[i]),
                     "timeout": bool(timeout[i]),
                     "crash_reason": crash_reason[i],
@@ -599,13 +721,26 @@ def evaluate_checkpoint(
         reversal_deadband = float(
             cfg.get("ppo", {}).get("reversal_deadband", DEFAULT_REVERSAL_DEADBAND)
         )
+    jobs = [
+        {
+            "name": spec["name"],
+            "cfg": _prepare_eval_cfg(spec["cfg"]),
+            "opponent_ahead_m": None,
+            "opponent_speed_mps": None,
+        }
+        for spec in resolved
+    ]
+    extra = extra_scripted_overtake_spec(resolved)
+    if extra is not None:
+        jobs.append(extra)
+
     scenarios = {}
-    for spec in resolved:
-        scn_cfg = _prepare_eval_cfg(spec["cfg"])
+    for job in jobs:
+        scn_cfg = job["cfg"]
         speed = spawn_speed_mps(scn_cfg["env"])
         env = _open_env(scn_cfg, int(num_envs))
         try:
-            scenarios[spec["name"]] = evaluate_policy_on_env(
+            scenarios[job["name"]] = evaluate_policy_on_env(
                 env,
                 actor,
                 normalize,
@@ -615,6 +750,8 @@ def evaluate_checkpoint(
                 clip_actions=clip_actions,
                 spawn_speed=speed,
                 reversal_deadband=float(reversal_deadband),
+                opponent_ahead_m=job["opponent_ahead_m"],
+                opponent_speed_mps=job["opponent_speed_mps"],
             )
         finally:
             env.close()
@@ -653,6 +790,9 @@ def wandb_metrics(result: dict) -> dict:
         payload[f"{prefix}/mean_progress_m"] = row["mean_progress_m"]
         payload[f"{prefix}/mean_progress_frac"] = row["mean_progress_frac"]
         payload[f"{prefix}/n_episodes"] = row["n_episodes"]
+        payload[f"{prefix}/mean_overtake_count"] = row.get(
+            "mean_overtake_count", 0.0
+        )
         if row.get("mean_lap_time_s") is not None:
             payload[f"{prefix}/mean_lap_time_s"] = row["mean_lap_time_s"]
         if row.get("best_lap_time_s") is not None:
@@ -703,6 +843,7 @@ def _print_result(result: dict) -> None:
             f"progress={row['mean_progress_m']:.1f}m "
             f"({row['mean_progress_frac']:.2f} L) "
             f"mean_lap={mean_s} best_lap={best_s} "
+            f"overtakes={row.get('mean_overtake_count', 0.0):.3f} "
             f"n={row['n_episodes']}"
         )
         if "reversal_rate_throttle" in row:
