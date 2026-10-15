@@ -8,7 +8,12 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env.sensors import ACTOR_OBS_DIM
-from ppo import PPOTrainer, caps_temporal_loss
+from ppo import (
+    PPOTrainer,
+    caps_spatial_loss,
+    caps_temporal_loss,
+    grad_caps_temporal_loss,
+)
 from qrsac import make_actor
 from qrsac.spinningup.core import GRU_HIDDEN_DIM
 from standalone_trainer import validate_algorithm_config, validate_config_patch
@@ -37,8 +42,13 @@ def test_caps_temporal_loss_positive_and_skips_resets():
 
 
 def test_default_caps_coef_is_off():
-    assert DEFAULT_CONFIG["ppo"]["caps_coef"] == 0.0
+    ppo = DEFAULT_CONFIG["ppo"]
+    assert ppo["caps_coef"] == 0.0
+    assert ppo["caps_spatial_coef"] == 0.0
+    assert ppo["grad_caps_coef"] == 0.0
     validate_config_patch({"ppo": {"caps_coef": 0.1}})
+    validate_config_patch({"ppo": {"caps_spatial_coef": 0.1}})
+    validate_config_patch({"ppo": {"grad_caps_coef": 0.1}})
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["algorithm"] = "ppo"
     cfg["ppo"]["caps_coef"] = 0.1
@@ -46,9 +56,14 @@ def test_default_caps_coef_is_off():
     cfg["ppo"]["caps_coef"] = -0.1
     with pytest.raises(ValueError, match="caps_coef"):
         validate_algorithm_config(cfg, num_envs=8)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["algorithm"] = "ppo"
+    cfg["ppo"]["grad_caps_coef"] = -0.1
+    with pytest.raises(ValueError, match="grad_caps_coef"):
+        validate_algorithm_config(cfg, num_envs=8)
 
 
-def _tiny_trainer(caps_coef: float) -> PPOTrainer:
+def _tiny_trainer(**kwargs) -> PPOTrainer:
     torch.manual_seed(0)
     actor = make_actor(
         actor_type="lidar_cnn_gru",
@@ -70,7 +85,7 @@ def _tiny_trainer(caps_coef: float) -> PPOTrainer:
         env_minibatch_size=4,
         action_clip=1.0,
         advantage_filter_enabled=False,
-        caps_coef=caps_coef,
+        **kwargs,
     )
 
 
@@ -94,14 +109,51 @@ def _run_one_rollout(trainer: PPOTrainer):
 
 
 def test_caps_coef_zero_matches_baseline_update():
-    off = _tiny_trainer(0.0)
+    off = _tiny_trainer(caps_coef=0.0)
     metrics = _run_one_rollout(off)
     assert metrics is not None
     assert metrics["caps_loss"] == 0.0
+    assert metrics["caps_spatial_loss"] == 0.0
+    assert metrics["grad_caps_loss"] == 0.0
 
 
 def test_caps_coef_adds_positive_smoothness_loss():
-    on = _tiny_trainer(0.1)
+    on = _tiny_trainer(caps_coef=0.1)
     metrics = _run_one_rollout(on)
     assert metrics is not None
     assert metrics["caps_loss"] > 0.0
+
+
+def test_grad_caps_zero_on_constant_slew_and_positive_on_zigzag():
+    reset = torch.zeros(1, 3, dtype=torch.bool)
+    ramp = torch.tensor([[[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]]])
+    assert float(grad_caps_temporal_loss(ramp, reset)) == pytest.approx(0.0)
+    zigzag = torch.tensor([[[1.0, 0.0], [-1.0, 0.0], [1.0, 0.0]]])
+    assert float(grad_caps_temporal_loss(zigzag, reset)) > 0.0
+    assert float(caps_temporal_loss(ramp, reset)) > 0.0
+
+
+def test_grad_caps_skips_resets():
+    mean = torch.tensor([[[1.0, 0.0], [-1.0, 0.0], [1.0, 0.0]]])
+    reset = torch.tensor([[False, True, False]])
+    assert float(grad_caps_temporal_loss(mean, reset)) == pytest.approx(0.0)
+
+
+def test_caps_spatial_loss_zero_on_identical_means():
+    mean = torch.ones(2, 4, 2)
+    assert float(caps_spatial_loss(mean, mean.clone())) == pytest.approx(0.0)
+    other = mean.clone()
+    other[..., 0] = 2.0
+    assert float(caps_spatial_loss(mean, other)) == pytest.approx(1.0)
+
+
+def test_grad_caps_coef_logs_positive_loss():
+    metrics = _run_one_rollout(_tiny_trainer(grad_caps_coef=0.1))
+    assert metrics is not None
+    assert metrics["grad_caps_loss"] > 0.0
+
+
+def test_caps_spatial_coef_logs_positive_loss():
+    metrics = _run_one_rollout(_tiny_trainer(caps_spatial_coef=0.1))
+    assert metrics is not None
+    assert metrics["caps_spatial_loss"] > 0.0

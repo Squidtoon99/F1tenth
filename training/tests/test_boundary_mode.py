@@ -26,6 +26,7 @@ def _make_env(
     wall_cost_mode: str = "one_shot",
     boundary_contact_coefficient: float = 0.0,
     oob_impact_coefficient: float = 0.0,
+    wall_proximity_m: float = 0.0,
 ):
     rt.configure(
         float_dtype=torch.float32,
@@ -42,6 +43,7 @@ def _make_env(
     cfg["reward"]["wall_cost_mode"] = wall_cost_mode
     cfg["reward"]["boundary_contact_coefficient"] = boundary_contact_coefficient
     cfg["reward"]["oob_impact_coefficient"] = oob_impact_coefficient
+    cfg["reward"]["wall_proximity_m"] = wall_proximity_m
     cfg["reward"]["reward_scales"] = {
         name: 0.0 for name in cfg["reward"]["reward_scales"]
     }
@@ -76,6 +78,7 @@ def _place_at_lateral(env, target_ey: float, speed: float):
 def test_default_config_is_unchanged_first_contact_terminal():
     assert DEFAULT_CONFIG["env"]["boundary_mode"] == "first_contact_terminal"
     assert DEFAULT_CONFIG["reward"]["wall_cost_mode"] == "one_shot"
+    assert DEFAULT_CONFIG["reward"]["wall_proximity_m"] == 0.0
     assert DEFAULT_CONFIG["reward"]["boundary_contact_coefficient"] == 0.0
     assert DEFAULT_CONFIG["reward"]["oob_impact_coefficient"] == 0.0
 
@@ -271,3 +274,56 @@ def test_legacy_ladder_composes_graze_one_shot_contact_and_terminal_impact():
         )
     finally:
         env.close()
+
+
+def test_wall_proximity_charges_before_contact_without_terminating():
+    env = _make_env(
+        boundary_mode="recoverable_full_car_out",
+        wall_cost_mode="continuous",
+        wall_proximity_m=0.15,
+    )
+    try:
+        w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
+        half_width = 0.5 * float(env.env_cfg["car_width"])
+        _place_at_lateral(env, target_ey=w_l - half_width - 0.10, speed=2.0)
+        _, _, done, extras = env.step(
+            torch.zeros(1, 2), n_steps=env.control_interval
+        )
+        gap = float(extras["metrics"]["boundary_dist"][0])
+        assert gap > 0.0
+        assert gap < 0.15
+        assert not bool(done[0])
+        assert not bool(extras["termination"]["out_of_bounds"][0])
+        terms = extras["rewards"]["terms"]
+        assert float(terms["progress"][0]) == 0.0
+        assert float(terms["wall_contact"][0]) < 0.0
+        assert float(extras["metrics"]["wall_contact"][0]) == 1.0
+    finally:
+        env.close()
+
+
+def test_wall_proximity_does_not_terminate_first_contact_until_touch():
+    env = _make_env(wall_proximity_m=0.15)
+    try:
+        w_l, _ = _place_at_lateral(env, target_ey=0.0, speed=0.0)
+        half_width = 0.5 * float(env.env_cfg["car_width"])
+        _place_at_lateral(env, target_ey=w_l - half_width - 0.10, speed=2.0)
+        _, reward, done, extras = env.step(
+            torch.zeros(1, 2), n_steps=env.control_interval
+        )
+        gap = float(extras["metrics"]["boundary_dist"][0])
+        assert gap > 0.0
+        assert gap < 0.15
+        assert not bool(done[0])
+        assert not bool(extras["termination"]["out_of_bounds"][0])
+        terms = extras["rewards"]["terms"]
+        assert float(terms["progress"][0]) == 0.0
+        assert float(terms["wall_contact"][0]) == pytest.approx(-30.0, abs=1e-3)
+        assert float(reward[0]) == pytest.approx(-30.0, abs=1e-3)
+    finally:
+        env.close()
+
+
+def test_negative_wall_proximity_is_rejected():
+    with pytest.raises(ValueError, match="wall_proximity_m"):
+        _make_env(wall_proximity_m=-0.01)
