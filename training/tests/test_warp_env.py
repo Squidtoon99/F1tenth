@@ -369,3 +369,50 @@ def test_deterministic_rollout_repeats_trajectory(opponent):
         assert torch.equal(first_positions, torch.stack(positions))
     finally:
         env.close()
+
+
+def test_scripted_passing_fires_without_actor_opponent_features():
+    rt.configure(
+        float_dtype=torch.float32,
+        int_dtype=torch.int32,
+        dev=torch.device("cpu"),
+        eps=1e-12,
+    )
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["obs"]["enable_opponent_obs"] = False
+    cfg["env"]["opponent_strategy"] = "scripted"
+    cfg["env"]["domain_randomization"]["enabled"] = False
+    cfg["env"]["opponent_spawn_gap_min_m"] = 3.0
+    cfg["env"]["opponent_spawn_gap_max_m"] = 3.0
+    cfg["env"]["opponent_spawn_behind_prob"] = 0.0
+    cfg["env"]["opponent_spawn_lateral_independent"] = False
+    cfg["env"]["opponent_reset_speed_min_mps"] = 1.0
+    cfg["env"]["opponent_reset_speed_max_mps"] = 1.0
+    cfg["env"]["reset_speed_min_mps"] = 3.0
+    cfg["env"]["reset_speed_max_mps"] = 3.0
+    cfg["env"]["opponent_target_speed"] = 1.0
+    cfg["env"]["opponent_target_speed_range"] = [1.0, 1.0]
+    cfg["env"]["term_on_collision"] = False
+    cfg["env"]["term_not_moving_time_s"] = 999.0
+    env = F1tenthEnv(
+        num_envs=8,
+        env_cfg=cfg["env"],
+        obs_cfg=cfg["obs"],
+        reward_cfg=cfg["reward"],
+    )
+    try:
+        assert env.has_opponent
+        env.reset()
+        passing_abs = 0.0
+        for _ in range(40):
+            actions = torch.zeros(8, 2)
+            actions[:, 0] = 1.0
+            _, _, _, extras = env.step(actions, n_steps=env.control_interval)
+            term = extras["rewards"]["terms"]["passing"]
+            passing_abs = max(passing_abs, float(term.abs().max()))
+            if passing_abs > 1e-6:
+                break
+        assert passing_abs > 1e-6
+        assert int(cfg["obs"]["num_actor_obs"]) == 1097
+    finally:
+        env.close()

@@ -1769,6 +1769,9 @@ def build_config(
                 cfg["env"]["opponent_strategy"] = "policy"
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
+    resolved_strategy = cfg["env"].get("opponent_strategy")
+    if "opponent" not in explicit and resolved_strategy in ("scripted", "policy"):
+        args.opponent = resolved_strategy
 
     steering_mode = str(cfg["env"].get("steering_action_mode", "delta"))
     if steering_mode not in ("absolute", "delta"):

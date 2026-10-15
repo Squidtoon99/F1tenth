@@ -84,6 +84,23 @@ def test_default_1v1_uses_lee_reward_scales():
     assert scales["rear_end"] == DEFAULT_CONFIG["reward"]["reward_scales"]["rear_end"]
 
 
+def test_patch_scripted_opponent_without_cli_flag():
+    tal_path = Path(__file__).resolve().parents[1] / (
+        "configs/austin_e2e_ppo_baseline_v6.json"
+    )
+    patch = json.loads(tal_path.read_text(encoding="utf-8"))
+    patch["env"]["opponent_strategy"] = "scripted"
+    args, explicit = parse_args([])
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    assert "opponent" not in explicit
+    assert cfg["env"]["opponent_strategy"] == "scripted"
+    assert args.opponent == "scripted"
+    assert cfg["obs"]["enable_opponent_obs"] is False
+    assert cfg["obs"]["num_actor_obs"] == 1097
+    assert cfg["reward"]["reward_scales"]["passing"] == 3.0
+    assert cfg["reward"]["reward_scales"]["tal"] == 0.2
+
+
 def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
     args, _ = parse_args([])
     control_dt = (
