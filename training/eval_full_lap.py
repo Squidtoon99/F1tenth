@@ -33,10 +33,13 @@ DEFAULT_CONFIG_REL = Path("configs") / "courtyard_2_e2e_ppo_multi_scenario.json"
 DEFAULT_N_SPAWNS = 64
 DEFAULT_NUM_ENVS = 8
 DEFAULT_MEMORY_FRACTION = 0.15
-EVAL_VERSION = 1
+EVAL_VERSION = 2
 PROGRESS_EPS_M = 1e-4
 ACTION_CHANNEL_NAMES = ("throttle", "steer")
 DEFAULT_REVERSAL_DEADBAND = 0.0
+FOLLOW_OPPONENT_AHEAD_M = 3.0
+FOLLOW_OPPONENT_SPEED_MPS = 2.0
+SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -338,6 +341,30 @@ def _prepare_eval_cfg(cfg: dict) -> dict:
     return cfg
 
 
+def _prepare_scripted_overtake_cfg(cfg: dict) -> dict:
+    cfg = _prepare_eval_cfg(cfg)
+    cfg["env"]["opponent_strategy"] = "scripted"
+    return cfg
+
+
+def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
+    """Follow-video scripted opponents on the flying (or first) track."""
+    if not resolved:
+        return None
+    if any(spec["name"] == SCRIPTED_OVERTAKE_NAME for spec in resolved):
+        return None
+    source = next(
+        (spec for spec in resolved if spec["name"] == "solo_flying"),
+        resolved[0],
+    )
+    return {
+        "name": SCRIPTED_OVERTAKE_NAME,
+        "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
+        "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
+        "opponent_speed_mps": FOLLOW_OPPONENT_SPEED_MPS,
+    }
+
+
 def evaluate_policy_on_env(
     env,
     actor,
@@ -349,6 +376,8 @@ def evaluate_policy_on_env(
     clip_actions: float,
     spawn_speed: float,
     reversal_deadband: float = DEFAULT_REVERSAL_DEADBAND,
+    opponent_ahead_m: float | None = None,
+    opponent_speed_mps: float | None = None,
 ) -> dict:
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
@@ -366,6 +395,22 @@ def evaluate_policy_on_env(
     poses = np.stack(poses, axis=0)
     yaws = np.asarray(yaws, dtype=np.float32)
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
+    opp_poses = None
+    opp_yaws = None
+    if opponent_ahead_m is not None:
+        ahead = []
+        ahead_yaw = []
+        for s_m in spawn_s:
+            xy, yaw = pose_at_s(env._track_host, float(s_m) + float(opponent_ahead_m))
+            ahead.append(xy)
+            ahead_yaw.append(yaw)
+        opp_poses = np.stack(ahead, axis=0)
+        opp_yaws = np.asarray(ahead_yaw, dtype=np.float32)
+    opp_speed = (
+        None
+        if opponent_speed_mps is None
+        else np.full(n_spawns, float(opponent_speed_mps), dtype=np.float32)
+    )
 
     recurrent = actor_is_recurrent(actor)
     num_envs = int(env.num_envs)
@@ -380,12 +425,20 @@ def evaluate_policy_on_env(
         batch_pose = _pad_batch(poses[sl], num_envs)
         batch_yaw = _pad_batch(yaws[sl], num_envs)
         batch_speed = _pad_batch(speeds[sl], num_envs)
+        reset_kwargs = {
+            "seed": int(seed + start),
+            "with_sensors": with_sensors,
+        }
+        if opp_poses is not None:
+            reset_kwargs["opponent_pose"] = _pad_batch(opp_poses[sl], num_envs)
+            reset_kwargs["opponent_yaw"] = _pad_batch(opp_yaws[sl], num_envs)
+            if opp_speed is not None:
+                reset_kwargs["opponent_speed"] = _pad_batch(opp_speed[sl], num_envs)
         raw_obs, extras = env.reset_to(
             batch_pose,
             batch_yaw,
             batch_speed,
-            seed=int(seed + start),
-            with_sensors=with_sensors,
+            **reset_kwargs,
         )
         obs = _actor_obs(raw_obs, with_sensors=with_sensors)
         hidden = None
@@ -668,13 +721,26 @@ def evaluate_checkpoint(
         reversal_deadband = float(
             cfg.get("ppo", {}).get("reversal_deadband", DEFAULT_REVERSAL_DEADBAND)
         )
+    jobs = [
+        {
+            "name": spec["name"],
+            "cfg": _prepare_eval_cfg(spec["cfg"]),
+            "opponent_ahead_m": None,
+            "opponent_speed_mps": None,
+        }
+        for spec in resolved
+    ]
+    extra = extra_scripted_overtake_spec(resolved)
+    if extra is not None:
+        jobs.append(extra)
+
     scenarios = {}
-    for spec in resolved:
-        scn_cfg = _prepare_eval_cfg(spec["cfg"])
+    for job in jobs:
+        scn_cfg = job["cfg"]
         speed = spawn_speed_mps(scn_cfg["env"])
         env = _open_env(scn_cfg, int(num_envs))
         try:
-            scenarios[spec["name"]] = evaluate_policy_on_env(
+            scenarios[job["name"]] = evaluate_policy_on_env(
                 env,
                 actor,
                 normalize,
@@ -684,6 +750,8 @@ def evaluate_checkpoint(
                 clip_actions=clip_actions,
                 spawn_speed=speed,
                 reversal_deadband=float(reversal_deadband),
+                opponent_ahead_m=job["opponent_ahead_m"],
+                opponent_speed_mps=job["opponent_speed_mps"],
             )
         finally:
             env.close()

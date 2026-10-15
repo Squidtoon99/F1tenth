@@ -11,11 +11,15 @@ import torch
 
 from config import DEFAULT_CONFIG
 from eval_full_lap import (
+    FOLLOW_OPPONENT_AHEAD_M,
+    FOLLOW_OPPONENT_SPEED_MPS,
+    SCRIPTED_OVERTAKE_NAME,
     action_delta_metrics,
     classify_terminations,
     count_progress_overtakes,
     even_spawn_s,
     evaluate_policy_on_env,
+    extra_scripted_overtake_spec,
     load_actor_bundle,
     pose_at_s,
     resolve_eval_config,
@@ -131,6 +135,31 @@ def test_spawn_speed_standing_vs_flying():
     assert flying == pytest.approx(3.5)
 
 
+def test_extra_scripted_overtake_spec_matches_follow_video():
+    flying = copy.deepcopy(DEFAULT_CONFIG)
+    flying["env"]["opponent_strategy"] = None
+    flying["reward"]["reward_scales"]["tal"] = 0.2
+    standing = copy.deepcopy(flying)
+    standing["env"]["reset_stationary_probability"] = 1.0
+    resolved = [
+        {"name": "solo_flying", "weight": 1.0, "num_envs": 4, "cfg": flying},
+        {"name": "solo_standing", "weight": 1.0, "num_envs": 4, "cfg": standing},
+    ]
+    extra = extra_scripted_overtake_spec(resolved)
+    assert extra["name"] == SCRIPTED_OVERTAKE_NAME
+    assert extra["opponent_ahead_m"] == pytest.approx(FOLLOW_OPPONENT_AHEAD_M)
+    assert extra["opponent_speed_mps"] == pytest.approx(FOLLOW_OPPONENT_SPEED_MPS)
+    assert extra["opponent_ahead_m"] == pytest.approx(3.0)
+    assert extra["opponent_speed_mps"] == pytest.approx(2.0)
+    assert extra["cfg"]["env"]["opponent_strategy"] == "scripted"
+    assert flying["env"]["opponent_strategy"] is None
+    assert standing["env"]["opponent_strategy"] is None
+    assert extra["cfg"]["reward"] == flying["reward"]
+    assert extra_scripted_overtake_spec(
+        resolved + [{"name": SCRIPTED_OVERTAKE_NAME, "cfg": flying}]
+    ) is None
+
+
 def test_count_progress_overtakes_from_behind_and_wrap():
     on = np.array([True, True, True, False])
     passed = count_progress_overtakes(
@@ -222,10 +251,15 @@ def test_summarize_episodes_rates_and_lap_times():
     assert row["mean_overtake_count"] == pytest.approx(0.75)
     assert row["crash_breakdown"]["out_of_bounds"] == 2
     assert row["crash_breakdown"]["not_moving"] == 1
-    metrics = wandb_metrics({"scenarios": {"solo_flying": row}})
+    metrics = wandb_metrics(
+        {"scenarios": {"solo_flying": row, SCRIPTED_OVERTAKE_NAME: row}}
+    )
     assert metrics["eval/solo_flying/full_lap_completion_rate"] == pytest.approx(0.5)
     assert metrics["eval/solo_flying/best_lap_time_s"] == pytest.approx(18.0)
     assert metrics["eval/solo_flying/mean_overtake_count"] == pytest.approx(0.75)
+    assert metrics[f"eval/{SCRIPTED_OVERTAKE_NAME}/mean_overtake_count"] == (
+        pytest.approx(0.75)
+    )
 
 
 def test_classify_terminations_crash_beats_timeout():
@@ -343,3 +377,68 @@ def test_reset_to_even_spawns_match_requested_s(warp_runtime):
             assert err < 0.35, f"spawn s {got} vs {want} (err {err})"
     finally:
         env.close()
+
+
+def _tiny_scripted_cfg():
+    cfg = _tiny_standing_cfg()
+    cfg["env"]["opponent_strategy"] = "scripted"
+    cfg["env"]["reset_stationary_probability"] = 0.0
+    cfg["env"]["expected_lap_speed_mps"] = 3.5
+    return cfg
+
+
+@pytest.mark.skipif(not HAS_WARP, reason="warp-lang not installed")
+def test_scripted_overtake_spawn_is_three_metres_ahead(warp_runtime):
+    del warp_runtime
+    from eval_full_lap import _open_env
+
+    cfg = _tiny_scripted_cfg()
+    env = _open_env(cfg, num_envs=2)
+    try:
+        assert env.has_opponent
+        length = float(env.track_length)
+        spawn_s = even_spawn_s(length, 2)
+        poses = []
+        yaws = []
+        opp_poses = []
+        opp_yaws = []
+        for s_m in spawn_s:
+            xy, yaw = pose_at_s(env._track_host, float(s_m))
+            oxy, oyaw = pose_at_s(
+                env._track_host, float(s_m) + FOLLOW_OPPONENT_AHEAD_M
+            )
+            poses.append(xy)
+            yaws.append(yaw)
+            opp_poses.append(oxy)
+            opp_yaws.append(oyaw)
+        env.reset_to(
+            np.stack(poses),
+            np.asarray(yaws),
+            0.0,
+            opponent_pose=np.stack(opp_poses),
+            opponent_yaw=np.asarray(opp_yaws),
+            opponent_speed=FOLLOW_OPPONENT_SPEED_MPS,
+            seed=0,
+        )
+        ego_s = env.extras["metrics"]["s"].detach().cpu().numpy()
+        opp_s = env.extras["metrics"]["opponent_s"].detach().cpu().numpy()
+        for ego, opp in zip(ego_s, opp_s):
+            gap = wrapped_delta_s(opp, ego, length)
+            assert gap == pytest.approx(FOLLOW_OPPONENT_AHEAD_M, abs=0.4)
+        row = evaluate_policy_on_env(
+            env,
+            ZeroPolicy(),
+            lambda obs: obs,
+            n_spawns=4,
+            seed=0,
+            with_sensors=False,
+            clip_actions=1.0,
+            spawn_speed=0.0,
+            opponent_ahead_m=FOLLOW_OPPONENT_AHEAD_M,
+            opponent_speed_mps=FOLLOW_OPPONENT_SPEED_MPS,
+        )
+    finally:
+        env.close()
+
+    assert row["mean_overtake_count"] == pytest.approx(0.0)
+    assert all(ep["overtake_count"] == 0 for ep in row["episodes"])
