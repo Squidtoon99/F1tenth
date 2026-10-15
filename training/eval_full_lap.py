@@ -65,6 +65,46 @@ def wrapped_delta_torch(current, previous, length):
     return torch.where(delta < -half, delta + length, delta)
 
 
+def count_progress_overtakes(
+    prev_ego_s,
+    ego_s,
+    prev_opp_s,
+    opp_s,
+    both_on_track,
+    length,
+):
+    """1 where ego along-track s crosses opponent s from behind.
+
+    A pass is the wrapped gap ``opp_s - ego_s`` going from ``> 0`` (opponent
+    ahead) to ``<= 0`` (ego even or ahead) in one step, while both cars are on
+    track. Relative progress larger than ``0.1 L`` is ignored as a wrap artifact.
+    """
+    max_rel = 0.1 * length
+    if torch.is_tensor(ego_s):
+        prev_gap = wrapped_delta_torch(prev_opp_s, prev_ego_s, length)
+        gap = wrapped_delta_torch(opp_s, ego_s, length)
+        delta = prev_gap - gap
+        passed = (
+            both_on_track
+            & (prev_gap > 0)
+            & (gap <= 0)
+            & (delta > 0)
+            & (delta <= max_rel)
+        )
+        return passed.to(dtype=torch.int32)
+    prev_gap = wrapped_delta_s(prev_opp_s, prev_ego_s, length)
+    gap = wrapped_delta_s(opp_s, ego_s, length)
+    delta = prev_gap - gap
+    passed = (
+        np.asarray(both_on_track, dtype=bool)
+        & (prev_gap > 0)
+        & (gap <= 0)
+        & (delta > 0)
+        & (delta <= max_rel)
+    )
+    return passed.astype(np.int32)
+
+
 def even_spawn_s(length: float, n: int) -> np.ndarray:
     if int(n) <= 0:
         raise ValueError(f"n_spawns must be positive, got {n!r}")
@@ -203,6 +243,9 @@ def summarize_episodes(
         if ep.get("lap_time_s") is not None
     ]
     progress = np.asarray([ep["progress_m"] for ep in episodes], dtype=np.float64)
+    overtakes = np.asarray(
+        [ep.get("overtake_count", 0) for ep in episodes], dtype=np.float64
+    )
     n_crash = sum(1 for ep in episodes if ep["crash"])
     n_timeout = sum(1 for ep in episodes if ep["timeout"])
     breakdown = {key: 0 for key in CRASH_TERM_KEYS}
@@ -220,6 +263,7 @@ def summarize_episodes(
         "mean_progress_frac": float(progress.mean() / float(track_length_m)),
         "mean_lap_time_s": float(np.mean(lap_times)) if lap_times else None,
         "best_lap_time_s": float(np.min(lap_times)) if lap_times else None,
+        "mean_overtake_count": float(overtakes.mean()),
         "track": track,
         "track_length_m": float(track_length_m),
         "spawn_speed_mps": float(spawn_speed_mps_value),
@@ -350,7 +394,16 @@ def evaluate_policy_on_env(
                 num_envs, device=obs.device, dtype=torch.float32
             )
         prev_s = extras["metrics"]["s"].detach().to(torch.float32).clone()
+        opp_s_key = extras.get("metrics", {}).get("opponent_s")
+        has_opponent = bool(getattr(env, "has_opponent", False))
+        if has_opponent and opp_s_key is not None:
+            prev_opp_s = opp_s_key.detach().to(torch.float32).clone()
+        else:
+            prev_opp_s = None
         progress = torch.zeros(num_envs, device=obs.device, dtype=torch.float32)
+        overtake_count = torch.zeros(
+            num_envs, device=obs.device, dtype=torch.int32
+        )
         completed = torch.zeros(num_envs, device=obs.device, dtype=torch.bool)
         lap_time = torch.full(
             (num_envs,), float("nan"), device=obs.device, dtype=torch.float32
@@ -399,6 +452,20 @@ def evaluate_policy_on_env(
                 ds = wrapped_delta_torch(s_used, prev_s, length)
                 ds = ds.clamp(-max_ds, max_ds)
                 progress = torch.where(alive, progress + ds, progress)
+                if prev_opp_s is not None:
+                    opp_now = extras["metrics"]["opponent_s"].detach().to(
+                        torch.float32
+                    )
+                    passed = count_progress_overtakes(
+                        prev_s,
+                        s_used,
+                        prev_opp_s,
+                        opp_now,
+                        alive,
+                        length,
+                    )
+                    overtake_count = overtake_count + passed
+                    prev_opp_s = torch.where(alive, opp_now, prev_opp_s)
                 newly = (
                     alive
                     & ~completed
@@ -440,6 +507,7 @@ def evaluate_policy_on_env(
         progress_np = progress.detach().cpu().numpy()
         lap_np = lap_time.detach().cpu().numpy()
         completed_np = completed.detach().cpu().numpy()
+        overtake_np = overtake_count.detach().cpu().numpy()
         for i in range(k):
             lap = float(lap_np[i]) if completed_np[i] and math.isfinite(lap_np[i]) else None
             traj = action_traj[i]
@@ -457,6 +525,7 @@ def evaluate_policy_on_env(
                     "progress_m": float(progress_np[i]),
                     "full_lap": bool(completed_np[i]),
                     "lap_time_s": lap,
+                    "overtake_count": int(overtake_np[i]),
                     "crash": bool(crash[i]),
                     "timeout": bool(timeout[i]),
                     "crash_reason": crash_reason[i],
@@ -653,6 +722,9 @@ def wandb_metrics(result: dict) -> dict:
         payload[f"{prefix}/mean_progress_m"] = row["mean_progress_m"]
         payload[f"{prefix}/mean_progress_frac"] = row["mean_progress_frac"]
         payload[f"{prefix}/n_episodes"] = row["n_episodes"]
+        payload[f"{prefix}/mean_overtake_count"] = row.get(
+            "mean_overtake_count", 0.0
+        )
         if row.get("mean_lap_time_s") is not None:
             payload[f"{prefix}/mean_lap_time_s"] = row["mean_lap_time_s"]
         if row.get("best_lap_time_s") is not None:
@@ -703,6 +775,7 @@ def _print_result(result: dict) -> None:
             f"progress={row['mean_progress_m']:.1f}m "
             f"({row['mean_progress_frac']:.2f} L) "
             f"mean_lap={mean_s} best_lap={best_s} "
+            f"overtakes={row.get('mean_overtake_count', 0.0):.3f} "
             f"n={row['n_episodes']}"
         )
         if "reversal_rate_throttle" in row:

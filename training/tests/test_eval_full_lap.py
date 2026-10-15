@@ -13,6 +13,7 @@ from config import DEFAULT_CONFIG
 from eval_full_lap import (
     action_delta_metrics,
     classify_terminations,
+    count_progress_overtakes,
     even_spawn_s,
     evaluate_policy_on_env,
     load_actor_bundle,
@@ -130,6 +131,37 @@ def test_spawn_speed_standing_vs_flying():
     assert flying == pytest.approx(3.5)
 
 
+def test_count_progress_overtakes_from_behind_and_wrap():
+    on = np.array([True, True, True, False])
+    passed = count_progress_overtakes(
+        prev_ego_s=np.array([10.0, 98.0, 20.0, 10.0]),
+        ego_s=np.array([12.0, 3.0, 22.0, 12.0]),
+        prev_opp_s=np.array([11.0, 1.0, 10.0, 11.0]),
+        opp_s=np.array([11.2, 1.2, 10.2, 11.2]),
+        both_on_track=on,
+        length=100.0,
+    )
+    assert passed.tolist() == [1, 1, 0, 0]
+    none = count_progress_overtakes(
+        prev_ego_s=np.array([10.0]),
+        ego_s=np.array([12.0]),
+        prev_opp_s=np.array([11.0]),
+        opp_s=np.array([11.0]),
+        both_on_track=np.array([False]),
+        length=100.0,
+    )
+    assert none.tolist() == [0]
+    torch_pass = count_progress_overtakes(
+        prev_ego_s=torch.tensor([10.0]),
+        ego_s=torch.tensor([12.0]),
+        prev_opp_s=torch.tensor([11.0]),
+        opp_s=torch.tensor([11.0]),
+        both_on_track=torch.tensor([True]),
+        length=100.0,
+    )
+    assert int(torch_pass.item()) == 1
+
+
 def test_summarize_episodes_rates_and_lap_times():
     episodes = [
         {
@@ -137,6 +169,7 @@ def test_summarize_episodes_rates_and_lap_times():
             "progress_m": 70.0,
             "full_lap": True,
             "lap_time_s": 20.0,
+            "overtake_count": 2,
             "crash": False,
             "timeout": True,
             "crash_reason": None,
@@ -147,6 +180,7 @@ def test_summarize_episodes_rates_and_lap_times():
             "progress_m": 12.0,
             "full_lap": False,
             "lap_time_s": None,
+            "overtake_count": 0,
             "crash": True,
             "timeout": False,
             "crash_reason": "out_of_bounds",
@@ -157,6 +191,7 @@ def test_summarize_episodes_rates_and_lap_times():
             "progress_m": 80.0,
             "full_lap": True,
             "lap_time_s": 18.0,
+            "overtake_count": 1,
             "crash": True,
             "timeout": False,
             "crash_reason": "out_of_bounds",
@@ -184,11 +219,13 @@ def test_summarize_episodes_rates_and_lap_times():
     assert row["mean_progress_m"] == pytest.approx(42.5)
     assert row["mean_lap_time_s"] == pytest.approx(19.0)
     assert row["best_lap_time_s"] == pytest.approx(18.0)
+    assert row["mean_overtake_count"] == pytest.approx(0.75)
     assert row["crash_breakdown"]["out_of_bounds"] == 2
     assert row["crash_breakdown"]["not_moving"] == 1
     metrics = wandb_metrics({"scenarios": {"solo_flying": row}})
     assert metrics["eval/solo_flying/full_lap_completion_rate"] == pytest.approx(0.5)
     assert metrics["eval/solo_flying/best_lap_time_s"] == pytest.approx(18.0)
+    assert metrics["eval/solo_flying/mean_overtake_count"] == pytest.approx(0.75)
 
 
 def test_classify_terminations_crash_beats_timeout():
@@ -279,6 +316,8 @@ def test_zero_action_standing_completes_no_laps(warp_runtime):
     assert row["reversal_rate_steer"] == pytest.approx(0.0)
     assert row["mean_abs_delta_throttle"] == pytest.approx(0.0)
     assert row["mean_abs_delta_steer"] == pytest.approx(0.0)
+    assert row["mean_overtake_count"] == pytest.approx(0.0)
+    assert all(ep["overtake_count"] == 0 for ep in row["episodes"])
 
 
 @pytest.mark.skipif(not HAS_WARP, reason="warp-lang not installed")
