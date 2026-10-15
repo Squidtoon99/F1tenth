@@ -100,6 +100,7 @@ def test_default_steering_reward_scales_and_constants():
     assert scales["steering_change"] == 0.5
     assert scales["steering_history"] == 5.0
     assert reward["wall_contact_coefficient"] == 15.0
+    assert reward["wall_proximity_m"] == 0.0
     assert "oob_penalty" not in scales
     assert "oob_impact" not in scales
     assert "boundary_contact" not in scales
@@ -204,6 +205,56 @@ def test_every_shipped_config_patch_loads():
     for path in paths:
         patch, _meta = load_config_patch(str(path))
         assert isinstance(patch, dict), path.name
+
+
+def _overlay_diffs(base: dict, overlay: dict, prefix=""):
+    diffs = []
+    keys = set(base) | set(overlay)
+    for key in sorted(keys):
+        path = f"{prefix}.{key}" if prefix else key
+        if key not in base:
+            diffs.append(path)
+            continue
+        if key not in overlay:
+            diffs.append(path)
+            continue
+        left, right = base[key], overlay[key]
+        if isinstance(left, dict) and isinstance(right, dict):
+            diffs.extend(_overlay_diffs(left, right, path))
+        elif left != right:
+            diffs.append(path)
+    return diffs
+
+
+def test_tal_v6_overlays_change_one_key():
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    base = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6.json").read_text()
+    )
+    expected = {
+        "austin_e2e_ppo_baseline_v6_wall_proximity.json": [
+            "reward.wall_proximity_m"
+        ],
+        "austin_e2e_ppo_baseline_v6_grad_caps.json": ["ppo.grad_caps_coef"],
+        "austin_e2e_ppo_baseline_v6_caps_spatial.json": [
+            "ppo.caps_spatial_coef"
+        ],
+    }
+    for name, keys in expected.items():
+        overlay = json.loads((config_dir / name).read_text())
+        assert _overlay_diffs(base, overlay) == keys, name
+    prox = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_wall_proximity.json").read_text()
+    )
+    assert prox["reward"]["wall_proximity_m"] == pytest.approx(0.05)
+    grad = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_grad_caps.json").read_text()
+    )
+    assert grad["ppo"]["grad_caps_coef"] == pytest.approx(0.1)
+    spatial = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_caps_spatial.json").read_text()
+    )
+    assert spatial["ppo"]["caps_spatial_coef"] == pytest.approx(0.1)
 
 
 def test_build_config_rejects_invalid_patch():

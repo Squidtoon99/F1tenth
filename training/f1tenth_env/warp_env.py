@@ -727,6 +727,13 @@ class WarpF1tenthEnv:
         params.tal_kp_heading = float(
             self.env_cfg.get("opponent_kh_heading", 1.0)
         )
+        proximity = float(self.reward_cfg.get("wall_proximity_m", 0.0))
+        if not math.isfinite(proximity) or proximity < 0.0:
+            raise ValueError(
+                "reward.wall_proximity_m must be a finite number >= 0, "
+                f"got {proximity!r}"
+            )
+        params.wall_proximity_m = proximity
         return params
 
     def _build_termination_params(self):

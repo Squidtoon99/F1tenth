@@ -995,18 +995,11 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.value_normalization must be a bool, got "
             f"{ppo.get('value_normalization')!r}"
         )
-    caps_coef = ppo.get("caps_coef")
-    if (
-        not isinstance(caps_coef, (int, float))
-        or isinstance(caps_coef, bool)
-        or not math.isfinite(float(caps_coef))
-        or float(caps_coef) < 0.0
-    ):
-        raise ValueError(
-            "ppo.caps_coef must be a finite number >= 0, got "
-            f"{caps_coef!r}"
-        )
     for key in (
+        "caps_coef",
+        "caps_spatial_coef",
+        "caps_spatial_std",
+        "grad_caps_coef",
         "reversal_coef_throttle",
         "reversal_coef_steer",
         "reversal_deadband",
@@ -1931,6 +1924,9 @@ def build_ppo_models(
         total_transitions=int(cfg["schedule"]["total_transitions"]),
         desired_kl=float(ppo_cfg.get("desired_kl", 0.01)),
         caps_coef=float(ppo_cfg["caps_coef"]),
+        caps_spatial_coef=float(ppo_cfg["caps_spatial_coef"]),
+        caps_spatial_std=float(ppo_cfg["caps_spatial_std"]),
+        grad_caps_coef=float(ppo_cfg["grad_caps_coef"]),
         reversal_coef_throttle=float(ppo_cfg["reversal_coef_throttle"]),
         reversal_coef_steer=float(ppo_cfg["reversal_coef_steer"]),
         reversal_deadband=float(ppo_cfg["reversal_deadband"]),

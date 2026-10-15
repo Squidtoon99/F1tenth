@@ -99,6 +99,22 @@ def caps_temporal_loss(mean_actions, reset_mask):
     return (delta.square().sum(dim=-1) * valid).sum() / valid.sum().clamp(min=1.0)
 
 
+def caps_spatial_loss(mean_actions, perturbed_mean):
+    delta = mean_actions - perturbed_mean
+    return delta.square().sum(dim=-1).mean()
+
+
+def grad_caps_temporal_loss(mean_actions, reset_mask, eps=1e-6):
+    if mean_actions.shape[1] < 3:
+        return mean_actions.new_zeros(())
+    delta = mean_actions[:, 1:] - mean_actions[:, :-1]
+    second = (delta[:, 1:] - delta[:, :-1]).norm(dim=-1)
+    displacement = (mean_actions[:, 2:] - mean_actions[:, :-2]).norm(dim=-1)
+    scale = torch.tanh(1.0 / (displacement + eps))
+    valid = ((~reset_mask[:, 1:-1]) & (~reset_mask[:, 2:])).to(dtype=second.dtype)
+    return (second * scale * valid).sum() / valid.sum().clamp(min=1.0)
+
+
 def _channel_weight_tensor(actions, channel_weights):
     weights = torch.as_tensor(
         channel_weights, device=actions.device, dtype=actions.dtype
@@ -288,6 +304,9 @@ class PPOTrainer:
         total_transitions=0,
         desired_kl=0.01,
         caps_coef=0.0,
+        caps_spatial_coef=0.0,
+        caps_spatial_std=0.05,
+        grad_caps_coef=0.0,
         reversal_coef_throttle=0.0,
         reversal_coef_steer=0.0,
         reversal_deadband=0.0,
@@ -344,10 +363,19 @@ class PPOTrainer:
         self.lidar_aug_enabled = bool(lidar_aug_enabled)
         self.lidar_aug_max_shift_beams = int(lidar_aug_max_shift_beams)
         self.caps_coef = float(caps_coef)
-        if not math.isfinite(self.caps_coef) or self.caps_coef < 0.0:
-            raise ValueError(
-                f"caps_coef must be a finite number >= 0, got {caps_coef!r}"
-            )
+        self.caps_spatial_coef = float(caps_spatial_coef)
+        self.caps_spatial_std = float(caps_spatial_std)
+        self.grad_caps_coef = float(grad_caps_coef)
+        for name, value in (
+            ("caps_coef", self.caps_coef),
+            ("caps_spatial_coef", self.caps_spatial_coef),
+            ("caps_spatial_std", self.caps_spatial_std),
+            ("grad_caps_coef", self.grad_caps_coef),
+        ):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} must be a finite number >= 0, got {value!r}"
+                )
         self.reversal_coef_throttle = float(reversal_coef_throttle)
         self.reversal_coef_steer = float(reversal_coef_steer)
         self.reversal_deadband = float(reversal_deadband)
@@ -363,6 +391,8 @@ class PPOTrainer:
                 )
         self._need_action_mean = (
             self.caps_coef > 0.0
+            or self.caps_spatial_coef > 0.0
+            or self.grad_caps_coef > 0.0
             or self.reversal_coef_throttle > 0.0
             or self.reversal_coef_steer > 0.0
         )
@@ -752,6 +782,8 @@ class PPOTrainer:
                 "actor_grad_clip_fraction": 0.0,
                 "value_grad_clip_fraction": 0.0,
                 "caps_loss": 0.0,
+                "caps_spatial_loss": 0.0,
+                "grad_caps_loss": 0.0,
                 "reversal_loss": 0.0,
                 "reversal_rate_throttle": 0.0,
                 "reversal_rate_steer": 0.0,
@@ -808,6 +840,8 @@ class PPOTrainer:
                 "actor_grad_clip_fraction",
                 "value_grad_clip_fraction",
                 "caps_loss",
+                "caps_spatial_loss",
+                "grad_caps_loss",
                 "reversal_loss",
                 "reversal_rate_throttle",
                 "reversal_rate_steer",
@@ -887,11 +921,29 @@ class PPOTrainer:
                     gaussian_entropy / self.act_dim - _GAUSSIAN_ENTROPY_OFFSET
                 )
                 caps_loss = policy_loss.new_zeros(())
+                caps_spatial = policy_loss.new_zeros(())
+                grad_caps_loss = policy_loss.new_zeros(())
                 reversal_loss = policy_loss.new_zeros(())
                 reversal_rate = policy_loss.new_zeros((self.act_dim,))
                 if new_mean is not None:
                     caps_loss = caps_temporal_loss(new_mean, reset_seq)
                     policy_loss = policy_loss + self.caps_coef * caps_loss
+                    grad_caps_loss = grad_caps_temporal_loss(new_mean, reset_seq)
+                    policy_loss = policy_loss + self.grad_caps_coef * grad_caps_loss
+                    if self.caps_spatial_coef > 0.0:
+                        noise = torch.randn_like(actor_seq) * self.caps_spatial_std
+                        spat_out = self._evaluate_actions_sequence(
+                            actor_seq + noise,
+                            hidden,
+                            action_seq,
+                            reset_mask=reset_seq,
+                            pre_tanh_actions=pre_tanh_seq,
+                            return_mean=True,
+                        )
+                        caps_spatial = caps_spatial_loss(new_mean, spat_out[3])
+                        policy_loss = (
+                            policy_loss + self.caps_spatial_coef * caps_spatial
+                        )
                     reversal_loss, reversal_rate = action_reversal_penalty(
                         new_mean,
                         reset_seq,
@@ -979,6 +1031,8 @@ class PPOTrainer:
                 metric_sums["policy_gaussian_entropy"] += gaussian_entropy.detach()
                 metric_sums["policy_log_std"] += mean_log_std.detach()
                 metric_sums["caps_loss"] += caps_loss.detach()
+                metric_sums["caps_spatial_loss"] += caps_spatial.detach()
+                metric_sums["grad_caps_loss"] += grad_caps_loss.detach()
                 metric_sums["reversal_loss"] += reversal_loss.detach()
                 metric_sums["reversal_rate_throttle"] += reversal_rate[0].detach()
                 if reversal_rate.numel() > 1:
