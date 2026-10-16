@@ -2,6 +2,7 @@
 
 from f1tenth_policy.actor import (
     LidarCNNEncoder,
+    TinyLidarNetEncoder,
     SquashedGaussianLidarGRUActor,
     actor_architecture_from_module,
     actor_from_architecture,
@@ -32,6 +33,7 @@ from f1tenth_policy.layout import (
     ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
     LIDAR_DREAMER_ARCHITECTURE_NAME,
+    TINYLIDARNET_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
     ACTOR_OBS_DIM,
     ARTIFACT_SCOPE_SIM_TRAINING,
@@ -72,6 +74,8 @@ __all__ = [
     "LONG_HISTORY",
     "LIDAR_DIM",
     "LIDAR_DREAMER_ARCHITECTURE_NAME",
+    "TINYLIDARNET_ARCHITECTURE_NAME",
+    "TinyLidarNetEncoder",
     "LidarCNNEncoder",
     "LidarDreamerActor",
     "CartesianPolarEncoder",

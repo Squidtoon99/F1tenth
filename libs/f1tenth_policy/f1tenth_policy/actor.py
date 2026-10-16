@@ -21,6 +21,7 @@ from f1tenth_policy.layout import (
     LIDAR_DREAMER_ARCHITECTURE_NAME,
     NUM_ACTIONS,
     PROPRIO_DIM,
+    TINYLIDARNET_ARCHITECTURE_NAME,
 )
 
 LOG_STD_MAX = 2
@@ -194,6 +195,71 @@ class LidarCNNEncoder(nn.Module):
         return features
 
 
+TINYLIDARNET_CONV = (
+    (24, 10, 4),
+    (36, 8, 4),
+    (48, 4, 2),
+    (64, 3, 1),
+    (64, 3, 1),
+)
+TINYLIDARNET_FC = (100, 50, 10)
+
+
+def _conv1d_length(length, kernel, stride):
+    return (int(length) - int(kernel)) // int(stride) + 1
+
+
+class TinyLidarNetEncoder(nn.Module):
+    """PilotNet-style 1D CNN on the raw 1081-beam scan (no 32-bin pool)."""
+
+    def __init__(self, lidar_dim=LIDAR_DIM, projection_dim=CNN_PROJECTION_DIM):
+        super().__init__()
+        self.lidar_dim = int(lidar_dim)
+        self.projection_dim = int(projection_dim)
+        layers = []
+        in_ch = 1
+        length = self.lidar_dim
+        for out_ch, kernel, stride in TINYLIDARNET_CONV:
+            layers.append(
+                nn.Conv1d(
+                    in_ch,
+                    int(out_ch),
+                    kernel_size=int(kernel),
+                    stride=int(stride),
+                )
+            )
+            layers.append(nn.ReLU())
+            length = _conv1d_length(length, kernel, stride)
+            if length < 1:
+                raise ValueError(
+                    f"TinyLidarNet conv collapsed lidar_dim={self.lidar_dim}"
+                )
+            in_ch = int(out_ch)
+        self.conv = nn.Sequential(*layers)
+        self.conv_length = int(length)
+        fc_in = in_ch * self.conv_length
+        fc_layers = []
+        for width in TINYLIDARNET_FC:
+            fc_layers.append(nn.Linear(fc_in, int(width)))
+            fc_layers.append(nn.ReLU())
+            fc_in = int(width)
+        fc_layers.append(nn.Linear(fc_in, self.projection_dim))
+        self.fc = nn.Sequential(*fc_layers)
+
+    def forward_features(self, lidar):
+        if lidar.shape[-1] != self.lidar_dim:
+            raise ValueError(
+                f"lidar last dim={lidar.shape[-1]}; expected {self.lidar_dim}"
+            )
+        conv = self.conv(lidar.unsqueeze(1))
+        features = self.fc(conv.flatten(1))
+        return features, conv
+
+    def forward(self, lidar):
+        features, _ = self.forward_features(lidar)
+        return features
+
+
 class SquashedGaussianLidarGRUActor(nn.Module):
 
     def __init__(
@@ -210,6 +276,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         gru_hidden_dim=GRU_HIDDEN_DIM,
         log_std_min=LOG_STD_MIN,
         log_std_max=LOG_STD_MAX,
+        encoder_name="lidar_cnn",
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -248,11 +315,22 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             raise ValueError(
                 f"gru_hidden_dim must be positive, got {self.gru_hidden_dim}"
             )
-        self.encoder = LidarCNNEncoder(
-            lidar_dim=self.lidar_dim,
-            pool_bins=self.pool_bins,
-            projection_dim=self.projection_dim,
-        )
+        self.encoder_name = str(encoder_name)
+        if self.encoder_name == "tinylidarnet":
+            self.encoder = TinyLidarNetEncoder(
+                lidar_dim=self.lidar_dim,
+                projection_dim=self.projection_dim,
+            )
+        elif self.encoder_name == "lidar_cnn":
+            self.encoder = LidarCNNEncoder(
+                lidar_dim=self.lidar_dim,
+                pool_bins=self.pool_bins,
+                projection_dim=self.projection_dim,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported encoder_name={self.encoder_name!r}"
+            )
         gru_in = self.projection_dim + self.proprio_dim
         self.gru = nn.GRU(
             input_size=gru_in,
@@ -269,24 +347,42 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.act_limit = act_limit
         self.use_segment_gru = True
-        self.actor_architecture = {
-            "name": ACTOR_ARCHITECTURE_NAME,
-            "version": 1,
-            "obs_dim": self.obs_dim,
-            "lidar_dim": self.lidar_dim,
-            "proprio_dim": self.proprio_dim,
-            "conv_channels": list(CNN_CONV_CHANNELS),
-            "kernels": list(CNN_KERNELS),
-            "strides": list(CNN_STRIDES),
-            "padding": list(CNN_PADDING),
-            "pool": "adaptive_avg_1d",
-            "pool_bins": self.pool_bins,
-            "projection_dim": self.projection_dim,
-            "gru_hidden_dim": self.gru_hidden_dim,
-            "hidden_layers": list(self.hidden_sizes),
-            "activation": "relu",
-            "action_dim": self.act_dim,
-        }
+        if self.encoder_name == "tinylidarnet":
+            self.actor_architecture = {
+                "name": TINYLIDARNET_ARCHITECTURE_NAME,
+                "version": 1,
+                "obs_dim": self.obs_dim,
+                "lidar_dim": self.lidar_dim,
+                "proprio_dim": self.proprio_dim,
+                "encoder": "tinylidarnet",
+                "pool": "none",
+                "conv": [list(row) for row in TINYLIDARNET_CONV],
+                "fc": list(TINYLIDARNET_FC),
+                "projection_dim": self.projection_dim,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "hidden_layers": list(self.hidden_sizes),
+                "activation": "relu",
+                "action_dim": self.act_dim,
+            }
+        else:
+            self.actor_architecture = {
+                "name": ACTOR_ARCHITECTURE_NAME,
+                "version": 1,
+                "obs_dim": self.obs_dim,
+                "lidar_dim": self.lidar_dim,
+                "proprio_dim": self.proprio_dim,
+                "conv_channels": list(CNN_CONV_CHANNELS),
+                "kernels": list(CNN_KERNELS),
+                "strides": list(CNN_STRIDES),
+                "padding": list(CNN_PADDING),
+                "pool": "adaptive_avg_1d",
+                "pool_bins": self.pool_bins,
+                "projection_dim": self.projection_dim,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "hidden_layers": list(self.hidden_sizes),
+                "activation": "relu",
+                "action_dim": self.act_dim,
+            }
         if self.action_horizon != 1:
             self.actor_architecture["action_horizon"] = self.action_horizon
 
@@ -707,11 +803,28 @@ def make_actor(
             log_std_min=log_std_min,
             log_std_max=log_std_max,
         )
+    if actor_type == TINYLIDARNET_ARCHITECTURE_NAME:
+        return SquashedGaussianLidarGRUActor(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_sizes=hidden_sizes,
+            activation=activation,
+            act_limit=act_limit,
+            lidar_dim=lidar_dim,
+            proprio_dim=proprio_dim,
+            pool_bins=lidar_pool_bins,
+            projection_dim=lidar_projection_dim,
+            gru_hidden_dim=gru_hidden_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+            encoder_name="tinylidarnet",
+        )
     if actor_type != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
             f"Unsupported actor_type={actor_type!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
-            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
+            f"expected {ACTOR_ARCHITECTURE_NAME!r}, "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
+            f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
     return SquashedGaussianLidarGRUActor(
         obs_dim=obs_dim,
@@ -746,11 +859,27 @@ def actor_from_architecture(architecture: Mapping[str, Any]):
             deter_dim=int(arch.get("deter_dim", 256)),
             stoch_dim=int(arch.get("stoch_dim", 32)),
         )
+    if name == TINYLIDARNET_ARCHITECTURE_NAME:
+        return make_actor(
+            actor_type=TINYLIDARNET_ARCHITECTURE_NAME,
+            obs_dim=int(arch["obs_dim"]),
+            act_dim=int(arch["action_dim"]),
+            hidden_sizes=list(arch["hidden_layers"]),
+            activation=nn.ReLU,
+            act_limit=1.0,
+            lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
+            proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
+            lidar_projection_dim=int(
+                arch.get("projection_dim", CNN_PROJECTION_DIM)
+            ),
+            gru_hidden_dim=int(arch.get("gru_hidden_dim", GRU_HIDDEN_DIM)),
+        )
     if name != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
             f"Unsupported actor_architecture.name={name!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
-            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
+            f"expected {ACTOR_ARCHITECTURE_NAME!r}, "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
+            f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
     return make_actor(
         obs_dim=int(arch["obs_dim"]),

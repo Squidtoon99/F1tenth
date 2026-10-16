@@ -85,3 +85,5 @@ trade-off. Routine work is captured by the PR instead (see
   action chunks (H=4, execute first tick, 20 Hz plant).
 - [0040](0040-lidar-dreamer-world-model.md) — LiDAR Dreamer RSSM
   (Cartesian-polar + LS3C), imagination-trained actor, encoder+actor deploy.
+- [0041](0041-tinylidarnet-encoder.md) — TinyLidarNet 1D CNN on raw 1081
+  beams; GRU and PPO kept; no 32-bin pool.

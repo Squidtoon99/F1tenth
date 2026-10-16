@@ -45,6 +45,7 @@ from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     DEFAULT_ACTION_HORIZON,
     LIDAR_DREAMER_ARCHITECTURE_NAME,
+    TINYLIDARNET_ARCHITECTURE_NAME,
     NUM_ACTIONS,
     SENSOR_POLICY_FORMAT_VERSION,
     STEERING_ACTION_MODE,
@@ -801,11 +802,13 @@ def validate_model_architecture(cfg: dict) -> None:
     if actor_type not in (
         ACTOR_ARCHITECTURE_NAME,
         LIDAR_DREAMER_ARCHITECTURE_NAME,
+        TINYLIDARNET_ARCHITECTURE_NAME,
     ):
         raise ValueError(
             f"Unsupported model.actor_type={actor_type!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
-            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
+            f"expected {ACTOR_ARCHITECTURE_NAME!r}, "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
+            f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
     pool_bins = model.get("lidar_pool_bins")
     if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
