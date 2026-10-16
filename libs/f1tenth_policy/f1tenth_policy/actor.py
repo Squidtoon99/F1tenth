@@ -18,6 +18,7 @@ from f1tenth_policy.layout import (
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
     LIDAR_DIM,
+    LIDAR_DREAMER_ARCHITECTURE_NAME,
     NUM_ACTIONS,
     PROPRIO_DIM,
 )
@@ -685,11 +686,32 @@ def make_actor(
     actor_type=ACTOR_ARCHITECTURE_NAME,
     log_std_min=LOG_STD_MIN,
     log_std_max=LOG_STD_MAX,
+    deter_dim=256,
+    stoch_dim=32,
+    embed_dim=CNN_PROJECTION_DIM,
 ):
+    if actor_type == LIDAR_DREAMER_ARCHITECTURE_NAME:
+        from f1tenth_policy.dreamer import LidarDreamerActor
+
+        return LidarDreamerActor(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_sizes=hidden_sizes,
+            activation=activation,
+            act_limit=act_limit,
+            lidar_dim=lidar_dim,
+            proprio_dim=proprio_dim,
+            embed_dim=embed_dim,
+            deter_dim=deter_dim,
+            stoch_dim=stoch_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+        )
     if actor_type != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
             f"Unsupported actor_type={actor_type!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r}"
+            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
         )
     return SquashedGaussianLidarGRUActor(
         obs_dim=obs_dim,
@@ -709,10 +731,26 @@ def make_actor(
 
 def actor_from_architecture(architecture: Mapping[str, Any]):
     arch = normalize_actor_architecture(architecture)
-    if arch.get("name") != ACTOR_ARCHITECTURE_NAME:
+    name = arch.get("name")
+    if name == LIDAR_DREAMER_ARCHITECTURE_NAME:
+        return make_actor(
+            actor_type=LIDAR_DREAMER_ARCHITECTURE_NAME,
+            obs_dim=int(arch["obs_dim"]),
+            act_dim=int(arch["action_dim"]),
+            hidden_sizes=list(arch["hidden_layers"]),
+            activation=nn.ReLU,
+            act_limit=1.0,
+            lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
+            proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
+            embed_dim=int(arch.get("embed_dim", CNN_PROJECTION_DIM)),
+            deter_dim=int(arch.get("deter_dim", 256)),
+            stoch_dim=int(arch.get("stoch_dim", 32)),
+        )
+    if name != ACTOR_ARCHITECTURE_NAME:
         raise ValueError(
-            f"Unsupported actor_architecture.name={arch.get('name')!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r}"
+            f"Unsupported actor_architecture.name={name!r}; "
+            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
         )
     return make_actor(
         obs_dim=int(arch["obs_dim"]),

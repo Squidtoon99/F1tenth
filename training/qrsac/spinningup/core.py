@@ -40,6 +40,9 @@ def make_actor(
     gru_hidden_dim=GRU_HIDDEN_DIM,
     log_std_min=LOG_STD_MIN,
     log_std_max=LOG_STD_MAX,
+    deter_dim=256,
+    stoch_dim=32,
+    embed_dim=CNN_PROJECTION_DIM,
 ):
     import torch.nn as nn
 
@@ -61,6 +64,9 @@ def make_actor(
         actor_type=actor_type,
         log_std_min=log_std_min,
         log_std_max=log_std_max,
+        deter_dim=deter_dim,
+        stoch_dim=stoch_dim,
+        embed_dim=embed_dim,
     )
 
 
