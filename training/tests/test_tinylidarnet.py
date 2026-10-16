@@ -173,8 +173,44 @@ def test_default_encoder_still_pools_to_32():
     assert actor.encoder.pool_bins == 32
 
 
+def test_cpu_smoke_one_ppo_update():
+    torch.manual_seed(0)
+    cfg = _arm_cfg()
+    actor = make_policy_network(cfg)
+    assert isinstance(actor.encoder, TinyLidarNetEncoder)
+    assert isinstance(actor.gru, nn.GRU)
+    assert actor.act_dim == 2
+    num_envs = 2
+    trainer = PPOTrainer(
+        actor,
+        int(cfg["obs"]["num_obs"]),
+        device="cpu",
+        value_hidden_sizes=tuple(HIDDEN),
+        rollout_steps=4,
+        num_epochs=1,
+        env_minibatch_size=num_envs,
+        action_clip=1.0,
+        advantage_filter_enabled=False,
+        lidar_aug_enabled=False,
+    )
+    actor_obs = torch.rand(num_envs, ACTOR_OBS_DIM)
+    critic_obs = torch.rand(num_envs, int(cfg["obs"]["num_obs"]))
+    trainer.initialize(actor_obs, critic_obs)
+    metrics = None
+    reward = torch.zeros(num_envs)
+    done = torch.zeros(num_envs, dtype=torch.bool)
+    for _ in range(trainer.rollout_steps):
+        actions = trainer.act(actor_obs, critic_obs)
+        assert actions.shape == (num_envs, NUM_ACTIONS)
+        metrics = trainer.observe(actor_obs, critic_obs, reward, done)
+    assert metrics is not None
+    assert math.isfinite(float(metrics["policy_loss"]))
+    assert math.isfinite(float(metrics["value_loss"]))
+
+
 def test_cpu_smoke_one_update_few_env_steps(warp_runtime):
     del warp_runtime
+    pytest.importorskip("scipy")
     cfg = _arm_cfg()
     assert cfg["model"]["actor_type"] == TINYLIDARNET_ARCHITECTURE_NAME
     assert control_dt_s(cfg["env"]) == pytest.approx(0.05)
