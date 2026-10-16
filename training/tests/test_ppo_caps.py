@@ -14,6 +14,8 @@ from ppo import (
     action_reversal_penalty,
     caps_spatial_loss,
     caps_temporal_loss,
+    chunk_boundary_steer_loss,
+    executed_steer_jerk_loss,
     grad_caps_temporal_loss,
 )
 from qrsac import make_actor
@@ -48,9 +50,13 @@ def test_default_caps_coef_is_off():
     assert ppo["caps_coef"] == 0.0
     assert ppo["caps_spatial_coef"] == 0.0
     assert ppo["grad_caps_coef"] == 0.0
+    assert ppo["chunk_boundary_steer_coef"] == 0.0
+    assert ppo["steer_jerk_coef"] == 0.0
     validate_config_patch({"ppo": {"caps_coef": 0.1}})
     validate_config_patch({"ppo": {"caps_spatial_coef": 0.1}})
     validate_config_patch({"ppo": {"grad_caps_coef": 0.1}})
+    validate_config_patch({"ppo": {"chunk_boundary_steer_coef": 0.05}})
+    validate_config_patch({"ppo": {"steer_jerk_coef": 0.02}})
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["algorithm"] = "ppo"
     cfg["ppo"]["caps_coef"] = 0.1
@@ -221,3 +227,64 @@ def test_caps_and_reversal_use_plant_prefix():
     assert metrics["caps_spatial_loss"] > 0.0
     assert 0.0 <= float(metrics["reversal_rate_throttle"]) <= 1.0
     assert 0.0 <= float(metrics["reversal_rate_steer"]) <= 1.0
+
+
+def test_chunk_boundary_steer_zero_when_prefix_matches_plan():
+    reset = torch.zeros(1, 3, dtype=torch.bool)
+    chunk = torch.zeros(1, 3, 8)
+    chunk[0, 0, 3] = 0.4
+    chunk[0, 1, 1] = 0.4
+    chunk[0, 1, 3] = -0.2
+    chunk[0, 2, 1] = -0.2
+    assert float(chunk_boundary_steer_loss(chunk, reset)) == pytest.approx(0.0)
+
+
+def test_chunk_boundary_steer_positive_on_discontinuity():
+    reset = torch.zeros(1, 2, dtype=torch.bool)
+    chunk = torch.zeros(1, 2, 8)
+    chunk[0, 0, 3] = 0.5
+    chunk[0, 1, 1] = -0.5
+    assert float(chunk_boundary_steer_loss(chunk, reset)) == pytest.approx(1.0)
+
+
+def test_chunk_boundary_steer_skips_resets_and_h1():
+    chunk = torch.zeros(1, 2, 8)
+    chunk[0, 0, 3] = 1.0
+    chunk[0, 1, 1] = -1.0
+    reset = torch.tensor([[False, True]])
+    assert float(chunk_boundary_steer_loss(chunk, reset)) == pytest.approx(0.0)
+    h1 = torch.zeros(1, 2, 2)
+    h1[0, 0, 1] = 1.0
+    h1[0, 1, 1] = -1.0
+    assert float(chunk_boundary_steer_loss(h1, reset.new_zeros(1, 2))) == pytest.approx(
+        0.0
+    )
+
+
+def test_executed_steer_jerk_zero_on_constant_slew():
+    reset = torch.zeros(1, 3, dtype=torch.bool)
+    ramp = torch.tensor([[[0.0, 0.0], [0.0, 0.5], [0.0, 1.0]]])
+    assert float(executed_steer_jerk_loss(ramp, reset)) == pytest.approx(0.0)
+
+
+def test_executed_steer_jerk_positive_on_steer_zigzag_not_throttle():
+    reset = torch.zeros(1, 3, dtype=torch.bool)
+    zigzag = torch.tensor([[[0.0, 1.0], [0.0, -1.0], [0.0, 1.0]]])
+    assert float(executed_steer_jerk_loss(zigzag, reset)) == pytest.approx(16.0)
+    throttle = torch.tensor([[[1.0, 0.0], [-1.0, 0.0], [1.0, 0.0]]])
+    assert float(executed_steer_jerk_loss(throttle, reset)) == pytest.approx(0.0)
+    mid_reset = torch.tensor([[False, True, False]])
+    assert float(executed_steer_jerk_loss(zigzag, mid_reset)) == pytest.approx(0.0)
+
+
+def test_jerk_coefs_default_off_and_log_when_on():
+    off = _run_one_rollout(_tiny_trainer())
+    assert off["chunk_boundary_steer_loss"] == 0.0
+    assert off["steer_jerk_loss"] == 0.0
+    jerk = _run_one_rollout(_tiny_trainer(steer_jerk_coef=0.02))
+    assert jerk["steer_jerk_loss"] > 0.0
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["algorithm"] = "ppo"
+    cfg["ppo"]["steer_jerk_coef"] = -0.1
+    with pytest.raises(ValueError, match="steer_jerk_coef"):
+        validate_algorithm_config(cfg, num_envs=8)

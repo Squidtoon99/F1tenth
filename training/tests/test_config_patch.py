@@ -274,6 +274,27 @@ def test_tal_v6_overlays_change_one_key():
     assert spatial["ppo"]["caps_spatial_coef"] == pytest.approx(0.1)
 
 
+def test_action_chunk_followup_overlays_change_only_penalty_keys():
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    base = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_action_chunk.json").read_text()
+    )
+    rev = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_action_chunk_rev.json").read_text()
+    )
+    jerk = json.loads(
+        (config_dir / "austin_e2e_ppo_baseline_v6_action_chunk_jerk.json").read_text()
+    )
+    assert _overlay_diffs(base, rev) == ["ppo.reversal_coef_steer"]
+    assert rev["ppo"]["reversal_coef_steer"] == pytest.approx(0.5)
+    assert sorted(_overlay_diffs(base, jerk)) == [
+        "ppo.chunk_boundary_steer_coef",
+        "ppo.steer_jerk_coef",
+    ]
+    assert jerk["ppo"]["chunk_boundary_steer_coef"] == pytest.approx(0.05)
+    assert jerk["ppo"]["steer_jerk_coef"] == pytest.approx(0.02)
+
+
 def test_build_config_rejects_invalid_patch():
     args, explicit = parse_args([])
     with pytest.raises(ValueError, match="unknown config key"):
