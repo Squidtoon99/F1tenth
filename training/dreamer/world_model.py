@@ -40,10 +40,12 @@ class WorldModelHeads(nn.Module):
         std = F.softplus(self.prior_std(h)) + 1e-4
         return mean, std
 
-    def imagine_step(self, actor: LidarDreamerActor, h, z, action):
+    def imagine_step(
+        self, actor: LidarDreamerActor, h, z, action, *, deterministic=False
+    ):
         h, _ = actor.ls3c(torch.cat((z, action), dim=-1), h)
         prior_mean, prior_std = self.prior_stats(h)
-        z = prior_mean
+        z = actor.sample_posterior(prior_mean, prior_std, deterministic)
         return h, z, prior_mean, prior_std
 
     def decode_lidar(self, h, z):
@@ -71,6 +73,7 @@ def world_model_losses(
     dones,
     hidden,
     reset_mask=None,
+    sample_latents=True,
 ):
     """One real sequence (B, T, ...) → reconstruction, reward, KL, continue."""
     if obs.dim() != 3:
@@ -91,7 +94,9 @@ def world_model_losses(
         h, _ = actor.ls3c(torch.cat((z, prev_a), dim=-1), h)
         prior_mean, prior_std = world.prior_stats(h)
         post_mean, post_std = actor.posterior_stats(h, embed, proprio)
-        z = post_mean
+        z = actor.sample_posterior(
+            post_mean, post_std, deterministic=not sample_latents
+        )
         recon.append(world.decode_lidar(h, z))
         reward_pred.append(world.reward(h, z))
         cont_pred.append(world.continue_pred(h, z))
@@ -126,6 +131,7 @@ def imagine_actor_critic(
     gamma,
     lambda_gae,
     entropy_coef,
+    sample_latents=True,
 ):
     """Train the actor on imagined RSSM rollouts, not on real PPO advantages."""
     h, z, _prev_a = actor.unpack_hidden(start_hidden)
@@ -140,7 +146,9 @@ def imagine_actor_critic(
         action, logp = actor.policy_from_state(h, z, deterministic=False)
         entropy = actor.entropy_from_state(h, z)
         with torch.no_grad():
-            h, z, _mean, _std = world.imagine_step(actor, h, z, action)
+            h, z, _mean, _std = world.imagine_step(
+                actor, h, z, action, deterministic=not sample_latents
+            )
             rewards.append(world.reward(h, z))
             continues.append(torch.sigmoid(world.continue_pred(h, z)))
         values.append(critic(actor.features(h, z)))

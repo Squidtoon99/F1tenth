@@ -2262,9 +2262,17 @@ def save_resume_state(
         payload["value_optimizer"] = trainer.value_optimizer.state_dict()
         if trainer.value_normalizer is not None:
             payload["value_norm"] = trainer.value_normalizer.state_dict()
+        payload["lr_schedule_state"] = trainer.lr_schedule_state()
+    elif algorithm == "lidar_dreamer":
+        payload["world"] = trainer.world.state_dict()
+        payload["critic"] = trainer.critic.state_dict()
+        payload["world_optimizer"] = trainer.world_optimizer.state_dict()
+        payload["actor_optimizer"] = trainer.actor_optimizer.state_dict()
+        payload["critic_optimizer"] = trainer.critic_optimizer.state_dict()
+        if critic_normalizer is not None:
+            payload["critic_obs_norm"] = critic_normalizer.state_dict()
     else:
         raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
-    payload["lr_schedule_state"] = trainer.lr_schedule_state()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -2302,6 +2310,16 @@ def load_resume_state(
         trainer.value_optimizer.load_state_dict(payload["value_optimizer"])
         if trainer.value_normalizer is not None and "value_norm" in payload:
             trainer.value_normalizer.load_state_dict(payload["value_norm"])
+    elif algorithm == "lidar_dreamer":
+        trainer.world.load_state_dict(payload["world"], strict=True)
+        trainer.critic.load_state_dict(payload["critic"], strict=True)
+        trainer.world_optimizer.load_state_dict(payload["world_optimizer"])
+        trainer.actor_optimizer.load_state_dict(payload["actor_optimizer"])
+        trainer.critic_optimizer.load_state_dict(payload["critic_optimizer"])
+        if critic_normalizer is not None and "critic_obs_norm" in payload:
+            critic_normalizer.load_state_dict(payload["critic_obs_norm"])
+    else:
+        raise ValueError(f"resume is not implemented for algorithm={algorithm!r}")
     restore_rng_state(payload["rng_state"], device)
     if hasattr(trainer, "load_lr_schedule_state"):
         trainer.load_lr_schedule_state(payload.get("lr_schedule_state"))
@@ -3007,8 +3025,10 @@ def main():
     if len(init_flags) > 1:
         raise ValueError("Cannot use " + " and ".join(init_flags) + " together")
     if args.resume_ckpt is not None:
-        if algorithm != "ppo":
-            raise ValueError("--resume-ckpt is only supported for PPO")
+        if algorithm not in ("ppo", "lidar_dreamer"):
+            raise ValueError(
+                "--resume-ckpt is only supported for PPO and lidar_dreamer"
+            )
         resume_counters = load_resume_state(
             args.resume_ckpt,
             algorithm=algorithm,
@@ -4018,7 +4038,7 @@ def main():
                     cfg,
                     protocol_state=protocol_state,
                 )
-                if algorithm == "ppo":
+                if algorithm in ("ppo", "lidar_dreamer"):
                     save_resume_state(
                         resume_state_path(run_dir),
                         algorithm=algorithm,
@@ -4081,7 +4101,7 @@ def main():
             cfg,
             protocol_state=protocol_state,
         )
-        if algorithm == "ppo":
+        if algorithm in ("ppo", "lidar_dreamer"):
             save_resume_state(
                 resume_state_path(run_dir),
                 algorithm=algorithm,

@@ -40,6 +40,11 @@ DEFAULT_REVERSAL_DEADBAND = 0.0
 FOLLOW_OPPONENT_AHEAD_M = 3.0
 FOLLOW_OPPONENT_SPEED_MPS = 2.0
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
+DISTURBANCE_STEER_GAINS = (1.0, 1.21)
+DISTURBANCE_ACTION_LATENCY_STEPS = 2
+GENERALIZATION_YAW_JITTER_RAD = 0.4
+GENERALIZATION_OPPONENT_SPEED_MPS = 6.0
+GENERALIZATION_NAME = "generalization_standing_yaw_opp6"
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -365,6 +370,91 @@ def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
     }
 
 
+def _flying_source(resolved: list[dict]) -> dict | None:
+    if not resolved:
+        return None
+    return next(
+        (spec for spec in resolved if spec["name"] == "solo_flying"),
+        resolved[0],
+    )
+
+
+def _apply_steer_gain(cfg: dict, gain: float) -> dict:
+    cfg["env"]["steer_gain"] = float(gain)
+    warp_sim = dict(cfg["env"].get("warp_sim") or {})
+    warp_sim["steer_gain"] = float(gain)
+    cfg["env"]["warp_sim"] = warp_sim
+    return cfg
+
+
+def extra_disturbance_specs(resolved: list[dict]) -> list[dict]:
+    """Flying-lap disturbance jobs: off-nominal steer gain and extra latency."""
+    source = _flying_source(resolved)
+    if source is None:
+        return []
+    existing = {spec["name"] for spec in resolved}
+    jobs = []
+    for gain in DISTURBANCE_STEER_GAINS:
+        name = f"disturbance_steer_gain_{str(gain).replace('.', '_')}"
+        if name in existing:
+            continue
+        cfg = _apply_steer_gain(_prepare_eval_cfg(source["cfg"]), gain)
+        jobs.append(
+            {
+                "name": name,
+                "cfg": cfg,
+                "opponent_ahead_m": None,
+                "opponent_speed_mps": None,
+            }
+        )
+    latency_name = f"disturbance_action_latency_{DISTURBANCE_ACTION_LATENCY_STEPS}"
+    if latency_name not in existing:
+        cfg = _prepare_eval_cfg(source["cfg"])
+        cfg["env"]["simulate_action_latency"] = int(
+            DISTURBANCE_ACTION_LATENCY_STEPS
+        )
+        cfg["env"]["domain_randomization"] = {
+            "enabled": True,
+            "action_latency_steps_range": [
+                DISTURBANCE_ACTION_LATENCY_STEPS,
+                DISTURBANCE_ACTION_LATENCY_STEPS,
+            ],
+        }
+        jobs.append(
+            {
+                "name": latency_name,
+                "cfg": cfg,
+                "opponent_ahead_m": None,
+                "opponent_speed_mps": None,
+            }
+        )
+    return jobs
+
+
+def extra_generalization_spec(resolved: list[dict]) -> dict | None:
+    """Standing start, off-heading spawn, held-out scripted opponent speed."""
+    if not resolved:
+        return None
+    if any(spec["name"] == GENERALIZATION_NAME for spec in resolved):
+        return None
+    source = next(
+        (spec for spec in resolved if spec["name"] == "solo_standing"),
+        resolved[0],
+    )
+    cfg = _prepare_scripted_overtake_cfg(source["cfg"])
+    cfg["env"]["reset_stationary_probability"] = 1.0
+    cfg["env"]["reset_spawn_yaw_jitter_rad"] = float(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
+    return {
+        "name": GENERALIZATION_NAME,
+        "cfg": cfg,
+        "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
+        "opponent_speed_mps": GENERALIZATION_OPPONENT_SPEED_MPS,
+        "spawn_yaw_jitter_rad": GENERALIZATION_YAW_JITTER_RAD,
+    }
+
+
 def evaluate_policy_on_env(
     env,
     actor,
@@ -378,6 +468,7 @@ def evaluate_policy_on_env(
     reversal_deadband: float = DEFAULT_REVERSAL_DEADBAND,
     opponent_ahead_m: float | None = None,
     opponent_speed_mps: float | None = None,
+    spawn_yaw_jitter_rad: float | None = None,
 ) -> dict:
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
@@ -395,6 +486,11 @@ def evaluate_policy_on_env(
         yaws.append(yaw)
     poses = np.stack(poses, axis=0)
     yaws = np.asarray(yaws, dtype=np.float32)
+    jitter = float(spawn_yaw_jitter_rad or 0.0)
+    if jitter > 0.0:
+        rng = np.random.default_rng(int(seed))
+        offset = rng.uniform(-jitter, jitter, size=yaws.shape)
+        yaws = (yaws + offset).astype(np.float32)
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
     opp_poses = None
     opp_yaws = None
@@ -735,6 +831,10 @@ def evaluate_checkpoint(
     extra = extra_scripted_overtake_spec(resolved)
     if extra is not None:
         jobs.append(extra)
+    jobs.extend(extra_disturbance_specs(resolved))
+    generalization = extra_generalization_spec(resolved)
+    if generalization is not None:
+        jobs.append(generalization)
 
     scenarios = {}
     for job in jobs:
@@ -754,6 +854,7 @@ def evaluate_checkpoint(
                 reversal_deadband=float(reversal_deadband),
                 opponent_ahead_m=job["opponent_ahead_m"],
                 opponent_speed_mps=job["opponent_speed_mps"],
+                spawn_yaw_jitter_rad=job.get("spawn_yaw_jitter_rad"),
             )
         finally:
             env.close()

@@ -13,6 +13,9 @@ from .world_model import (
     world_model_losses,
 )
 
+DEFAULT_REPLAY_CAPACITY = 4096
+DEFAULT_REPLAY_BATCH_SIZE = 32
+
 
 class ImaginationCritic(nn.Module):
     def __init__(self, feat_dim, hidden_sizes=(256, 256)):
@@ -27,6 +30,81 @@ class ImaginationCritic(nn.Module):
 
     def forward(self, features):
         return self.net(features).squeeze(-1)
+
+
+class SequenceReplay:
+    """On-device FIFO of length-T sequences for RSSM + imagination updates."""
+
+    def __init__(
+        self, capacity, seq_len, obs_dim, act_dim, hidden_dim, device
+    ):
+        self.capacity = int(capacity)
+        self.seq_len = int(seq_len)
+        device = torch.device(device)
+        self.obs = torch.zeros(self.capacity, self.seq_len, obs_dim, device=device)
+        self.next_obs = torch.zeros(
+            self.capacity, self.seq_len, obs_dim, device=device
+        )
+        self.actions = torch.zeros(
+            self.capacity, self.seq_len, act_dim, device=device
+        )
+        self.rewards = torch.zeros(self.capacity, self.seq_len, device=device)
+        self.dones = torch.zeros(
+            self.capacity, self.seq_len, dtype=torch.bool, device=device
+        )
+        self.reset = torch.zeros(
+            self.capacity, self.seq_len, dtype=torch.bool, device=device
+        )
+        self.start_hidden = torch.zeros(
+            self.capacity, hidden_dim, device=device
+        )
+        self.size = 0
+        self.index = 0
+
+    def clear(self):
+        self.size = 0
+        self.index = 0
+
+    def add(self, obs, next_obs, actions, rewards, dones, reset, start_hidden):
+        n = int(obs.shape[0])
+        if n <= 0:
+            return
+        if n > self.capacity:
+            obs = obs[-self.capacity :]
+            next_obs = next_obs[-self.capacity :]
+            actions = actions[-self.capacity :]
+            rewards = rewards[-self.capacity :]
+            dones = dones[-self.capacity :]
+            reset = reset[-self.capacity :]
+            start_hidden = start_hidden[-self.capacity :]
+            n = self.capacity
+        idx = (
+            self.index + torch.arange(n, device=obs.device)
+        ) % self.capacity
+        self.obs[idx] = obs
+        self.next_obs[idx] = next_obs
+        self.actions[idx] = actions
+        self.rewards[idx] = rewards
+        self.dones[idx] = dones
+        self.reset[idx] = reset
+        self.start_hidden[idx] = start_hidden
+        self.index = int((self.index + n) % self.capacity)
+        self.size = min(self.size + n, self.capacity)
+
+    def sample(self, batch_size):
+        if self.size <= 0:
+            raise RuntimeError("sequence replay is empty")
+        n = min(int(batch_size), self.size)
+        idx = torch.randint(0, self.size, (n,), device=self.obs.device)
+        return {
+            "obs": self.obs[idx],
+            "next_obs": self.next_obs[idx],
+            "actions": self.actions[idx],
+            "rewards": self.rewards[idx],
+            "dones": self.dones[idx],
+            "reset": self.reset[idx],
+            "start_hidden": self.start_hidden[idx],
+        }
 
 
 class DreamerTrainer:
@@ -49,6 +127,8 @@ class DreamerTrainer:
         entropy_coef=3e-4,
         max_grad_norm=0.5,
         world_hidden_sizes=(256, 256),
+        replay_capacity=DEFAULT_REPLAY_CAPACITY,
+        replay_batch_size=DEFAULT_REPLAY_BATCH_SIZE,
     ):
         if not isinstance(actor, LidarDreamerActor):
             raise TypeError("DreamerTrainer requires LidarDreamerActor")
@@ -71,6 +151,7 @@ class DreamerTrainer:
         self.max_grad_norm = float(max_grad_norm)
         self.actor_obs_dim = int(actor.obs_dim)
         self.act_dim = int(actor.act_dim)
+        self.replay_batch_size = int(replay_batch_size)
         wm_params = list(self.actor.encoder.parameters())
         wm_params += list(self.actor.ls3c.parameters())
         wm_params += list(self.actor.post_mean.parameters())
@@ -86,6 +167,15 @@ class DreamerTrainer:
         self.critic_optimizer = Adam(
             self.critic.parameters(), lr=float(critic_lr)
         )
+        self._replay = SequenceReplay(
+            capacity=replay_capacity,
+            seq_len=self.batch_length,
+            obs_dim=self.actor_obs_dim,
+            act_dim=self.act_dim,
+            hidden_dim=int(self.actor.gru_hidden_dim),
+            device=self.device,
+        )
+        self.last_batch_obs_shape = None
         self._initialized = False
         self._awaiting_observe = False
         self._step = 0
@@ -101,6 +191,9 @@ class DreamerTrainer:
         self._obs = torch.zeros(
             t, n, self.actor_obs_dim, device=self.device
         )
+        self._next_obs = torch.zeros(
+            t, n, self.actor_obs_dim, device=self.device
+        )
         self._actions = torch.zeros(t, n, self.act_dim, device=self.device)
         self._rewards = torch.zeros(t, n, device=self.device)
         self._dones = torch.zeros(t, n, dtype=torch.bool, device=self.device)
@@ -110,6 +203,8 @@ class DreamerTrainer:
         )
         self._start_hidden = self._live_hidden.clone()
         self._reset_mask = torch.ones(n, dtype=torch.bool, device=self.device)
+        self._replay.clear()
+        self.last_batch_obs_shape = None
         self._step = 0
         self._initialized = True
         self._awaiting_observe = False
@@ -149,13 +244,17 @@ class DreamerTrainer:
         timed_out=None,
         timeout_critic_obs=None,
     ):
-        del next_actor_obs, timed_out, timeout_critic_obs
+        del timed_out, timeout_critic_obs
         if not self._initialized:
             raise RuntimeError("initialize must be called before observe")
         if not self._awaiting_observe:
             raise RuntimeError("act must be called before observe")
+        next_actor_obs = next_actor_obs.to(
+            device=self.device, dtype=torch.float32
+        )
         reward = reward.to(device=self.device, dtype=torch.float32)
         done = done.to(device=self.device, dtype=torch.bool)
+        self._next_obs[self._step].copy_(next_actor_obs)
         self._rewards[self._step].copy_(reward)
         self._dones[self._step].copy_(done)
         self._live_hidden.masked_fill_(done.unsqueeze(-1), 0.0)
@@ -165,17 +264,24 @@ class DreamerTrainer:
         self.rollout_position = self._step
         if self._step < self.batch_length:
             return None
+        self._replay.add(
+            self._obs.transpose(0, 1).contiguous(),
+            self._next_obs.transpose(0, 1).contiguous(),
+            self._actions.transpose(0, 1).contiguous(),
+            self._rewards.transpose(0, 1).contiguous(),
+            self._dones.transpose(0, 1).contiguous(),
+            self._reset.transpose(0, 1).contiguous(),
+            self._start_hidden.contiguous(),
+        )
         metrics = self.update()
         self._step = 0
         self.rollout_position = 0
         return metrics
 
     def update(self):
-        obs = self._obs.transpose(0, 1)
-        actions = self._actions.transpose(0, 1)
-        rewards = self._rewards.transpose(0, 1)
-        dones = self._dones.transpose(0, 1)
-        reset_mask = self._reset.transpose(0, 1)
+        batch = self._replay.sample(self.replay_batch_size)
+        obs = batch["obs"]
+        self.last_batch_obs_shape = tuple(obs.shape)
         normalized = self.actor_normalizer.normalize(
             obs.reshape(-1, self.actor_obs_dim)
         ).view_as(obs)
@@ -183,11 +289,12 @@ class DreamerTrainer:
             self.actor,
             self.world,
             normalized,
-            actions,
-            rewards,
-            dones,
-            self._start_hidden,
-            reset_mask=reset_mask,
+            batch["actions"],
+            batch["rewards"],
+            batch["dones"],
+            batch["start_hidden"],
+            reset_mask=batch["reset"],
+            sample_latents=True,
         )
         world_loss = wm["world_loss"] + self.kl_scale * wm["kl_loss"]
         self.world_optimizer.zero_grad(set_to_none=True)
@@ -207,6 +314,7 @@ class DreamerTrainer:
             gamma=self.gamma,
             lambda_gae=self.lambda_gae,
             entropy_coef=self.entropy_coef,
+            sample_latents=True,
         )
         self.actor_optimizer.zero_grad(set_to_none=True)
         imag["actor_loss"].backward(retain_graph=True)

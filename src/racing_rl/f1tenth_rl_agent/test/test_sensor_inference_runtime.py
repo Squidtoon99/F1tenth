@@ -276,3 +276,60 @@ def test_runtime_chunk_actor_realizes_first_tick_only():
         tail_realized = runtime.realize_action(tail_only)
         assert realized.long_norm == pytest.approx(float(np.clip(action[0], -1.0, 1.0)))
         assert tail_realized.long_norm == pytest.approx(0.0)
+
+
+def test_sensor_runtime_loads_dreamer_actor():
+    from f1tenth_policy.dreamer import LidarDreamerActor, deploy_actor_state_dict
+
+    actor = LidarDreamerActor(
+        obs_dim=si.NUM_OBS,
+        act_dim=si.NUM_ACTIONS,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=si.ACT_LIMIT,
+        deter_dim=16,
+        stoch_dim=4,
+        embed_dim=32,
+    )
+    payload = {
+        "actor": deploy_actor_state_dict(actor),
+        "obs_norm": {
+            "mean": torch.zeros(si.NUM_OBS),
+            "var": torch.ones(si.NUM_OBS),
+            "count": torch.tensor(1.0),
+        },
+        "obs_dim": si.NUM_OBS,
+        "actor_obs_dim": si.NUM_OBS,
+        "critic_obs_dim": 392,
+        "actor_layout_version": si.ACTOR_LAYOUT_VERSION,
+        "action_dim": si.NUM_ACTIONS,
+        "policy_format_version": si.POLICY_FORMAT_VERSION,
+        "observation_preprocessing_version": si.OBS_PREPROCESSING_VERSION,
+        "artifact_scope": si.ARTIFACT_SCOPE_SIM_TRAINING,
+        "actor_architecture": actor.actor_architecture,
+        "longitudinal_mode": "force",
+        "steering_action_mode": si.STEERING_ACTION_MODE,
+        "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
+        "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 40.0,
+        "i_slew_a_per_s": 200.0,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = os.path.join(tmp, "policy.pt")
+        torch.save(payload, ckpt)
+        dev = torch.device("cpu")
+        loaded = load_sensor_actor(ckpt, "actor", dev)
+        assert loaded.actor_architecture["name"] == "lidar_dreamer_ls3c"
+        hidden_width = int(loaded.deter_dim + loaded.stoch_dim + loaded.act_dim)
+        assert loaded.gru_hidden_dim == hidden_width
+        norm = load_sensor_obs_norm(ckpt, dev, si.OBS_NORM_EPS, si.OBS_NORM_CLIP)
+        runtime = SensorInferenceRuntime(loaded, norm, dev, warmup_iters=1)
+        assert runtime.hidden.shape[-1] == hidden_width
+        rng = np.random.default_rng(0)
+        obs = rng.standard_normal(si.NUM_OBS, dtype=np.float32)
+        action, _ = runtime.infer_from_host_obs(obs)
+        assert action.shape == (si.NUM_ACTIONS,)
+        realized = runtime.realize_action(action)
+        assert np.isfinite([realized.drive_a, realized.brake_a, realized.servo]).all()
+        assert action.shape[0] == 2

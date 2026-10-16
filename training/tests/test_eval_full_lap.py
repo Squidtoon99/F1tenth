@@ -11,14 +11,21 @@ import torch
 
 from config import DEFAULT_CONFIG
 from eval_full_lap import (
+    DISTURBANCE_ACTION_LATENCY_STEPS,
+    DISTURBANCE_STEER_GAINS,
     FOLLOW_OPPONENT_AHEAD_M,
     FOLLOW_OPPONENT_SPEED_MPS,
+    GENERALIZATION_NAME,
+    GENERALIZATION_OPPONENT_SPEED_MPS,
+    GENERALIZATION_YAW_JITTER_RAD,
     SCRIPTED_OVERTAKE_NAME,
     action_delta_metrics,
     classify_terminations,
     count_progress_overtakes,
     even_spawn_s,
     evaluate_policy_on_env,
+    extra_disturbance_specs,
+    extra_generalization_spec,
     extra_scripted_overtake_spec,
     load_actor_bundle,
     pose_at_s,
@@ -157,6 +164,54 @@ def test_extra_scripted_overtake_spec_matches_follow_video():
     assert extra["cfg"]["reward"] == flying["reward"]
     assert extra_scripted_overtake_spec(
         resolved + [{"name": SCRIPTED_OVERTAKE_NAME, "cfg": flying}]
+    ) is None
+
+
+def test_extra_disturbance_and_generalization_specs():
+    flying = copy.deepcopy(DEFAULT_CONFIG)
+    flying["env"]["opponent_strategy"] = None
+    flying["env"]["steer_gain"] = 1.10714
+    standing = copy.deepcopy(flying)
+    standing["env"]["reset_stationary_probability"] = 1.0
+    resolved = [
+        {"name": "solo_flying", "weight": 1.0, "num_envs": 4, "cfg": flying},
+        {"name": "solo_standing", "weight": 1.0, "num_envs": 4, "cfg": standing},
+    ]
+    jobs = extra_disturbance_specs(resolved)
+    names = [job["name"] for job in jobs]
+    assert names[0] == "disturbance_steer_gain_1_0"
+    assert names[1] == "disturbance_steer_gain_1_21"
+    assert names[2] == "disturbance_action_latency_2"
+    assert jobs[0]["cfg"]["env"]["steer_gain"] == pytest.approx(
+        DISTURBANCE_STEER_GAINS[0]
+    )
+    assert jobs[1]["cfg"]["env"]["steer_gain"] == pytest.approx(
+        DISTURBANCE_STEER_GAINS[1]
+    )
+    assert flying["env"]["steer_gain"] == pytest.approx(1.10714)
+    latency = jobs[2]["cfg"]["env"]
+    assert latency["simulate_action_latency"] == DISTURBANCE_ACTION_LATENCY_STEPS
+    assert latency["domain_randomization"]["enabled"] is True
+    assert latency["domain_randomization"]["action_latency_steps_range"] == [
+        DISTURBANCE_ACTION_LATENCY_STEPS,
+        DISTURBANCE_ACTION_LATENCY_STEPS,
+    ]
+    gen = extra_generalization_spec(resolved)
+    assert gen["name"] == GENERALIZATION_NAME
+    assert gen["spawn_yaw_jitter_rad"] == pytest.approx(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
+    assert gen["opponent_speed_mps"] == pytest.approx(
+        GENERALIZATION_OPPONENT_SPEED_MPS
+    )
+    assert gen["cfg"]["env"]["opponent_strategy"] == "scripted"
+    assert gen["cfg"]["env"]["reset_stationary_probability"] == pytest.approx(1.0)
+    assert gen["cfg"]["env"]["reset_spawn_yaw_jitter_rad"] == pytest.approx(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
+    assert standing["env"]["opponent_strategy"] is None
+    assert extra_generalization_spec(
+        resolved + [{"name": GENERALIZATION_NAME, "cfg": standing}]
     ) is None
 
 
