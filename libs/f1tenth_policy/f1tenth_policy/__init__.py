@@ -9,6 +9,13 @@ from f1tenth_policy.actor import (
     make_actor,
     normalize_actor_architecture,
 )
+from f1tenth_policy.dreamer import (
+    CartesianPolarEncoder,
+    LidarDreamerActor,
+    LightweightStateSpaceCell,
+    cartesian_polar_lidar,
+    deploy_actor_state_dict,
+)
 from f1tenth_policy.artifact import (
     build_sensor_artifact_payload,
     load_sensor_artifact,
@@ -24,6 +31,7 @@ from f1tenth_policy.current import (
 from f1tenth_policy.layout import (
     ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
+    LIDAR_DREAMER_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
     ACTOR_OBS_DIM,
     ARTIFACT_SCOPE_SIM_TRAINING,
@@ -63,7 +71,11 @@ __all__ = [
     "HISTORY_STRIDE",
     "LONG_HISTORY",
     "LIDAR_DIM",
+    "LIDAR_DREAMER_ARCHITECTURE_NAME",
     "LidarCNNEncoder",
+    "LidarDreamerActor",
+    "CartesianPolarEncoder",
+    "LightweightStateSpaceCell",
     "NUM_ACTIONS",
     "OBS_PREPROCESSING_VERSION",
     "ObsNormalizer",
@@ -83,6 +95,8 @@ __all__ = [
     "assert_artifact_current_limits_match",
     "architectures_match",
     "build_sensor_artifact_payload",
+    "cartesian_polar_lidar",
+    "deploy_actor_state_dict",
     "executed_plant_action",
     "integrate_steering_delta",
     "load_obs_normalizer",

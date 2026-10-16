@@ -36,6 +36,7 @@ from f1tenth_policy import (
     actor_from_architecture,
     architectures_match,
     build_sensor_artifact_payload,
+    deploy_actor_state_dict,
     validate_sensor_policy_artifact,
 )
 from f1tenth_policy.actor import apply_policy_output_init
@@ -43,6 +44,7 @@ from f1tenth_policy.layout import (
     ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
     DEFAULT_ACTION_HORIZON,
+    LIDAR_DREAMER_ARCHITECTURE_NAME,
     NUM_ACTIONS,
     SENSOR_POLICY_FORMAT_VERSION,
     STEERING_ACTION_MODE,
@@ -54,6 +56,7 @@ from f1tenth_policy.layout import (
 from config import (
     DEFAULT_CONFIG,
     control_dt_s,
+    effective_dreamer_horizon,
     effective_ppo_horizon,
     effective_qrsac_horizon,
     effective_qrsac_sequence,
@@ -64,6 +67,7 @@ from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
+from dreamer import DreamerTrainer
 from ppo import (
     PPOTrainer,
     annealed_entropy_coef,
@@ -794,10 +798,14 @@ def validate_model_architecture(cfg: dict) -> None:
             "model.actor_hidden_layers and model.critic_hidden_layers"
         )
     actor_type = model.get("actor_type")
-    if actor_type != ACTOR_ARCHITECTURE_NAME:
+    if actor_type not in (
+        ACTOR_ARCHITECTURE_NAME,
+        LIDAR_DREAMER_ARCHITECTURE_NAME,
+    ):
         raise ValueError(
             f"Unsupported model.actor_type={actor_type!r}; "
-            f"expected {ACTOR_ARCHITECTURE_NAME!r}"
+            f"expected {ACTOR_ARCHITECTURE_NAME!r} or "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
         )
     pool_bins = model.get("lidar_pool_bins")
     if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
@@ -901,14 +909,64 @@ def cfg_actor_action_dim(cfg: dict) -> int:
     )
 
 
+def validate_dreamer_config(cfg: dict) -> None:
+    dreamer = cfg.get("dreamer")
+    if not isinstance(dreamer, dict):
+        raise ValueError("algorithm='lidar_dreamer' requires a dreamer mapping")
+    if cfg.get("model", {}).get("actor_type") != LIDAR_DREAMER_ARCHITECTURE_NAME:
+        raise ValueError(
+            "algorithm='lidar_dreamer' requires model.actor_type="
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}"
+        )
+    for key in (
+        "deter_dim",
+        "stoch_dim",
+        "embed_dim",
+        "batch_length",
+        "imagination_horizon",
+    ):
+        value = dreamer.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"dreamer.{key} must be a positive int, got {value!r}")
+    for key in (
+        "gamma",
+        "lambda_gae",
+        "kl_scale",
+        "actor_lr",
+        "world_lr",
+        "critic_lr",
+        "entropy_coef",
+        "max_grad_norm",
+    ):
+        value = dreamer.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise ValueError(
+                f"dreamer.{key} must be a finite number >= 0, got {value!r}"
+            )
+    if not isinstance(dreamer.get("horizon_from_control_dt"), bool):
+        raise ValueError("dreamer.horizon_from_control_dt must be a bool")
+    hidden = dreamer.get("hidden_sizes")
+    if not isinstance(hidden, (list, tuple)) or not hidden:
+        raise ValueError("dreamer.hidden_sizes must be a non-empty list of ints")
+
+
 def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
     algorithm = cfg.get("algorithm")
-    if algorithm not in ("qrsac", "ppo"):
+    if algorithm not in ("qrsac", "ppo", "lidar_dreamer"):
         raise ValueError(
-            f"algorithm must be 'qrsac' or 'ppo', got {algorithm!r}"
+            f"algorithm must be 'qrsac', 'ppo', or 'lidar_dreamer', "
+            f"got {algorithm!r}"
         )
     validate_action_chunk_config(cfg)
     if algorithm == "qrsac":
+        return
+    if algorithm == "lidar_dreamer":
+        validate_dreamer_config(cfg)
         return
     ppo = cfg["ppo"]
     _validate_ppo_init_lr_schedule(cfg, ppo)
@@ -1139,6 +1197,7 @@ def make_policy_network(cfg: dict):
     validate_model_architecture(cfg)
     model = cfg["model"]
     ppo = cfg.get("ppo", {})
+    dreamer = cfg.get("dreamer", {})
     return make_actor(
         actor_type=model["actor_type"],
         obs_dim=cfg["obs"]["num_actor_obs"],
@@ -1150,6 +1209,9 @@ def make_policy_network(cfg: dict):
         lidar_projection_dim=model["lidar_projection_dim"],
         log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
         log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
+        deter_dim=int(dreamer.get("deter_dim", 256)),
+        stoch_dim=int(dreamer.get("stoch_dim", 32)),
+        embed_dim=int(dreamer.get("embed_dim", model["lidar_projection_dim"])),
     )
 
 
@@ -1987,6 +2049,34 @@ def build_ppo_models(
     return models, trainer
 
 
+def build_dreamer_models(
+    cfg: dict,
+    device: torch.device,
+    actor_normalizer: ObsNormalizer,
+) -> tuple[ActorModels, DreamerTrainer]:
+    dreamer_cfg = cfg["dreamer"]
+    actor = make_policy_network(cfg).to(device=device, dtype=torch.float32)
+    models = ActorModels(actor=actor)
+    gamma, lam = effective_dreamer_horizon(cfg)
+    trainer = DreamerTrainer(
+        actor,
+        actor_normalizer,
+        device,
+        batch_length=int(dreamer_cfg["batch_length"]),
+        imagination_horizon=int(dreamer_cfg["imagination_horizon"]),
+        gamma=gamma,
+        lambda_gae=lam,
+        kl_scale=float(dreamer_cfg["kl_scale"]),
+        actor_lr=float(dreamer_cfg["actor_lr"]),
+        world_lr=float(dreamer_cfg["world_lr"]),
+        critic_lr=float(dreamer_cfg["critic_lr"]),
+        entropy_coef=float(dreamer_cfg["entropy_coef"]),
+        max_grad_norm=float(dreamer_cfg["max_grad_norm"]),
+        world_hidden_sizes=tuple(dreamer_cfg["hidden_sizes"]),
+    )
+    return models, trainer
+
+
 def save_policy_artifact(
     models,
     env_transitions: int,
@@ -1998,8 +2088,14 @@ def save_policy_artifact(
     """Save actor-only simulation artifact with sensor layout metadata."""
     artifact_dir.mkdir(parents=True, exist_ok=True)
     path = artifact_dir / f"policy_{env_transitions}.pt"
+    actor_state = models.actor.state_dict()
+    if (
+        actor_architecture_from_module(models.actor).get("name")
+        == LIDAR_DREAMER_ARCHITECTURE_NAME
+    ):
+        actor_state = deploy_actor_state_dict(models.actor)
     payload = build_sensor_artifact_payload(
-        actor_state_dict=models.actor.state_dict(),
+        actor_state_dict=actor_state,
         obs_norm=normalizer.state_dict(),
         actor_architecture=actor_architecture_from_module(models.actor),
         env_transitions=env_transitions,
@@ -2368,7 +2464,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--algorithm",
-        choices=["qrsac", "ppo"],
+        choices=["qrsac", "ppo", "lidar_dreamer"],
         default=cfg["algorithm"],
         help="Training algorithm; explicitly overrides config.algorithm.",
     )
@@ -2688,7 +2784,8 @@ def main():
     # Inductor and PPO's adaptive-pooling backward have no deterministic CUDA
     # implementation; retain deterministic checks but warn on those paths.
     torch.use_deterministic_algorithms(
-        True, warn_only=args.compile or cfg["algorithm"] == "ppo"
+        True,
+        warn_only=args.compile or cfg["algorithm"] in ("ppo", "lidar_dreamer"),
     )
     training_root = Path(__file__).resolve().parent
     source_git = training_source_git_state(training_root)
@@ -2714,6 +2811,7 @@ def main():
     qrsac_gamma, n_step = effective_qrsac_horizon(cfg)
     qrsac_burn_in, qrsac_train_len = effective_qrsac_sequence(cfg)
     ppo_gamma, ppo_gae_lambda = effective_ppo_horizon(cfg)
+    dreamer_gamma, dreamer_lambda = effective_dreamer_horizon(cfg)
 
     device = select_device(args.device)
     if device.type == "cuda":
@@ -2762,6 +2860,24 @@ def main():
             qrsac_gamma,
             n_step,
             bool(model_cfg.get("horizon_from_control_dt", True)),
+        )
+    elif algorithm == "lidar_dreamer":
+        log.info(
+            "Effective experiment: algorithm=lidar_dreamer "
+            "steering_action_mode=%s steering_delta_max_rad=%.12f "
+            "control_hz=%.1f total_transitions=%d compile=%s "
+            "gamma=%.6f lambda_gae=%.6f imagination_horizon=%d "
+            "batch_length=%d horizon_from_control_dt=%s",
+            env_cfg.get("steering_action_mode", "delta"),
+            float(env_cfg.get("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)),
+            1.0 / (float(env_cfg["sim_dt"]) * int(env_cfg["control_interval"])),
+            int(args.total_transitions),
+            bool(args.compile),
+            dreamer_gamma,
+            dreamer_lambda,
+            int(cfg["dreamer"]["imagination_horizon"]),
+            int(cfg["dreamer"]["batch_length"]),
+            bool(cfg["dreamer"].get("horizon_from_control_dt", True)),
         )
     else:
         log.info(
@@ -2854,6 +2970,13 @@ def main():
             train_len=qrsac_train_len,
         )
         args.buffer_capacity = selected_capacity
+    elif algorithm == "lidar_dreamer":
+        models, trainer = build_dreamer_models(
+            cfg, device, actor_normalizer
+        )
+        buffer = None
+        selected_capacity = 0
+        replay_estimate = None
     else:
         models, trainer = build_ppo_models(
             cfg,
@@ -3043,7 +3166,7 @@ def main():
     actor_obs, critic_obs = collect_sensor_reset(train_envs)
     actor_normalizer.update(actor_obs)
     critic_normalizer.update(critic_obs)
-    if algorithm == "ppo":
+    if algorithm in ("ppo", "lidar_dreamer"):
         trainer.initialize(actor_obs, critic_obs)
     if selfplay_mgr is not None:
         selfplay_mgr.seed_snapshot(
@@ -3106,6 +3229,19 @@ def main():
             lidar_aug_enabled,
             lidar_aug_max_shift,
         )
+    elif algorithm == "lidar_dreamer":
+        log.info(
+            "Training protocol: algorithm=lidar_dreamer batch_length=%d "
+            "imagination_horizon=%d actor_lr=%.3e world_lr=%.3e "
+            "critic_lr=%.3e entropy_coef=%.4f kl_scale=%.3f",
+            int(cfg["dreamer"]["batch_length"]),
+            int(cfg["dreamer"]["imagination_horizon"]),
+            float(cfg["dreamer"]["actor_lr"]),
+            float(cfg["dreamer"]["world_lr"]),
+            float(cfg["dreamer"]["critic_lr"]),
+            float(cfg["dreamer"]["entropy_coef"]),
+            float(cfg["dreamer"]["kl_scale"]),
+        )
     else:
         log.info(
             "Training protocol: algorithm=ppo rollout_steps=%d epochs=%d "
@@ -3159,7 +3295,7 @@ def main():
                 env_transitions, args.total_transitions, continuous
             )
             or (
-                algorithm == "ppo"
+                algorithm in ("ppo", "lidar_dreamer")
                 and trainer.rollout_position > 0
             )
         ):
@@ -3174,6 +3310,8 @@ def main():
                     int(cfg["ppo"]["entropy_coef_horizon_transitions"]),
                     env_transitions,
                 )
+                actions = trainer.act(actor_obs, critic_obs)
+            elif algorithm == "lidar_dreamer":
                 actions = trainer.act(actor_obs, critic_obs)
             elif env_transitions < args.min_train_transitions:
                 actions = (
@@ -3226,7 +3364,14 @@ def main():
             vector_ticks += 1
             env_transitions += args.num_envs
             ppo_metrics = None
-            if algorithm == "ppo":
+            if algorithm == "lidar_dreamer":
+                ppo_metrics = trainer.observe(
+                    next_actor_obs,
+                    next_critic_obs,
+                    reward,
+                    done,
+                )
+            elif algorithm == "ppo":
                 trainer.set_schedule_transitions(env_transitions)
                 ppo_timed_out = pure_timeout_mask(extras["termination"])
                 ppo_metrics = trainer.observe(
@@ -3237,22 +3382,29 @@ def main():
                     timed_out=ppo_timed_out,
                     timeout_critic_obs=extras["observations"]["terminal_critic"],
                 )
-                if ppo_metrics is not None:
-                    minibatches = int(ppo_metrics["minibatches"])
-                    gradient_updates += int(ppo_metrics["actor_updates"])
-                    gradient_updates += int(ppo_metrics["value_updates"])
+            if algorithm in ("ppo", "lidar_dreamer") and ppo_metrics is not None:
+                minibatches = int(ppo_metrics["minibatches"])
+                gradient_updates += int(ppo_metrics["actor_updates"])
+                gradient_updates += int(ppo_metrics["value_updates"])
+                if algorithm == "ppo":
                     sampled_replay_rows += (
                         minibatches
                         * trainer.rollout_steps
                         * trainer.env_minibatch_size
                     )
-                    policy_loss_accum += float(ppo_metrics["policy_loss"])
-                    critic_loss_accum += float(ppo_metrics["value_loss"])
-                    loss_count += 1
-                    for key, value in ppo_metrics.items():
-                        ppo_metric_accum[key] = ppo_metric_accum.get(key, 0.0) + float(
-                            value
-                        )
+                else:
+                    sampled_replay_rows += (
+                        minibatches
+                        * trainer.batch_length
+                        * args.num_envs
+                    )
+                policy_loss_accum += float(ppo_metrics["policy_loss"])
+                critic_loss_accum += float(ppo_metrics["value_loss"])
+                loss_count += 1
+                for key, value in ppo_metrics.items():
+                    ppo_metric_accum[key] = ppo_metric_accum.get(key, 0.0) + float(
+                        value
+                    )
 
             episode_rewards += reward
             done_f = done.to(episode_rewards.dtype)
@@ -3548,7 +3700,24 @@ def main():
                             ep_count=ep_count,
                         ),
                     )
-                    if loss_count:
+                    if loss_count and algorithm == "lidar_dreamer":
+                        log.info(
+                            "  lidar_dreamer: world_loss=%.5f recon=%.5f "
+                            "reward=%.5f kl=%.5f policy_loss=%.5f "
+                            "value_loss=%.5f imagined_return=%.4f "
+                            "policy_entropy=%.3f",
+                            ppo_metric_accum.get("world_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("recon_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("reward_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("kl_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("policy_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("value_loss", 0.0) / loss_count,
+                            ppo_metric_accum.get("imagined_return", 0.0)
+                            / loss_count,
+                            ppo_metric_accum.get("policy_entropy", 0.0)
+                            / loss_count,
+                        )
+                    elif loss_count and algorithm == "ppo":
                         log.info(
                             "  ppo: value_loss=%.5f neg_logp=%.5f approx_kl=%.5f "
                             "policy_entropy=%.3f gaussian_entropy=%.3f "

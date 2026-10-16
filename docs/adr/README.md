@@ -83,3 +83,5 @@ trade-off. Routine work is captured by the PR instead (see
   occupied/free thresholds so unknown cells stay max-range like Warp.
 - [0039](0039-action-chunk-receding-horizon-ppo.md) — Receding-horizon PPO
   action chunks (H=4, execute first tick, 20 Hz plant).
+- [0040](0040-lidar-dreamer-world-model.md) — LiDAR Dreamer RSSM
+  (Cartesian-polar + LS3C), imagination-trained actor, encoder+actor deploy.

@@ -251,6 +251,23 @@ DEFAULT_CONFIG = {
         "lr_final": 0.0,
         "desired_kl": 0.01,
     },
+    "dreamer": {
+        "deter_dim": 256,
+        "stoch_dim": 32,
+        "embed_dim": 256,
+        "batch_length": 16,
+        "imagination_horizon": 8,
+        "gamma": 0.9896,
+        "lambda_gae": 0.95,
+        "kl_scale": 0.1,
+        "actor_lr": 3e-5,
+        "world_lr": 1e-4,
+        "critic_lr": 1e-4,
+        "entropy_coef": 3e-4,
+        "max_grad_norm": 0.5,
+        "horizon_from_control_dt": True,
+        "hidden_sizes": [256, 256],
+    },
     "schedule": {
         "total_transitions": 500_000_000,
         "log_interval_transitions": 51_200,
@@ -354,3 +371,15 @@ def effective_ppo_horizon(cfg: dict) -> tuple[float, float]:
             rescale_gamma_for_dt(gae_lambda, dt),
         )
     return gamma, gae_lambda
+
+
+def effective_dreamer_horizon(cfg: dict) -> tuple[float, float]:
+    gamma = float(cfg["dreamer"]["gamma"])
+    lam = float(cfg["dreamer"]["lambda_gae"])
+    if bool(cfg["dreamer"].get("horizon_from_control_dt", True)):
+        dt = control_dt_s(cfg["env"])
+        return (
+            rescale_gamma_for_dt(gamma, dt),
+            rescale_gamma_for_dt(lam, dt),
+        )
+    return gamma, lam
