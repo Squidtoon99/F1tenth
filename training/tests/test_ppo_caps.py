@@ -190,7 +190,8 @@ def test_caps_and_reversal_use_plant_prefix():
     assert plant_rates.numel() == 2
     assert chunk_rates.numel() == 8
     assert float(plant_penalty) == pytest.approx(0.0)
-    assert float(chunk_penalty) > 0.0
+    assert float(plant_rates[0]) == pytest.approx(0.0)
+    assert float(chunk_rates[2]) > 0.0
 
     torch.manual_seed(0)
     actor = make_actor(
