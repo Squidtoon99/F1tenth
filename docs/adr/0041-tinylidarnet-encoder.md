@@ -27,5 +27,7 @@ GRU, PPO, proprio, and 20 Hz stay.
 
 ## Consequences
 
-- Austin arm: `training/configs/austin_e2e_ppo_baseline_v6_tinylidarnet.json`.
+- Austin arm: `training/configs/austin_e2e_ppo_baseline_v6_tinylidarnet.json`
+  (256M, scripted opponents). `validate_model_architecture` does not require
+  `lidar_pool_bins` for `tinylidarnet_gru`.
 - `sensor_racer` loads the graph through `actor_from_architecture`.

@@ -11,14 +11,22 @@ import torch
 
 from config import DEFAULT_CONFIG
 from eval_full_lap import (
+    DISTURBANCE_LATENCY_STEPS,
+    DISTURBANCE_STEER_GAINS,
     FOLLOW_OPPONENT_AHEAD_M,
     FOLLOW_OPPONENT_SPEED_MPS,
+    GENERALIZATION_NAME,
+    GENERALIZATION_OPPONENT_SPEED_MPS,
+    GENERALIZATION_YAW_JITTER_RAD,
     SCRIPTED_OVERTAKE_NAME,
     action_delta_metrics,
     classify_terminations,
     count_progress_overtakes,
+    disturbance_job_name,
     even_spawn_s,
     evaluate_policy_on_env,
+    extra_disturbance_specs,
+    extra_generalization_spec,
     extra_scripted_overtake_spec,
     load_actor_bundle,
     pose_at_s,
@@ -157,6 +165,61 @@ def test_extra_scripted_overtake_spec_matches_follow_video():
     assert extra["cfg"]["reward"] == flying["reward"]
     assert extra_scripted_overtake_spec(
         resolved + [{"name": SCRIPTED_OVERTAKE_NAME, "cfg": flying}]
+    ) is None
+
+
+def test_extra_disturbance_specs_pin_gain_and_latency():
+    flying = copy.deepcopy(DEFAULT_CONFIG)
+    flying["env"]["steer_gain"] = 1.10714
+    flying["env"]["warp_sim"]["steer_gain"] = 1.10714
+    flying["env"]["opponent_strategy"] = None
+    resolved = [
+        {"name": "solo_flying", "weight": 1.0, "num_envs": 4, "cfg": flying},
+    ]
+    jobs = extra_disturbance_specs(resolved)
+    assert [job["name"] for job in jobs] == [
+        disturbance_job_name(gain) for gain in DISTURBANCE_STEER_GAINS
+    ]
+    for job, gain in zip(jobs, DISTURBANCE_STEER_GAINS):
+        env = job["cfg"]["env"]
+        dr = env["domain_randomization"]
+        assert env["steer_gain"] == pytest.approx(gain)
+        assert env["warp_sim"]["steer_gain"] == pytest.approx(gain)
+        assert dr["enabled"] is True
+        assert dr["action_latency_steps_range"] == DISTURBANCE_LATENCY_STEPS
+        assert dr["steer_gain_range"] == [gain, gain]
+        assert env["opponent_strategy"] is None
+        assert job["opponent_ahead_m"] is None
+    assert flying["env"]["steer_gain"] == pytest.approx(1.10714)
+    assert extra_disturbance_specs(
+        resolved + [{"name": jobs[0]["name"], "cfg": flying}]
+    )[0]["name"] == jobs[1]["name"]
+
+
+def test_extra_generalization_spec_standing_off_heading():
+    flying = copy.deepcopy(DEFAULT_CONFIG)
+    flying["env"]["reset_stationary_probability"] = 0.0
+    standing = copy.deepcopy(flying)
+    standing["env"]["reset_stationary_probability"] = 1.0
+    resolved = [
+        {"name": "solo_flying", "weight": 1.0, "num_envs": 4, "cfg": flying},
+        {"name": "solo_standing", "weight": 1.0, "num_envs": 4, "cfg": standing},
+    ]
+    extra = extra_generalization_spec(resolved)
+    assert extra["name"] == GENERALIZATION_NAME
+    env = extra["cfg"]["env"]
+    assert env["opponent_strategy"] == "scripted"
+    assert env["reset_stationary_probability"] == pytest.approx(1.0)
+    assert env["reset_spawn_yaw_jitter_rad"] == pytest.approx(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
+    assert extra["opponent_ahead_m"] == pytest.approx(FOLLOW_OPPONENT_AHEAD_M)
+    assert extra["opponent_speed_mps"] == pytest.approx(
+        GENERALIZATION_OPPONENT_SPEED_MPS
+    )
+    assert standing["env"]["opponent_strategy"] is None
+    assert extra_generalization_spec(
+        resolved + [{"name": GENERALIZATION_NAME, "cfg": standing}]
     ) is None
 
 

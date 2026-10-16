@@ -15,7 +15,10 @@ from f1tenth_policy import (
     NUM_ACTIONS,
     PROPRIO_DIM,
     STEER_HISTORY,
+    TINYLIDARNET_ARCHITECTURE_NAME,
+    TinyLidarNetEncoder,
     actor_action_dim,
+    actor_from_architecture,
     executed_plant_action,
     make_actor,
     steer_history_angles_and_deltas,
@@ -209,3 +212,26 @@ def test_chunk_artifact_roundtrip_uses_action_dim_eight():
     )
     assert payload["action_dim"] == 8
     assert payload["policy_format_version"] == 5
+
+
+def test_tinylidarnet_architecture_roundtrip():
+    torch.manual_seed(7)
+    actor = make_actor(
+        ACTOR_OBS_DIM,
+        2,
+        [32, 32],
+        activation=nn.ReLU,
+        actor_type=TINYLIDARNET_ARCHITECTURE_NAME,
+    )
+    assert isinstance(actor.encoder, TinyLidarNetEncoder)
+    assert actor.actor_architecture["name"] == TINYLIDARNET_ARCHITECTURE_NAME
+    assert actor.actor_architecture["pool"] == "none"
+    assert "pool_bins" not in actor.actor_architecture
+    restored = actor_from_architecture(actor.actor_architecture)
+    restored.load_state_dict(actor.state_dict())
+    obs = torch.randn(2, ACTOR_OBS_DIM)
+    hidden = actor.initial_hidden(2)
+    first, _, _ = actor.step(obs, hidden, deterministic=True)
+    second, _, _ = restored.step(obs, hidden, deterministic=True)
+    assert first.shape == (2, NUM_ACTIONS)
+    assert torch.allclose(first, second, atol=1e-5)

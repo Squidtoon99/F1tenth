@@ -811,11 +811,12 @@ def validate_model_architecture(cfg: dict) -> None:
             f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
     pool_bins = model.get("lidar_pool_bins")
-    if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
-        raise ValueError(
-            f"model.lidar_pool_bins must be one of "
-            f"{sorted(ALLOWED_LIDAR_POOL_BINS)}, got {pool_bins!r}"
-        )
+    if actor_type != TINYLIDARNET_ARCHITECTURE_NAME:
+        if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
+            raise ValueError(
+                f"model.lidar_pool_bins must be one of "
+                f"{sorted(ALLOWED_LIDAR_POOL_BINS)}, got {pool_bins!r}"
+            )
     projection_dim = model.get("lidar_projection_dim")
     if not isinstance(projection_dim, int) or projection_dim <= 0:
         raise ValueError(
@@ -1201,6 +1202,9 @@ def make_policy_network(cfg: dict):
     model = cfg["model"]
     ppo = cfg.get("ppo", {})
     dreamer = cfg.get("dreamer", {})
+    pool_bins = model.get("lidar_pool_bins")
+    if pool_bins is None:
+        pool_bins = 32
     return make_actor(
         actor_type=model["actor_type"],
         obs_dim=cfg["obs"]["num_actor_obs"],
@@ -1208,7 +1212,7 @@ def make_policy_network(cfg: dict):
         hidden_sizes=model["actor_hidden_layers"],
         activation=nn.ReLU,
         act_limit=1.0,
-        lidar_pool_bins=model["lidar_pool_bins"],
+        lidar_pool_bins=pool_bins,
         lidar_projection_dim=model["lidar_projection_dim"],
         log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
         log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
