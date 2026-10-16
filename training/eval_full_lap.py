@@ -42,10 +42,9 @@ FOLLOW_OPPONENT_SPEED_MPS = 2.0
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 DISTURBANCE_STEER_GAINS = (1.0, 1.21)
 DISTURBANCE_ACTION_LATENCY_STEPS = 2
-OFF_HEADING_YAW_JITTER_RAD = 0.4
-HELD_OUT_OPPONENT_SPEED_MPS = 6.0
-OFF_HEADING_NAME = "off_heading"
-HELD_OUT_OVERTAKE_NAME = "scripted_overtake_6mps"
+GENERALIZATION_YAW_JITTER_RAD = 0.4
+GENERALIZATION_OPPONENT_SPEED_MPS = 6.0
+GENERALIZATION_NAME = "generalization_standing_yaw_opp6"
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -400,7 +399,7 @@ def extra_disturbance_specs(resolved: list[dict]) -> list[dict]:
             }
         )
         existing.add(name)
-    latency_name = "disturbance_action_latency_2"
+    latency_name = f"disturbance_action_latency_{DISTURBANCE_ACTION_LATENCY_STEPS}"
     if latency_name not in existing:
         cfg = _prepare_eval_cfg(source["cfg"])
         steps = int(DISTURBANCE_ACTION_LATENCY_STEPS)
@@ -420,35 +419,28 @@ def extra_disturbance_specs(resolved: list[dict]) -> list[dict]:
     return jobs
 
 
-def extra_generalization_specs(resolved: list[dict]) -> list[dict]:
-    """Off-heading flying start and a held-out scripted opponent speed."""
+def extra_generalization_spec(resolved: list[dict]) -> dict | None:
+    """Standing start, off-heading spawn, held-out scripted opponent speed."""
     if not resolved:
-        return []
-    existing = {spec["name"] for spec in resolved}
-    source = _flying_eval_source(resolved)
-    jobs = []
-    if OFF_HEADING_NAME not in existing:
-        cfg = _prepare_eval_cfg(source["cfg"])
-        cfg["env"]["reset_spawn_yaw_jitter_rad"] = float(OFF_HEADING_YAW_JITTER_RAD)
-        jobs.append(
-            {
-                "name": OFF_HEADING_NAME,
-                "cfg": cfg,
-                "opponent_ahead_m": None,
-                "opponent_speed_mps": None,
-                "yaw_jitter_rad": float(OFF_HEADING_YAW_JITTER_RAD),
-            }
-        )
-    if HELD_OUT_OVERTAKE_NAME not in existing:
-        jobs.append(
-            {
-                "name": HELD_OUT_OVERTAKE_NAME,
-                "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
-                "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
-                "opponent_speed_mps": float(HELD_OUT_OPPONENT_SPEED_MPS),
-            }
-        )
-    return jobs
+        return None
+    if any(spec["name"] == GENERALIZATION_NAME for spec in resolved):
+        return None
+    source = next(
+        (spec for spec in resolved if spec["name"] == "solo_standing"),
+        resolved[0],
+    )
+    cfg = _prepare_scripted_overtake_cfg(source["cfg"])
+    cfg["env"]["reset_stationary_probability"] = 1.0
+    cfg["env"]["reset_spawn_yaw_jitter_rad"] = float(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
+    return {
+        "name": GENERALIZATION_NAME,
+        "cfg": cfg,
+        "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
+        "opponent_speed_mps": float(GENERALIZATION_OPPONENT_SPEED_MPS),
+        "yaw_jitter_rad": float(GENERALIZATION_YAW_JITTER_RAD),
+    }
 
 
 def evaluate_policy_on_env(
@@ -482,13 +474,14 @@ def evaluate_policy_on_env(
         yaws.append(yaw)
     poses = np.stack(poses, axis=0)
     yaws = np.asarray(yaws, dtype=np.float32)
-    if yaw_jitter_rad is not None and float(yaw_jitter_rad) != 0.0:
+    jitter = float(yaw_jitter_rad or 0.0)
+    if jitter == 0.0:
+        jitter = float(env.env_cfg.get("reset_spawn_yaw_jitter_rad", 0.0) or 0.0)
+    if jitter != 0.0:
         rng = np.random.default_rng(int(seed))
-        yaws = yaws + rng.uniform(
-            -float(yaw_jitter_rad),
-            float(yaw_jitter_rad),
-            size=yaws.shape,
-        ).astype(np.float32)
+        yaws = yaws + rng.uniform(-jitter, jitter, size=yaws.shape).astype(
+            np.float32
+        )
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
     opp_poses = None
     opp_yaws = None
@@ -830,7 +823,9 @@ def evaluate_checkpoint(
     if extra is not None:
         jobs.append(extra)
     jobs.extend(extra_disturbance_specs(resolved + jobs))
-    jobs.extend(extra_generalization_specs(resolved + jobs))
+    extra_gen = extra_generalization_spec(resolved + jobs)
+    if extra_gen is not None:
+        jobs.append(extra_gen)
 
     scenarios = {}
     for job in jobs:

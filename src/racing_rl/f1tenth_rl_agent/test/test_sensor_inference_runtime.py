@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import math
 import os
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from f1tenth_policy.actor import TinyLidarNetEncoder
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
     SquashedGaussianLidarGRUActor,
@@ -288,3 +290,54 @@ def test_runtime_chunk_actor_realizes_first_tick_only():
         tail_of_first = float(np.clip(action[2], -1.0, 1.0))
         if not np.isclose(float(action_b[0]), float(action[2])):
             assert realized_b.long_norm != pytest.approx(tail_of_first)
+
+
+def test_sensor_runtime_loads_tinylidarnet():
+    actor = SquashedGaussianLidarGRUActor(
+        obs_dim=si.NUM_OBS,
+        act_dim=si.NUM_ACTIONS,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=si.ACT_LIMIT,
+        gru_hidden_dim=si.GRU_HIDDEN_DIM,
+        encoder_name="tinylidarnet",
+    )
+    payload = {
+        "actor": actor.state_dict(),
+        "obs_norm": {
+            "mean": torch.zeros(si.NUM_OBS),
+            "var": torch.ones(si.NUM_OBS),
+            "count": torch.tensor(1.0),
+        },
+        "obs_dim": si.NUM_OBS,
+        "actor_obs_dim": si.NUM_OBS,
+        "critic_obs_dim": 392,
+        "actor_layout_version": si.ACTOR_LAYOUT_VERSION,
+        "action_dim": si.NUM_ACTIONS,
+        "policy_format_version": si.POLICY_FORMAT_VERSION,
+        "observation_preprocessing_version": si.OBS_PREPROCESSING_VERSION,
+        "artifact_scope": si.ARTIFACT_SCOPE_SIM_TRAINING,
+        "actor_architecture": actor.actor_architecture,
+        "longitudinal_mode": "force",
+        "steering_action_mode": si.STEERING_ACTION_MODE,
+        "steering_delta_max_rad": float(si.STEERING_DELTA_MAX_RAD),
+        "control_hz": si.CONTROL_HZ,
+        "i_drive_max_a": 80.0,
+        "i_brake_max_a": 40.0,
+        "i_slew_a_per_s": 200.0,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = os.path.join(tmp, "policy.pt")
+        torch.save(payload, ckpt)
+        dev = torch.device("cpu")
+        loaded = load_sensor_actor(ckpt, "actor", dev)
+        norm = load_sensor_obs_norm(ckpt, dev, si.OBS_NORM_EPS, si.OBS_NORM_CLIP)
+        runtime = SensorInferenceRuntime(loaded, norm, dev, warmup_iters=1)
+        assert isinstance(loaded.encoder, TinyLidarNetEncoder)
+        rng = np.random.default_rng(0)
+        obs = rng.standard_normal(si.NUM_OBS, dtype=np.float32)
+        action, _ = runtime.infer_from_host_obs(obs)
+        assert action.shape == (2,)
+        realized = runtime.realize_action(action)
+        assert math.isfinite(realized.long_norm)
+        assert math.isfinite(realized.realized_steer_rad)
