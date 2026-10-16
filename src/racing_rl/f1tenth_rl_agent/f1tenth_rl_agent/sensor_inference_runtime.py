@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from f1tenth_policy.layout import executed_plant_action
+
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import ObsNormalizer, SquashedGaussianLidarGRUActor
 from f1tenth_rl_agent.sensor_action import (
@@ -84,7 +86,9 @@ class SensorInferenceRuntime:
         self._steer_hist_view = np.zeros(si.STEER_HISTORY, dtype=np.float32)
         self._executed_steer_history = np.zeros(si.STEER_HISTORY, dtype=np.float32)
         self._executed_long_history = np.zeros(si.LONG_HISTORY, dtype=np.float32)
-        self._action_host = np.zeros(si.NUM_ACTIONS, dtype=np.float32)
+        self._act_dim = int(actor.act_dim)
+        self._action_host = np.zeros(self._act_dim, dtype=np.float32)
+        self._chunk_cache = np.zeros(self._act_dim, dtype=np.float32)
         self._hidden = actor.initial_hidden(1, device=device, dtype=torch.float32)
         self._obs_device = torch.zeros(
             (1, si.NUM_OBS), dtype=torch.float32, device=device
@@ -93,7 +97,7 @@ class SensorInferenceRuntime:
             (1, si.NUM_OBS), dtype=torch.float32, device=device
         )
         self._action_device = torch.zeros(
-            (1, si.NUM_ACTIONS), dtype=torch.float32, device=device
+            (1, self._act_dim), dtype=torch.float32, device=device
         )
         self._use_cuda = device.type == "cuda"
         self._stream: torch.cuda.Stream | None = None
@@ -139,6 +143,7 @@ class SensorInferenceRuntime:
         self._steer_hist_view.fill(0.0)
         self._executed_steer_history.fill(0.0)
         self._executed_long_history.fill(0.0)
+        self._chunk_cache.fill(0.0)
 
     def pack_observation(
         self,
@@ -196,9 +201,10 @@ class SensorInferenceRuntime:
     def realize_action(self, action_np: np.ndarray) -> RealizedActuatorCommand:
         """Integrate delta steering and map to VESC/servo (delta-only)."""
         t0 = time.perf_counter()
+        plant = executed_plant_action(np.asarray(action_np, dtype=np.float32))
         self.realized_steer_rad = integrate_steering_delta(
             self.realized_steer_rad,
-            float(action_np[1]),
+            float(plant[1]),
             delta_max_rad=self.steering_delta_max_rad,
             max_steer=self.max_steer,
             clip_actions=si.CLIP_ACTIONS,
@@ -206,7 +212,7 @@ class SensorInferenceRuntime:
         steering_command = self.realized_steer_rad / self.max_steer
         drive_a, brake_a, servo, long_norm, steer_norm = (
             normalized_action_to_physical(
-                float(action_np[0]),
+                float(plant[0]),
                 steering_command,
                 i_drive_max_a=self.i_drive_max_a,
                 i_brake_max_a=self.i_brake_max_a,
@@ -278,6 +284,7 @@ class SensorInferenceRuntime:
             d2h_t0 = time.perf_counter()
             self._action_device.copy_(action)
             self._action_host[:] = self._action_device[0].detach().cpu().numpy()
+            self._chunk_cache[:] = self._action_host
             d2h_ms = (time.perf_counter() - d2h_t0) * 1000.0
 
         return self._action_host, InferenceTimings(

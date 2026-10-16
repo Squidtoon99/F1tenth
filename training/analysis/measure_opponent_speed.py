@@ -91,7 +91,7 @@ def measure_checkpoint_speed(
         payload,
         expected_architecture=architecture,
         expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
-        expected_action_dim=int(cfg["env"]["num_actions"]),
+        expected_action_dim=None,
         expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
         expected_critic_obs_dim=int(cfg["obs"]["num_obs"]),
     )

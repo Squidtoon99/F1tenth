@@ -385,7 +385,7 @@ def evaluate_checkpoint(
         ckpt_path,
         device,
         expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
-        expected_action_dim=int(cfg["env"]["num_actions"]),
+        expected_action_dim=None,
         expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
         norm_eps=float(cfg["obs"].get("norm_eps", 1e-8)),
         norm_clip=float(cfg["obs"].get("norm_clip", 10.0)),

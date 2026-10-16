@@ -12,8 +12,11 @@ from f1tenth_policy import (
     HISTORY_STRIDE,
     LIDAR_DIM,
     LONG_HISTORY,
+    NUM_ACTIONS,
     PROPRIO_DIM,
     STEER_HISTORY,
+    actor_action_dim,
+    executed_plant_action,
     make_actor,
     steer_history_angles_and_deltas,
     validate_sensor_policy_artifact,
@@ -24,6 +27,9 @@ from f1tenth_policy.normalizer import ObsNormalizer
 
 def test_layout_dimensions():
     assert ACTOR_OBS_DIM == LIDAR_DIM + PROPRIO_DIM == 1097
+    assert NUM_ACTIONS == 2
+    assert actor_action_dim(1) == 2
+    assert actor_action_dim(4) == 8
 
 
 def test_steer_history_deltas():
@@ -151,3 +157,55 @@ def test_artifact_validation_accepts_v3_tag_at_20hz():
             too_old,
             expected_architecture=actor.actor_architecture,
         )
+
+
+def test_action_chunk_head_and_executed_prefix():
+    torch.manual_seed(4)
+    actor = make_actor(ACTOR_OBS_DIM, 8, [32, 32], activation=nn.ReLU)
+    assert actor.act_dim == 8
+    assert actor.action_horizon == 4
+    assert actor.actor_architecture["action_horizon"] == 4
+    obs = torch.randn(3, ACTOR_OBS_DIM)
+    hidden = actor.initial_hidden(3)
+    action, logp, _ = actor.step(obs, hidden, deterministic=True)
+    assert action.shape == (3, 8)
+    assert logp.shape == (3,)
+    plant = executed_plant_action(action)
+    assert plant.shape == (3, 2)
+    assert torch.equal(plant, action[..., :2])
+    assert not torch.equal(plant, action[..., 2:4])
+
+
+def test_receding_horizon_does_not_play_cached_tail():
+    torch.manual_seed(5)
+    actor = make_actor(ACTOR_OBS_DIM, 8, [32, 32], activation=nn.ReLU)
+    obs = torch.randn(1, ACTOR_OBS_DIM)
+    hidden = actor.initial_hidden(1)
+    chunk, _, next_h = actor.step(obs, hidden, deterministic=True)
+    again, _, _ = actor.step(obs, next_h, deterministic=True)
+    first = executed_plant_action(chunk)
+    second = executed_plant_action(again)
+    assert torch.equal(first, chunk[..., :2])
+    assert torch.equal(second, again[..., :2])
+    assert not torch.equal(first, chunk[..., 2:4])
+
+
+def test_chunk_artifact_roundtrip_uses_action_dim_eight():
+    torch.manual_seed(6)
+    actor = make_actor(ACTOR_OBS_DIM, 8, [32, 32], activation=nn.ReLU)
+    normalizer = ObsNormalizer(ACTOR_OBS_DIM, torch.device("cpu"))
+    payload = build_sensor_artifact_payload(
+        actor_state_dict=actor.state_dict(),
+        obs_norm=normalizer.state_dict(),
+        actor_architecture=actor.actor_architecture,
+        env_transitions=1000,
+        action_dim=8,
+        policy_format_version=5,
+    )
+    validate_sensor_policy_artifact(
+        payload,
+        expected_architecture=actor.actor_architecture,
+        expected_action_dim=8,
+    )
+    assert payload["action_dim"] == 8
+    assert payload["policy_format_version"] == 5

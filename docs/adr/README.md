@@ -81,3 +81,5 @@ trade-off. Routine work is captured by the PR instead (see
   `/drive` before the next lockstep observation.
 - [0038](0038-gym-ros-trinary-occupancy.md) — Gym occupancy uses ROS
   occupied/free thresholds so unknown cells stay max-range like Warp.
+- [0039](0039-action-chunk-receding-horizon-ppo.md) — Receding-horizon PPO
+  action chunks (H=4, execute first tick, 20 Hz plant).

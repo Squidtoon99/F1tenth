@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from f1tenth_contract import validate_policy_artifact
 from f1tenth_policy import (
+    NUM_ACTIONS,
     STEERING_DELTA_MAX_RAD,
     ObsNormalizer as SharedObsNormalizer,
     SquashedGaussianLidarGRUActor,
@@ -137,6 +138,7 @@ def load_sensor_actor(
     validate_sensor_policy_artifact(
         payload,
         expected_architecture=architecture,
+        expected_action_dim=int(architecture.get("action_dim", NUM_ACTIONS)),
         expected_steering_action_mode=expected_steering_action_mode,
         expected_steering_delta_max_rad=expected_steering_delta_max_rad,
     )
@@ -170,6 +172,7 @@ def load_sensor_obs_norm(
     validate_sensor_policy_artifact(
         payload,
         expected_architecture=architecture,
+        expected_action_dim=int(architecture.get("action_dim", NUM_ACTIONS)),
         expected_steering_action_mode=expected_steering_action_mode,
         expected_steering_delta_max_rad=expected_steering_delta_max_rad,
     )

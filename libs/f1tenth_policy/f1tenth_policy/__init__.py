@@ -22,12 +22,14 @@ from f1tenth_policy.current import (
     assert_artifact_current_limits_match,
 )
 from f1tenth_policy.layout import (
+    ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
     ACTOR_OBS_DIM,
     ARTIFACT_SCOPE_SIM_TRAINING,
     CONTROL_HZ,
     CRITIC_OBS_DIM,
+    DEFAULT_ACTION_HORIZON,
     GRU_HIDDEN_DIM,
     HISTORY_STRIDE,
     LONG_HISTORY,
@@ -39,6 +41,8 @@ from f1tenth_policy.layout import (
     STEER_HISTORY,
     STEERING_ACTION_MODE,
     STEERING_DELTA_MAX_RAD,
+    actor_action_dim,
+    executed_plant_action,
 )
 from f1tenth_policy.normalizer import ObsNormalizer, load_obs_normalizer
 from f1tenth_policy.steering import (
@@ -47,12 +51,14 @@ from f1tenth_policy.steering import (
 )
 
 __all__ = [
+    "ACTION_CHUNK_POLICY_FORMAT_VERSION",
     "ACTOR_ARCHITECTURE_NAME",
     "ACTOR_LAYOUT_VERSION",
     "ACTOR_OBS_DIM",
     "ARTIFACT_SCOPE_SIM_TRAINING",
     "CONTROL_HZ",
     "CRITIC_OBS_DIM",
+    "DEFAULT_ACTION_HORIZON",
     "GRU_HIDDEN_DIM",
     "HISTORY_STRIDE",
     "LONG_HISTORY",
@@ -67,6 +73,7 @@ __all__ = [
     "STEERING_ACTION_MODE",
     "STEERING_DELTA_MAX_RAD",
     "SquashedGaussianLidarGRUActor",
+    "actor_action_dim",
     "actor_architecture_from_module",
     "actor_from_architecture",
     "TRAINING_I_BRAKE_MAX_A",
@@ -76,6 +83,7 @@ __all__ = [
     "assert_artifact_current_limits_match",
     "architectures_match",
     "build_sensor_artifact_payload",
+    "executed_plant_action",
     "integrate_steering_delta",
     "load_obs_normalizer",
     "load_sensor_artifact",
