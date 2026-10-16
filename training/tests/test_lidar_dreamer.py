@@ -332,6 +332,29 @@ def _adam_exp_avg(optimizer):
     raise AssertionError("optimizer has no Adam moments")
 
 
+def test_two_sequential_world_loss_updates():
+    torch.manual_seed(0)
+    trainer, _actor, _norm = _tiny_trainer(batch_length=4, replay_batch_size=4)
+    n = 4
+    obs = torch.rand(n, ACTOR_OBS_DIM)
+    critic_obs = torch.rand(n, 392)
+    trainer.initialize(obs, critic_obs)
+    for _ in range(2):
+        metrics = None
+        for _ in range(trainer.batch_length):
+            trainer.act(obs, critic_obs)
+            obs = torch.rand(n, ACTOR_OBS_DIM)
+            metrics = trainer.observe(
+                obs,
+                critic_obs,
+                torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool),
+            )
+        assert metrics is not None
+        for key in ("world_loss", "kl_loss", "policy_loss", "value_loss"):
+            assert math.isfinite(metrics[key]), key
+
+
 def test_replay_batch_shapes():
     torch.manual_seed(0)
     trainer, _actor, _norm = _tiny_trainer(batch_length=4, replay_batch_size=8)
