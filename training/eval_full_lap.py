@@ -40,6 +40,12 @@ DEFAULT_REVERSAL_DEADBAND = 0.0
 FOLLOW_OPPONENT_AHEAD_M = 3.0
 FOLLOW_OPPONENT_SPEED_MPS = 2.0
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
+DISTURBANCE_STEER_GAINS = (1.0, 1.21)
+DISTURBANCE_ACTION_LATENCY_STEPS = 2
+OFF_HEADING_YAW_JITTER_RAD = 0.4
+HELD_OUT_OPPONENT_SPEED_MPS = 6.0
+OFF_HEADING_NAME = "off_heading"
+HELD_OUT_OVERTAKE_NAME = "scripted_overtake_6mps"
 
 
 def _transitions_from_name(path: Path) -> int:
@@ -347,22 +353,102 @@ def _prepare_scripted_overtake_cfg(cfg: dict) -> dict:
     return cfg
 
 
+def _flying_eval_source(resolved: list[dict]) -> dict:
+    return next(
+        (spec for spec in resolved if spec["name"] == "solo_flying"),
+        resolved[0],
+    )
+
+
 def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
     """Follow-video scripted opponents on the flying (or first) track."""
     if not resolved:
         return None
     if any(spec["name"] == SCRIPTED_OVERTAKE_NAME for spec in resolved):
         return None
-    source = next(
-        (spec for spec in resolved if spec["name"] == "solo_flying"),
-        resolved[0],
-    )
+    source = _flying_eval_source(resolved)
     return {
         "name": SCRIPTED_OVERTAKE_NAME,
         "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
         "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
         "opponent_speed_mps": FOLLOW_OPPONENT_SPEED_MPS,
     }
+
+
+def extra_disturbance_specs(resolved: list[dict]) -> list[dict]:
+    """Flying eval with steer-gain and extra action-latency knobs; other DR off."""
+    if not resolved:
+        return []
+    existing = {spec["name"] for spec in resolved}
+    source = _flying_eval_source(resolved)
+    jobs = []
+    for gain in DISTURBANCE_STEER_GAINS:
+        name = f"disturbance_steer_gain_{str(gain).replace('.', '_')}"
+        if name in existing:
+            continue
+        cfg = _prepare_eval_cfg(source["cfg"])
+        cfg["env"]["steer_gain"] = float(gain)
+        warp = dict(cfg["env"].get("warp_sim") or {})
+        warp["steer_gain"] = float(gain)
+        cfg["env"]["warp_sim"] = warp
+        jobs.append(
+            {
+                "name": name,
+                "cfg": cfg,
+                "opponent_ahead_m": None,
+                "opponent_speed_mps": None,
+            }
+        )
+        existing.add(name)
+    latency_name = "disturbance_action_latency_2"
+    if latency_name not in existing:
+        cfg = _prepare_eval_cfg(source["cfg"])
+        steps = int(DISTURBANCE_ACTION_LATENCY_STEPS)
+        cfg["env"]["simulate_action_latency"] = steps
+        dr = dict(cfg["env"].get("domain_randomization") or {})
+        dr["enabled"] = False
+        dr["action_latency_steps_range"] = [steps, steps]
+        cfg["env"]["domain_randomization"] = dr
+        jobs.append(
+            {
+                "name": latency_name,
+                "cfg": cfg,
+                "opponent_ahead_m": None,
+                "opponent_speed_mps": None,
+            }
+        )
+    return jobs
+
+
+def extra_generalization_specs(resolved: list[dict]) -> list[dict]:
+    """Off-heading flying start and a held-out scripted opponent speed."""
+    if not resolved:
+        return []
+    existing = {spec["name"] for spec in resolved}
+    source = _flying_eval_source(resolved)
+    jobs = []
+    if OFF_HEADING_NAME not in existing:
+        cfg = _prepare_eval_cfg(source["cfg"])
+        cfg["env"]["reset_spawn_yaw_jitter_rad"] = float(OFF_HEADING_YAW_JITTER_RAD)
+        jobs.append(
+            {
+                "name": OFF_HEADING_NAME,
+                "cfg": cfg,
+                "opponent_ahead_m": None,
+                "opponent_speed_mps": None,
+                "yaw_jitter_rad": float(OFF_HEADING_YAW_JITTER_RAD),
+            }
+        )
+    if HELD_OUT_OVERTAKE_NAME not in existing:
+        jobs.append(
+            {
+                "name": HELD_OUT_OVERTAKE_NAME,
+                "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
+                "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
+                "opponent_speed_mps": float(HELD_OUT_OPPONENT_SPEED_MPS),
+            }
+        )
+    return jobs
 
 
 def evaluate_policy_on_env(
@@ -378,6 +464,7 @@ def evaluate_policy_on_env(
     reversal_deadband: float = DEFAULT_REVERSAL_DEADBAND,
     opponent_ahead_m: float | None = None,
     opponent_speed_mps: float | None = None,
+    yaw_jitter_rad: float | None = None,
 ) -> dict:
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
@@ -395,6 +482,13 @@ def evaluate_policy_on_env(
         yaws.append(yaw)
     poses = np.stack(poses, axis=0)
     yaws = np.asarray(yaws, dtype=np.float32)
+    if yaw_jitter_rad is not None and float(yaw_jitter_rad) != 0.0:
+        rng = np.random.default_rng(int(seed))
+        yaws = yaws + rng.uniform(
+            -float(yaw_jitter_rad),
+            float(yaw_jitter_rad),
+            size=yaws.shape,
+        ).astype(np.float32)
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
     opp_poses = None
     opp_yaws = None
@@ -735,6 +829,8 @@ def evaluate_checkpoint(
     extra = extra_scripted_overtake_spec(resolved)
     if extra is not None:
         jobs.append(extra)
+    jobs.extend(extra_disturbance_specs(resolved + jobs))
+    jobs.extend(extra_generalization_specs(resolved + jobs))
 
     scenarios = {}
     for job in jobs:
@@ -752,8 +848,9 @@ def evaluate_checkpoint(
                 clip_actions=clip_actions,
                 spawn_speed=speed,
                 reversal_deadband=float(reversal_deadband),
-                opponent_ahead_m=job["opponent_ahead_m"],
-                opponent_speed_mps=job["opponent_speed_mps"],
+                opponent_ahead_m=job.get("opponent_ahead_m"),
+                opponent_speed_mps=job.get("opponent_speed_mps"),
+                yaw_jitter_rad=job.get("yaw_jitter_rad"),
             )
         finally:
             env.close()

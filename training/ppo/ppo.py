@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 
+from f1tenth_policy.layout import executed_plant_action
 from f1tenth_policy.normalizer import ObsNormalizer
 
 
@@ -926,9 +927,10 @@ class PPOTrainer:
                 reversal_loss = policy_loss.new_zeros(())
                 reversal_rate = policy_loss.new_zeros((self.act_dim,))
                 if new_mean is not None:
-                    caps_loss = caps_temporal_loss(new_mean, reset_seq)
+                    plant_mean = executed_plant_action(new_mean)
+                    caps_loss = caps_temporal_loss(plant_mean, reset_seq)
                     policy_loss = policy_loss + self.caps_coef * caps_loss
-                    grad_caps_loss = grad_caps_temporal_loss(new_mean, reset_seq)
+                    grad_caps_loss = grad_caps_temporal_loss(plant_mean, reset_seq)
                     policy_loss = policy_loss + self.grad_caps_coef * grad_caps_loss
                     if self.caps_spatial_coef > 0.0:
                         noise = torch.randn_like(actor_seq) * self.caps_spatial_std
@@ -940,12 +942,14 @@ class PPOTrainer:
                             pre_tanh_actions=pre_tanh_seq,
                             return_mean=True,
                         )
-                        caps_spatial = caps_spatial_loss(new_mean, spat_out[3])
+                        caps_spatial = caps_spatial_loss(
+                            plant_mean, executed_plant_action(spat_out[3])
+                        )
                         policy_loss = (
                             policy_loss + self.caps_spatial_coef * caps_spatial
                         )
                     reversal_loss, reversal_rate = action_reversal_penalty(
-                        new_mean,
+                        plant_mean,
                         reset_seq,
                         channel_weights=(
                             self.reversal_coef_throttle,

@@ -13,12 +13,18 @@ from config import DEFAULT_CONFIG
 from eval_full_lap import (
     FOLLOW_OPPONENT_AHEAD_M,
     FOLLOW_OPPONENT_SPEED_MPS,
+    HELD_OUT_OPPONENT_SPEED_MPS,
+    HELD_OUT_OVERTAKE_NAME,
+    OFF_HEADING_NAME,
+    OFF_HEADING_YAW_JITTER_RAD,
     SCRIPTED_OVERTAKE_NAME,
     action_delta_metrics,
     classify_terminations,
     count_progress_overtakes,
     even_spawn_s,
     evaluate_policy_on_env,
+    extra_disturbance_specs,
+    extra_generalization_specs,
     extra_scripted_overtake_spec,
     load_actor_bundle,
     pose_at_s,
@@ -158,6 +164,44 @@ def test_extra_scripted_overtake_spec_matches_follow_video():
     assert extra_scripted_overtake_spec(
         resolved + [{"name": SCRIPTED_OVERTAKE_NAME, "cfg": flying}]
     ) is None
+
+
+def test_extra_disturbance_and_generalization_specs():
+    flying = copy.deepcopy(DEFAULT_CONFIG)
+    flying["env"]["opponent_strategy"] = None
+    flying["reward"]["reward_scales"]["tal"] = 0.2
+    resolved = [
+        {"name": "solo_flying", "weight": 1.0, "num_envs": 4, "cfg": flying},
+        {"name": "solo_standing", "weight": 1.0, "num_envs": 4, "cfg": flying},
+    ]
+    dist = extra_disturbance_specs(resolved)
+    names = [spec["name"] for spec in dist]
+    assert names == [
+        "disturbance_steer_gain_1_0",
+        "disturbance_steer_gain_1_21",
+        "disturbance_action_latency_2",
+    ]
+    gain_1 = dist[0]["cfg"]["env"]
+    gain_121 = dist[1]["cfg"]["env"]
+    assert gain_1["steer_gain"] == pytest.approx(1.0)
+    assert gain_1["warp_sim"]["steer_gain"] == pytest.approx(1.0)
+    assert gain_121["steer_gain"] == pytest.approx(1.21)
+    assert gain_121["warp_sim"]["steer_gain"] == pytest.approx(1.21)
+    assert flying["env"]["steer_gain"] == pytest.approx(1.10714)
+    latency = dist[2]["cfg"]["env"]
+    assert latency["simulate_action_latency"] == 2
+    assert latency["domain_randomization"]["enabled"] is False
+    assert latency["domain_randomization"]["action_latency_steps_range"] == [2, 2]
+    gen = extra_generalization_specs(resolved)
+    off = next(spec for spec in gen if spec["name"] == OFF_HEADING_NAME)
+    assert off["yaw_jitter_rad"] == pytest.approx(OFF_HEADING_YAW_JITTER_RAD)
+    assert off["cfg"]["env"]["reset_spawn_yaw_jitter_rad"] == pytest.approx(0.4)
+    fast = next(spec for spec in gen if spec["name"] == HELD_OUT_OVERTAKE_NAME)
+    assert fast["opponent_ahead_m"] == pytest.approx(FOLLOW_OPPONENT_AHEAD_M)
+    assert fast["opponent_speed_mps"] == pytest.approx(HELD_OUT_OPPONENT_SPEED_MPS)
+    assert fast["cfg"]["env"]["opponent_strategy"] == "scripted"
+    assert extra_disturbance_specs(resolved + dist) == []
+    assert extra_generalization_specs(resolved + gen) == []
 
 
 def test_count_progress_overtakes_from_behind_and_wrap():

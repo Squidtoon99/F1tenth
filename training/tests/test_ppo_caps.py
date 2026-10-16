@@ -8,8 +8,10 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env.sensors import ACTOR_OBS_DIM
+from f1tenth_policy.layout import executed_plant_action
 from ppo import (
     PPOTrainer,
+    action_reversal_penalty,
     caps_spatial_loss,
     caps_temporal_loss,
     grad_caps_temporal_loss,
@@ -157,3 +159,64 @@ def test_caps_spatial_coef_logs_positive_loss():
     metrics = _run_one_rollout(_tiny_trainer(caps_spatial_coef=0.1))
     assert metrics is not None
     assert metrics["caps_spatial_loss"] > 0.0
+
+
+def test_caps_and_reversal_use_plant_prefix():
+    chunk = torch.zeros(2, 5, 8)
+    chunk[..., 2] = torch.tensor([0.0, 1.0, -1.0, 1.0, -1.0])
+    plant = executed_plant_action(chunk)
+    assert plant.shape[-1] == 2
+    reset = torch.zeros(2, 5, dtype=torch.bool)
+    assert float(caps_temporal_loss(plant, reset)) == pytest.approx(0.0)
+    assert float(caps_temporal_loss(chunk, reset)) > 0.0
+    assert float(grad_caps_temporal_loss(plant, reset)) == pytest.approx(0.0)
+    assert float(grad_caps_temporal_loss(chunk, reset)) > 0.0
+    perturbed = plant.clone()
+    perturbed[..., 0] = plant[..., 0] + 1.0
+    assert float(caps_spatial_loss(plant, perturbed)) == pytest.approx(1.0)
+    other = chunk.clone()
+    other[..., 0] = 1.0
+    other[..., 2] = 0.0
+    prefix_spatial = float(
+        caps_spatial_loss(executed_plant_action(chunk), executed_plant_action(other))
+    )
+    assert float(caps_spatial_loss(chunk, other)) > prefix_spatial
+    plant_penalty, plant_rates = action_reversal_penalty(
+        plant, reset, channel_weights=(1.0, 1.0)
+    )
+    chunk_penalty, chunk_rates = action_reversal_penalty(
+        chunk, reset, channel_weights=(1.0, 1.0)
+    )
+    assert plant_rates.numel() == 2
+    assert chunk_rates.numel() == 8
+    assert float(plant_penalty) == pytest.approx(0.0)
+    assert float(chunk_penalty) > 0.0
+
+    torch.manual_seed(0)
+    actor = make_actor(
+        actor_type="lidar_cnn_gru",
+        obs_dim=ACTOR_OBS_DIM,
+        act_dim=8,
+        hidden_sizes=[32, 32],
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=16,
+        gru_hidden_dim=GRU_HIDDEN_DIM,
+    )
+    trainer = PPOTrainer(
+        actor,
+        CRITIC_DIM,
+        device="cpu",
+        value_hidden_sizes=(32, 32),
+        rollout_steps=4,
+        num_epochs=1,
+        env_minibatch_size=4,
+        action_clip=1.0,
+        advantage_filter_enabled=False,
+        caps_spatial_coef=0.1,
+    )
+    metrics = _run_one_rollout(trainer)
+    assert metrics is not None
+    assert metrics["caps_spatial_loss"] > 0.0
+    assert 0.0 <= float(metrics["reversal_rate_throttle"]) <= 1.0
+    assert 0.0 <= float(metrics["reversal_rate_steer"]) <= 1.0

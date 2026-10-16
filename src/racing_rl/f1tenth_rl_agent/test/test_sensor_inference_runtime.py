@@ -276,3 +276,15 @@ def test_runtime_chunk_actor_realizes_first_tick_only():
         tail_realized = runtime.realize_action(tail_only)
         assert realized.long_norm == pytest.approx(float(np.clip(action[0], -1.0, 1.0)))
         assert tail_realized.long_norm == pytest.approx(0.0)
+
+        obs_b = rng.standard_normal(si.NUM_OBS, dtype=np.float32)
+        action_b, _ = runtime.infer_from_host_obs(obs_b)
+        runtime.realized_steer_rad = 0.0
+        realized_b = runtime.realize_action(action_b)
+        assert action_b.shape == (8,)
+        assert realized_b.long_norm == pytest.approx(
+            float(np.clip(action_b[0], -1.0, 1.0))
+        )
+        tail_of_first = float(np.clip(action[2], -1.0, 1.0))
+        if not np.isclose(float(action_b[0]), float(action[2])):
+            assert realized_b.long_norm != pytest.approx(tail_of_first)
