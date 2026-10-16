@@ -11,7 +11,7 @@ import torch
 from f1tenth_policy.layout import executed_plant_action
 
 from f1tenth_rl_agent import sensor_interfaces as si
-from f1tenth_rl_agent.policy_model import ObsNormalizer, SquashedGaussianLidarGRUActor
+from f1tenth_rl_agent.policy_model import ObsNormalizer
 from f1tenth_rl_agent.sensor_action import (
     integrate_steering_delta,
     normalized_action_to_physical,
@@ -47,7 +47,7 @@ class RealizedActuatorCommand:
 class SensorInferenceRuntime:
     def __init__(
         self,
-        actor: SquashedGaussianLidarGRUActor,
+        actor,
         normalizer: ObsNormalizer,
         device: torch.device,
         *,

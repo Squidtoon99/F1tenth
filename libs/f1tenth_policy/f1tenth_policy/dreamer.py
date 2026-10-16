@@ -299,7 +299,7 @@ class LidarDreamerActor(nn.Module):
             )
         hidden = self._apply_reset_mask(hidden, reset_mask)
         h, z, post_mean, post_std, _embed = self.rssm_observe(
-            obs, hidden, deterministic=True
+            obs, hidden, deterministic=deterministic
         )
         del post_mean, post_std
         feat = self.features(h, z)

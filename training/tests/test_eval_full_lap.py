@@ -203,6 +203,9 @@ def test_extra_disturbance_and_generalization_specs():
     gen = extra_generalization_spec(resolved)
     assert gen["name"] == GENERALIZATION_NAME
     assert gen["yaw_jitter_rad"] == pytest.approx(GENERALIZATION_YAW_JITTER_RAD)
+    assert gen["spawn_yaw_jitter_rad"] == pytest.approx(
+        GENERALIZATION_YAW_JITTER_RAD
+    )
     assert gen["opponent_ahead_m"] == pytest.approx(FOLLOW_OPPONENT_AHEAD_M)
     assert gen["opponent_speed_mps"] == pytest.approx(
         GENERALIZATION_OPPONENT_SPEED_MPS

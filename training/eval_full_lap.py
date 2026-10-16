@@ -440,6 +440,7 @@ def extra_generalization_spec(resolved: list[dict]) -> dict | None:
         "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
         "opponent_speed_mps": float(GENERALIZATION_OPPONENT_SPEED_MPS),
         "yaw_jitter_rad": float(GENERALIZATION_YAW_JITTER_RAD),
+        "spawn_yaw_jitter_rad": float(GENERALIZATION_YAW_JITTER_RAD),
     }
 
 
@@ -845,7 +846,9 @@ def evaluate_checkpoint(
                 reversal_deadband=float(reversal_deadband),
                 opponent_ahead_m=job.get("opponent_ahead_m"),
                 opponent_speed_mps=job.get("opponent_speed_mps"),
-                yaw_jitter_rad=job.get("yaw_jitter_rad"),
+                yaw_jitter_rad=job.get(
+                    "yaw_jitter_rad", job.get("spawn_yaw_jitter_rad")
+                ),
             )
         finally:
             env.close()
