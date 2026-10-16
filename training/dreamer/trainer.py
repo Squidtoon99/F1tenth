@@ -81,13 +81,13 @@ class SequenceReplay:
         idx = (
             self.index + torch.arange(n, device=obs.device)
         ) % self.capacity
-        self.obs[idx] = obs
-        self.next_obs[idx] = next_obs
-        self.actions[idx] = actions
-        self.rewards[idx] = rewards
-        self.dones[idx] = dones
-        self.reset[idx] = reset
-        self.start_hidden[idx] = start_hidden
+        self.obs[idx] = obs.detach()
+        self.next_obs[idx] = next_obs.detach()
+        self.actions[idx] = actions.detach()
+        self.rewards[idx] = rewards.detach()
+        self.dones[idx] = dones.detach()
+        self.reset[idx] = reset.detach()
+        self.start_hidden[idx] = start_hidden.detach()
         self.index = int((self.index + n) % self.capacity)
         self.size = min(self.size + n, self.capacity)
 
@@ -222,15 +222,16 @@ class DreamerTrainer:
         self._reset[self._step].copy_(self._reset_mask)
         self.actor_normalizer.update(actor_obs)
         normalized = self.actor_normalizer.normalize(actor_obs)
-        action, _, next_hidden = self.actor.step(
-            normalized,
-            self._live_hidden,
-            reset_mask=self._reset_mask,
-            deterministic=False,
-            with_logprob=False,
-        )
-        self._actions[self._step].copy_(action)
-        self._live_hidden.copy_(next_hidden)
+        with torch.no_grad():
+            action, _, next_hidden = self.actor.step(
+                normalized,
+                self._live_hidden,
+                reset_mask=self._reset_mask,
+                deterministic=False,
+                with_logprob=False,
+            )
+            self._actions[self._step].copy_(action)
+            self._live_hidden.copy_(next_hidden)
         self._awaiting_observe = True
         return action
 
@@ -280,7 +281,7 @@ class DreamerTrainer:
 
     def update(self):
         batch = self._replay.sample(self.replay_batch_size)
-        obs = batch["obs"]
+        obs = batch["obs"].detach()
         self.last_batch_obs_shape = tuple(obs.shape)
         normalized = self.actor_normalizer.normalize(
             obs.reshape(-1, self.actor_obs_dim)
@@ -289,10 +290,10 @@ class DreamerTrainer:
             self.actor,
             self.world,
             normalized,
-            batch["actions"],
-            batch["rewards"],
+            batch["actions"].detach(),
+            batch["rewards"].detach(),
             batch["dones"],
-            batch["start_hidden"],
+            batch["start_hidden"].detach(),
             reset_mask=batch["reset"],
             sample_latents=True,
         )
@@ -317,7 +318,7 @@ class DreamerTrainer:
             sample_latents=True,
         )
         self.actor_optimizer.zero_grad(set_to_none=True)
-        imag["actor_loss"].backward(retain_graph=True)
+        imag["actor_loss"].backward()
         nn.utils.clip_grad_norm_(
             list(self.actor_optimizer.param_groups[0]["params"]),
             self.max_grad_norm,
