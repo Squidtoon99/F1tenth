@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 
-from f1tenth_policy.layout import executed_plant_action
+from f1tenth_policy.layout import NUM_ACTIONS, executed_plant_action
 from f1tenth_policy.normalizer import ObsNormalizer
 
 
@@ -114,6 +114,29 @@ def grad_caps_temporal_loss(mean_actions, reset_mask, eps=1e-6):
     scale = torch.tanh(1.0 / (displacement + eps))
     valid = ((~reset_mask[:, 1:-1]) & (~reset_mask[:, 2:])).to(dtype=second.dtype)
     return (second * scale * valid).sum() / valid.sum().clamp(min=1.0)
+
+
+def chunk_boundary_steer_loss(chunk_mean, reset_mask, *, plant_dim=NUM_ACTIONS):
+    plant_dim = int(plant_dim)
+    zero = chunk_mean.new_zeros(())
+    if chunk_mean.shape[-1] < 2 * plant_dim or chunk_mean.shape[1] < 2:
+        return zero
+    executed = chunk_mean[:, 1:, 1]
+    planned = chunk_mean[:, :-1, plant_dim + 1]
+    valid = (~reset_mask[:, 1:]).to(dtype=chunk_mean.dtype)
+    denom = valid.sum().clamp(min=1.0)
+    return ((executed - planned).square() * valid).sum() / denom
+
+
+def executed_steer_jerk_loss(plant_mean, reset_mask):
+    zero = plant_mean.new_zeros(())
+    if plant_mean.shape[1] < 3 or plant_mean.shape[-1] < 2:
+        return zero
+    steer = plant_mean[..., 1]
+    second = steer[:, 2:] - 2.0 * steer[:, 1:-1] + steer[:, :-2]
+    valid = ((~reset_mask[:, 1:-1]) & (~reset_mask[:, 2:])).to(dtype=steer.dtype)
+    denom = valid.sum().clamp(min=1.0)
+    return (second.square() * valid).sum() / denom
 
 
 def _channel_weight_tensor(actions, channel_weights):
@@ -312,6 +335,8 @@ class PPOTrainer:
         reversal_coef_steer=0.0,
         reversal_deadband=0.0,
         reversal_lag2=False,
+        chunk_boundary_steer_coef=0.0,
+        steer_jerk_coef=0.0,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -381,10 +406,14 @@ class PPOTrainer:
         self.reversal_coef_steer = float(reversal_coef_steer)
         self.reversal_deadband = float(reversal_deadband)
         self.reversal_lag2 = bool(reversal_lag2)
+        self.chunk_boundary_steer_coef = float(chunk_boundary_steer_coef)
+        self.steer_jerk_coef = float(steer_jerk_coef)
         for name, value in (
             ("reversal_coef_throttle", self.reversal_coef_throttle),
             ("reversal_coef_steer", self.reversal_coef_steer),
             ("reversal_deadband", self.reversal_deadband),
+            ("chunk_boundary_steer_coef", self.chunk_boundary_steer_coef),
+            ("steer_jerk_coef", self.steer_jerk_coef),
         ):
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(
@@ -396,6 +425,8 @@ class PPOTrainer:
             or self.grad_caps_coef > 0.0
             or self.reversal_coef_throttle > 0.0
             or self.reversal_coef_steer > 0.0
+            or self.chunk_boundary_steer_coef > 0.0
+            or self.steer_jerk_coef > 0.0
         )
         if self.lidar_aug_max_shift_beams < 0:
             raise ValueError(
@@ -788,6 +819,8 @@ class PPOTrainer:
                 "reversal_loss": 0.0,
                 "reversal_rate_throttle": 0.0,
                 "reversal_rate_steer": 0.0,
+                "chunk_boundary_steer_loss": 0.0,
+                "steer_jerk_loss": 0.0,
                 "epochs": 0,
                 "minibatches": 0,
                 "actor_updates": 0,
@@ -846,6 +879,8 @@ class PPOTrainer:
                 "reversal_loss",
                 "reversal_rate_throttle",
                 "reversal_rate_steer",
+                "chunk_boundary_steer_loss",
+                "steer_jerk_loss",
             )
         }
         clip_active_sum = 0.0
@@ -926,12 +961,27 @@ class PPOTrainer:
                 grad_caps_loss = policy_loss.new_zeros(())
                 reversal_loss = policy_loss.new_zeros(())
                 reversal_rate = policy_loss.new_zeros((self.act_dim,))
+                chunk_boundary_steer_loss_v = policy_loss.new_zeros(())
+                steer_jerk_loss_v = policy_loss.new_zeros(())
                 if new_mean is not None:
                     plant_mean = executed_plant_action(new_mean)
                     caps_loss = caps_temporal_loss(plant_mean, reset_seq)
                     policy_loss = policy_loss + self.caps_coef * caps_loss
                     grad_caps_loss = grad_caps_temporal_loss(plant_mean, reset_seq)
                     policy_loss = policy_loss + self.grad_caps_coef * grad_caps_loss
+                    chunk_boundary_steer_loss_v = chunk_boundary_steer_loss(
+                        new_mean, reset_seq
+                    )
+                    policy_loss = (
+                        policy_loss
+                        + self.chunk_boundary_steer_coef * chunk_boundary_steer_loss_v
+                    )
+                    steer_jerk_loss_v = executed_steer_jerk_loss(
+                        plant_mean, reset_seq
+                    )
+                    policy_loss = (
+                        policy_loss + self.steer_jerk_coef * steer_jerk_loss_v
+                    )
                     if self.caps_spatial_coef > 0.0:
                         noise = torch.randn_like(actor_seq) * self.caps_spatial_std
                         spat_out = self._evaluate_actions_sequence(
@@ -1038,6 +1088,10 @@ class PPOTrainer:
                 metric_sums["caps_spatial_loss"] += caps_spatial.detach()
                 metric_sums["grad_caps_loss"] += grad_caps_loss.detach()
                 metric_sums["reversal_loss"] += reversal_loss.detach()
+                metric_sums["chunk_boundary_steer_loss"] += (
+                    chunk_boundary_steer_loss_v.detach()
+                )
+                metric_sums["steer_jerk_loss"] += steer_jerk_loss_v.detach()
                 metric_sums["reversal_rate_throttle"] += reversal_rate[0].detach()
                 if reversal_rate.numel() > 1:
                     metric_sums["reversal_rate_steer"] += reversal_rate[1].detach()

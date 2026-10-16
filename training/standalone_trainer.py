@@ -1111,6 +1111,8 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         "reversal_coef_throttle",
         "reversal_coef_steer",
         "reversal_deadband",
+        "chunk_boundary_steer_coef",
+        "steer_jerk_coef",
     ):
         value = ppo.get(key)
         if (
@@ -2052,6 +2054,8 @@ def build_ppo_models(
         reversal_coef_steer=float(ppo_cfg["reversal_coef_steer"]),
         reversal_deadband=float(ppo_cfg["reversal_deadband"]),
         reversal_lag2=bool(ppo_cfg["reversal_lag2"]),
+        chunk_boundary_steer_coef=float(ppo_cfg["chunk_boundary_steer_coef"]),
+        steer_jerk_coef=float(ppo_cfg["steer_jerk_coef"]),
     )
     return models, trainer
 

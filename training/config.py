@@ -242,6 +242,8 @@ DEFAULT_CONFIG = {
         "reversal_coef_steer": 0.0,
         "reversal_deadband": 0.0,
         "reversal_lag2": False,
+        "chunk_boundary_steer_coef": 0.0,
+        "steer_jerk_coef": 0.0,
         "residual_base_enabled": False,
         "advantage_filter_enabled": True,
         "advantage_filter_discard_fraction": 0.05,
