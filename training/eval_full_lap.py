@@ -382,6 +382,7 @@ def evaluate_policy_on_env(
     """Roll the mean policy from evenly spaced centerline spawns (one episode each)."""
     from evaluation import actor_is_recurrent
     from f1tenth_env import runtime as rt
+    from f1tenth_policy.layout import executed_plant_action
 
     track = str(env.env_cfg.get("track"))
     length = float(env.track_length)
@@ -487,13 +488,14 @@ def evaluate_policy_on_env(
                         model_obs, deterministic=True, with_logprob=False
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
+                plant_actions = executed_plant_action(actions)
                 alive_np = alive.detach().cpu().numpy()
-                act_np = actions.detach().cpu().numpy()
+                act_np = plant_actions.detach().cpu().numpy()
                 for i in range(k):
                     if alive_np[i]:
                         action_traj[i].append(np.asarray(act_np[i], dtype=np.float64))
                 raw_obs, _reward, done, extras = env.step(
-                    actions.to(rt.tc_float),
+                    plant_actions.to(rt.tc_float),
                     n_steps=env.control_interval,
                     with_sensors=with_sensors,
                 )

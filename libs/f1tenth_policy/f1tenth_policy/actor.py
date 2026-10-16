@@ -18,6 +18,7 @@ from f1tenth_policy.layout import (
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
     LIDAR_DIM,
+    NUM_ACTIONS,
     PROPRIO_DIM,
 )
 
@@ -212,6 +213,12 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         super().__init__()
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
+        if self.act_dim % NUM_ACTIONS != 0 or self.act_dim <= 0:
+            raise ValueError(
+                f"act_dim={self.act_dim} must be a positive multiple of "
+                f"plant NUM_ACTIONS={NUM_ACTIONS}"
+            )
+        self.action_horizon = self.act_dim // NUM_ACTIONS
         log_std_min = float(log_std_min)
         log_std_max = float(log_std_max)
         if not math.isfinite(log_std_min) or not math.isfinite(log_std_max):
@@ -279,6 +286,8 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             "activation": "relu",
             "action_dim": self.act_dim,
         }
+        if self.action_horizon != 1:
+            self.actor_architecture["action_horizon"] = self.action_horizon
 
     def initial_hidden(self, batch_size, *, device=None, dtype=None):
         return torch.zeros(

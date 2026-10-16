@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     },
     "env": {
         "num_actions": 2,
+        "action_horizon": 1,
         "episode_length": 120.0,
         "expected_lap_speed_mps": 3.5,
         "episode_lap_multiplier": 3.0,

@@ -761,7 +761,7 @@ def collect_simulated_actor_observations(
         checkpoint,
         torch_device,
         expected_actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
-        expected_action_dim=int(cfg["env"]["num_actions"]),
+        expected_action_dim=None,
         expected_layout_version=int(cfg["obs"]["actor_layout_version"]),
         norm_eps=float(cfg["obs"]["norm_eps"]),
         norm_clip=float(cfg["obs"]["norm_clip"]),

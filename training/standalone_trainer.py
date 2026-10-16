@@ -40,10 +40,15 @@ from f1tenth_policy import (
 )
 from f1tenth_policy.actor import apply_policy_output_init
 from f1tenth_policy.layout import (
+    ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
+    DEFAULT_ACTION_HORIZON,
+    NUM_ACTIONS,
     SENSOR_POLICY_FORMAT_VERSION,
     STEERING_ACTION_MODE,
     STEERING_DELTA_MAX_RAD,
+    actor_action_dim,
+    executed_plant_action,
 )
 
 from config import (
@@ -856,12 +861,53 @@ def validate_model_architecture(cfg: dict) -> None:
         )
 
 
+def validate_action_chunk_config(cfg: dict) -> None:
+    env = cfg["env"]
+    horizon = env.get("action_horizon", DEFAULT_ACTION_HORIZON)
+    if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
+        raise ValueError(
+            f"env.action_horizon must be a positive int, got {horizon!r}"
+        )
+    plant_dim = env.get("num_actions")
+    if plant_dim != NUM_ACTIONS:
+        raise ValueError(
+            f"env.num_actions={plant_dim!r} is the plant command dim; "
+            f"expected {NUM_ACTIONS}"
+        )
+    if horizon == 1:
+        return
+    if cfg.get("algorithm") != "ppo":
+        raise ValueError("env.action_horizon>1 requires algorithm='ppo'")
+    if bool(cfg.get("ppo", {}).get("residual_base_enabled", False)):
+        raise ValueError(
+            "env.action_horizon>1 cannot be combined with ppo.residual_base_enabled"
+        )
+    fmt = cfg.get("policy_format_version", SENSOR_POLICY_FORMAT_VERSION)
+    if int(fmt) < ACTION_CHUNK_POLICY_FORMAT_VERSION:
+        raise ValueError(
+            "env.action_horizon>1 requires policy_format_version>="
+            f"{ACTION_CHUNK_POLICY_FORMAT_VERSION}"
+        )
+
+
+def cfg_action_horizon(cfg: dict) -> int:
+    return int(cfg["env"].get("action_horizon", DEFAULT_ACTION_HORIZON))
+
+
+def cfg_actor_action_dim(cfg: dict) -> int:
+    return actor_action_dim(
+        horizon=cfg_action_horizon(cfg),
+        plant_dim=int(cfg["env"]["num_actions"]),
+    )
+
+
 def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
     algorithm = cfg.get("algorithm")
     if algorithm not in ("qrsac", "ppo"):
         raise ValueError(
             f"algorithm must be 'qrsac' or 'ppo', got {algorithm!r}"
         )
+    validate_action_chunk_config(cfg)
     if algorithm == "qrsac":
         return
     ppo = cfg["ppo"]
@@ -1096,7 +1142,7 @@ def make_policy_network(cfg: dict):
     return make_actor(
         actor_type=model["actor_type"],
         obs_dim=cfg["obs"]["num_actor_obs"],
-        act_dim=cfg["env"]["num_actions"],
+        act_dim=cfg_actor_action_dim(cfg),
         hidden_sizes=model["actor_hidden_layers"],
         activation=nn.ReLU,
         act_limit=1.0,
@@ -1147,7 +1193,9 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
 
 
 _SCENARIO_KEYS = frozenset({"name", "weight", "env", "sensor"})
-_LOCKED_SCENARIO_ENV_KEYS = frozenset({"sim_dt", "control_interval", "num_actions"})
+_LOCKED_SCENARIO_ENV_KEYS = frozenset(
+    {"sim_dt", "control_interval", "num_actions", "action_horizon"}
+)
 
 
 def validate_scenario_list(scenarios) -> None:
@@ -1344,13 +1392,14 @@ def collect_sensor_reset(envs):
 
 def collect_sensor_step(envs, actions, counts, control_interval):
     """Step every training env and concatenate obs/reward/done/extras."""
+    plant_actions = executed_plant_action(actions)
     if len(envs) == 1:
         raw, reward, done, extras = envs[0].step(
-            actions, n_steps=control_interval, with_sensors=True
+            plant_actions, n_steps=control_interval, with_sensors=True
         )
         actor_obs, critic_obs = unpack_sensor_observations(raw)
         return actor_obs, critic_obs, reward.to(torch.float32), done, extras
-    action_chunks = torch.split(actions, counts, dim=0)
+    action_chunks = torch.split(plant_actions, counts, dim=0)
     actor_parts = []
     critic_parts = []
     reward_parts = []
@@ -1957,7 +2006,7 @@ def save_policy_artifact(
         actor_obs_dim=int(cfg["obs"]["num_actor_obs"]),
         critic_obs_dim=int(cfg["obs"]["num_obs"]),
         actor_layout_version=int(cfg["obs"]["actor_layout_version"]),
-        action_dim=int(cfg["env"]["num_actions"]),
+        action_dim=int(models.actor.act_dim),
         action_scale=float(cfg["env"]["clip_actions"]),
         config_version=int(cfg["config_version"]),
         policy_format_version=int(cfg["policy_format_version"]),
@@ -2928,7 +2977,7 @@ def main():
                 str(sp_cfg["anchor_ckpt"]),
                 device,
                 actor_obs_dim,
-                int(cfg["env"]["num_actions"]),
+                cfg_actor_action_dim(cfg),
                 expected_layout_version=int(obs_cfg["actor_layout_version"]),
                 expected_architecture=actor_architecture_from_module(models.actor),
                 expected_critic_obs_dim=int(obs_cfg["num_obs"]),
@@ -3064,7 +3113,8 @@ def main():
             "entropy_coef=%.4f entropy_coef_end=%.4f "
             "entropy_coef_horizon_transitions=%d entropy_from_squashed=%s "
             "log_std_min=%.3f log_std_max=%.3f compile=%s compile_mode=%s "
-            "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d",
+            "lidar_aug_enabled=%s lidar_aug_max_shift_beams=%d "
+            "action_horizon=%d actor_action_dim=%d",
             trainer.rollout_steps,
             trainer.num_epochs,
             args.num_envs // trainer.env_minibatch_size,
@@ -3081,6 +3131,8 @@ def main():
             trainer.compile_mode,
             lidar_aug_enabled,
             lidar_aug_max_shift,
+            cfg_action_horizon(cfg),
+            cfg_actor_action_dim(cfg),
         )
     # Live GRU carry for the learner: one hidden per env. Checkpoints store the
     # pre-action state; done/reset rows are zeroed after the env step.

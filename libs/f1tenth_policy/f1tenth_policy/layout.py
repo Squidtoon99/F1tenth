@@ -15,6 +15,8 @@ PROPRIO_DIM = 16
 ACTOR_OBS_DIM = 1097
 NUM_ACTIONS = 2
 CRITIC_OBS_DIM = 392
+DEFAULT_ACTION_HORIZON = 1
+ACTION_CHUNK_POLICY_FORMAT_VERSION = 5
 
 LIDAR_START = 0
 IMU_START = LIDAR_DIM
@@ -55,3 +57,26 @@ OBS_NORM_EPS = 1e-8
 GRU_HIDDEN_DIM = 512
 CNN_PROJECTION_DIM = 256
 ALLOWED_LIDAR_POOL_BINS = frozenset((16, 32, 64))
+
+
+def actor_action_dim(horizon=DEFAULT_ACTION_HORIZON, plant_dim=NUM_ACTIONS):
+    horizon = int(horizon)
+    plant_dim = int(plant_dim)
+    if horizon < 1:
+        raise ValueError(f"action_horizon must be >= 1, got {horizon}")
+    if plant_dim < 1:
+        raise ValueError(f"plant_dim must be >= 1, got {plant_dim}")
+    return plant_dim * horizon
+
+
+def executed_plant_action(actions, *, plant_dim=NUM_ACTIONS):
+    """First plant command of a receding-horizon chunk; unused tail is ignored."""
+    plant_dim = int(plant_dim)
+    if plant_dim < 1:
+        raise ValueError(f"plant_dim must be >= 1, got {plant_dim}")
+    width = int(actions.shape[-1])
+    if width < plant_dim:
+        raise ValueError(
+            f"action last dim={width} is smaller than plant_dim={plant_dim}"
+        )
+    return actions[..., :plant_dim]

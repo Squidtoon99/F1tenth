@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from f1tenth_env import runtime as rt
+from f1tenth_policy.layout import executed_plant_action
 
 
 def _actor_obs_from_env(obs, *, with_sensors: bool) -> torch.Tensor:
@@ -53,7 +54,7 @@ def load_sensor_actor_bundle(
     device: torch.device,
     *,
     expected_actor_obs_dim: int,
-    expected_action_dim: int,
+    expected_action_dim: int | None = None,
     expected_layout_version: int,
     norm_eps: float = 1e-8,
     norm_clip: float = 10.0,
@@ -80,6 +81,10 @@ def load_sensor_actor_bundle(
             f"{path.name}: actor_architecture mismatch: "
             f"got {normalize_actor_architecture(architecture)!r}, "
             f"expected {normalize_actor_architecture(expected_architecture)!r}"
+        )
+    if expected_action_dim is None:
+        expected_action_dim = int(
+            architecture.get("action_dim", payload.get("action_dim"))
         )
     validate_sensor_policy_artifact(
         payload,
@@ -162,7 +167,7 @@ def deterministic_rollout(
                         )
                     actions = actions.clamp(-clip_actions, clip_actions)
                     raw_obs, reward, done, extras = env.step(
-                        actions.to(rt.tc_float),
+                        executed_plant_action(actions).to(rt.tc_float),
                         n_steps=control_interval,
                         with_sensors=with_sensors,
                     )
