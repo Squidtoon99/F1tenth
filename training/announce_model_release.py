@@ -1,33 +1,196 @@
-"""Post one F1TENTH policy release to the Discord webhook.
+"""Post one F1TENTH policy release or result to the Discord webhook.
 
 The follow video is rendered by ``training/render_follow.py`` (the script that
-produced overlay_follow.mp4). This module only records the trajectory ``.npz``
-that script reads, pulls two W&B charts, and uploads one multipart message.
+produced overlay_follow.mp4). This module records the trajectory ``.npz`` that
+script reads, pulls two W&B charts, and uploads one multipart message. Every
+post includes the evaluated checkpoint: attached when it fits Discord's
+documented per-file webhook limit, otherwise uploaded to the existing S3
+bucket and linked.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
+import hmac
 import json
 import os
 import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+# Discord API default per-file upload limit is 20 MiB.
+# https://docs.discord.com/developers/reference#uploading-files
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+S3_BUCKET = "storage-o9g473recrgmg1p06"
+S3_ENDPOINT_URL = "https://t3.storageapi.dev"
+S3_REGION = "auto"
+S3_PREFIX = "rl/model-release"
+KIND_TITLES = {
+    "release": "F1TENTH policy release",
+    "result": "F1TENTH policy result",
+    "loss": "F1TENTH policy loss",
+}
 CARS = 8
 RENDER_SCRIPT = Path(__file__).resolve().parent / "render_follow.py"
+RELEASE_ENV = Path.home() / ".config/f1tenth/model-release.env"
 TIMESTAMP_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
 THROUGHPUT_RE = re.compile(r"transitions/s=([0-9]+(?:\.[0-9]+)?)")
 WANDB_URL_RE = re.compile(
     r"https?://wandb\.ai/([^/]+)/([^/]+)/runs/([^/?#]+)"
 )
+
+
+def load_release_env(path: Path = RELEASE_ENV) -> None:
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def s3_bucket() -> str:
+    return os.environ.get("S3_BUCKET", S3_BUCKET).strip() or S3_BUCKET
+
+
+def s3_endpoint() -> str:
+    return (
+        os.environ.get("S3_ENDPOINT_URL", S3_ENDPOINT_URL).strip() or S3_ENDPOINT_URL
+    ).rstrip("/")
+
+
+def s3_checkpoint_key(filename: str, run_id: str | None = None) -> str:
+    prefix = S3_PREFIX.strip("/")
+    if run_id:
+        return f"{prefix}/{run_id}/{filename}"
+    return f"{prefix}/{filename}"
+
+
+def s3_object_url(key: str) -> str:
+    encoded = "/".join(urllib.parse.quote(part, safe="") for part in key.split("/"))
+    return f"{s3_endpoint()}/{s3_bucket()}/{encoded}"
+
+
+def planned_s3_url(_path: Path, key: str) -> str:
+    return s3_object_url(key)
+
+
+def _sign(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def put_s3_object(path: Path, key: str) -> str:
+    access = os.environ.get("S3_ACCESS_KEY_ID", "").strip()
+    secret = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip()
+    region = os.environ.get("S3_REGION", S3_REGION).strip() or S3_REGION
+    if not access or not secret:
+        raise SystemExit("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required")
+    body = path.read_bytes()
+    payload_hash = hashlib.sha256(body).hexdigest()
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    host = urllib.parse.urlparse(s3_endpoint()).netloc
+    canonical_uri = "/" + "/".join(
+        urllib.parse.quote(part, safe="") for part in [s3_bucket(), *key.split("/")]
+    )
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join(
+        [
+            "PUT",
+            canonical_uri,
+            "",
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+    date_key = _sign(("AWS4" + secret).encode("utf-8"), datestamp)
+    region_key = _sign(date_key, region)
+    service_key = _sign(region_key, "s3")
+    signing_key = _sign(service_key, "aws4_request")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    authorization = (
+        f"AWS4-HMAC-SHA256 Credential={access}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    request = urllib.request.Request(
+        s3_endpoint() + canonical_uri,
+        data=body,
+        headers={
+            "Host": host,
+            "x-amz-content-sha256": payload_hash,
+            "x-amz-date": amz_date,
+            "Authorization": authorization,
+            "Content-Type": "application/octet-stream",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        raise SystemExit(f"S3 rejected the checkpoint ({exc.code}): {detail}") from None
+    return s3_object_url(key)
+
+
+def deliver_checkpoint(
+    path: Path,
+    filename: str,
+    *,
+    run_id: str | None = None,
+    limit: int | None = None,
+    upload=put_s3_object,
+) -> dict:
+    if limit is None:
+        limit = MAX_ATTACHMENT_BYTES
+    if path.stat().st_size <= limit:
+        return {
+            "mode": "attach",
+            "filename": filename,
+            "path": path,
+            "url": None,
+            "key": None,
+        }
+    key = s3_checkpoint_key(filename, run_id)
+    url = upload(path, key)
+    return {
+        "mode": "s3",
+        "filename": filename,
+        "path": path,
+        "url": url,
+        "key": key,
+    }
 
 
 def format_duration(seconds: float) -> str:
@@ -430,12 +593,16 @@ def build_embed(fields: dict, summary: str, charts_note: str | None) -> dict:
     ]
     if fields.get("full_lap"):
         body.append(("Full lap", fields["full_lap"]))
+    if fields.get("checkpoint_ref"):
+        body.append(("Checkpoint", fields["checkpoint_ref"]))
+    long_fields = ("W&B", "Full lap", "Checkpoint")
     discord_fields = [
-        {"name": name, "value": str(value), "inline": name not in ("W&B", "Full lap")}
+        {"name": name, "value": str(value), "inline": name not in long_fields}
         for name, value in body
     ]
+    kind = fields.get("kind", "release")
     embed = {
-        "title": "F1TENTH policy release",
+        "title": KIND_TITLES.get(kind, KIND_TITLES["release"]),
         "description": description,
         "color": 3447003,
         "fields": discord_fields,
@@ -452,10 +619,6 @@ def build_payload(embed: dict, names: list[str]) -> dict:
         extra = {"image": {"url": "attachment://laps.png"}}
         embeds.append(extra)
     return {"embeds": embeds, "attachments": attachments}
-
-
-def attachment_bytes(files: list[Path]) -> int:
-    return sum(path.stat().st_size for path in files)
 
 
 def encode_multipart(payload: dict, files: list[tuple[str, Path]]) -> tuple[bytes, str]:
@@ -632,10 +795,14 @@ def resolve_release(args: argparse.Namespace) -> dict:
         "laps": laps,
         "checkpoint": checkpoint,
         "policy_name": policy_name,
+        "kind": args.kind,
+        "run_id": snapshot.get("run_id"),
     }
 
 
-def named_files(release: dict) -> list[tuple[str, Path]]:
+def named_files(
+    release: dict, *, attach_checkpoint: bool = True
+) -> list[tuple[str, Path]]:
     files: list[tuple[str, Path]] = []
     if release["video"] is not None:
         files.append(("overlay_follow.mp4", release["video"]))
@@ -643,11 +810,15 @@ def named_files(release: dict) -> list[tuple[str, Path]]:
         files.append(("reward.png", release["reward"]))
     if release["laps"] is not None:
         files.append(("laps.png", release["laps"]))
-    files.append((release["policy_name"], release["checkpoint"]))
+    if attach_checkpoint:
+        files.append((release["policy_name"], release["checkpoint"]))
     return files
 
 
-def print_release(release: dict, files: list[tuple[str, Path]]) -> None:
+def print_release(
+    release: dict, files: list[tuple[str, Path]], delivery: dict | None = None
+) -> None:
+    print(f"kind: {release.get('kind', 'release')}")
     print(f"track: {release['track']}")
     print(f"training time: {release['training_time']}")
     print(f"throughput: {release['throughput']}")
@@ -658,6 +829,11 @@ def print_release(release: dict, files: list[tuple[str, Path]]) -> None:
     if release.get("full_lap"):
         print(f"full lap: {release['full_lap']}")
     print(f"wandb: {release['wandb']}")
+    if delivery is not None:
+        if delivery["mode"] == "attach":
+            print(f"checkpoint: attach {delivery['filename']}")
+        else:
+            print(f"checkpoint: s3 {delivery['url']}")
     if release["charts_note"]:
         print(release["charts_note"])
     print("attachments:")
@@ -690,6 +866,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--kind",
+        choices=tuple(KIND_TITLES),
+        default="release",
+        help="release, result, or loss; every kind includes the checkpoint",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -707,21 +889,30 @@ def main(argv: list[str] | None = None) -> None:
         # Hide the GPU before the first torch import in this process.
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     release = resolve_release(args)
-    files = named_files(release)
+    if not release["checkpoint"].is_file():
+        raise SystemExit(f"missing checkpoint: {release['checkpoint']}")
+    if not args.dry_run:
+        load_release_env()
+    upload = planned_s3_url if args.dry_run else put_s3_object
+    delivery = deliver_checkpoint(
+        release["checkpoint"],
+        release["policy_name"],
+        run_id=release.get("run_id"),
+        upload=upload,
+    )
+    release["checkpoint_ref"] = (
+        delivery["url"] if delivery["mode"] == "s3" else delivery["filename"]
+    )
+    files = named_files(release, attach_checkpoint=delivery["mode"] == "attach")
     missing = [path for _name, path in files if not path.is_file()]
     if missing:
         joined = ", ".join(str(path) for path in missing)
         raise SystemExit(f"missing attachment: {joined}")
-    total = attachment_bytes([path for _name, path in files])
-    if total > MAX_ATTACHMENT_BYTES:
-        raise SystemExit(
-            f"attachments are {total} bytes; the limit is {MAX_ATTACHMENT_BYTES}"
-        )
-    print_release(release, files)
+    print_release(release, files, delivery)
     if args.dry_run:
         print("dry-run: not posting")
         return
-    if release["video"] is None:
+    if args.kind == "release" and release["video"] is None:
         raise SystemExit("a follow video is required; pass --video, --npz, or --render")
     webhook = os.environ.get("DISCORD_MODEL_RELEASE_WEBHOOK", "").strip()
     if not webhook:
