@@ -39,6 +39,9 @@ ACTION_CHANNEL_NAMES = ("throttle", "steer")
 DEFAULT_REVERSAL_DEADBAND = 0.0
 FOLLOW_OPPONENT_AHEAD_M = 3.0
 FOLLOW_OPPONENT_SPEED_MPS = 2.0
+# Used only when a config omits both opponent_target_speed_range and
+# opponent_target_speed. Matches the Austin TAL-era scripted training range.
+DEFAULT_OPPONENT_SPEED_RANGE = (2.0, 5.0)
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 DISTURBANCE_STEER_GAINS = (1.0, 1.21)
 DISTURBANCE_ACTION_LATENCY_STEPS = 2
@@ -147,6 +150,60 @@ def spawn_speed_mps(env_cfg: dict) -> float:
     return float(env_cfg.get("expected_lap_speed_mps", 3.5))
 
 
+def resolve_opponent_speed_range(env_cfg: dict) -> tuple[float, float]:
+    """Return the per-episode opponent speed range used at training reset.
+
+    Prefers ``opponent_target_speed_range``. A scalar ``opponent_target_speed``
+    becomes a degenerate range. Configs that omit both use
+    ``DEFAULT_OPPONENT_SPEED_RANGE``.
+    """
+    speed_range = env_cfg.get("opponent_target_speed_range")
+    if speed_range is not None:
+        lo = float(speed_range[0])
+        hi = float(speed_range[1])
+        if hi < lo:
+            lo, hi = hi, lo
+        return lo, hi
+    if env_cfg.get("opponent_target_speed") is not None:
+        target = float(env_cfg["opponent_target_speed"])
+        return target, target
+    lo, hi = DEFAULT_OPPONENT_SPEED_RANGE
+    return float(lo), float(hi)
+
+
+def sample_opponent_speeds(n: int, lo: float, hi: float, rng) -> np.ndarray:
+    """Draw one independent speed per opponent, once per episode/video."""
+    n = int(n)
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n!r}")
+    lo = float(lo)
+    hi = float(hi)
+    if hi < lo:
+        lo, hi = hi, lo
+    if lo == hi:
+        return np.full(n, lo, dtype=np.float32)
+    return rng.uniform(lo, hi, size=n).astype(np.float32)
+
+
+def apply_opponent_target_speeds(env, speeds) -> None:
+    """Hold sampled speeds after reset_to overwrites launch velocity only."""
+    speeds = np.asarray(speeds, dtype=np.float32).reshape(-1)
+    tensor = getattr(getattr(env, "_env", None), "tensor", None)
+    if tensor is not None and "opponent_target_speed" in tensor:
+        buf = tensor["opponent_target_speed"]
+        n = min(int(buf.shape[0]), int(speeds.shape[0]))
+        buf[:n].copy_(
+            torch.as_tensor(speeds[:n], device=buf.device, dtype=buf.dtype)
+        )
+    ctrl = getattr(env, "opponent_ctrl", None)
+    buf = getattr(ctrl, "_speed_buf", None)
+    if buf is not None:
+        n = min(int(buf.shape[0]), int(speeds.shape[0]))
+        buf[:n].copy_(
+            torch.as_tensor(speeds[:n], device=buf.device, dtype=buf.dtype)
+        )
+
+
 def classify_terminations(done, extras) -> tuple[np.ndarray, np.ndarray]:
     """Return (crash_mask, timeout_mask) for the current step."""
     if torch.is_tensor(done):
@@ -240,6 +297,9 @@ def summarize_episodes(
     track: str,
     track_length_m: float,
     spawn_speed_mps_value: float,
+    opponent_speed_seed: int | None = None,
+    opponent_speed_range: tuple[float, float] | None = None,
+    opponent_speeds_mps: list[float] | np.ndarray | None = None,
 ) -> dict:
     n = len(episodes)
     if n == 0:
@@ -261,7 +321,10 @@ def summarize_episodes(
         reason = ep.get("crash_reason")
         if reason in breakdown:
             breakdown[reason] += 1
-    return {
+    sampled = None
+    if opponent_speeds_mps is not None:
+        sampled = [float(s) for s in opponent_speeds_mps]
+    out = {
         "n_episodes": n,
         "n_full_laps": len(full_laps),
         "full_lap_completion_rate": len(full_laps) / n,
@@ -279,6 +342,20 @@ def summarize_episodes(
         "episodes": episodes,
         **_combine_action_delta_metrics(episodes),
     }
+    if sampled is not None:
+        out["opponent_speed_seed"] = (
+            None if opponent_speed_seed is None else int(opponent_speed_seed)
+        )
+        if opponent_speed_range is None:
+            out["opponent_speed_range"] = None
+        else:
+            out["opponent_speed_range"] = [
+                float(opponent_speed_range[0]),
+                float(opponent_speed_range[1]),
+            ]
+        out["opponent_speeds_mps"] = sampled
+        out["mean_opponent_speed_mps"] = float(np.mean(sampled))
+    return out
 
 
 def _actor_obs(obs, *, with_sensors: bool) -> torch.Tensor:
@@ -366,11 +443,13 @@ def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
     if any(spec["name"] == SCRIPTED_OVERTAKE_NAME for spec in resolved):
         return None
     source = _flying_eval_source(resolved)
+    cfg = _prepare_scripted_overtake_cfg(source["cfg"])
     return {
         "name": SCRIPTED_OVERTAKE_NAME,
-        "cfg": _prepare_scripted_overtake_cfg(source["cfg"]),
+        "cfg": cfg,
         "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
-        "opponent_speed_mps": FOLLOW_OPPONENT_SPEED_MPS,
+        "opponent_speed_mps": None,
+        "opponent_speed_range": resolve_opponent_speed_range(cfg["env"]),
     }
 
 
@@ -486,6 +565,7 @@ def evaluate_policy_on_env(
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
     opp_poses = None
     opp_yaws = None
+    opp_lo, opp_hi = resolve_opponent_speed_range(env.env_cfg)
     if opponent_ahead_m is not None:
         ahead = []
         ahead_yaw = []
@@ -495,11 +575,14 @@ def evaluate_policy_on_env(
             ahead_yaw.append(yaw)
         opp_poses = np.stack(ahead, axis=0)
         opp_yaws = np.asarray(ahead_yaw, dtype=np.float32)
-    opp_speed = (
-        None
-        if opponent_speed_mps is None
-        else np.full(n_spawns, float(opponent_speed_mps), dtype=np.float32)
-    )
+    if opponent_ahead_m is None:
+        opp_speed = None
+    elif opponent_speed_mps is None:
+        opp_speed = sample_opponent_speeds(
+            n_spawns, opp_lo, opp_hi, np.random.default_rng(int(seed))
+        )
+    else:
+        opp_speed = np.full(n_spawns, float(opponent_speed_mps), dtype=np.float32)
 
     recurrent = actor_is_recurrent(actor)
     num_envs = int(env.num_envs)
@@ -529,6 +612,10 @@ def evaluate_policy_on_env(
             batch_speed,
             **reset_kwargs,
         )
+        if opp_speed is not None:
+            apply_opponent_target_speeds(
+                env, _pad_batch(opp_speed[sl], num_envs)
+            )
         obs = _actor_obs(raw_obs, with_sensors=with_sensors)
         hidden = None
         if recurrent:
@@ -662,26 +749,30 @@ def evaluate_policy_on_env(
                 act_stats = action_delta_metrics(
                     np.zeros((0, 2), dtype=np.float64), deadband=reversal_deadband
                 )
-            episodes.append(
-                {
-                    "spawn_s": float(spawn_s[start + i]),
-                    "progress_m": float(progress_np[i]),
-                    "full_lap": bool(completed_np[i]),
-                    "lap_time_s": lap,
-                    "overtake_count": int(overtake_np[i]),
-                    "crash": bool(crash[i]),
-                    "timeout": bool(timeout[i]),
-                    "crash_reason": crash_reason[i],
-                    "steps": int(steps_alive[i]),
-                    **act_stats,
-                }
-            )
+            ep = {
+                "spawn_s": float(spawn_s[start + i]),
+                "progress_m": float(progress_np[i]),
+                "full_lap": bool(completed_np[i]),
+                "lap_time_s": lap,
+                "overtake_count": int(overtake_np[i]),
+                "crash": bool(crash[i]),
+                "timeout": bool(timeout[i]),
+                "crash_reason": crash_reason[i],
+                "steps": int(steps_alive[i]),
+                **act_stats,
+            }
+            if opp_speed is not None:
+                ep["opponent_speed_mps"] = float(opp_speed[start + i])
+            episodes.append(ep)
 
     return summarize_episodes(
         episodes,
         track=track,
         track_length_m=length,
         spawn_speed_mps_value=spawn_speed,
+        opponent_speed_seed=None if opp_speed is None else int(seed),
+        opponent_speed_range=None if opp_speed is None else (opp_lo, opp_hi),
+        opponent_speeds_mps=None if opp_speed is None else opp_speed,
     )
 
 
@@ -894,6 +985,10 @@ def wandb_metrics(result: dict) -> dict:
             payload[f"{prefix}/mean_lap_time_s"] = row["mean_lap_time_s"]
         if row.get("best_lap_time_s") is not None:
             payload[f"{prefix}/best_lap_time_s"] = row["best_lap_time_s"]
+        if row.get("mean_opponent_speed_mps") is not None:
+            payload[f"{prefix}/mean_opponent_speed_mps"] = row[
+                "mean_opponent_speed_mps"
+            ]
         for key in (
             "reversal_rate_throttle",
             "reversal_rate_steer",
