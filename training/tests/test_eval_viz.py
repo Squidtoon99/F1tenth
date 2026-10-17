@@ -145,13 +145,29 @@ def test_follow_renderer_eases_keeps_trail_and_marks_crash(tmp_path):
     crash_py = (cam[1] - crash_xy[1]) * scale + 700 / 2
     static_px = (targets[-1][0] - targets[0][0]) * scale + 1120 / 2
 
+    mid = 350
+    band = frame[mid - 50:mid + 50]
     live = np.argwhere(
-        (frame[:, :, 1] > 200) & (frame[:, :, 2] > 180) & (frame[:, :, 0] < 180)
+        (band[:, :, 1] > 200) & (band[:, :, 2] > 180) & (band[:, :, 0] < 180)
     )
     assert len(live) > 20
     centroid = live.mean(axis=0)
     assert abs(centroid[1] - live_px) < 35
     assert abs(centroid[1] - static_px) > 60
+
+    from render_follow import CAR_COLORS, OPP_COLOR
+
+    opp_xy = np.array([0.0, 2.0])
+    opp_px = (opp_xy[0] - cam[0]) * scale + 1120 / 2
+    opp_py = (cam[1] - opp_xy[1]) * scale + 700 / 2
+    ox = int(np.clip(opp_px, 0, 1119))
+    oy = int(np.clip(opp_py, 0, 699))
+    patch = frame[max(0, oy - 22):oy + 22, max(0, ox - 22):ox + 22]
+    ego0 = np.array(CAR_COLORS[0])
+    border = np.abs(patch.astype(int) - ego0).sum(axis=2) <= 24
+    assert border.any()
+    fill = np.abs(patch.astype(int) - np.array(OPP_COLOR)).sum(axis=2) <= 24
+    assert fill.any()
 
     legend = frame[20, 1120 - 202]
     assert legend.min() > 180

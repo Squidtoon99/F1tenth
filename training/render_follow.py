@@ -244,7 +244,9 @@ def main():
             o = to_px(rect(opp_xy[i][idx[i]][0], opp_xy[i][idx[i]][1],
                            opp_yaw[i][idx[i]], car_l, car_w))
             cv2.fillPoly(frame, [o], OPP_COLOR)
-            cv2.polylines(frame, [o], True, (40, 40, 40), 1, cv2.LINE_AA)
+            cv2.polylines(
+                frame, [o], True, CAR_COLORS[i % len(CAR_COLORS)], 2, cv2.LINE_AA
+            )
 
         n_alive = len(alive)
         cv2.putText(frame, f"t = {t / args.fps:5.1f} s", (14, 28),
