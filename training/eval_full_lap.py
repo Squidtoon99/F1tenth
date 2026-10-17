@@ -39,9 +39,13 @@ ACTION_CHANNEL_NAMES = ("throttle", "steer")
 DEFAULT_REVERSAL_DEADBAND = 0.0
 FOLLOW_OPPONENT_AHEAD_M = 3.0
 FOLLOW_OPPONENT_SPEED_MPS = 2.0
-# Used only when a config omits both opponent_target_speed_range and
+# Used only when a TAL config omits both opponent_target_speed_range and
 # opponent_target_speed. Matches the Austin TAL-era scripted training range.
 DEFAULT_OPPONENT_SPEED_RANGE = (2.0, 5.0)
+# No-TAL eval/release videos. Austin flying mean from opponents-notal s42
+# final is 421.042 m / 58.133 s = 7.24 m/s. Range is noticeably slower than
+# that average up to about the average so overtakes stay contests.
+NOTAL_EVAL_OPPONENT_SPEED_RANGE = (5.0, 7.2)
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 DISTURBANCE_STEER_GAINS = (1.0, 1.21)
 DISTURBANCE_ACTION_LATENCY_STEPS = 2
@@ -169,6 +173,21 @@ def resolve_opponent_speed_range(env_cfg: dict) -> tuple[float, float]:
         return target, target
     lo, hi = DEFAULT_OPPONENT_SPEED_RANGE
     return float(lo), float(hi)
+
+
+def resolve_eval_opponent_speed_range(
+    env_cfg: dict,
+    reward_cfg: dict | None = None,
+) -> tuple[float, float]:
+    """Eval/video range: no-TAL uses the faster default; TAL keeps training."""
+    tal = 0.0
+    if reward_cfg is not None:
+        scales = reward_cfg.get("reward_scales") or {}
+        tal = float(scales.get("tal", 0.0) or 0.0)
+    if reward_cfg is not None and tal <= 0.0:
+        lo, hi = NOTAL_EVAL_OPPONENT_SPEED_RANGE
+        return float(lo), float(hi)
+    return resolve_opponent_speed_range(env_cfg)
 
 
 def sample_opponent_speeds(n: int, lo: float, hi: float, rng) -> np.ndarray:
@@ -449,7 +468,9 @@ def extra_scripted_overtake_spec(resolved: list[dict]) -> dict | None:
         "cfg": cfg,
         "opponent_ahead_m": FOLLOW_OPPONENT_AHEAD_M,
         "opponent_speed_mps": None,
-        "opponent_speed_range": resolve_opponent_speed_range(cfg["env"]),
+        "opponent_speed_range": resolve_eval_opponent_speed_range(
+            cfg["env"], cfg.get("reward")
+        ),
     }
 
 
@@ -565,7 +586,9 @@ def evaluate_policy_on_env(
     speeds = np.full(n_spawns, float(spawn_speed), dtype=np.float32)
     opp_poses = None
     opp_yaws = None
-    opp_lo, opp_hi = resolve_opponent_speed_range(env.env_cfg)
+    opp_lo, opp_hi = resolve_eval_opponent_speed_range(
+        env.env_cfg, getattr(env, "reward_cfg", None)
+    )
     if opponent_ahead_m is not None:
         ahead = []
         ahead_yaw = []

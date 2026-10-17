@@ -6,6 +6,8 @@ import pytest
 
 from eval_full_lap import (
     DEFAULT_OPPONENT_SPEED_RANGE,
+    NOTAL_EVAL_OPPONENT_SPEED_RANGE,
+    resolve_eval_opponent_speed_range,
     resolve_opponent_speed_range,
     sample_opponent_speeds,
 )
@@ -36,6 +38,23 @@ def test_resolve_falls_back_to_scalar_target():
 def test_resolve_documented_range_when_config_omits_speeds():
     assert resolve_opponent_speed_range({}) == DEFAULT_OPPONENT_SPEED_RANGE
     assert DEFAULT_OPPONENT_SPEED_RANGE == (2.0, 5.0)
+
+
+def test_notal_eval_uses_faster_range():
+    lo, hi = resolve_eval_opponent_speed_range(
+        {"opponent_target_speed_range": [2.0, 5.0]},
+        {"reward_scales": {"tal": 0.0}},
+    )
+    assert (lo, hi) == NOTAL_EVAL_OPPONENT_SPEED_RANGE
+    assert NOTAL_EVAL_OPPONENT_SPEED_RANGE == (5.0, 7.2)
+
+
+def test_tal_eval_keeps_training_range():
+    lo, hi = resolve_eval_opponent_speed_range(
+        {"opponent_target_speed_range": [2.0, 5.0]},
+        {"reward_scales": {"tal": 0.2}},
+    )
+    assert (lo, hi) == (2.0, 5.0)
 
 
 def test_sample_is_per_opponent_reproducible_and_in_range():

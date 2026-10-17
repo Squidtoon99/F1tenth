@@ -317,11 +317,13 @@ def _rollout_to_npz(env, actor, normalizer, cfg, npz_path, **deps) -> str:
     opp_i = min(max(opp_i, 1), len(center) - 1)
     from eval_full_lap import (
         apply_opponent_target_speeds,
-        resolve_opponent_speed_range,
+        resolve_eval_opponent_speed_range,
         sample_opponent_speeds,
     )
 
-    opp_lo, opp_hi = resolve_opponent_speed_range(cfg["env"])
+    opp_lo, opp_hi = resolve_eval_opponent_speed_range(
+        cfg["env"], cfg.get("reward")
+    )
     opp_speeds = sample_opponent_speeds(
         CARS, opp_lo, opp_hi, np.random.default_rng(int(seed))
     )
