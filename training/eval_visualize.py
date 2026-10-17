@@ -48,8 +48,6 @@ def build_eval_config(args: argparse.Namespace) -> dict:
     cfg["env"]["episode_length"] = episode_length_for_track(
         track=args.track,
         workspace_dir=str(Path(__file__).resolve().parent),
-        ref_lap_speed_mps=float(cfg["env"].get("expected_lap_speed_mps", 3.5)),
-        lap_multiplier=float(cfg["env"].get("episode_lap_multiplier", 3.0)),
     )
     return cfg
 
