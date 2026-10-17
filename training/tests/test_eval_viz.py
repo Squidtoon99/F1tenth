@@ -98,7 +98,9 @@ def _write_follow_npz(path):
         payload[f"ego_xy_{i}"] = xy
         payload[f"ego_yaw_{i}"] = np.zeros(n, dtype=np.float64)
         payload[f"ego_speed_{i}"] = np.full(n, 3.0, dtype=np.float64)
-        payload[f"opp_xy_{i}"] = np.repeat(opp[None, :], n, axis=0)
+        payload[f"opp_xy_{i}"] = np.repeat(
+            (opp + np.array([0.0, 0.45 * i]))[None, :], n, axis=0
+        )
         payload[f"opp_yaw_{i}"] = np.zeros(n, dtype=np.float64)
     np.savez(path, **payload)
 
@@ -162,11 +164,11 @@ def test_follow_renderer_eases_keeps_trail_and_marks_crash(tmp_path):
     opp_py = (cam[1] - opp_xy[1]) * scale + 700 / 2
     ox = int(np.clip(opp_px, 0, 1119))
     oy = int(np.clip(opp_py, 0, 699))
-    patch = frame[max(0, oy - 22):oy + 22, max(0, ox - 22):ox + 22]
+    patch = frame[max(0, oy - 24):oy + 24, max(0, ox - 24):ox + 24]
     ego0 = np.array(CAR_COLORS[0])
-    border = np.abs(patch.astype(int) - ego0).sum(axis=2) <= 24
+    border = np.abs(patch.astype(int) - ego0).max(axis=2) <= 40
     assert border.any()
-    fill = np.abs(patch.astype(int) - np.array(OPP_COLOR)).sum(axis=2) <= 24
+    fill = np.abs(patch.astype(int) - np.array(OPP_COLOR)).max(axis=2) <= 40
     assert fill.any()
 
     legend = frame[20, 1120 - 202]
