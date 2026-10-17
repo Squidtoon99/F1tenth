@@ -46,7 +46,7 @@ def test_notal_eval_uses_faster_range():
         {"reward_scales": {"tal": 0.0}},
     )
     assert (lo, hi) == NOTAL_EVAL_OPPONENT_SPEED_RANGE
-    assert NOTAL_EVAL_OPPONENT_SPEED_RANGE == (5.0, 7.2)
+    assert NOTAL_EVAL_OPPONENT_SPEED_RANGE == (6.5, 7.6)
 
 
 def test_tal_eval_keeps_training_range():

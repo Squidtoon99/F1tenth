@@ -43,9 +43,10 @@ FOLLOW_OPPONENT_SPEED_MPS = 2.0
 # opponent_target_speed. Matches the Austin TAL-era scripted training range.
 DEFAULT_OPPONENT_SPEED_RANGE = (2.0, 5.0)
 # No-TAL eval/release videos. Austin flying mean from opponents-notal s42
-# final is 421.042 m / 58.133 s = 7.24 m/s. Range is noticeably slower than
-# that average up to about the average so overtakes stay contests.
-NOTAL_EVAL_OPPONENT_SPEED_RANGE = (5.0, 7.2)
+# final is 421.042 m / 58.133 s = 7.24 m/s. Range sits around and slightly
+# above that average. Hi is the last scripted-centerline target that still
+# completes an Austin lap without leaving the ribbon (7.8+ cuts infield).
+NOTAL_EVAL_OPPONENT_SPEED_RANGE = (6.5, 7.6)
 SCRIPTED_OVERTAKE_NAME = "scripted_overtake"
 DISTURBANCE_STEER_GAINS = (1.0, 1.21)
 DISTURBANCE_ACTION_LATENCY_STEPS = 2
