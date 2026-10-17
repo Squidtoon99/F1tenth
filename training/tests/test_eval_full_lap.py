@@ -136,16 +136,31 @@ def test_pose_at_s_circle_quarter_turns():
 
 def test_spawn_speed_standing_vs_flying():
     assert spawn_speed_mps({"reset_stationary_probability": 1.0}) == 0.0
-    flying = spawn_speed_mps(
-        {"reset_stationary_probability": 0.0, "expected_lap_speed_mps": 3.5}
+    courtyard = spawn_speed_mps(
+        {
+            "track": "courtyard_2",
+            "reset_stationary_probability": 0.0,
+            "reset_speed_max_mps": 7.0,
+            "expected_lap_speed_mps": 3.5,
+        }
     )
-    assert flying == pytest.approx(3.5)
+    assert courtyard == pytest.approx(0.0)
+    austin = spawn_speed_mps(
+        {
+            "track": "Austin",
+            "reset_stationary_probability": 0.0,
+            "reset_speed_max_mps": 7.0,
+        }
+    )
+    assert austin == pytest.approx(2.0)
+    unknown = spawn_speed_mps({"reset_stationary_probability": 0.0})
+    assert unknown == pytest.approx(0.0)
 
 
 def test_extra_scripted_overtake_spec_matches_follow_video():
     flying = copy.deepcopy(DEFAULT_CONFIG)
     flying["env"]["opponent_strategy"] = None
-    flying["reward"]["reward_scales"]["tal"] = 0.2
+    flying["reward"]["reward_scales"]["tal"] = 0.0
     standing = copy.deepcopy(flying)
     standing["env"]["reset_stationary_probability"] = 1.0
     resolved = [
@@ -172,7 +187,7 @@ def test_extra_disturbance_and_generalization_specs():
     flying["env"]["opponent_strategy"] = None
     flying["env"]["steer_gain"] = 1.10714
     flying["env"]["warp_sim"]["steer_gain"] = 1.10714
-    flying["reward"]["reward_scales"]["tal"] = 0.2
+    flying["reward"]["reward_scales"]["tal"] = 0.0
     standing = copy.deepcopy(flying)
     standing["env"]["reset_stationary_probability"] = 1.0
     resolved = [
@@ -301,7 +316,7 @@ def test_summarize_episodes_rates_and_lap_times():
         },
     ]
     row = summarize_episodes(
-        episodes, track="courtyard_2", track_length_m=70.0, spawn_speed_mps_value=3.5
+        episodes, track="courtyard_2", track_length_m=70.0, spawn_speed_mps_value=0.0
     )
     assert row["n_episodes"] == 4
     assert row["n_full_laps"] == 2
@@ -446,7 +461,7 @@ def _tiny_scripted_cfg():
     cfg = _tiny_standing_cfg()
     cfg["env"]["opponent_strategy"] = "scripted"
     cfg["env"]["reset_stationary_probability"] = 0.0
-    cfg["env"]["expected_lap_speed_mps"] = 3.5
+    cfg["env"]["reset_speed_max_mps"] = 1.0
     return cfg
 
 

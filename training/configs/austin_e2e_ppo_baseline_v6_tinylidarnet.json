@@ -114,7 +114,7 @@
   ],
   "reward": {
     "reward_scales": {
-      "tal": 0.2
+      "tal": 0.0
     }
   }
 }

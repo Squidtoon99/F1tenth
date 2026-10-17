@@ -144,7 +144,9 @@ def spawn_speed_mps(env_cfg: dict) -> float:
     stationary = float(env_cfg.get("reset_stationary_probability", 0.0))
     if stationary >= 1.0:
         return 0.0
-    return float(env_cfg.get("expected_lap_speed_mps", 3.5))
+    from f1tenth_env.utils import track_flying_spawn_mps
+
+    return track_flying_spawn_mps(env_cfg.get("track"))
 
 
 def classify_terminations(done, extras) -> tuple[np.ndarray, np.ndarray]:

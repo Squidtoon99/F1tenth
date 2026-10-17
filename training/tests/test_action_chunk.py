@@ -20,6 +20,7 @@ from f1tenth_policy.layout import (
 from ppo import PPOTrainer
 from qrsac import make_actor
 from standalone_trainer import (
+    apply_scenario_patch,
     build_config,
     cfg_action_horizon,
     cfg_actor_action_dim,
@@ -62,7 +63,14 @@ def test_action_chunk_arm_config_turns_h4_on():
     assert cfg["env"]["num_actions"] == 2
     assert cfg["env"]["opponent_strategy"] == "scripted"
     assert cfg["schedule"]["total_transitions"] == 256000000
-    assert cfg["reward"]["reward_scales"]["tal"] == pytest.approx(0.2)
+    assert cfg["reward"]["reward_scales"]["tal"] == pytest.approx(0.0)
+    assert cfg["env"]["reset_speed_min_mps"] == pytest.approx(0.0)
+    assert cfg["env"]["reset_speed_max_mps"] == pytest.approx(5.0)
+    assert cfg["env"]["track"] == "Austin"
+    iv = next(s for s in cfg["scenarios"] if s["name"] == "solo_iv_2026")
+    merged_iv = apply_scenario_patch(cfg, iv, str(path.parent))
+    assert merged_iv["env"]["reset_speed_min_mps"] == pytest.approx(1.0)
+    assert merged_iv["env"]["reset_speed_max_mps"] == pytest.approx(3.0)
     assert cfg["ppo"].get("caps_spatial_coef", 0.0) == pytest.approx(0.0)
     assert cfg["policy_format_version"] == ACTION_CHUNK_POLICY_FORMAT_VERSION
     assert cfg_action_horizon(cfg) == 4

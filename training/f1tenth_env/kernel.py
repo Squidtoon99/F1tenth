@@ -421,7 +421,6 @@ class RewardParams:
     oob_impact_coefficient: wp.float32
     steering_change: wp.float32
     steering_history: wp.float32
-    max_steer: wp.float32
     steering_c_s: wp.float32
     steering_c_o: wp.float32
     steering_c_d: wp.float32
@@ -433,10 +432,6 @@ class RewardParams:
     global_scale: wp.float32
     rear_end_any_contact: wp.int32
     wall_cost_mode: wp.int32
-    tal_scale: wp.float32
-    tal_v_ref: wp.float32
-    tal_kp_lateral: wp.float32
-    tal_kp_heading: wp.float32
     wall_proximity_m: wp.float32
 
 
@@ -1482,29 +1477,6 @@ def compute_reward_and_done(
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
     out.tal = 0.0
-    if reward.tal_scale != 0.0:
-        track_speed = wp.dot(vel_world, ego_frenet.tangent)
-        lookahead = wp.float32(0.5) * wp.abs(track_speed)
-        if lookahead < 0.05:
-            ahead = wp.atan2(ego_frenet.tangent[1], ego_frenet.tangent[0])
-        else:
-            ahead = track_heading_ahead(ego_frenet, track, lookahead)
-        heading_err = wrap_angle(ego.yaw - ahead)
-        cross_track = wp.atan(
-            reward.tal_kp_lateral
-            * ego_frenet.ey
-            / wp.max(wp.abs(track_speed) + 0.5, 0.5)
-        )
-        delta_ref = wp.clamp(
-            -(reward.tal_kp_heading * heading_err + cross_track),
-            -reward.max_steer,
-            reward.max_steer,
-        )
-        out.tal = reward.tal_scale * (
-            1.0
-            - wp.abs(track_speed - reward.tal_v_ref)
-            - wp.abs(ego.steer_logical - delta_ref)
-        )
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
     delta_t = theta_t - theta_prev

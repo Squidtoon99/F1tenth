@@ -98,7 +98,7 @@ def test_patch_scripted_opponent_without_cli_flag():
     assert cfg["obs"]["enable_opponent_obs"] is False
     assert cfg["obs"]["num_actor_obs"] == 1097
     assert cfg["reward"]["reward_scales"]["passing"] == 3.0
-    assert cfg["reward"]["reward_scales"]["tal"] == 0.2
+    assert cfg["reward"]["reward_scales"]["tal"] == 0.0
 
 
 def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
@@ -109,6 +109,9 @@ def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
     assert control_dt == pytest.approx(0.05)
     assert args.num_envs == 1024
     assert DEFAULT_CONFIG["model"]["replay_buffer_limit"] == 3_000_000
+    assert DEFAULT_CONFIG["env"]["track"] == "IV_2026_SIM"
+    assert DEFAULT_CONFIG["env"]["reset_speed_min_mps"] == pytest.approx(1.0)
+    assert DEFAULT_CONFIG["env"]["reset_speed_max_mps"] == pytest.approx(3.0)
 
 
 def test_default_steering_reward_scales_and_constants():
