@@ -1256,38 +1256,23 @@ def curvature_limited_speed(
     track: TrackData,
     target_speed: wp.float32,
 ) -> wp.float32:
-    a_lat = wp.float32(8.0)
-    a_brake = wp.float32(6.0)
-    chord = wp.float32(4.0)
-    n_samples = 8
+    a_lat = wp.float32(5.5)
+    a_brake = wp.float32(5.0)
+    chord = wp.float32(2.0)
     min_v2 = target_speed * target_speed
     heading_prev = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     prev_s = wp.float32(0.0)
-    segment = frenet.segment
-    covered = wp.float32(0.0)
-    available = (1.0 - frenet.t) * track.segment_length[segment]
-    sample_i = 1
-    for _ in range(MAX_FORWARD_SEGMENTS):
-        if sample_i > n_samples:
-            break
-        sample_s = chord * wp.float32(sample_i)
-        if covered + available >= sample_s:
-            heading = wp.atan2(
-                track.tangent[segment][1], track.tangent[segment][0]
-            )
-            ds = wp.max(sample_s - prev_s, 0.2)
-            kappa = wp.abs(wrap_angle(heading - heading_prev)) / ds
-            v_corner2 = a_lat / wp.max(kappa, 1.0e-4)
-            v_allow2 = v_corner2 + 2.0 * a_brake * sample_s
-            if v_allow2 < min_v2:
-                min_v2 = v_allow2
-            heading_prev = heading
-            prev_s = sample_s
-            sample_i = sample_i + 1
-        else:
-            covered = covered + available
-            segment = wrap_segment(segment + 1, track.count)
-            available = track.segment_length[segment]
+    for i in range(16):
+        sample_s = chord * wp.float32(i + 1)
+        heading = track_heading_ahead(frenet, track, sample_s)
+        ds = wp.max(sample_s - prev_s, 0.2)
+        kappa = wp.abs(wrap_angle(heading - heading_prev)) / ds
+        v_corner2 = a_lat / wp.max(kappa, 1.0e-4)
+        v_allow2 = v_corner2 + 2.0 * a_brake * sample_s
+        if v_allow2 < min_v2:
+            min_v2 = v_allow2
+        heading_prev = heading
+        prev_s = sample_s
     return wp.sqrt(wp.max(min_v2, 0.0))
 
 
@@ -1304,7 +1289,10 @@ def centerline_tracking_action(
     lateral_offset: wp.float32,
 ) -> wp.vec2f:
     track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
-    lookahead = wp.max(wp.float32(1.5), 0.75 * wp.abs(track_speed))
+    lookahead = wp.min(
+        wp.float32(2.5),
+        wp.max(wp.float32(1.5), 0.75 * wp.abs(track_speed)),
+    )
     heading_now = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading = track_heading_ahead(frenet, track, lookahead)
     heading_error = wrap_angle(vehicle.yaw - heading)
