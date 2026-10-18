@@ -1,6 +1,6 @@
 "use client";
 
-import { Cpu, Flag, GitFork, LayoutDashboard, Search } from "lucide-react";
+import { Cpu, Flag, Gauge, GitFork, LayoutDashboard, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
@@ -16,6 +16,7 @@ const NAV = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/runs", label: "Runs", icon: Flag },
   { href: "/policies", label: "Policies", icon: Cpu },
+  { href: "/race", label: "Race", icon: Gauge },
 ];
 
 const TABS = [

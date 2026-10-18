@@ -1,0 +1,928 @@
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions.normal import Normal
+
+from f1tenth_policy.layout import (
+    ACTOR_ARCHITECTURE_NAME,
+    ALLOWED_LIDAR_POOL_BINS,
+    CNN_PROJECTION_DIM,
+    GRU_HIDDEN_DIM,
+    LIDAR_DIM,
+    LIDAR_DREAMER_ARCHITECTURE_NAME,
+    NUM_ACTIONS,
+    PROPRIO_DIM,
+    TINYLIDARNET_ARCHITECTURE_NAME,
+)
+
+LOG_STD_MAX = 2
+LOG_STD_MIN = -20
+CNN_CONV_CHANNELS = (32, 64, 64)
+CNN_KERNELS = (7, 5, 3)
+CNN_STRIDES = (3, 2, 2)
+CNN_PADDING = (3, 2, 1)
+
+
+def mlp(sizes, activation, output_activation=nn.Identity):
+    layers = []
+    for j in range(len(sizes) - 1):
+        act = activation if j < len(sizes) - 2 else output_activation
+        layers += [nn.Linear(sizes[j], sizes[j + 1]), act()]
+    return nn.Sequential(*layers)
+
+
+def _squashed_gaussian_distribution(
+    net,
+    mu_layer,
+    log_std_layer,
+    obs,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
+):
+    net_out = net(obs)
+    mu = mu_layer(net_out)
+    log_std = torch.clamp(log_std_layer(net_out), log_std_min, log_std_max)
+    return Normal(mu, torch.exp(log_std))
+
+
+def _squashed_gaussian_log_prob_from_pre_tanh(
+    distribution, pre_tanh, act_limit=1.0
+):
+    logp = distribution.log_prob(pre_tanh).sum(dim=-1)
+    correction = 2 * (np.log(2) - pre_tanh - F.softplus(-2 * pre_tanh))
+    scale_correction = pre_tanh.shape[-1] * np.log(float(act_limit))
+    return logp - correction.sum(dim=-1) - scale_correction
+
+
+def _squashed_gaussian_log_prob(distribution, action, act_limit):
+    scaled_action = action / act_limit
+    eps = torch.finfo(action.dtype).eps
+    pre_tanh = torch.atanh(scaled_action.clamp(-1.0 + eps, 1.0 - eps))
+    return _squashed_gaussian_log_prob_from_pre_tanh(
+        distribution, pre_tanh, act_limit
+    )
+
+
+def _squashed_gaussian_forward(
+    net,
+    mu_layer,
+    log_std_layer,
+    act_limit,
+    obs,
+    deterministic,
+    with_logprob,
+    standard_normal=None,
+    return_pre_tanh=False,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
+):
+    pi_distribution = _squashed_gaussian_distribution(
+        net,
+        mu_layer,
+        log_std_layer,
+        obs,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
+    )
+    if deterministic:
+        pre_tanh = pi_distribution.mean
+    elif standard_normal is not None:
+        pre_tanh = pi_distribution.mean + pi_distribution.stddev * standard_normal
+    else:
+        pre_tanh = pi_distribution.rsample()
+
+    pi_action = act_limit * torch.tanh(pre_tanh)
+    logp_pi = (
+        _squashed_gaussian_log_prob_from_pre_tanh(
+            pi_distribution, pre_tanh, act_limit
+        )
+        if with_logprob
+        else None
+    )
+    if return_pre_tanh:
+        return pi_action, logp_pi, pre_tanh
+    return pi_action, logp_pi
+
+
+@torch.compiler.disable
+def _partition_invariant_standard_normal(reference):
+    eps = torch.finfo(reference.dtype).eps
+    uniform = torch.rand_like(reference).clamp_(eps, 1.0 - eps)
+    return torch.erfinv(uniform.mul_(2.0).sub_(1.0)).mul_(np.sqrt(2.0))
+
+
+def normalize_actor_architecture(architecture: Mapping[str, Any] | dict) -> dict:
+    return json.loads(
+        json.dumps(
+            architecture,
+            default=lambda v: int(v) if hasattr(v, "item") else v,
+        )
+    )
+
+
+def architectures_match(left, right) -> bool:
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    return normalize_actor_architecture(left) == normalize_actor_architecture(right)
+
+
+class LidarCNNEncoder(nn.Module):
+    def __init__(
+        self,
+        lidar_dim=LIDAR_DIM,
+        pool_bins=32,
+        projection_dim=CNN_PROJECTION_DIM,
+    ):
+        super().__init__()
+        pool_bins = int(pool_bins)
+        if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
+            raise ValueError(
+                f"lidar_pool_bins must be one of {sorted(ALLOWED_LIDAR_POOL_BINS)}, "
+                f"got {pool_bins}"
+            )
+        self.lidar_dim = int(lidar_dim)
+        self.pool_bins = pool_bins
+        self.projection_dim = int(projection_dim)
+        self.conv = nn.Sequential(
+            nn.Conv1d(
+                1,
+                CNN_CONV_CHANNELS[0],
+                kernel_size=CNN_KERNELS[0],
+                stride=CNN_STRIDES[0],
+                padding=CNN_PADDING[0],
+            ),
+            nn.ReLU(),
+            nn.Conv1d(
+                CNN_CONV_CHANNELS[0],
+                CNN_CONV_CHANNELS[1],
+                kernel_size=CNN_KERNELS[1],
+                stride=CNN_STRIDES[1],
+                padding=CNN_PADDING[1],
+            ),
+            nn.ReLU(),
+            nn.Conv1d(
+                CNN_CONV_CHANNELS[1],
+                CNN_CONV_CHANNELS[2],
+                kernel_size=CNN_KERNELS[2],
+                stride=CNN_STRIDES[2],
+                padding=CNN_PADDING[2],
+            ),
+            nn.ReLU(),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        self.projection = nn.Linear(
+            CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
+        )
+
+    def forward_features(self, lidar):
+        x = lidar.unsqueeze(1)
+        x = self.conv(x)
+        pooled = self.pool(x)
+        flat = pooled.flatten(1)
+        return F.relu(self.projection(flat)), pooled
+
+    def forward(self, lidar):
+        features, _ = self.forward_features(lidar)
+        return features
+
+
+TINYLIDARNET_CONV = (
+    (24, 10, 4),
+    (36, 8, 4),
+    (48, 4, 2),
+    (64, 3, 1),
+    (64, 3, 1),
+)
+TINYLIDARNET_FC = (100, 50, 10)
+
+
+def _conv1d_length(length, kernel, stride):
+    return (int(length) - int(kernel)) // int(stride) + 1
+
+
+class TinyLidarNetEncoder(nn.Module):
+    """PilotNet-style 1D CNN on the raw 1081-beam scan (no 32-bin pool)."""
+
+    def __init__(self, lidar_dim=LIDAR_DIM, projection_dim=CNN_PROJECTION_DIM):
+        super().__init__()
+        self.lidar_dim = int(lidar_dim)
+        self.projection_dim = int(projection_dim)
+        layers = []
+        in_ch = 1
+        length = self.lidar_dim
+        for out_ch, kernel, stride in TINYLIDARNET_CONV:
+            layers.append(
+                nn.Conv1d(
+                    in_ch,
+                    int(out_ch),
+                    kernel_size=int(kernel),
+                    stride=int(stride),
+                )
+            )
+            layers.append(nn.ReLU())
+            length = _conv1d_length(length, kernel, stride)
+            if length < 1:
+                raise ValueError(
+                    f"TinyLidarNet conv collapsed lidar_dim={self.lidar_dim}"
+                )
+            in_ch = int(out_ch)
+        self.conv = nn.Sequential(*layers)
+        self.conv_length = int(length)
+        fc_in = in_ch * self.conv_length
+        fc_layers = []
+        for width in TINYLIDARNET_FC:
+            fc_layers.append(nn.Linear(fc_in, int(width)))
+            fc_layers.append(nn.ReLU())
+            fc_in = int(width)
+        fc_layers.append(nn.Linear(fc_in, self.projection_dim))
+        self.fc = nn.Sequential(*fc_layers)
+
+    def forward_features(self, lidar):
+        if lidar.shape[-1] != self.lidar_dim:
+            raise ValueError(
+                f"lidar last dim={lidar.shape[-1]}; expected {self.lidar_dim}"
+            )
+        conv = self.conv(lidar.unsqueeze(1))
+        features = self.fc(conv.flatten(1))
+        return features, conv
+
+    def forward(self, lidar):
+        features, _ = self.forward_features(lidar)
+        return features
+
+
+class SquashedGaussianLidarGRUActor(nn.Module):
+
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        hidden_sizes,
+        activation,
+        act_limit,
+        lidar_dim=LIDAR_DIM,
+        proprio_dim=PROPRIO_DIM,
+        pool_bins=32,
+        projection_dim=CNN_PROJECTION_DIM,
+        gru_hidden_dim=GRU_HIDDEN_DIM,
+        log_std_min=LOG_STD_MIN,
+        log_std_max=LOG_STD_MAX,
+        encoder_name="lidar_cnn",
+    ):
+        super().__init__()
+        self.obs_dim = int(obs_dim)
+        self.act_dim = int(act_dim)
+        if self.act_dim % NUM_ACTIONS != 0 or self.act_dim <= 0:
+            raise ValueError(
+                f"act_dim={self.act_dim} must be a positive multiple of "
+                f"plant NUM_ACTIONS={NUM_ACTIONS}"
+            )
+        self.action_horizon = self.act_dim // NUM_ACTIONS
+        log_std_min = float(log_std_min)
+        log_std_max = float(log_std_max)
+        if not math.isfinite(log_std_min) or not math.isfinite(log_std_max):
+            raise ValueError(
+                f"log_std_min and log_std_max must be finite, got "
+                f"{log_std_min!r}, {log_std_max!r}"
+            )
+        if log_std_min >= log_std_max:
+            raise ValueError(
+                f"log_std_min={log_std_min} must be < log_std_max={log_std_max}"
+            )
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.lidar_dim = int(lidar_dim)
+        self.proprio_dim = int(proprio_dim)
+        self.pool_bins = int(pool_bins)
+        self.projection_dim = int(projection_dim)
+        self.gru_hidden_dim = int(gru_hidden_dim)
+        self.hidden_sizes = tuple(int(s) for s in hidden_sizes)
+        if self.obs_dim != self.lidar_dim + self.proprio_dim:
+            raise ValueError(
+                f"obs_dim={self.obs_dim} must equal lidar_dim+proprio_dim="
+                f"{self.lidar_dim + self.proprio_dim}"
+            )
+        if self.gru_hidden_dim <= 0:
+            raise ValueError(
+                f"gru_hidden_dim must be positive, got {self.gru_hidden_dim}"
+            )
+        self.encoder_name = str(encoder_name)
+        if self.encoder_name == "tinylidarnet":
+            self.encoder = TinyLidarNetEncoder(
+                lidar_dim=self.lidar_dim,
+                projection_dim=self.projection_dim,
+            )
+        elif self.encoder_name == "lidar_cnn":
+            self.encoder = LidarCNNEncoder(
+                lidar_dim=self.lidar_dim,
+                pool_bins=self.pool_bins,
+                projection_dim=self.projection_dim,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported encoder_name={self.encoder_name!r}"
+            )
+        gru_in = self.projection_dim + self.proprio_dim
+        self.gru = nn.GRU(
+            input_size=gru_in,
+            hidden_size=self.gru_hidden_dim,
+            batch_first=True,
+        )
+        self.gru.flatten_parameters()
+        self.net = mlp(
+            [self.gru_hidden_dim] + list(hidden_sizes),
+            activation,
+            activation,  # type: ignore
+        )
+        self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
+        self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
+        self.act_limit = act_limit
+        self.use_segment_gru = True
+        if self.encoder_name == "tinylidarnet":
+            self.actor_architecture = {
+                "name": TINYLIDARNET_ARCHITECTURE_NAME,
+                "version": 1,
+                "obs_dim": self.obs_dim,
+                "lidar_dim": self.lidar_dim,
+                "proprio_dim": self.proprio_dim,
+                "encoder": "tinylidarnet",
+                "pool": "none",
+                "conv": [list(row) for row in TINYLIDARNET_CONV],
+                "fc": list(TINYLIDARNET_FC),
+                "projection_dim": self.projection_dim,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "hidden_layers": list(self.hidden_sizes),
+                "activation": "relu",
+                "action_dim": self.act_dim,
+            }
+        else:
+            self.actor_architecture = {
+                "name": ACTOR_ARCHITECTURE_NAME,
+                "version": 1,
+                "obs_dim": self.obs_dim,
+                "lidar_dim": self.lidar_dim,
+                "proprio_dim": self.proprio_dim,
+                "conv_channels": list(CNN_CONV_CHANNELS),
+                "kernels": list(CNN_KERNELS),
+                "strides": list(CNN_STRIDES),
+                "padding": list(CNN_PADDING),
+                "pool": "adaptive_avg_1d",
+                "pool_bins": self.pool_bins,
+                "projection_dim": self.projection_dim,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "hidden_layers": list(self.hidden_sizes),
+                "activation": "relu",
+                "action_dim": self.act_dim,
+            }
+        if self.action_horizon != 1:
+            self.actor_architecture["action_horizon"] = self.action_horizon
+
+    def initial_hidden(self, batch_size, *, device=None, dtype=None):
+        return torch.zeros(
+            int(batch_size),
+            self.gru_hidden_dim,
+            device=device,
+            dtype=dtype,
+        )
+
+    def encode(self, obs):
+        lidar = obs[..., : self.lidar_dim]
+        proprio = obs[..., self.lidar_dim :]
+        features, pooled = self.encoder.forward_features(lidar)
+        trunk_in = torch.cat([features, proprio], dim=-1)
+        return trunk_in, pooled
+
+    def _apply_reset_mask(self, hidden, reset_mask):
+        if reset_mask is None:
+            return hidden
+        if reset_mask.shape != (hidden.shape[0],):
+            raise ValueError(
+                f"reset_mask shape={tuple(reset_mask.shape)}; "
+                f"expected ({hidden.shape[0]},)"
+            )
+        mask = reset_mask.to(device=hidden.device, dtype=hidden.dtype).unsqueeze(-1)
+        return hidden * (1.0 - mask)
+
+    def step(
+        self,
+        obs,
+        hidden,
+        reset_mask=None,
+        deterministic=False,
+        with_logprob=True,
+        return_pre_tanh=False,
+    ):
+        if obs.dim() != 2 or obs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"step expects obs shape (B, {self.obs_dim}), got {tuple(obs.shape)}"
+            )
+        if (
+            hidden.dim() != 2
+            or hidden.shape[0] != obs.shape[0]
+            or hidden.shape[-1] != self.gru_hidden_dim
+        ):
+            raise ValueError(
+                f"step expects hidden shape ({obs.shape[0]}, {self.gru_hidden_dim}), "
+                f"got {tuple(hidden.shape)}"
+            )
+        hidden = self._apply_reset_mask(hidden, reset_mask)
+        features, _ = self.encode(obs)
+        out, h_n = self.gru(features.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+        next_hidden = h_n.squeeze(0)
+        result = _squashed_gaussian_forward(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            self.act_limit,
+            out.squeeze(1),
+            deterministic,
+            with_logprob,
+            standard_normal=(
+                None
+                if deterministic
+                else _partition_invariant_standard_normal(
+                    out.new_empty(out.shape[0], self.act_dim)
+                )
+            ),
+            return_pre_tanh=return_pre_tanh,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        if return_pre_tanh:
+            pi_action, logp_pi, pre_tanh = result
+            return pi_action, logp_pi, next_hidden, pre_tanh
+        pi_action, logp_pi = result
+        return pi_action, logp_pi, next_hidden
+
+    def evaluate_actions_step(
+        self,
+        obs,
+        hidden,
+        actions,
+        reset_mask=None,
+    ):
+        if actions.shape != (obs.shape[0], self.act_dim):
+            raise ValueError(
+                f"actions shape={tuple(actions.shape)}; "
+                f"expected ({obs.shape[0]}, {self.act_dim})"
+            )
+        hidden = self._apply_reset_mask(hidden, reset_mask)
+        features, _ = self.encode(obs)
+        out, h_n = self.gru(features.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+        distribution = _squashed_gaussian_distribution(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            out.squeeze(1),
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        logp = _squashed_gaussian_log_prob(
+            distribution, actions, self.act_limit
+        )
+        return logp, h_n.squeeze(0)
+
+    def _gru_sequence(self, features, hidden, reset_mask):
+        batch, steps, _ = features.shape
+        if steps == 0:
+            empty = features.new_zeros(batch, 0, self.gru_hidden_dim)
+            return empty, hidden
+
+        if features.is_cuda:
+            self.gru.flatten_parameters()
+        if reset_mask is None:
+            out, h_n = self.gru(features, hidden.unsqueeze(0).contiguous())
+            return out, h_n.squeeze(0)
+
+        reset = reset_mask.to(dtype=torch.bool)
+        capturing = features.is_cuda and torch.cuda.is_current_stream_capturing()
+        if (
+            not self.use_segment_gru
+            or torch.compiler.is_compiling()
+            or capturing
+        ):
+            return self._gru_sequence_cell(features, hidden, reset)
+        if steps == 1 or not bool(reset[:, 1:].any()):
+            h0 = self._apply_reset_mask(hidden, reset[:, 0])
+            out, h_n = self.gru(features, h0.unsqueeze(0).contiguous())
+            return out, h_n.squeeze(0)
+
+        return self._gru_sequence_segments(features, hidden, reset)
+
+    def _gru_sequence_segments(self, features, hidden, reset):
+        """Run nn.GRU over episode segments split at resets.
+
+        reset[b, t] True zeros the hidden state before consuming features[b, t],
+        matching a per-timestep gru_cell loop with _apply_reset_mask. Segments are
+        padded to the longest episode piece and run in one cuDNN GRU call.
+        """
+        batch, steps, feat_dim = features.shape
+        device = features.device
+        starts = reset.clone()
+        starts[:, 0] = True
+        starts_i = starts.to(dtype=torch.int64)
+        segs_per_batch = starts_i.sum(dim=1)
+        batch_offset = torch.zeros(batch, dtype=torch.int64, device=device)
+        if batch > 1:
+            batch_offset[1:] = segs_per_batch.cumsum(dim=0)[:-1]
+        segment_id = (starts_i.cumsum(dim=1) - 1) + batch_offset.unsqueeze(1)
+        num_segments = int(segs_per_batch.sum().item())
+
+        t_idx = torch.arange(steps, device=device).unsqueeze(0).expand(batch, steps)
+        last_start = torch.where(starts, t_idx, torch.zeros_like(t_idx)).cummax(
+            dim=1
+        ).values
+        pos = t_idx - last_start
+
+        lengths = torch.zeros(num_segments, dtype=torch.int64, device=device)
+        lengths.scatter_add_(
+            0,
+            segment_id.reshape(-1),
+            torch.ones(batch * steps, dtype=torch.int64, device=device),
+        )
+        max_len = int(lengths.max().item())
+        if num_segments * max_len > 8 * batch * steps:
+            return self._gru_sequence_cell(features, hidden, reset)
+
+        padded = features.new_zeros(num_segments, max_len, feat_dim)
+        padded[segment_id, pos] = features
+
+        h0 = hidden.new_zeros(num_segments, self.gru_hidden_dim)
+        h0[batch_offset] = self._apply_reset_mask(hidden, reset[:, 0])
+
+        gru_out, _ = self.gru(padded, h0.unsqueeze(0).contiguous())
+        out = gru_out[segment_id, pos]
+        last_seg = batch_offset + segs_per_batch - 1
+        last_pos = lengths[last_seg] - 1
+        next_hidden = gru_out[last_seg, last_pos]
+        return out, next_hidden
+
+    def _gru_sequence_cell(self, features, hidden, reset):
+        outs = []
+        h = hidden
+        for t in range(features.shape[1]):
+            h = self._apply_reset_mask(h, reset[:, t])
+            h = self.gru_cell(features[:, t], h)
+            outs.append(h)
+        return torch.stack(outs, dim=1), h
+
+    def gru_cell(self, features, hidden):
+        return torch._VF.gru_cell(
+            features,
+            hidden,
+            self.gru.weight_ih_l0,
+            self.gru.weight_hh_l0,
+            self.gru.bias_ih_l0,
+            self.gru.bias_hh_l0,
+        )
+
+    def log_prob_from_pre_tanh(self, recurrent_features, pre_tanh_actions):
+        distribution = _squashed_gaussian_distribution(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            recurrent_features,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        return _squashed_gaussian_log_prob_from_pre_tanh(
+            distribution, pre_tanh_actions, self.act_limit
+        )
+
+    def forward_sequence(
+        self,
+        obs,
+        hidden,
+        reset_mask=None,
+        deterministic=False,
+        with_logprob=True,
+    ):
+        if obs.dim() != 3 or obs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"forward_sequence expects obs shape (B, T, {self.obs_dim}), "
+                f"got {tuple(obs.shape)}"
+            )
+        batch, steps, _ = obs.shape
+        if (
+            hidden.dim() != 2
+            or hidden.shape[0] != batch
+            or hidden.shape[-1] != self.gru_hidden_dim
+        ):
+            raise ValueError(
+                f"forward_sequence expects hidden shape ({batch}, "
+                f"{self.gru_hidden_dim}), got {tuple(hidden.shape)}"
+            )
+        if reset_mask is not None and reset_mask.shape != (batch, steps):
+            raise ValueError(
+                f"reset_mask shape={tuple(reset_mask.shape)}; "
+                f"expected ({batch}, {steps})"
+            )
+        if steps == 0:
+            empty_act = obs.new_zeros(batch, 0, self.act_dim)
+            empty_logp = obs.new_zeros(batch, 0) if with_logprob else None
+            return empty_act, empty_logp, hidden
+
+        flat_obs = obs.reshape(batch * steps, self.obs_dim)
+        features, _ = self.encode(flat_obs)
+        features = features.view(batch, steps, -1)
+        gru_out, h = self._gru_sequence(features, hidden, reset_mask)
+        flat_h = gru_out.transpose(0, 1).reshape(
+            steps * batch, self.gru_hidden_dim
+        )
+        pi_action, logp_pi = _squashed_gaussian_forward(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            self.act_limit,
+            flat_h,
+            deterministic,
+            with_logprob,
+            standard_normal=(
+                None
+                if deterministic
+                else _partition_invariant_standard_normal(
+                    flat_h.new_empty(flat_h.shape[0], self.act_dim)
+                )
+            ),
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        stacked_actions = pi_action.view(steps, batch, self.act_dim).transpose(0, 1)
+        stacked_logp = (
+            None
+            if logp_pi is None
+            else logp_pi.view(steps, batch).transpose(0, 1)
+        )
+        return stacked_actions, stacked_logp, h
+
+    def evaluate_actions_sequence(
+        self,
+        obs,
+        hidden,
+        actions,
+        reset_mask=None,
+        pre_tanh_actions=None,
+        return_mean=False,
+    ):
+        if obs.dim() != 3 or obs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"evaluate_actions_sequence expects obs shape (B, T, "
+                f"{self.obs_dim}), got {tuple(obs.shape)}"
+            )
+        batch, steps, _ = obs.shape
+        if actions.shape != (batch, steps, self.act_dim):
+            raise ValueError(
+                f"actions shape={tuple(actions.shape)}; "
+                f"expected ({batch}, {steps}, {self.act_dim})"
+            )
+        if (
+            pre_tanh_actions is not None
+            and pre_tanh_actions.shape != (batch, steps, self.act_dim)
+        ):
+            raise ValueError(
+                f"pre_tanh_actions shape={tuple(pre_tanh_actions.shape)}; "
+                f"expected ({batch}, {steps}, {self.act_dim})"
+            )
+        if reset_mask is not None and reset_mask.shape != (batch, steps):
+            raise ValueError(
+                f"reset_mask shape={tuple(reset_mask.shape)}; "
+                f"expected ({batch}, {steps})"
+            )
+        if steps == 0:
+            empty_logp = obs.new_zeros(batch, 0)
+            empty_entropy = obs.new_zeros(batch, 0)
+            if return_mean:
+                return (
+                    empty_logp,
+                    hidden,
+                    empty_entropy,
+                    obs.new_zeros(batch, 0, self.act_dim),
+                )
+            return empty_logp, hidden, empty_entropy
+
+        flat_obs = obs.reshape(batch * steps, self.obs_dim)
+        features, _ = self.encode(flat_obs)
+        features = features.view(batch, steps, -1)
+        gru_out, next_hidden = self._gru_sequence(features, hidden, reset_mask)
+        flat_h = gru_out.transpose(0, 1).reshape(
+            steps * batch, self.gru_hidden_dim
+        )
+        distribution = _squashed_gaussian_distribution(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            flat_h,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        if pre_tanh_actions is None:
+            flat_actions = actions.transpose(0, 1).reshape(
+                steps * batch, self.act_dim
+            )
+            logp = _squashed_gaussian_log_prob(
+                distribution, flat_actions, self.act_limit
+            )
+        else:
+            flat_pre_tanh = pre_tanh_actions.transpose(0, 1).reshape(
+                steps * batch, self.act_dim
+            )
+            logp = self.log_prob_from_pre_tanh(flat_h, flat_pre_tanh)
+        entropy = distribution.entropy().sum(dim=-1)
+        result = (
+            logp.view(steps, batch).transpose(0, 1),
+            next_hidden,
+            entropy.view(steps, batch).transpose(0, 1),
+        )
+        if not return_mean:
+            return result
+        mean_action = self.act_limit * torch.tanh(distribution.mean)
+        mean_action = mean_action.view(steps, batch, self.act_dim).transpose(0, 1)
+        return result + (mean_action,)
+
+    def forward(self, obs, deterministic=False, with_logprob=True):
+        if obs.dim() != 2:
+            raise ValueError(
+                f"forward expects obs shape (B, {self.obs_dim}); "
+                f"use step or forward_sequence for recurrent calls, "
+                f"got {tuple(obs.shape)}"
+            )
+        hidden = self.initial_hidden(
+            obs.shape[0], device=obs.device, dtype=obs.dtype
+        )
+        action, logp, _ = self.step(
+            obs,
+            hidden,
+            reset_mask=None,
+            deterministic=deterministic,
+            with_logprob=with_logprob,
+        )
+        return action, logp
+
+
+def make_actor(
+    obs_dim,
+    act_dim,
+    hidden_sizes,
+    activation=nn.ReLU,
+    act_limit=1.0,
+    lidar_pool_bins=32,
+    lidar_projection_dim=CNN_PROJECTION_DIM,
+    lidar_dim=LIDAR_DIM,
+    proprio_dim=PROPRIO_DIM,
+    gru_hidden_dim=GRU_HIDDEN_DIM,
+    actor_type=ACTOR_ARCHITECTURE_NAME,
+    log_std_min=LOG_STD_MIN,
+    log_std_max=LOG_STD_MAX,
+    deter_dim=256,
+    stoch_dim=32,
+    embed_dim=CNN_PROJECTION_DIM,
+):
+    if actor_type == LIDAR_DREAMER_ARCHITECTURE_NAME:
+        from f1tenth_policy.dreamer import LidarDreamerActor
+
+        return LidarDreamerActor(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_sizes=hidden_sizes,
+            activation=activation,
+            act_limit=act_limit,
+            lidar_dim=lidar_dim,
+            proprio_dim=proprio_dim,
+            embed_dim=embed_dim,
+            deter_dim=deter_dim,
+            stoch_dim=stoch_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+        )
+    if actor_type == TINYLIDARNET_ARCHITECTURE_NAME:
+        return SquashedGaussianLidarGRUActor(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_sizes=hidden_sizes,
+            activation=activation,
+            act_limit=act_limit,
+            lidar_dim=lidar_dim,
+            proprio_dim=proprio_dim,
+            pool_bins=lidar_pool_bins,
+            projection_dim=lidar_projection_dim,
+            gru_hidden_dim=gru_hidden_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+            encoder_name="tinylidarnet",
+        )
+    if actor_type != ACTOR_ARCHITECTURE_NAME:
+        raise ValueError(
+            f"Unsupported actor_type={actor_type!r}; "
+            f"expected {ACTOR_ARCHITECTURE_NAME!r}, "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
+            f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
+        )
+    return SquashedGaussianLidarGRUActor(
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        hidden_sizes=hidden_sizes,
+        activation=activation,
+        act_limit=act_limit,
+        lidar_dim=lidar_dim,
+        proprio_dim=proprio_dim,
+        pool_bins=lidar_pool_bins,
+        projection_dim=lidar_projection_dim,
+        gru_hidden_dim=gru_hidden_dim,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
+    )
+
+
+def actor_from_architecture(architecture: Mapping[str, Any]):
+    arch = normalize_actor_architecture(architecture)
+    name = arch.get("name")
+    if name == LIDAR_DREAMER_ARCHITECTURE_NAME:
+        return make_actor(
+            actor_type=LIDAR_DREAMER_ARCHITECTURE_NAME,
+            obs_dim=int(arch["obs_dim"]),
+            act_dim=int(arch["action_dim"]),
+            hidden_sizes=list(arch["hidden_layers"]),
+            activation=nn.ReLU,
+            act_limit=1.0,
+            lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
+            proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
+            embed_dim=int(arch.get("embed_dim", CNN_PROJECTION_DIM)),
+            deter_dim=int(arch.get("deter_dim", 256)),
+            stoch_dim=int(arch.get("stoch_dim", 32)),
+        )
+    if name == TINYLIDARNET_ARCHITECTURE_NAME:
+        return make_actor(
+            actor_type=TINYLIDARNET_ARCHITECTURE_NAME,
+            obs_dim=int(arch["obs_dim"]),
+            act_dim=int(arch["action_dim"]),
+            hidden_sizes=list(arch["hidden_layers"]),
+            activation=nn.ReLU,
+            act_limit=1.0,
+            lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
+            proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
+            lidar_projection_dim=int(
+                arch.get("projection_dim", CNN_PROJECTION_DIM)
+            ),
+            gru_hidden_dim=int(arch.get("gru_hidden_dim", GRU_HIDDEN_DIM)),
+        )
+    if name != ACTOR_ARCHITECTURE_NAME:
+        raise ValueError(
+            f"Unsupported actor_architecture.name={name!r}; "
+            f"expected {ACTOR_ARCHITECTURE_NAME!r}, "
+            f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
+            f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
+        )
+    return make_actor(
+        obs_dim=int(arch["obs_dim"]),
+        act_dim=int(arch["action_dim"]),
+        hidden_sizes=list(arch["hidden_layers"]),
+        activation=nn.ReLU,
+        act_limit=1.0,
+        lidar_pool_bins=int(arch.get("pool_bins", 32)),
+        lidar_projection_dim=int(
+            arch.get("projection_dim", CNN_PROJECTION_DIM)
+        ),
+        lidar_dim=int(arch.get("lidar_dim", LIDAR_DIM)),
+        proprio_dim=int(arch.get("proprio_dim", PROPRIO_DIM)),
+        gru_hidden_dim=int(arch.get("gru_hidden_dim", GRU_HIDDEN_DIM)),
+    )
+
+
+def actor_architecture_from_module(actor) -> dict:
+    return normalize_actor_architecture(dict(actor.actor_architecture))
+
+
+def apply_policy_output_init(
+    actor,
+    policy_mean_init_scale=None,
+    policy_init_log_std=None,
+):
+    if policy_mean_init_scale is not None:
+        scale = float(policy_mean_init_scale)
+        if not math.isfinite(scale) or scale < 0.0:
+            raise ValueError(
+                "policy_mean_init_scale must be a finite number >= 0, got "
+                f"{policy_mean_init_scale!r}"
+            )
+        with torch.no_grad():
+            actor.mu_layer.weight.mul_(scale)
+            if actor.mu_layer.bias is not None:
+                actor.mu_layer.bias.mul_(scale)
+    if policy_init_log_std is not None:
+        log_std = float(policy_init_log_std)
+        if not math.isfinite(log_std):
+            raise ValueError(
+                "policy_init_log_std must be a finite number, got "
+                f"{policy_init_log_std!r}"
+            )
+        nn.init.zeros_(actor.log_std_layer.weight)
+        nn.init.constant_(actor.log_std_layer.bias, log_std)

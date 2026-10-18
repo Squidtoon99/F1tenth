@@ -1,0 +1,3 @@
+# Default gigaflow requirements (CPU-oriented local scaffold/dev target).
+# For a CUDA training box use requirements-gpu.txt instead.
+-r requirements-cpu.txt
