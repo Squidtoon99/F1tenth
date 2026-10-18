@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -37,6 +38,7 @@ from gigaflow_f1tenth.sim.geometry import (
     make_synthetic_oval_atlas,
     make_two_track_atlas,
 )
+from gigaflow_f1tenth.sim.spawn import spawn_agent_pose
 from gigaflow_f1tenth.sim.layout_local import (
     IMU_START,
     STEER_DELTA0,
@@ -696,6 +698,17 @@ def _lap_time_cfg(*, max_agents: int, soak_steps: int):
     return config_from_dict(raw)
 
 
+def _centerline_spawn(speed_mps: float):
+    def _spawn(rng, geom, track_id, existing, **kwargs):
+        kwargs["yaw_jitter"] = 0.0
+        kwargs["spawn_margin"] = 2.0
+        kwargs["speed_min"] = float(speed_mps)
+        kwargs["speed_max"] = float(speed_mps)
+        return spawn_agent_pose(rng, geom, track_id, existing, **kwargs)
+
+    return _spawn
+
+
 def test_lap_time_tracks_commanded_speed_on_a_circular_track():
     """Fail-before: EvalMetrics.lap_time_s was hardcoded to None."""
     radius = 8.0
@@ -705,9 +718,13 @@ def test_lap_time_tracks_commanded_speed_on_a_circular_track():
 
     laps = {}
     for speed in (2.0, 3.0):
-        report = FixedSeedEvaluator(
-            cfg, atlas=atlas, actor=CircleDriver(speed, radius), device="cpu"
-        ).run_suite("solo", 0)
+        with patch(
+            "gigaflow_f1tenth.sim.runtime.spawn_agent_pose",
+            _centerline_spawn(speed),
+        ):
+            report = FixedSeedEvaluator(
+                cfg, atlas=atlas, actor=CircleDriver(speed, radius), device="cpu"
+            ).run_suite("solo", 0)
         assert report.metrics.completion_rate == 1.0
         assert report.extras["num_lap_completers"] == report.extras["num_participants"]
         laps[speed] = report.metrics.lap_time_s
