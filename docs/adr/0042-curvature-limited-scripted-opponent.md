@@ -24,21 +24,19 @@ through the infield.
 ## Decision
 
 1. Replace steer-command slow-in with a per-segment curvature preview: walk
-   32 m of centerline segments and command
-   `min(v_target, sqrt(a_lat / κ_seg + 2 a_brake s))` with `a_lat = 5.5 m/s²`
-   and `a_brake = 2.0 m/s²`.
-   *Why:* per-segment κ keeps hairpin peaks; `a_brake = 2` starts slowing
-   ~18 m out so steer lag and the 3 deg/tick slew can still make the corner.
-   `a_lat` sits below `μ g`. The loop only advances `segment` / `covered` —
-   the same pattern as `track_heading_ahead` — so Warp actually runs it.
+   40 m of centerline segments and command
+   `min(v_target, sqrt(a_lat / κ_seg + 2 a_brake s))` with `a_lat = 4.0 m/s²`
+   and `a_brake = 1.2 m/s²`.
+   *Why:* per-segment κ keeps hairpin peaks; `a_brake = 1.2` starts slowing
+   ~35 m out so steer lag and the 3 deg/tick slew can still make the corner
+   from a 9 m/s cruise. `a_lat` sits below `μ g`. The loop only advances
+   `segment` / `covered` — the same pattern as `track_heading_ahead`.
 
-2. Stanley heading is the current centerline tangent, not a far lookahead
-   point. Add `atan(L κ)` feedforward from the heading 1 m ahead. Drop the
-   0.3× steer-proportional scale.
+2. Heading target is the centerline 1 m ahead with 2× Stanley heading gain.
+   Drop the 0.3× steer-proportional scale and drop long-chord feedforward.
    *Why:* a 2.5 m lookahead on Austin's R ≈ 1.1 m hairpins is a chord through
-   the infield (sagitta ≳ corridor half-width). Local tangent + 1 m bicycle
-   feedforward turns in without aiming across the infield. Steer lag is
-   handled by slowing 18 m out, not by lengthening the look point.
+   the infield. 1 m of heading preview turns in without that sagitta; extra
+   heading gain closes yaw before the 1.1 m half-width is spent.
 
 Apply the same law in `centerline_tracking_action` (scripted opponent and the
 optional residual ego base). Courtyard and IV keep using the same preview, so
