@@ -22,17 +22,19 @@ once the car is no longer crawling.
 
 1. Command `min(v_target, sqrt(a_lat / κ + 2 a_brake s))` from 3 m heading
    chords for 39 m ahead (`for i in range(13)` calling `track_heading_ahead`)
-   with `a_lat = 6.0 m/s²` and `a_brake = 2.5 m/s²`. Drop the 0.3×
-   steer-proportional scale.
-   *Why:* 3 m κ is the corner that actually lasts; `a_brake = 2.5` starts
-   slowing ~12–15 m out of a 9 m/s cruise. The 0.3× floor was what held mean
-   speed at 4 m/s after preview already kept the car on the CSV.
+   with `a_lat = 6.0 m/s²` and `a_brake = 1.5 m/s²`. Drop the 0.3×
+   steer-proportional scale. Close the speed loop on body speed, not the
+   tangent component.
+   *Why:* 3 m κ is the corner that actually lasts; `a_brake = 1.5` starts
+   slowing ~20 m out of a 9 m/s cruise so the bicycle can actually match the
+   envelope. Tangent-speed P-control accelerates when yaw error kills
+   `v · t`. The 0.3× floor was what held mean speed at 4 m/s.
 
-2. Cap Stanley lookahead at `min(1.5, max(0.8, 0.25 |v|))` with 1.4× heading
+2. Cap Stanley lookahead at `min(1.2, max(0.8, 0.20 |v|))` with 1.4× heading
    gain.
-   *Why:* 1.5 m of heading on Austin's tightest 3 m window (R ≈ 1.4–5 m)
-   has sagitta well under the 2.5 m `|ey|` bar. Longer chords at 8–9 m/s aim
-   through the infield.
+   *Why:* 1.2 m of heading on Austin's tightest 3 m window keeps sagitta
+   under the 2.5 m `|ey|` bar. Longer chords at 8–9 m/s aim through the
+   infield.
 
 Apply the same law in `centerline_tracking_action` (scripted opponent and the
 optional residual ego base). Courtyard and IV keep using the same preview.

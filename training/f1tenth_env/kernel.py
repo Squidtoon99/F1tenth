@@ -1257,7 +1257,7 @@ def curvature_limited_speed(
     target_speed: wp.float32,
 ) -> wp.float32:
     a_lat = wp.float32(6.0)
-    a_brake = wp.float32(2.5)
+    a_brake = wp.float32(1.5)
     chord = wp.float32(3.0)
     min_v2 = target_speed * target_speed
     heading_prev = wp.atan2(frenet.tangent[1], frenet.tangent[0])
@@ -1289,12 +1289,12 @@ def centerline_tracking_action(
     lateral_offset: wp.float32,
 ) -> wp.vec2f:
     track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
+    body_speed = wp.sqrt(vehicle.vx * vehicle.vx + vehicle.vy * vehicle.vy)
     abs_speed = wp.abs(track_speed)
     lookahead = wp.min(
-        wp.float32(1.5),
-        wp.max(wp.float32(0.8), 0.25 * abs_speed),
+        wp.float32(1.2),
+        wp.max(wp.float32(0.8), 0.20 * abs_speed),
     )
-    heading_now = wp.atan2(frenet.tangent[1], frenet.tangent[0])
     heading = track_heading_ahead(frenet, track, lookahead)
     heading_error = wrap_angle(vehicle.yaw - heading)
     ey_corr = frenet.ey - lateral_offset
@@ -1312,7 +1312,7 @@ def centerline_tracking_action(
         sim.steering_delta_max, 1.0e-6
     )
     speed_cmd = curvature_limited_speed(frenet, track, target_speed)
-    throttle = kp_speed * (speed_cmd - track_speed)
+    throttle = kp_speed * (speed_cmd - body_speed)
     return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
