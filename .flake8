@@ -8,4 +8,7 @@ exclude =
     build,
     install,
     log,
-    sim/f1tenth_gym_ros
+    sim/f1tenth_gym_ros,
+    dashboard/api/.venv,
+    dashboard/web/node_modules,
+    dashboard/web/.next
