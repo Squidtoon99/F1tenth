@@ -93,3 +93,5 @@ trade-off. Routine work is captured by the PR instead (see
   f1tenth_racetracks map and one of six affine variants; courtyard/IV stay out.
 - [0044](0044-curvature-limited-scripted-opponent.md) — Scripted centerline
   follower uses curvature-preview speed and steer feedforward (8–9 m/s Austin).
+- [0045](0045-sophy-multi-scenario.md) — Sophy 1v0–1v7, grid, and hard-corner
+  scenes on SIM_READY_V2; no slipstream; faster slots stub a V2 policy copy.

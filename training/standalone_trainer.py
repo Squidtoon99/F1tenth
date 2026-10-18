@@ -1569,6 +1569,9 @@ def accumulate_tick_diagnostics(
             done,
             extras,
         )
+    scenario_id = extras.get("scenario_id")
+    if isinstance(scenario_id, torch.Tensor):
+        diag.add_mean("scenario_id", scenario_id.to(dtype=torch.float32))
     laps_completed = extras.get("metrics", {}).get("laps_completed")
     if isinstance(laps_completed, torch.Tensor):
         diag.add_total("metric/laps_completed", laps_completed)
@@ -1601,6 +1604,9 @@ def log_scenario_metrics(log: logging.Logger, diag: RunningStats, names: list[st
             payload[f"{prefix}/lap_completion_rate"],
             payload[f"{prefix}/crash_rate"],
         )
+    scenario_id = diag.mean("scenario_id")
+    if math.isfinite(scenario_id):
+        log.info("  scenario_id mean=%.3f", scenario_id)
 
 
 # Gated reward-scale coefficients that compute_rewards enables purely by their
@@ -2941,8 +2947,9 @@ def main():
         )
         for spec, scn_env in zip(resolved_scenarios, train_envs):
             log.info(
-                "  %s: track=%s horizon=%.1fs -> %d steps stationary_p=%.2f",
+                "  %s: id=%s track=%s horizon=%.1fs -> %d steps stationary_p=%.2f",
                 spec["name"],
+                spec["cfg"]["env"].get("scenario_id", -1),
                 spec["cfg"]["env"]["track"],
                 float(spec["cfg"]["env"]["episode_length"]),
                 int(scn_env.max_episode_steps),
@@ -3408,6 +3415,7 @@ def main():
                     done,
                     timed_out=ppo_timed_out,
                     timeout_critic_obs=extras["observations"]["terminal_critic"],
+                    scenario_ids=extras.get("scenario_id"),
                 )
             if algorithm in ("ppo", "lidar_dreamer") and ppo_metrics is not None:
                 minibatches = int(ppo_metrics["minibatches"])
@@ -4012,6 +4020,9 @@ def main():
                         wandb_metrics.update(
                             scenario_metric_payload(diag, scenario_names)
                         )
+                    scenario_id = diag.mean("scenario_id")
+                    if math.isfinite(scenario_id):
+                        wandb_metrics["scenario_id"] = scenario_id
                     wandb_run.log(
                         wandb_metrics,
                         step=env_transitions,

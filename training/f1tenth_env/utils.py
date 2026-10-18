@@ -355,6 +355,84 @@ GIGAFLOW_AFFINE_VARIANTS = (
     "mirror_width_1.2",
 )
 
+SOPHY_SCENARIO_NAMES = ("1v0", "1v1", "1v2", "1v3", "1v7", "grid", "corner")
+SOPHY_SCENARIO_IDS = {
+    name: index for index, name in enumerate(SOPHY_SCENARIO_NAMES)
+}
+SPAWN_SCENE_IDS = {"nearby": 0, "grid": 1, "corner": 2}
+SCRIPTED_HOLD_SPEED_MPS = 4.0
+EGO_PACE_MPS = 7.2
+SPEED_CLASS_SLOWER = 0
+SPEED_CLASS_SAME = 1
+SPEED_CLASS_FASTER = 2
+SPEED_CLASS_WEIGHTS = (0.45, 0.45, 0.10)
+
+
+def _closed_polyline(points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.shape[0] < 3:
+        raise ValueError("centerline must have at least 3 points")
+    if np.linalg.norm(pts[0] - pts[-1]) <= 1.0e-6:
+        pts = pts[:-1]
+    return pts
+
+
+def polyline_kappa(centerline: np.ndarray) -> np.ndarray:
+    pts = _closed_polyline(centerline)
+    prev = np.roll(pts, 1, axis=0)
+    nxt = np.roll(pts, -1, axis=0)
+    incoming = pts - prev
+    outgoing = nxt - pts
+    len_in = np.clip(np.linalg.norm(incoming, axis=1), 1.0e-8, None)
+    len_out = np.clip(np.linalg.norm(outgoing, axis=1), 1.0e-8, None)
+    cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
+    denom = np.clip(len_in * len_out * (len_in + len_out), 1.0e-8, None)
+    return np.abs(cross) * 2.0 / denom
+
+
+def hardest_corner_s(centerline: np.ndarray) -> float:
+    pts = _closed_polyline(centerline)
+    edge = np.roll(pts, -1, axis=0) - pts
+    segment_length = np.linalg.norm(edge, axis=1)
+    cumulative = np.concatenate(
+        (np.zeros(1, dtype=np.float64), np.cumsum(segment_length[:-1]))
+    )
+    kappa = polyline_kappa(pts)
+    return float(cumulative[int(np.argmax(kappa))])
+
+
+def scripted_hold_speed_mps(
+    centerline: np.ndarray,
+    *,
+    a_lat: float = 4.0,
+    cruise_mps: float = 8.0,
+) -> float:
+    kappa = polyline_kappa(centerline)
+    speed = np.minimum(
+        cruise_mps, np.sqrt(a_lat / np.clip(kappa, 1.0e-6, None))
+    )
+    return float(np.mean(speed))
+
+
+def draw_opponent_speed_class(
+    rng: np.random.Generator,
+    ego_pace: float,
+    hold: float,
+) -> tuple[int, float, int]:
+    pace = max(float(ego_pace), 3.0)
+    u = float(rng.random())
+    if u < SPEED_CLASS_WEIGHTS[0]:
+        speed_class = SPEED_CLASS_SLOWER
+        speed = pace * float(rng.uniform(0.55, 0.85))
+    elif u < SPEED_CLASS_WEIGHTS[0] + SPEED_CLASS_WEIGHTS[1]:
+        speed_class = SPEED_CLASS_SAME
+        speed = pace * float(rng.uniform(0.90, 1.10))
+    else:
+        speed_class = SPEED_CLASS_FASTER
+        speed = pace * float(rng.uniform(1.15, 1.40))
+    mode = 1 if speed > hold else 0
+    return speed_class, speed, mode
+
 
 def gigaflow_variant_ops(variant_id: str) -> tuple[bool, float]:
     if variant_id not in GIGAFLOW_AFFINE_VARIANTS:

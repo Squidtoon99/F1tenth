@@ -1,0 +1,177 @@
+{
+  "algorithm": "ppo",
+  "config_version": 4,
+  "policy_format_version": 4,
+  "env": {
+    "track": "Austin",
+    "gigaflow_track_sampling": true,
+    "episode_length": 150.0,
+    "opponent_strategy": null,
+    "num_opponents": 0,
+    "spawn_scene": "nearby",
+    "use_speed_classes": true,
+    "ego_pace_mps": 7.2,
+    "v2_policy_ckpt": null,
+    "opponent_target_speed": 3.5,
+    "opponent_target_speed_range": [
+      2.0,
+      5.0
+    ],
+    "opponent_lateral_offset_m": 0.15,
+    "f_drive_max": 21.46877492171339,
+    "f_brake_max": 9.139188067139935,
+    "power_max": 320.0,
+    "ego_speed_cap_mps": 0.0,
+    "reset_stationary_probability": 0.0,
+    "reset_post_brake_history_probability": 0.5,
+    "reset_speed_min_mps": 0.0,
+    "i_drive_max_a": 80.0,
+    "i_brake_max_a": 40.0,
+    "i_slew_a_per_s": 200.0,
+    "t_delta": 0.09,
+    "steer_gain": 1.0511988660159353,
+    "warp_sim": {
+      "izz": 0.13,
+      "lat_stiffness_scale": 5.329306089973615,
+      "steer_gain": 1.0511988660159353,
+      "c_coast": 4.804781294740983
+    },
+    "domain_randomization": {
+      "enabled": true,
+      "lidar_range_noise_std_range": [
+        0.01,
+        0.04
+      ],
+      "lidar_dropout_prob_range": [
+        0.04,
+        0.12
+      ],
+      "lidar_far_dropout_prob_range": [
+        0.08,
+        0.25
+      ],
+      "action_latency_steps_range": [
+        0,
+        0
+      ]
+    }
+  },
+  "sensor": {
+    "lidar_map_yaml": null,
+    "lidar_map_sha256": null,
+    "lidar_map_variant_count": 1,
+    "lidar_wall_offset_max_m": 0.0,
+    "lidar_map_variant_seed": 17,
+    "lidar_dropout_bin_m": 0.7
+  },
+  "model": {
+    "lidar_aug_enabled": true,
+    "lidar_aug_max_shift_beams": 2
+  },
+  "obs": {
+    "enable_opponent_obs": true,
+    "opponent_obs_dim": 8
+  },
+  "schedule": {
+    "total_transitions": 256000000,
+    "log_interval_transitions": 512000,
+    "export_interval_transitions": 2560000,
+    "eval_interval_transitions": 0
+  },
+  "ppo": {
+    "rollout_steps": 256,
+    "epochs": 4,
+    "env_minibatches": 32,
+    "entropy_coef": 0.01,
+    "advantage_filter_enabled": true,
+    "advantage_filter_discard_fraction": 0.05,
+    "horizon_from_control_dt": true,
+    "entropy_coef_end": 0.0,
+    "entropy_coef_horizon_transitions": 96000000,
+    "entropy_from_squashed": false,
+    "caps_spatial_coef": 0.1
+  },
+  "scenarios": [
+    {
+      "name": "1v0",
+      "weight": 0.20,
+      "env": {
+        "scenario_id": 0,
+        "opponent_strategy": null,
+        "num_opponents": 0,
+        "spawn_scene": "nearby"
+      }
+    },
+    {
+      "name": "1v1",
+      "weight": 0.20,
+      "env": {
+        "scenario_id": 1,
+        "opponent_strategy": "scripted",
+        "num_opponents": 1,
+        "spawn_scene": "nearby",
+        "use_speed_classes": true
+      }
+    },
+    {
+      "name": "1v2",
+      "weight": 0.15,
+      "env": {
+        "scenario_id": 2,
+        "opponent_strategy": "scripted",
+        "num_opponents": 2,
+        "spawn_scene": "nearby",
+        "use_speed_classes": true
+      }
+    },
+    {
+      "name": "1v3",
+      "weight": 0.15,
+      "env": {
+        "scenario_id": 3,
+        "opponent_strategy": "scripted",
+        "num_opponents": 3,
+        "spawn_scene": "nearby",
+        "use_speed_classes": true
+      }
+    },
+    {
+      "name": "1v7",
+      "weight": 0.10,
+      "env": {
+        "scenario_id": 4,
+        "opponent_strategy": "scripted",
+        "num_opponents": 7,
+        "spawn_scene": "nearby",
+        "use_speed_classes": true
+      }
+    },
+    {
+      "name": "grid",
+      "weight": 0.10,
+      "env": {
+        "scenario_id": 5,
+        "opponent_strategy": "scripted",
+        "num_opponents": 7,
+        "spawn_scene": "grid",
+        "use_speed_classes": true
+      }
+    },
+    {
+      "name": "corner",
+      "weight": 0.10,
+      "env": {
+        "scenario_id": 6,
+        "opponent_strategy": "scripted",
+        "num_opponents": 2,
+        "spawn_scene": "corner",
+        "use_speed_classes": true
+      }
+    }
+  ],
+  "reward": {
+    "reward_scales": {
+      "tal": 0.2
+    }
+  }
+}

@@ -46,7 +46,34 @@ class Rollout:
     returns: torch.Tensor
     advantages: torch.Tensor
     rollout_start_hidden: torch.Tensor
+    scenario_ids: torch.Tensor
     optimized: bool = False
+
+
+def stratified_env_permutation(scenario_ids):
+    ids = scenario_ids.reshape(-1)
+    unique = torch.unique(ids)
+    groups = []
+    for sid in unique.tolist():
+        idx = torch.nonzero(ids == sid, as_tuple=False).squeeze(-1)
+        groups.append(idx[torch.randperm(idx.numel(), device=idx.device)])
+    n = int(ids.numel())
+    out = torch.empty(n, dtype=torch.long, device=ids.device)
+    pos = 0
+    cursors = [0] * len(groups)
+    while pos < n:
+        progressed = False
+        for g, grp in enumerate(groups):
+            if cursors[g] < grp.numel():
+                out[pos] = grp[cursors[g]]
+                cursors[g] += 1
+                pos += 1
+                progressed = True
+                if pos >= n:
+                    break
+        if not progressed:
+            break
+    return out
 
 
 def annealed_entropy_coef(start, end, horizon_transitions, transitions):
@@ -630,6 +657,9 @@ class PPOTrainer:
                 device=self.device,
                 dtype=torch.float32,
             ),
+            scenario_ids=torch.full(
+                time_env, -1, device=self.device, dtype=torch.int32
+            ),
         )
         self._initialized = True
 
@@ -682,6 +712,7 @@ class PPOTrainer:
         *,
         timed_out=None,
         timeout_critic_obs=None,
+        scenario_ids=None,
     ):
         if not self._initialized:
             raise RuntimeError("initialize must be called before observe")
@@ -712,6 +743,18 @@ class PPOTrainer:
         )
         self._rollout.rewards[self._step].copy_(step_reward)
         self._rollout.dones[self._step].copy_(done)
+        if scenario_ids is None:
+            ids = torch.full(
+                (self._num_envs,), -1, device=self.device, dtype=torch.int32
+            )
+        else:
+            ids = scenario_ids.to(device=self.device, dtype=torch.int32)
+            if ids.shape != (self._num_envs,):
+                raise ValueError(
+                    f"scenario_ids shape={tuple(ids.shape)}; "
+                    f"expected ({self._num_envs},)"
+                )
+        self._rollout.scenario_ids[self._step].copy_(ids)
         self._live_hidden.masked_fill_(done.unsqueeze(-1), 0.0)
         self._reset_mask.copy_(done)
         self._step += 1
@@ -862,7 +905,9 @@ class PPOTrainer:
             augment_actor_lidar_beam_shift = None
 
         for epoch in range(self.num_epochs):
-            permutation = torch.randperm(num_envs, device=self.device)
+            permutation = stratified_env_permutation(
+                rollout.scenario_ids[0]
+            )
             for start in range(0, num_envs, self.env_minibatch_size):
                 if self.compile and self.compile_mode == "reduce-overhead":
                     torch.compiler.cudagraph_mark_step_begin()

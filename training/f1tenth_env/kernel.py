@@ -23,6 +23,10 @@ OBS_SLIP_ANGLE_START = 376
 OBS_LOAD_START = 380
 OBS_OPPONENT_START = 384
 MAX_FORWARD_SEGMENTS = 2048
+MAX_OPPONENTS = 7
+SPAWN_NEARBY = 0
+SPAWN_GRID = 1
+SPAWN_CORNER = 2
 ACTION_HISTORY = 4
 STEER_HISTORY = 8
 LONG_HISTORY = 4
@@ -529,6 +533,13 @@ class ResetParams:
     vesc_speed_dropout_prob_min: wp.float32
     vesc_speed_dropout_prob_max: wp.float32
     post_brake_history_probability: wp.float32
+    num_opponents: wp.int32
+    spawn_scene: wp.int32
+    corner_s: wp.float32
+    ego_pace: wp.float32
+    scripted_hold_speed: wp.float32
+    num_envs: wp.int32
+    use_speed_classes: wp.int32
 
 
 @wp.struct
@@ -636,6 +647,12 @@ class EnvBuffers:
     metric_opponent_speed: wp.array(dtype=wp.float32)
     metric_nonfinite: wp.array(dtype=wp.float32)
     contact_closing_speed: wp.array(dtype=wp.float32)
+    opponent_count: wp.array(dtype=wp.int32)
+    slot_target_speed: wp.array(dtype=wp.float32)
+    slot_offset: wp.array(dtype=wp.float32)
+    slot_mode: wp.array(dtype=wp.int32)
+    slot_class: wp.array(dtype=wp.int32)
+    slot_segment: wp.array(dtype=wp.int32)
 
 
 @wp.struct
@@ -658,6 +675,11 @@ class PhysicsBuffers:
     contact: wp.array(dtype=wp.int32)
     contact_closing_speed: wp.array(dtype=wp.float32)
     valid: wp.array(dtype=wp.int32)
+    opponent_count: wp.array(dtype=wp.int32)
+    slot_target_speed: wp.array(dtype=wp.float32)
+    slot_offset: wp.array(dtype=wp.float32)
+    slot_mode: wp.array(dtype=wp.int32)
+    slot_segment: wp.array(dtype=wp.int32)
 
 
 @wp.struct
@@ -896,6 +918,107 @@ def spawn_on_track(
     wheel_speed = speed / sim.wheel_radius
     vehicle.omega = wp.vec4f(wheel_speed)
     return vehicle
+
+
+@wp.func
+def wrap_length(s: wp.float32, length: wp.float32) -> wp.float32:
+    wrapped = s
+    while wrapped < 0.0:
+        wrapped = wrapped + length
+    while wrapped >= length:
+        wrapped = wrapped - length
+    return wrapped
+
+
+@wp.func
+def locate_s(
+    s: wp.float32, seed: wp.int32, track: TrackData
+) -> tuple[wp.int32, wp.float32]:
+    wrapped = wrap_length(s, track.length)
+    segment = seed
+    for _ in range(MAX_FORWARD_SEGMENTS):
+        start_s = track.cumulative_length[segment]
+        end_s = start_s + track.segment_length[segment]
+        if wrapped >= start_s and wrapped <= end_s:
+            alpha = (wrapped - start_s) / wp.max(
+                track.segment_length[segment], 1.0e-8
+            )
+            return segment, alpha
+        segment = wrap_segment(segment + 1, track.count)
+    return seed, wp.float32(0.0)
+
+
+@wp.func
+def park_vehicle() -> VehicleLocal:
+    vehicle = VehicleLocal()
+    vehicle = clear_vehicle(vehicle)
+    vehicle.x = 1.0e6
+    vehicle.y = 1.0e6
+    return vehicle
+
+
+@wp.func
+def draw_class_speed(
+    random: wp.uint32, ego_pace: wp.float32, hold: wp.float32
+) -> tuple[wp.int32, wp.float32, wp.int32]:
+    pace = wp.max(ego_pace, 3.0)
+    u = wp.randf(random)
+    speed_class = wp.int32(0)
+    if u < 0.45:
+        speed_class = 0
+        speed = pace * random_range(random, 0.55, 0.85)
+    elif u < 0.90:
+        speed_class = 1
+        speed = pace * random_range(random, 0.90, 1.10)
+    else:
+        speed_class = 2
+        speed = pace * random_range(random, 1.15, 1.40)
+    mode = wp.int32(0)
+    if speed > hold:
+        mode = 1
+    return speed_class, speed, mode
+
+
+@wp.func
+def copy_vehicle_params(
+    buffers: VehicleBuffers, src: wp.int32, dst: wp.int32
+):
+    if src == dst:
+        return
+    buffers.mass[dst] = buffers.mass[src]
+    buffers.mu[dst] = buffers.mu[src]
+    buffers.drive_scale[dst] = buffers.drive_scale[src]
+    buffers.steer_bias[dst] = buffers.steer_bias[src]
+    buffers.izz[dst] = buffers.izz[src]
+    buffers.c_f[dst] = buffers.c_f[src]
+    buffers.c_r[dst] = buffers.c_r[src]
+    buffers.steer_lag[dst] = buffers.steer_lag[src]
+    buffers.steer_rate[dst] = buffers.steer_rate[src]
+    buffers.steer_gain[dst] = buffers.steer_gain[src]
+
+
+@wp.func
+def store_slot(
+    env: EnvBuffers,
+    env_id: wp.int32,
+    num_envs: wp.int32,
+    slot: wp.int32,
+    opponent: VehicleLocal,
+    opponent_buffers: VehicleBuffers,
+    segment: wp.int32,
+    target_speed: wp.float32,
+    offset: wp.float32,
+    speed_class: wp.int32,
+    mode: wp.int32,
+):
+    idx = slot * num_envs + env_id
+    store_vehicle(opponent_buffers, idx, opponent)
+    copy_vehicle_params(opponent_buffers, env_id, idx)
+    env.slot_target_speed[idx] = target_speed
+    env.slot_offset[idx] = offset
+    env.slot_class[idx] = speed_class
+    env.slot_mode[idx] = mode
+    env.slot_segment[idx] = segment
 
 
 @wp.func
@@ -1175,6 +1298,247 @@ def reset_pair(
     for steer_index in range(STEER_HISTORY):
         env.executed_steer_history[env_id, steer_index] = 0.0
         env.opponent_executed_steer_history[env_id, steer_index] = 0.0
+
+    count = wp.int32(reset.num_opponents)
+    if reset.has_opponent == 0:
+        count = wp.int32(0)
+    if count < 0:
+        count = wp.int32(0)
+    if count > MAX_OPPONENTS:
+        count = wp.int32(MAX_OPPONENTS)
+    env.opponent_count[env_id] = count
+    ego_s = (
+        track.cumulative_length[segment]
+        + alpha * track.segment_length[segment]
+    )
+    if reset.spawn_scene == SPAWN_CORNER:
+        ego_s = wrap_length(
+            reset.corner_s + random_range(random, -2.0, 2.0),
+            track.length,
+        )
+        segment, alpha = locate_s(ego_s, segment, track)
+        ego = spawn_on_track(
+            segment, alpha, lateral, speed, ego_yaw_jitter, track, sim
+        )
+    if reset.spawn_scene == SPAWN_GRID:
+        n_cars = wp.int32(count + 1)
+        if n_cars < 1:
+            n_cars = wp.int32(1)
+        ego_seat = wp.min(
+            wp.int32(wp.randf(random) * wp.float32(n_cars)),
+            n_cars - 1,
+        )
+        row_gap = wp.float32(1.2)
+        col = wp.float32(0.35)
+        opp_slot = wp.int32(0)
+        for seat in range(MAX_OPPONENTS + 1):
+            if seat >= n_cars:
+                break
+            seat_s = wrap_length(
+                ego_s + wp.float32(seat // 2) * row_gap, track.length
+            )
+            seat_lat = col
+            if seat % 2 != 0:
+                seat_lat = -col
+            seat_seg, seat_alpha = locate_s(seat_s, segment, track)
+            if seat == ego_seat:
+                ego = spawn_on_track(
+                    seat_seg,
+                    seat_alpha,
+                    seat_lat,
+                    speed,
+                    ego_yaw_jitter,
+                    track,
+                    sim,
+                )
+            elif opp_slot < count:
+                grid_pace = reset.ego_pace
+                if grid_pace <= 0.0:
+                    grid_pace = speed
+                cls, tgt, mode = draw_class_speed(
+                    random, grid_pace, reset.scripted_hold_speed
+                )
+                spawned = spawn_on_track(
+                    seat_seg,
+                    seat_alpha,
+                    seat_lat,
+                    tgt,
+                    0.0,
+                    track,
+                    sim,
+                )
+                if opp_slot == 0:
+                    opponent = spawned
+                    opponent_segment = seat_seg
+                    opponent_speed = tgt
+                    env.opponent_target_speed[env_id] = tgt
+                    env.opponent_lateral_offset[env_id] = seat_lat
+                    env.opponent_mode[env_id] = 0
+                store_slot(
+                    env,
+                    env_id,
+                    reset.num_envs,
+                    opp_slot,
+                    spawned,
+                    opponent_buffers,
+                    seat_seg,
+                    tgt,
+                    seat_lat,
+                    cls,
+                    mode,
+                )
+                opp_slot = opp_slot + wp.int32(1)
+        count = opp_slot
+        env.opponent_count[env_id] = count
+    elif count > 0 and (
+        reset.spawn_scene != SPAWN_NEARBY or reset.use_speed_classes != 0
+    ):
+        ego_pace = reset.ego_pace
+        if ego_pace <= 0.0:
+            ego_pace = speed
+        for slot in range(MAX_OPPONENTS):
+            if slot >= count:
+                parked = park_vehicle()
+                store_slot(
+                    env,
+                    env_id,
+                    reset.num_envs,
+                    slot,
+                    parked,
+                    opponent_buffers,
+                    0,
+                    0.0,
+                    0.0,
+                    -1,
+                    0,
+                )
+                continue
+            gap = random_range(
+                random, reset.opponent_gap_min, reset.opponent_gap_max
+            )
+            if wp.randf(random) < reset.opponent_behind_probability:
+                gap = -gap
+            gap = gap + wp.float32(slot) * 0.6
+            slot_s = wrap_length(ego_s + gap, track.length)
+            slot_seg, slot_alpha = locate_s(slot_s, segment, track)
+            slot_lat = wp.float32(0.0)
+            if reset.opponent_lateral_spawn != 0:
+                half = wp.min(
+                    track.width_left[slot_seg],
+                    track.width_right[slot_seg],
+                ) - reset.spawn_margin
+                half = wp.max(half, 0.0)
+                slot_lat = random_range(random, -half, half)
+            cls, tgt, mode = draw_class_speed(
+                random, ego_pace, reset.scripted_hold_speed
+            )
+            spawned = spawn_on_track(
+                slot_seg,
+                slot_alpha,
+                slot_lat,
+                tgt,
+                random_range(
+                    random, -reset.spawn_yaw_jitter, reset.spawn_yaw_jitter
+                ),
+                track,
+                sim,
+            )
+            if slot == 0:
+                opponent = spawned
+                opponent_segment = slot_seg
+                opponent_speed = tgt
+                env.opponent_target_speed[env_id] = tgt
+                env.opponent_lateral_offset[env_id] = slot_lat
+                env.opponent_mode[env_id] = 0
+            store_slot(
+                env,
+                env_id,
+                reset.num_envs,
+                slot,
+                spawned,
+                opponent_buffers,
+                slot_seg,
+                tgt,
+                slot_lat,
+                cls,
+                mode,
+            )
+    elif count > 0:
+        store_slot(
+            env,
+            env_id,
+            reset.num_envs,
+            0,
+            opponent,
+            opponent_buffers,
+            opponent_segment,
+            env.opponent_target_speed[env_id],
+            env.opponent_lateral_offset[env_id],
+            -1,
+            0,
+        )
+        for slot in range(1, MAX_OPPONENTS):
+            if slot >= count:
+                store_slot(
+                    env,
+                    env_id,
+                    reset.num_envs,
+                    slot,
+                    park_vehicle(),
+                    opponent_buffers,
+                    0,
+                    0.0,
+                    0.0,
+                    -1,
+                    0,
+                )
+                continue
+            gap = random_range(
+                random, reset.opponent_gap_min, reset.opponent_gap_max
+            )
+            if wp.randf(random) < reset.opponent_behind_probability:
+                gap = -gap
+            slot_s = wrap_length(ego_s + gap + wp.float32(slot), track.length)
+            slot_seg, slot_alpha = locate_s(slot_s, segment, track)
+            tgt = random_range(
+                random,
+                opponent_params.target_speed_min,
+                opponent_params.target_speed_max,
+            )
+            spawned = spawn_on_track(
+                slot_seg, slot_alpha, 0.0, tgt, 0.0, track, sim
+            )
+            store_slot(
+                env,
+                env_id,
+                reset.num_envs,
+                slot,
+                spawned,
+                opponent_buffers,
+                slot_seg,
+                tgt,
+                0.0,
+                -1,
+                0,
+            )
+    else:
+        opponent = park_vehicle()
+        opponent_speed = 0.0
+        opponent_segment = segment
+        for slot in range(MAX_OPPONENTS):
+            store_slot(
+                env,
+                env_id,
+                reset.num_envs,
+                slot,
+                opponent,
+                opponent_buffers,
+                0,
+                0.0,
+                0.0,
+                -1,
+                0,
+            )
 
     ego_frenet = project_track(wp.vec2f(ego.x, ego.y), segment, track)
     opponent_frenet = project_track(
@@ -1962,7 +2326,8 @@ def physics_stage_kernel(
 ):
     thread_id = wp.tid()
     env_id = thread_id % num_envs
-    if thread_id < num_envs:
+    role = thread_id // num_envs
+    if role == 0:
         action = wp.vec2f(
             wp.clamp(actions[env_id][0], -1.0, 1.0),
             wp.clamp(actions[env_id][1], -1.0, 1.0),
@@ -1991,22 +2356,35 @@ def physics_stage_kernel(
         env.episode_step[env_id] = env.episode_step[env_id] + 1
         store_vehicle(ego_buffers, env_id, ego)
     else:
-        opponent = load_vehicle(opponent_buffers, env_id)
+        slot = role - 1
+        if slot >= env.opponent_count[env_id]:
+            return
+        idx = slot * num_envs + env_id
+        opponent = load_vehicle(opponent_buffers, idx)
+        seed_segment = env.slot_segment[idx]
+        if slot == 0:
+            seed_segment = env.opponent_segment[env_id]
         opponent_frenet = project_track(
             wp.vec2f(opponent.x, opponent.y),
-            env.opponent_segment[env_id],
+            seed_segment,
             track,
         )
         opponent_action = policy_opponent_actions[env_id]
-        if env.opponent_mode[env_id] == 0:
-            opponent_action = scripted_physics_opponent_action(
-                env_id,
+        use_scripted = env.opponent_mode[env_id] == 0 or slot != 0
+        target_speed = env.slot_target_speed[idx]
+        if env.slot_mode[idx] != 0:
+            target_speed = wp.min(target_speed, reset.scripted_hold_speed)
+        if use_scripted:
+            opponent_action = centerline_tracking_action(
                 opponent,
                 opponent_frenet,
-                env,
                 track,
                 sim,
-                opponent_params,
+                opponent_params.kp_lateral,
+                opponent_params.kp_heading,
+                opponent_params.kp_speed,
+                target_speed,
+                env.slot_offset[idx],
             )
         else:
             opponent_action = apply_speed_cap(
@@ -2014,27 +2392,29 @@ def physics_stage_kernel(
                 opponent_action,
                 env.opponent_speed_cap[env_id],
             )
-        push_executed_longitudinal(
-            env.opponent_executed_longitudinal_history,
-            env_id,
-            opponent_action[0],
-        )
+        if slot == 0:
+            push_executed_longitudinal(
+                env.opponent_executed_longitudinal_history,
+                env_id,
+                opponent_action[0],
+            )
         opponent = apply_command_and_integrate_env(
             opponent,
             opponent_action,
             opponent_buffers,
-            env_id,
+            idx,
             sim,
             substeps,
         )
-        opponent_executed_steer = opponent.steer_logical
-        push_executed_steer(
-            env.opponent_executed_steer_history,
-            env_id,
-            opponent_executed_steer,
-        )
-        env.current_opponent_action[env_id] = opponent_action
-        store_vehicle(opponent_buffers, env_id, opponent)
+        env.slot_segment[idx] = opponent_frenet.segment
+        if slot == 0:
+            push_executed_steer(
+                env.opponent_executed_steer_history,
+                env_id,
+                opponent.steer_logical,
+            )
+            env.current_opponent_action[env_id] = opponent_action
+        store_vehicle(opponent_buffers, idx, opponent)
 
 
 @wp.kernel(enable_backward=False)
@@ -2077,12 +2457,39 @@ def transaction_stage_kernel(
     opponent = load_vehicle(opponent_buffers, env_id)
     contact = ContactResult()
     if reset.has_opponent != 0:
-        ego, opponent, contact = resolve_and_apply_pair_contact(
-            ego, opponent, opponent_params
-        )
-        if contact.contact != 0:
-            store_vehicle(ego_buffers, env_id, ego)
-            store_vehicle(opponent_buffers, env_id, opponent)
+        count = env.opponent_count[env_id]
+        for slot in range(MAX_OPPONENTS):
+            if slot >= count:
+                break
+            idx = slot * reset.num_envs + env_id
+            other = load_vehicle(opponent_buffers, idx)
+            ego, other, slot_contact = resolve_and_apply_pair_contact(
+                ego, other, opponent_params
+            )
+            if slot_contact.contact != 0:
+                store_vehicle(ego_buffers, env_id, ego)
+                store_vehicle(opponent_buffers, idx, other)
+                if slot == 0:
+                    opponent = other
+                    contact = slot_contact
+        for slot_a in range(MAX_OPPONENTS):
+            if slot_a >= count:
+                break
+            for slot_b in range(slot_a + 1, MAX_OPPONENTS):
+                if slot_b >= count:
+                    break
+                idx_a = slot_a * reset.num_envs + env_id
+                idx_b = slot_b * reset.num_envs + env_id
+                car_a = load_vehicle(opponent_buffers, idx_a)
+                car_b = load_vehicle(opponent_buffers, idx_b)
+                car_a, car_b, pair_contact = resolve_and_apply_pair_contact(
+                    car_a, car_b, opponent_params
+                )
+                if pair_contact.contact != 0:
+                    store_vehicle(opponent_buffers, idx_a, car_a)
+                    store_vehicle(opponent_buffers, idx_b, car_b)
+                    if slot_a == 0:
+                        opponent = car_a
     env.contact[env_id] = contact.contact
     env.contact_closing_speed[env_id] = contact.closing_speed
     ego_frenet = project_track(
