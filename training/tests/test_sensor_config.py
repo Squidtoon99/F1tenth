@@ -19,6 +19,7 @@ from analysis.map_lidar import raycast_distance_field
 from f1tenth_env.utils import build_corridor_distance_field
 from f1tenth_env.utils import load_occupancy_distance_field
 from f1tenth_env.warp_env import _CorridorDistanceStorage
+from f1tenth_sim.params import VehicleParams
 from standalone_trainer import build_config, build_env_cfg, parse_args
 
 
@@ -517,13 +518,30 @@ def test_courtyard_2_e2e_ppo_merged_patch_is_80a_drive_40a_brake():
     env = cfg["env"]
     assert env["i_drive_max_a"] == pytest.approx(80.0)
     assert env["i_brake_max_a"] == pytest.approx(40.0)
-    assert env["f_drive_max"] == pytest.approx(26.5)
-    assert env["f_brake_max"] == pytest.approx(23.1)
+    assert env["f_drive_max"] == pytest.approx(21.46877492171339)
+    assert env["f_brake_max"] == pytest.approx(9.139188067139935)
     assert env["i_slew_a_per_s"] == pytest.approx(200.0)
     assert env["control_interval"] == 10
+    assert env["t_delta"] == pytest.approx(0.09)
+    assert env["steer_gain"] == pytest.approx(1.0511988660159353)
     assert env["warp_sim"]["izz"] == pytest.approx(0.13)
-    assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(11.0)
+    assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(5.329306089973615)
+    assert env["warp_sim"]["steer_gain"] == pytest.approx(1.0511988660159353)
+    assert env["warp_sim"]["c_coast"] == pytest.approx(4.804781294740983)
     assert "longitudinal_slew_rate_per_s" not in env["warp_sim"]
+    params = VehicleParams.from_config(env)
+    assert params.f_drive_max == pytest.approx(21.46877492171339)
+    assert params.f_brake_max == pytest.approx(9.139188067139935)
+    assert params.c_coast == pytest.approx(4.804781294740983)
+    assert params.steer_gain == pytest.approx(1.0511988660159353)
+    assert params.t_delta == pytest.approx(0.09)
+    assert params.lat_stiffness_scale == pytest.approx(5.329306089973615)
+    default_params = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+    assert default_params.f_drive_max == pytest.approx(26.5)
+    assert default_params.f_brake_max == pytest.approx(23.1)
+    assert default_params.c_coast == pytest.approx(0.0)
+    assert default_params.steer_gain == pytest.approx(1.10714)
+    assert default_params.lat_stiffness_scale == pytest.approx(11.0)
     dr = env["domain_randomization"]
     assert dr["drive_scale_range"] == [1.0, 1.0]
     assert dr["tire_friction_range"] == [0.66, 0.85]
