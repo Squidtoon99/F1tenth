@@ -59,6 +59,7 @@ class SimParams:
     steering_delta_max: wp.float32
     command_delay_substeps: wp.int32
     history_stride: wp.int32
+    v_nom: wp.float32
 
 
 @wp.struct
@@ -154,6 +155,8 @@ class VehicleParams:
     steering_delta_max: float = STEERING_DELTA_MAX_RAD
 
     gravity: float = GRAVITY
+    # Apple Eq. 6 nominal speed; per-agent ceiling is v_nom * vmax_scale.
+    v_nom: float = 6.0
     # HUD / viewer speed-axis only; the bicycle plant has no aero or power cap.
     power_max: float = 320.0
     dragcoeff: float = 0.075
@@ -197,6 +200,7 @@ class VehicleParams:
         if control_dt <= 0.0:
             raise ValueError("control_dt must be positive")
         params.history_stride = max(1, int(round(0.1 / float(control_dt))))
+        params.v_nom = float(self.v_nom)
         return params
 
     def axle_stiffness(self, mass: float | None = None) -> tuple[float, float]:
@@ -386,7 +390,6 @@ def integrate_vehicle_substep(
     drive_force = (
         vehicle.i_drive
         * params.f_drive_max
-        * vmax_scale
         / wp.max(params.i_drive_max, 1.0e-6)
         * drive_scale
         * params.drive_torque_sign
@@ -429,6 +432,11 @@ def integrate_vehicle_substep(
 
     if vx * vx_dyn < 0.0 and vx_dyn * drive_force <= 0.0:
         vx_dyn = 0.0
+
+    v_cap = params.v_nom * wp.max(vmax_scale, 0.1)
+    if vx_dyn > v_cap and ax > 0.0:
+        vx_dyn = wp.max(vx, v_cap)
+        ax = (vx_dyn - vx) / params.sim_dt
 
     r_kin = vx * wp.tan(vehicle.steer) / wp.max(params.wheelbase, 1.0e-6)
     vy_kin = r_kin * params.lr

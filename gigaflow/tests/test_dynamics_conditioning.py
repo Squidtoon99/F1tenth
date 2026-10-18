@@ -58,6 +58,7 @@ def _drive_slots(
     wp_actions = wp.from_torch(actions, dtype=wp.vec2f)
     speeds: list[list[float]] = []
     steer: list[list[float]] = []
+    ax_hist: list[list[float]] = []
     for _ in range(steps):
         wp.launch(
             physics_control_kernel,
@@ -76,15 +77,16 @@ def _drive_slots(
         )
         speeds.append([float(t.vx[i]) for i in range(len(values))])
         steer.append([float(t.steer[i]) for i in range(len(values))])
-    return speeds, steer
+        ax_hist.append([float(t.ax[i]) for i in range(len(values))])
+    return speeds, steer, ax_hist
 
 
 def test_steer_scale_gives_symmetric_authority_in_both_modes():
     for mode in ("delta", "position"):
-        _, right = _drive_slots(
+        _, right, _ = _drive_slots(
             "steer_scale", WIDE_SCALES, (0.0, 1.0), 12, steering_action_mode=mode
         )
-        _, left = _drive_slots(
+        _, left, _ = _drive_slots(
             "steer_scale", WIDE_SCALES, (0.0, -1.0), 12, steering_action_mode=mode
         )
         for slot, scale in enumerate(WIDE_SCALES):
@@ -96,7 +98,7 @@ def test_steer_scale_gives_symmetric_authority_in_both_modes():
 
 def test_steer_scale_is_a_gain_on_steer_gain():
     """steer_scale multiplies V2 steer_gain; physical steer lags toward that target."""
-    _, steer = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 1.0), 8)
+    _, steer, _ = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 1.0), 8)
     last = steer[-1]
     assert last[0] < last[1] < last[2]
     params = VehicleParams()
@@ -105,26 +107,33 @@ def test_steer_scale_is_a_gain_on_steer_gain():
         target = params.steer_gain * scale * MAX_STEER_RAD
         assert abs(last[slot]) < abs(target) + 1e-3
 
-    _, centered = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 0.0), 6)
+    _, centered, _ = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 0.0), 6)
     assert max(abs(v) for v in centered[-1]) == 0.0
 
 
 def test_accel_scale_sets_the_current_slew():
-    speeds, _ = _drive_slots("accel_scale", WIDE_SCALES, (1.0, 0.0), 8)
+    speeds, _, _ = _drive_slots("accel_scale", WIDE_SCALES, (1.0, 0.0), 8)
     early = speeds[1]
     assert early[0] < early[1] < early[2]
 
 
-def test_vmax_scale_and_drive_scale_diverge_top_speed():
-    speeds_v, _ = _drive_slots("vmax_scale", WIDE_SCALES, (1.0, 0.0), 60)
+def test_vmax_scale_enforces_eq6_ceiling_independently_of_drive_scale():
+    params = VehicleParams()
+    v_nom = float(params.v_nom)
+    scales = (0.3, 1.5)
+    speeds_v, _, ax_v = _drive_slots("vmax_scale", scales, (1.0, 0.0), 120)
     late_v = speeds_v[-1]
-    assert late_v[0] < late_v[1] < late_v[2]
-    assert late_v[1] > 1.05 * late_v[0]
+    assert late_v[0] == pytest.approx(v_nom * 0.3, abs=0.08)
+    assert late_v[1] == pytest.approx(v_nom * 1.5, abs=0.15)
+    assert late_v[0] < 2.0
+    assert late_v[1] > 8.5
+    # IMU ax must match the clamped velocity change, not the unclipped drive force.
+    assert abs(ax_v[-1][0]) < 0.5
+    assert abs(ax_v[-1][1]) < 0.5
 
-    speeds_d, _ = _drive_slots("drive_scale", WIDE_SCALES, (1.0, 0.0), 60)
-    late_d = speeds_d[-1]
-    assert late_d[0] < late_d[1] < late_d[2]
-    assert late_d[1] > 1.05 * late_d[0]
+    speeds_d, _, _ = _drive_slots("drive_scale", WIDE_SCALES, (1.0, 0.0), 8)
+    early_d = speeds_d[3]
+    assert early_d[0] < early_d[1] < early_d[2]
 
 
 def test_dynamics_scales_reach_buffers_and_privileged_state():

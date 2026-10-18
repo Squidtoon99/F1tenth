@@ -10,14 +10,16 @@ import pytest
 import torch
 
 from gigaflow_f1tenth.buffers import CompactRolloutBatch
-from gigaflow_f1tenth.config import AGENT_STATE_DIM, load_config
+from gigaflow_f1tenth.config import AGENT_STATE_DIM, LIDAR_DIM, load_config
 from gigaflow_f1tenth.critic import CRITIC_EGO_STATE_DIM, build_critic
 from gigaflow_f1tenth.model import build_actor
 from gigaflow_f1tenth.ppo import (
     PreparedPPOInputs,
     build_ppo,
     caps_spatial_loss,
+    caps_temporal_loss,
     evaluate_actions_sequence,
+    perturb_lidar_obs,
 )
 from gigaflow_f1tenth.rewards import sample_private_styles, styles_to_condition_batch
 
@@ -25,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "configs" / "smoke.yaml"
 
 
-def _cfg(*, caps_spatial_coef: float):
+def _cfg(*, caps_spatial_coef: float, caps_temporal_coef: float = 0.0):
     cfg = load_config(SMOKE)
     return replace(
         cfg,
@@ -43,6 +45,7 @@ def _cfg(*, caps_spatial_coef: float):
             actor_kl_stop_enabled=False,
             caps_spatial_coef=float(caps_spatial_coef),
             caps_spatial_std=0.05,
+            caps_temporal_coef=float(caps_temporal_coef),
             caps_coef=0.0,
             grad_caps_coef=0.0,
             total_updates=4,
@@ -112,12 +115,36 @@ def _real_batch(cfg, actor):
     return batch, prepared
 
 
-def test_ppo_defaults_enable_spatial_caps_only():
+def test_ppo_defaults_enable_spatial_and_temporal_caps():
     cfg = load_config(SMOKE)
     assert cfg.ppo.caps_spatial_coef == pytest.approx(0.1)
     assert cfg.ppo.caps_spatial_std == pytest.approx(0.05)
+    assert cfg.ppo.caps_temporal_coef == pytest.approx(0.02)
     assert cfg.ppo.caps_coef == pytest.approx(0.0)
     assert cfg.ppo.grad_caps_coef == pytest.approx(0.0)
+
+
+def test_spatial_caps_perturbs_lidar_only():
+    obs = torch.zeros(2, 4, LIDAR_DIM + 16)
+    obs[..., :LIDAR_DIM] = 1.0
+    obs[..., LIDAR_DIM:] = 2.0
+    torch.manual_seed(0)
+    pert = perturb_lidar_obs(obs, 0.05)
+    assert torch.equal(pert[..., LIDAR_DIM:], obs[..., LIDAR_DIM:])
+    assert not torch.equal(pert[..., :LIDAR_DIM], obs[..., :LIDAR_DIM])
+
+
+def test_caps_temporal_penalizes_action_jumps():
+    smooth = torch.zeros(3, 8, 2)
+    smooth[:, :, 0] = torch.linspace(-0.1, 0.1, 8)
+    bang = torch.zeros(3, 8, 2)
+    bang[:, 0::2, 0] = 1.0
+    bang[:, 1::2, 0] = -1.0
+    assert float(caps_temporal_loss(smooth).item()) < 0.01
+    assert float(caps_temporal_loss(bang).item()) > 0.5
+    mask = torch.zeros(3, 7)
+    masked = caps_temporal_loss(bang, mask)
+    assert float(masked.item()) == pytest.approx(0.0)
 
 
 def test_spatial_caps_loss_positive_on_real_actor():
@@ -141,10 +168,10 @@ def test_spatial_caps_loss_positive_on_real_actor():
     )
     assert len(scored) >= 4
     torch.manual_seed(1)
-    noise = torch.randn_like(obs) * cfg.ppo.caps_spatial_std
+    obs_pert = perturb_lidar_obs(obs, cfg.ppo.caps_spatial_std)
     pert = evaluate_actions_sequence(
         actor,
-        obs + noise,
+        obs_pert,
         cond,
         batch.gru_start,
         act,
@@ -174,3 +201,23 @@ def test_ppo_update_adds_spatial_term_only_when_coef_positive():
     batch_off, prepared_off = _real_batch(cfg_off, actor_off)
     stats_off = learner_off.update(batch_off, prepared_off)
     assert stats_off.caps_spatial_loss == pytest.approx(0.0)
+    assert stats_off.caps_temporal_loss == pytest.approx(0.0)
+
+
+def test_ppo_update_adds_temporal_term_when_coef_positive():
+    cfg_on = _cfg(caps_spatial_coef=0.0, caps_temporal_coef=0.02)
+    actor_on = build_actor(cfg_on)
+    critic_on = build_critic(cfg_on)
+    learner_on = build_ppo(cfg_on, actor_on, critic_on, device="cpu")
+    batch_on, prepared_on = _real_batch(cfg_on, actor_on)
+    stats_on = learner_on.update(batch_on, prepared_on)
+    assert stats_on.caps_temporal_loss > 0.0
+    assert stats_on.caps_spatial_loss == pytest.approx(0.0)
+
+    cfg_off = _cfg(caps_spatial_coef=0.0, caps_temporal_coef=0.0)
+    actor_off = build_actor(cfg_off)
+    critic_off = build_critic(cfg_off)
+    learner_off = build_ppo(cfg_off, actor_off, critic_off, device="cpu")
+    batch_off, prepared_off = _real_batch(cfg_off, actor_off)
+    stats_off = learner_off.update(batch_off, prepared_off)
+    assert stats_off.caps_temporal_loss == pytest.approx(0.0)

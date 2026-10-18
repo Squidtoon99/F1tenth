@@ -136,6 +136,10 @@ def test_production_configs_use_scale_adjusted_ppo(name: str):
     assert cfg.ppo.adaptive_filter_beta == pytest.approx(0.25)
     assert cfg.ppo.adaptive_filter_eta_scale == pytest.approx(0.01)
     assert cfg.ppo.value_clip is False
+    assert cfg.ppo.caps_spatial_coef == pytest.approx(0.1)
+    assert cfg.ppo.caps_temporal_coef == pytest.approx(0.02)
+    assert cfg.reward_conditioning.vmax_scale_min == pytest.approx(0.25)
+    assert cfg.reward_conditioning.vmax_scale_max == pytest.approx(1.5)
     assert cfg.evaluation.device == "cpu"
 
 

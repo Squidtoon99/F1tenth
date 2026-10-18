@@ -43,6 +43,8 @@ reward_conditioning:
   enabled: true
   x_drive_a: 1.25
   x_accel_a: 1.5
+  vmax_scale_min: 0.25
+  vmax_scale_max: 1.5
   enable_finish_rank: false
   enable_blocking: false
   enable_zero_sum: false
@@ -51,6 +53,9 @@ ppo:
   rollout_length: 256
   gamma: 0.999
   gae_lambda: 0.95
+  caps_spatial_coef: 0.1
+  caps_spatial_std: 0.05
+  caps_temporal_coef: 0.02
   clip_ratio: 0.2
   ent_coef: 0.01
   vf_coef: 0.5

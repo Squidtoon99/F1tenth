@@ -107,7 +107,7 @@ def condition_schema_fields() -> list[dict[str, Any]]:
         "drive_scale": "X(x_drive_a)",
         "steer_scale": "X(x_drive_a)",
         "accel_scale": "X(x_accel_a)",
-        "vmax_scale": "X(x_accel_a)",
+        "vmax_scale": "0.5 U(vmax_scale_min,1)+0.5 U(1,vmax_scale_max)",
         "mass_kg": MASS_KG_RANGE,
     }
     groups = {
@@ -146,6 +146,24 @@ def sample_x(rng: np.random.Generator, a: float, size: int = 1) -> np.ndarray:
     return np.where(coin < 0.5, lo, hi).astype(np.float32)
 
 
+def sample_vmax_scale(
+    rng: np.random.Generator,
+    vmin: float,
+    vmax: float,
+    size: int = 1,
+) -> np.ndarray:
+    """50% U[vmin, 1] and 50% U[1, vmax] for Apple C_vel on V2."""
+    if vmin <= 0.0 or vmin > 1.0 or vmax < 1.0:
+        raise ValueError(
+            f"vmax_scale range requires 0 < min <= 1 <= max, got {vmin}, {vmax}"
+        )
+    size = int(size)
+    coin = rng.random(size)
+    lo = rng.uniform(vmin, 1.0, size=size)
+    hi = rng.uniform(1.0, vmax, size=size)
+    return np.where(coin < 0.5, lo, hi).astype(np.float32)
+
+
 def _uniform(rng: np.random.Generator, lo: float, hi: float, size: int) -> np.ndarray:
     return rng.uniform(lo, hi, size=size).astype(np.float32)
 
@@ -166,7 +184,7 @@ def sample_private_styles(
     drive = sample_x(rng, rc.x_drive_a, n)
     steer = sample_x(rng, rc.x_drive_a, n)
     accel = sample_x(rng, rc.x_accel_a, n)
-    vmax = sample_x(rng, rc.x_accel_a, n)
+    vmax = sample_vmax_scale(rng, rc.vmax_scale_min, rc.vmax_scale_max, n)
     mass = _uniform(rng, MASS_KG_RANGE[0], MASS_KG_RANGE[1], n)
 
     a_col = _uniform(rng, *ALPHA_COLLISION_RANGE, n)

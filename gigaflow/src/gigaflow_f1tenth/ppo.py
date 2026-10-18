@@ -17,7 +17,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from gigaflow_f1tenth.buffers import CompactRolloutBatch
-from gigaflow_f1tenth.config import ExperimentConfig
+from gigaflow_f1tenth.config import LIDAR_DIM, ExperimentConfig
 from gigaflow_f1tenth.critic import CentralValueCritic, critic_values_over_time
 from gigaflow_f1tenth.model import (
     ACT_LIMIT,
@@ -86,12 +86,54 @@ class PPOUpdateStats:
     actor_kl_warmup_active: bool = False
     rollback_free_accepted_updates: int = 0
     caps_spatial_loss: float = 0.0
+    caps_temporal_loss: float = 0.0
     telemetry: dict[str, float] = field(default_factory=dict)
 
 
 def caps_spatial_loss(mean_actions: Tensor, perturbed_mean: Tensor) -> Tensor:
     delta = mean_actions - perturbed_mean
     return delta.square().sum(dim=-1).mean()
+
+
+def perturb_lidar_obs(
+    obs: Tensor,
+    std: float,
+    lidar_dim: int = LIDAR_DIM,
+) -> Tensor:
+    """Add N(0, std) noise to LiDAR beams only; proprioception stays exact."""
+    if obs.shape[-1] < lidar_dim:
+        raise ValueError(
+            f"obs last dim {obs.shape[-1]} is smaller than lidar_dim={lidar_dim}"
+        )
+    noise = torch.randn(
+        *obs.shape[:-1], lidar_dim, device=obs.device, dtype=obs.dtype
+    ) * std
+    perturbed = obs.clone()
+    perturbed[..., :lidar_dim] = obs[..., :lidar_dim] + noise
+    return perturbed
+
+
+def caps_temporal_loss(
+    mean_actions: Tensor,
+    valid_pair_mask: Tensor | None = None,
+) -> Tensor:
+    """Penalize step-to-step mean-action jumps along time dim 1 of [B, T, A]."""
+    if mean_actions.dim() != 3 or mean_actions.shape[1] <= 1:
+        return mean_actions.new_zeros(())
+    delta = mean_actions[:, 1:] - mean_actions[:, :-1]
+    if valid_pair_mask is None:
+        pair = torch.ones(
+            delta.shape[:-1], dtype=delta.dtype, device=delta.device
+        )
+    else:
+        pair = valid_pair_mask.to(dtype=delta.dtype)
+        if pair.shape != delta.shape[:-1]:
+            raise ValueError(
+                f"valid_pair_mask shape {tuple(pair.shape)} != {tuple(delta.shape[:-1])}"
+            )
+    delta = delta * pair.unsqueeze(-1)
+    denom = pair.sum().clamp(min=1.0)
+    return 0.5 * delta.square().sum() / denom
 
 
 class CollectEvaluateParityError(RuntimeError):
@@ -726,6 +768,7 @@ class RecurrentPPO:
         self.rollout_length = int(cfg.ppo.rollout_length)
         self.caps_spatial_coef = float(cfg.ppo.caps_spatial_coef)
         self.caps_spatial_std = float(cfg.ppo.caps_spatial_std)
+        self.caps_temporal_coef = float(cfg.ppo.caps_temporal_coef)
         eval_fn = getattr(actor, "evaluate_actions_sequence", None)
         try:
             eval_params = (
@@ -735,6 +778,7 @@ class RecurrentPPO:
             eval_params = {}
         if "return_mean" not in eval_params:
             self.caps_spatial_coef = 0.0
+            self.caps_temporal_coef = 0.0
         self.value_clip = bool(cfg.ppo.value_clip)
         if self.value_clip:
             raise ValueError("value_clip must be false (paper-aligned PPO)")
@@ -1130,6 +1174,7 @@ class RecurrentPPO:
             "actor_grad_norm": 0.0,
             "critic_grad_norm": 0.0,
             "caps_spatial_loss": 0.0,
+            "caps_temporal_loss": 0.0,
         }
         actor_steps = 0
         critic_steps = 0
@@ -1207,7 +1252,9 @@ class RecurrentPPO:
                     continue
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
-                want_mean = self.caps_spatial_coef > 0.0
+                want_mean = (
+                    self.caps_spatial_coef > 0.0 or self.caps_temporal_coef > 0.0
+                )
                 scored = evaluate_actions_sequence(
                     self.actor,
                     obs_seq,
@@ -1235,11 +1282,12 @@ class RecurrentPPO:
                 entropy_loss = -ent_coef * entropy
                 policy_loss = surrogate_loss + entropy_loss
                 caps_spatial = policy_loss.new_zeros(())
+                caps_temporal = policy_loss.new_zeros(())
                 if new_mean is not None and self.caps_spatial_coef > 0.0:
-                    noise = torch.randn_like(obs_seq) * self.caps_spatial_std
+                    obs_pert = perturb_lidar_obs(obs_seq, self.caps_spatial_std)
                     spat_out = evaluate_actions_sequence(
                         self.actor,
-                        obs_seq + noise,
+                        obs_pert,
                         cond,
                         hidden,
                         act_seq,
@@ -1252,6 +1300,20 @@ class RecurrentPPO:
                         policy_loss = (
                             policy_loss + self.caps_spatial_coef * caps_spatial
                         )
+                if (
+                    new_mean is not None
+                    and self.caps_temporal_coef > 0.0
+                    and new_mean.shape[1] > 1
+                ):
+                    keep_bt = mb_keep.transpose(0, 1).to(dtype=new_mean.dtype)
+                    pair_valid = keep_bt[:, 1:] * keep_bt[:, :-1]
+                    pair_valid = pair_valid * (
+                        (~reset_seq[:, 1:]).to(dtype=pair_valid.dtype)
+                    )
+                    caps_temporal = caps_temporal_loss(new_mean, pair_valid)
+                    policy_loss = (
+                        policy_loss + self.caps_temporal_coef * caps_temporal
+                    )
                 if not torch.isfinite(policy_loss.detach()):
                     continue
                 policy_loss.backward()
@@ -1273,6 +1335,7 @@ class RecurrentPPO:
                 metric_sums["clip_fraction"] += float(clip_frac.detach())
                 metric_sums["actor_grad_norm"] += float(actor_grad_norm)
                 metric_sums["caps_spatial_loss"] += float(caps_spatial.detach())
+                metric_sums["caps_temporal_loss"] += float(caps_temporal.detach())
                 actor_steps += 1
 
                 with torch.no_grad():
@@ -1499,6 +1562,7 @@ class RecurrentPPO:
             actor_kl_rejection_reason=actor_kl_rejection_reason,
             actor_kl_warmup_active=actor_kl_warmup_active,
             caps_spatial_loss=metric_sums["caps_spatial_loss"] / actor_denom,
+            caps_temporal_loss=metric_sums["caps_temporal_loss"] / actor_denom,
             rollback_free_accepted_updates=self.rollback_free_accepted_updates,
             telemetry=telemetry,
         )

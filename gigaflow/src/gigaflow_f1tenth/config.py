@@ -106,6 +106,9 @@ class RewardConditioningConfig:
     enabled: bool = True
     x_drive_a: float = 1.25
     x_accel_a: float = 1.5
+    # Apple C_vel: 50% U[min, 1] (1.5..6.0 m/s) and 50% U[1, max] (6.0..9.0 m/s).
+    vmax_scale_min: float = 0.25
+    vmax_scale_max: float = 1.5
     enable_finish_rank: bool = False
     enable_blocking: bool = False
     enable_zero_sum: bool = False
@@ -121,6 +124,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     caps_spatial_coef: float = 0.1
     caps_spatial_std: float = 0.05
+    caps_temporal_coef: float = 0.02
     caps_coef: float = 0.0
     grad_caps_coef: float = 0.0
     clip_ratio: float = 0.2
@@ -733,6 +737,14 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
     rc = cfg.reward_conditioning
     if rc.x_drive_a < 1.0 or rc.x_accel_a < 1.0:
         raise ConfigError("reward conditioning X(a) scale factors must be >= 1")
+    if not (0.0 < rc.vmax_scale_min <= 1.0 <= rc.vmax_scale_max):
+        raise ConfigError(
+            "vmax_scale_min must be in (0, 1] and vmax_scale_max must be >= 1"
+        )
+    if p.caps_spatial_coef < 0.0 or p.caps_spatial_std < 0.0:
+        raise ConfigError("ppo caps_spatial_coef/std must be non-negative")
+    if p.caps_temporal_coef < 0.0:
+        raise ConfigError("ppo.caps_temporal_coef must be non-negative")
 
     if p.rollout_length <= 0 or p.num_epochs <= 0 or p.minibatch_size <= 0:
         raise ConfigError("ppo rollout_length/num_epochs/minibatch_size must be > 0")
