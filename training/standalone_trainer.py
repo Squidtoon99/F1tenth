@@ -39,7 +39,7 @@ from f1tenth_policy import (
     deploy_actor_state_dict,
     validate_sensor_policy_artifact,
 )
-from f1tenth_policy.actor import apply_policy_output_init
+from f1tenth_policy.actor import apply_orthogonal_init, apply_policy_output_init
 from f1tenth_policy.layout import (
     ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
@@ -64,6 +64,12 @@ from config import (
 )
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
+from f1tenth_env.gigaflow_cond import (
+    GIGAFLOW_ACTOR_OBS_DIM,
+    GIGAFLOW_C_DIM,
+    GIGAFLOW_CRITIC_OBS_DIM,
+    format_gigaflow_spec,
+)
 from f1tenth_env.sensors import ACTOR_LIDAR_DIM
 from f1tenth_env.utils import episode_length_for_track
 from evaluation import actor_is_recurrent, deterministic_rollout
@@ -873,6 +879,43 @@ def validate_model_architecture(cfg: dict) -> None:
         )
 
 
+def validate_gigaflow_config(cfg: dict) -> None:
+    env = cfg["env"]
+    enabled = bool(env.get("gigaflow_conditioning", False))
+    if not isinstance(env.get("gigaflow_conditioning", False), bool):
+        raise ValueError("env.gigaflow_conditioning must be a bool")
+    if not enabled:
+        return
+    obs = cfg["obs"]
+    if int(obs["num_actor_obs"]) != GIGAFLOW_ACTOR_OBS_DIM:
+        raise ValueError(
+            "gigaflow_conditioning requires obs.num_actor_obs="
+            f"{GIGAFLOW_ACTOR_OBS_DIM}, got {obs['num_actor_obs']!r}"
+        )
+    if int(obs["num_obs"]) != GIGAFLOW_CRITIC_OBS_DIM:
+        raise ValueError(
+            "gigaflow_conditioning requires obs.num_obs="
+            f"{GIGAFLOW_CRITIC_OBS_DIM}, got {obs['num_obs']!r}"
+        )
+    if bool(obs.get("enable_opponent_obs", False)):
+        raise ValueError(
+            "gigaflow actor is lidar-only; obs.enable_opponent_obs must be false"
+        )
+    nominal = env.get("gigaflow_nominal_speed_mps", 6.0)
+    if (
+        not isinstance(nominal, (int, float))
+        or isinstance(nominal, bool)
+        or not math.isfinite(float(nominal))
+        or float(nominal) <= 0.0
+    ):
+        raise ValueError(
+            "env.gigaflow_nominal_speed_mps must be a positive finite number, "
+            f"got {nominal!r}"
+        )
+    if int(obs["num_actor_obs"]) - ACTOR_LIDAR_DIM < GIGAFLOW_C_DIM:
+        raise ValueError("gigaflow actor proprio must include the C vector")
+
+
 def validate_action_chunk_config(cfg: dict) -> None:
     env = cfg["env"]
     horizon = env.get("action_horizon", DEFAULT_ACTION_HORIZON)
@@ -1132,6 +1175,28 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
             "ppo.residual_base_enabled must be a bool, got "
             f"{ppo.get('residual_base_enabled')!r}"
         )
+    filter_mode = ppo.get("advantage_filter_mode", "quantile")
+    if filter_mode not in ("quantile", "running_max"):
+        raise ValueError(
+            "ppo.advantage_filter_mode must be 'quantile' or 'running_max', "
+            f"got {filter_mode!r}"
+        )
+    eta = ppo.get("advantage_filter_eta", 0.01)
+    if (
+        not isinstance(eta, (int, float))
+        or isinstance(eta, bool)
+        or not math.isfinite(float(eta))
+        or float(eta) < 0.0
+    ):
+        raise ValueError(
+            f"ppo.advantage_filter_eta must be a finite number >= 0, got {eta!r}"
+        )
+    if not isinstance(ppo.get("orthogonal_init", False), bool):
+        raise ValueError(
+            "ppo.orthogonal_init must be a bool, got "
+            f"{ppo.get('orthogonal_init')!r}"
+        )
+    validate_gigaflow_config(cfg)
 
 
 def _validate_ppo_init_lr_schedule(cfg: dict, ppo: dict) -> None:
@@ -1205,15 +1270,18 @@ def make_policy_network(cfg: dict):
     pool_bins = model.get("lidar_pool_bins")
     if pool_bins is None:
         pool_bins = 32
+    obs_dim = int(cfg["obs"]["num_actor_obs"])
     return make_actor(
         actor_type=model["actor_type"],
-        obs_dim=cfg["obs"]["num_actor_obs"],
+        obs_dim=obs_dim,
         act_dim=cfg_actor_action_dim(cfg),
         hidden_sizes=model["actor_hidden_layers"],
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=pool_bins,
         lidar_projection_dim=model["lidar_projection_dim"],
+        lidar_dim=ACTOR_LIDAR_DIM,
+        proprio_dim=obs_dim - ACTOR_LIDAR_DIM,
         log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
         log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
         deter_dim=int(dreamer.get("deter_dim", 256)),
@@ -1258,6 +1326,7 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
         "actor_hidden_layers": list(model["actor_hidden_layers"]),
         "lidar_pool_bins": int(model["lidar_pool_bins"]),
         "lidar_projection_dim": int(model["lidar_projection_dim"]),
+        "lidar_dim": ACTOR_LIDAR_DIM,
     }
 
 
@@ -1442,6 +1511,11 @@ def make_training_envs(cfg, args, resolved, obs_cfg, reward_cfg):
             env.close()
         raise
     return envs, primary_cfg
+
+
+def policy_opponent_envs(envs):
+    """Training envs that actually host a copy of π (skip solo/scripted)."""
+    return [env for env in envs if getattr(env, "_policy_opponent", None) is not None]
 
 
 def collect_sensor_reset(envs):
@@ -2002,6 +2076,8 @@ def build_ppo_models(
     ppo_cfg = cfg["ppo"]
     env_minibatches = min(int(num_envs), int(ppo_cfg["env_minibatches"]))
     actor = make_policy_network(cfg).to(device=device, dtype=torch.float32)
+    if bool(ppo_cfg.get("orthogonal_init", False)):
+        apply_orthogonal_init(actor)
     apply_policy_output_init(
         actor,
         policy_mean_init_scale=ppo_cfg.get("policy_mean_init_scale"),
@@ -2038,6 +2114,8 @@ def build_ppo_models(
         advantage_filter_discard_fraction=float(
             ppo_cfg["advantage_filter_discard_fraction"]
         ),
+        advantage_filter_mode=str(ppo_cfg.get("advantage_filter_mode", "quantile")),
+        advantage_filter_eta=float(ppo_cfg.get("advantage_filter_eta", 0.01)),
         lidar_aug_enabled=bool(cfg["model"]["lidar_aug_enabled"]),
         lidar_aug_max_shift_beams=int(cfg["model"]["lidar_aug_max_shift_beams"]),
         lr_schedule=str(ppo_cfg.get("lr_schedule", "constant")),
@@ -2053,6 +2131,8 @@ def build_ppo_models(
         reversal_deadband=float(ppo_cfg["reversal_deadband"]),
         reversal_lag2=bool(ppo_cfg["reversal_lag2"]),
     )
+    if bool(ppo_cfg.get("orthogonal_init", False)):
+        apply_orthogonal_init(trainer.value_critic)
     return models, trainer
 
 
@@ -2863,6 +2943,10 @@ def main():
     config_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
     log.info("Wrote config snapshot to %s", config_path)
     log.info("Using device: %s", device)
+    if bool(cfg["env"].get("gigaflow_conditioning", False)):
+        log.info("Gigaflow conditioning C_dim=%d", GIGAFLOW_C_DIM)
+        for line in format_gigaflow_spec().splitlines():
+            log.info("%s", line)
     if algorithm == "qrsac":
         log.info(
             "Effective experiment: steering_action_mode=%s steering_delta_max_rad=%.12f "
@@ -3201,7 +3285,7 @@ def main():
                 models, actor_normalizer, transitions=init_transitions
             )
         )
-        selfplay_mgr.bootstrap_opponent(env)
+        selfplay_mgr.bootstrap_opponent(policy_opponent_envs(train_envs))
     if resume_counters is not None:
         vector_ticks = resume_counters["vector_ticks"]
         env_transitions = resume_counters["env_transitions"]
@@ -3636,7 +3720,9 @@ def main():
                 selfplay_mgr.maybe_snapshot(
                     models, actor_normalizer, env_transitions
                 )
-                selfplay_mgr.maybe_refresh(env, env_transitions)
+                selfplay_mgr.maybe_refresh(
+                    policy_opponent_envs(train_envs), env_transitions
+                )
 
             if interval_crossed(
                 previous_transitions,

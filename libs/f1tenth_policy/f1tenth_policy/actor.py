@@ -901,6 +901,14 @@ def actor_architecture_from_module(actor) -> dict:
     return normalize_actor_architecture(dict(actor.actor_architecture))
 
 
+def apply_orthogonal_init(module, gain=math.sqrt(2.0)):
+    for child in module.modules():
+        if isinstance(child, nn.Linear):
+            nn.init.orthogonal_(child.weight, gain=float(gain))
+            if child.bias is not None:
+                nn.init.zeros_(child.bias)
+
+
 def apply_policy_output_init(
     actor,
     policy_mean_init_scale=None,
