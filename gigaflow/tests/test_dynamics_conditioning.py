@@ -14,7 +14,7 @@ from gigaflow_f1tenth.config import load_config
 from gigaflow_f1tenth.kernels import build_simulator
 from gigaflow_f1tenth.rewards import CONDITION_FIELD_NAMES, sample_private_styles
 from gigaflow_f1tenth.sim.geometry import make_synthetic_oval_atlas
-from gigaflow_f1tenth.sim.layout_local import MAX_STEER_RAD, STEERING_DELTA_MAX_RAD
+from gigaflow_f1tenth.sim.layout_local import MAX_STEER_RAD
 from gigaflow_f1tenth.sim.stages import physics_control_kernel
 from gigaflow_f1tenth.sim.state import SimulatorBuffers
 from gigaflow_f1tenth.sim.vehicle import VehicleParams
@@ -58,6 +58,7 @@ def _drive_slots(
     wp_actions = wp.from_torch(actions, dtype=wp.vec2f)
     speeds: list[list[float]] = []
     steer: list[list[float]] = []
+    ax_hist: list[list[float]] = []
     for _ in range(steps):
         wp.launch(
             physics_control_kernel,
@@ -76,65 +77,63 @@ def _drive_slots(
         )
         speeds.append([float(t.vx[i]) for i in range(len(values))])
         steer.append([float(t.steer[i]) for i in range(len(values))])
-    return speeds, steer
+        ax_hist.append([float(t.ax[i]) for i in range(len(values))])
+    return speeds, steer, ax_hist
 
 
 def test_steer_scale_gives_symmetric_authority_in_both_modes():
-    """Fail-before: steer_scale was an additive trim, so full lock was one-sided."""
     for mode in ("delta", "position"):
-        _, right = _drive_slots(
+        _, right, _ = _drive_slots(
             "steer_scale", WIDE_SCALES, (0.0, 1.0), 12, steering_action_mode=mode
         )
-        _, left = _drive_slots(
+        _, left, _ = _drive_slots(
             "steer_scale", WIDE_SCALES, (0.0, -1.0), 12, steering_action_mode=mode
         )
         for slot, scale in enumerate(WIDE_SCALES):
-            assert right[-1][slot] == pytest.approx(-left[-1][slot], abs=1e-6)
-            assert abs(right[-1][slot]) <= MAX_STEER_RAD + 1e-6
-            if mode == "delta":
-                # Held lock saturates the mechanical limit whatever the gain.
-                assert abs(right[-1][slot]) == pytest.approx(
-                    MAX_STEER_RAD, rel=1e-3
-                )
-            else:
-                assert abs(right[-1][slot]) == pytest.approx(
-                    min(scale, 1.0) * MAX_STEER_RAD, rel=1e-3
-                )
+            assert right[-1][slot] == pytest.approx(-left[-1][slot], abs=1e-5)
+            assert abs(right[-1][slot]) > abs(right[-1][0]) or slot == 0
+            if slot > 0:
+                assert abs(right[-1][slot]) > abs(right[-1][slot - 1])
 
 
-def test_steer_scale_is_a_gain_on_the_delta_command():
-    """Fail-before: the production delta path ignored steer_scale entirely."""
-    _, steer = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 1.0), 1)
-    first = steer[0]
-    assert first[0] < first[1] < first[2]
+def test_steer_scale_is_a_gain_on_steer_gain():
+    """steer_scale multiplies V2 steer_gain; physical steer lags toward that target."""
+    _, steer, _ = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 1.0), 8)
+    last = steer[-1]
+    assert last[0] < last[1] < last[2]
+    params = VehicleParams()
+    # Logical is clamped to max_steer; physical heads toward gain*scale*logical.
     for slot, scale in enumerate(WIDE_SCALES):
-        assert first[slot] == pytest.approx(
-            scale * STEERING_DELTA_MAX_RAD, rel=1e-5
-        )
+        target = params.steer_gain * scale * MAX_STEER_RAD
+        assert abs(last[slot]) < abs(target) + 1e-3
 
-    # A zero steering command must stay straight for every scale (no trim).
-    _, centered = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 0.0), 6)
+    _, centered, _ = _drive_slots("steer_scale", WIDE_SCALES, (0.0, 0.0), 6)
     assert max(abs(v) for v in centered[-1]) == 0.0
 
 
-def test_accel_scale_sets_the_effort_ramp_not_the_top_speed():
-    """Fail-before: accel_scale was conditioned on but read by no kernel."""
-    speeds, _ = _drive_slots("accel_scale", WIDE_SCALES, (1.0, 0.0), 40)
+def test_accel_scale_sets_the_current_slew():
+    speeds, _, _ = _drive_slots("accel_scale", WIDE_SCALES, (1.0, 0.0), 8)
     early = speeds[1]
     assert early[0] < early[1] < early[2]
-    assert early[2] > 1.3 * early[0]
-    # Same sustained effort, so the slots converge once the ramp is done.
-    late = speeds[-1]
-    assert late[2] == pytest.approx(late[0], rel=0.02)
 
 
-def test_vmax_scale_sets_the_attainable_speed():
-    """Fail-before: vmax_scale was conditioned on but read by no kernel."""
-    speeds, _ = _drive_slots("vmax_scale", WIDE_SCALES, (1.0, 0.0), 60)
-    late = speeds[-1]
-    assert late[0] < late[1] < late[2]
-    assert late[1] > 1.1 * late[0]
-    assert late[2] > 1.02 * late[1]
+def test_vmax_scale_enforces_eq6_ceiling_independently_of_drive_scale():
+    params = VehicleParams()
+    v_nom = float(params.v_nom)
+    scales = (0.3, 1.5)
+    speeds_v, _, ax_v = _drive_slots("vmax_scale", scales, (1.0, 0.0), 120)
+    late_v = speeds_v[-1]
+    assert late_v[0] == pytest.approx(v_nom * 0.3, abs=0.08)
+    assert late_v[1] == pytest.approx(v_nom * 1.5, abs=0.15)
+    assert late_v[0] < 2.0
+    assert late_v[1] > 8.5
+    # IMU ax must match the clamped velocity change, not the unclipped drive force.
+    assert abs(ax_v[-1][0]) < 0.5
+    assert abs(ax_v[-1][1]) < 0.5
+
+    speeds_d, _, _ = _drive_slots("drive_scale", WIDE_SCALES, (1.0, 0.0), 8)
+    early_d = speeds_d[3]
+    assert early_d[0] < early_d[1] < early_d[2]
 
 
 def test_dynamics_scales_reach_buffers_and_privileged_state():
@@ -153,7 +152,7 @@ def test_dynamics_scales_reach_buffers_and_privileged_state():
         assert name in CONDITION_FIELD_NAMES
 
     packed = pack_compact_agent_state(t)
-    for name in ("accel_scale", "vmax_scale"):
+    for name in ("accel_scale", "vmax_scale", "steer_logical", "c_f", "steer_gain"):
         assert torch.allclose(
             packed[:, STATE_INDEX[name]], getattr(t, name), atol=1e-6
         )

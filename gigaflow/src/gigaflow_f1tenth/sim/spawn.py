@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from gigaflow_f1tenth.config import ExperimentConfig, episode_steps
+from gigaflow_f1tenth.sim.vehicle import VehicleParams
 from gigaflow_f1tenth.sim.geometry import SimTrackGeometry, project_frenet_numpy
 from gigaflow_f1tenth.tracks import sample_active_counts as atlas_sample_active_counts
 from gigaflow_f1tenth.tracks import sample_track_ids as atlas_sample_track_ids
@@ -100,6 +101,7 @@ def spawn_agent_pose(
     speed_max: float = 3.0,
     yaw_jitter: float = 0.15,
     max_rejects: int = 64,
+    width_scale: float = 1.0,
 ) -> dict[str, float | int]:
     a = int(geom.offsets[track_id])
     b = int(geom.offsets[track_id + 1])
@@ -110,12 +112,13 @@ def spawn_agent_pose(
     cum = geom.cum_length[a:b]
     seg = geom.segment_length[a:b]
     count = b - a
+    scale = float(width_scale)
     for _ in range(max_rejects):
         segment = int(rng.integers(0, count))
         alpha = float(rng.random())
         following = (segment + 1) % count
-        wr = max(float(widths[segment, 0]) - spawn_margin, 0.0)
-        wl = max(float(widths[segment, 1]) - spawn_margin, 0.0)
+        wr = max(float(widths[segment, 0]) * scale - spawn_margin, 0.0)
+        wl = max(float(widths[segment, 1]) * scale - spawn_margin, 0.0)
         lateral = float(rng.uniform(-wr, wl))
         center = centerline[segment] + alpha * (
             centerline[following] - centerline[segment]
@@ -147,7 +150,12 @@ def spawn_agent_pose(
             "segment": int(fr["segment"]),
             "s": float(fr["s"]),
             "ey": float(fr["ey"]),
-            "boundary_distance": float(fr["boundary_distance"]),
+            "boundary_distance": float(
+                min(
+                    float(fr["width_left"]) * scale - float(fr["ey"]),
+                    float(fr["width_right"]) * scale + float(fr["ey"]),
+                )
+            ),
             "rejected": 0,
         }
     segment = int(rng.integers(0, count))
@@ -172,7 +180,12 @@ def spawn_agent_pose(
         "segment": int(fr["segment"]),
         "s": float(fr["s"]),
         "ey": float(fr["ey"]),
-        "boundary_distance": float(fr["boundary_distance"]),
+        "boundary_distance": float(
+            min(
+                float(fr["width_left"]) * scale - float(fr["ey"]),
+                float(fr["width_right"]) * scale + float(fr["ey"]),
+            )
+        ),
         "rejected": 1,
     }
 
@@ -369,7 +382,11 @@ def apply_static_pins(
     arrays.vy[mask] = 0.0
     arrays.yaw_rate[mask] = 0.0
     arrays.steer[mask] = 0.0
-    arrays.effort_state[mask] = -1.0
+    arrays.steer_logical[mask] = 0.0
+    arrays.i_drive[mask] = 0.0
+    arrays.i_brake[mask] = float(VehicleParams.i_brake_max_a)
+    arrays.i_drive_cmd[mask] = 0.0
+    arrays.i_brake_cmd[mask] = float(VehicleParams.i_brake_max_a)
     arrays.applied_effort[mask] = -1.0
     arrays.ax[mask] = 0.0
     arrays.ay[mask] = 0.0

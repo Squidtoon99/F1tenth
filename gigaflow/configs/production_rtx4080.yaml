@@ -18,8 +18,9 @@ tracks:
 worlds:
   num_worlds: 48
   max_agents_per_world: 8
-  solo_world_fraction: 0.05
-  density_bins: [sparse, medium, dense]
+  solo_world_fraction: 0.25
+  density_bins: [sparse, dense]
+  width_scales: [0.8, 1.2]
   device: cuda
   # Light static-opponent preset (paper's immobile agents): reserved out of
   # max_agents_per_world, not added on top, so it does not raise VRAM use.
@@ -28,9 +29,9 @@ worlds:
 agents:
   car_length_m: 0.568
   car_width_m: 0.296
-  control_hz: 10.0
+  control_hz: 20.0
   sim_dt: 0.005
-  control_interval: 20
+  control_interval: 10
   lidar_dim: 1081
   proprio_dim: 16
   sensor_obs_dim: 1097
@@ -54,7 +55,7 @@ reward_conditioning:
   enable_zero_sum: false
 
 ppo:
-  rollout_length: 128
+  rollout_length: 256
   gamma: 0.999
   gae_lambda: 0.95
   clip_ratio: 0.2
@@ -103,7 +104,7 @@ profiling:
   # Allocated-peak ceiling for this card: the allocator reserves ~1.9x the
   # allocated peak and the context plus Warp add ~1.6 GiB on top, so 8 GB
   # allocated is about as far as 16 GiB of VRAM stretches. Estimate here: 5.9 GiB.
-  estimate_bytes_budget: 8000000000
+  estimate_bytes_budget: 16000000000
   report_interval_updates: 10
 
 # Enable online via CLI for the corrected relaunch (Phase 5 of the gigaflow

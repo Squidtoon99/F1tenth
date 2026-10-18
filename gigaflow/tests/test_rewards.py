@@ -25,6 +25,7 @@ from gigaflow_f1tenth.rewards import (
     reward_lane_center,
     reward_passing_n,
     sample_private_styles,
+    sample_vmax_scale,
     sample_x,
     styles_to_condition_batch,
 )
@@ -106,6 +107,26 @@ def test_sample_x_balanced_and_in_range():
     assert samples.max() <= a + 1e-6
     frac_below = float(np.mean(samples < 1.0))
     assert 0.45 <= frac_below <= 0.55
+
+
+def test_vmax_scale_samples_wide_apple_range():
+    rng = np.random.default_rng(0)
+    samples = sample_vmax_scale(rng, 0.25, 1.5, size=20_000)
+    assert samples.min() >= 0.25 - 1e-6
+    assert samples.max() <= 1.5 + 1e-6
+    frac_below = float(np.mean(samples < 1.0))
+    assert 0.45 <= frac_below <= 0.55
+    assert samples.min() < 0.30
+    assert samples.max() > 1.45
+
+    cfg = load_config(SMOKE)
+    assert cfg.reward_conditioning.vmax_scale_min == pytest.approx(0.25)
+    assert cfg.reward_conditioning.vmax_scale_max == pytest.approx(1.5)
+    styles = sample_private_styles(cfg, 20_000, np.random.default_rng(1))
+    vals = np.asarray([s.vmax_scale for s in styles])
+    assert vals.min() >= 0.25 - 1e-6
+    assert vals.max() <= 1.5 + 1e-6
+    assert float(np.mean(vals < 1.0)) == pytest.approx(0.5, abs=0.05)
 
 
 def test_private_style_sampling_deterministic():

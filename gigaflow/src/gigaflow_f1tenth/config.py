@@ -18,9 +18,10 @@ SENSOR_OBS_DIM = LIDAR_DIM + PROPRIO_DIM
 ACTION_DIM = 2
 GRU_HIDDEN_DIM = 512
 CNN_PROJECTION_DIM = 256
-CONTROL_HZ = 10.0
+CONTROL_HZ = 20.0
 SIM_DT = 0.005
-CONTROL_INTERVAL = 20
+CONTROL_INTERVAL = 10
+MAX_PHYSICS_SUBSTEPS = 20
 CAR_LENGTH_M = 0.568
 CAR_WIDTH_M = 0.296
 
@@ -31,8 +32,8 @@ BYTES_PER_BOOL = 1
 # Privileged compact agent-state / critic element width (shared packing).
 # Includes track-local frenet_segment so pack/restore keeps projection lock, and
 # the command history / wheel speeds the proprioception channels are rebuilt from.
-AGENT_STATE_DIM = 45
-CRITIC_ELEMENT_DIM = 45
+AGENT_STATE_DIM = 59
+CRITIC_ELEMENT_DIM = 59
 # Upstream f1tenth_racetracks pin ships this many centerlines (see track_pin.json).
 PINNED_UPSTREAM_TRACK_COUNT = 23
 
@@ -64,6 +65,8 @@ class WorldsConfig:
     max_agents_per_world: int
     solo_world_fraction: float = 0.05
     density_bins: tuple[str, ...] = ("sparse", "medium", "dense")
+    # Per-world corridor scale drawn on reset_all (1.0 leaves atlas widths).
+    width_scales: tuple[float, ...] = (1.0,)
     device: str = "cuda"
     # Immobile "static opponent" slots reserved per world (paper's obstacle
     # agents); they count against max_agents_per_world rather than growing it.
@@ -92,6 +95,10 @@ class AgentsConfig:
     async_respawn: bool = True
     actor_variant: str = "gru"
     frame_stack: int = 1
+    physics_randomize: bool = True
+    mu_range: tuple[float, float] = (0.55, 0.85)
+    steer_gain_range: tuple[float, float] = (0.84, 1.26)
+    command_delay_substeps_range: tuple[int, int] = (0, 4)
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,9 @@ class RewardConditioningConfig:
     enabled: bool = True
     x_drive_a: float = 1.25
     x_accel_a: float = 1.5
+    # Apple C_vel: 50% U[min, 1] (1.5..6.0 m/s) and 50% U[1, max] (6.0..9.0 m/s).
+    vmax_scale_min: float = 0.25
+    vmax_scale_max: float = 1.5
     enable_finish_rank: bool = False
     enable_blocking: bool = False
     enable_zero_sum: bool = False
@@ -109,9 +119,14 @@ class RewardConditioningConfig:
 
 @dataclass(frozen=True)
 class PPOConfig:
-    rollout_length: int = 128
+    rollout_length: int = 256
     gamma: float = 0.999
     gae_lambda: float = 0.95
+    caps_spatial_coef: float = 0.1
+    caps_spatial_std: float = 0.05
+    caps_temporal_coef: float = 0.02
+    caps_coef: float = 0.0
+    grad_caps_coef: float = 0.0
     clip_ratio: float = 0.2
     ent_coef: float | None = 0.01
     ent_coef_initial: float | None = None
@@ -259,6 +274,10 @@ def _from_mapping(cls: type, data: Mapping[str, Any]):
         value = data[f.name]
         if f.name in {
             "density_bins",
+            "width_scales",
+            "mu_range",
+            "steer_gain_range",
+            "command_delay_substeps_range",
             "actor_mlp_sizes",
             "seeds",
             "suite",
@@ -662,10 +681,10 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("sensor_obs_dim/action_dim diverge from package layout")
     if a.control_interval <= 0 or a.sim_dt <= 0.0 or a.control_hz <= 0.0:
         raise ConfigError("control_interval, sim_dt, and control_hz must be positive")
-    if a.control_interval > CONTROL_INTERVAL:
+    if a.control_interval > MAX_PHYSICS_SUBSTEPS:
         raise ConfigError(
             f"control_interval={a.control_interval} exceeds fused max "
-            f"{CONTROL_INTERVAL}"
+            f"{MAX_PHYSICS_SUBSTEPS}"
         )
     control_dt = a.control_interval * a.sim_dt
     expected_dt = 1.0 / a.control_hz
@@ -690,6 +709,18 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("solo_world_fraction must be in [0, 1]")
     if not w.density_bins:
         raise ConfigError("density_bins must be non-empty")
+    if not w.width_scales or any(float(s) <= 0.0 for s in w.width_scales):
+        raise ConfigError("width_scales must be positive")
+    mu_lo, mu_hi = (float(a.mu_range[0]), float(a.mu_range[1]))
+    if mu_lo <= 0.0 or mu_hi < mu_lo:
+        raise ConfigError("mu_range must be positive with lo <= hi")
+    g_lo, g_hi = (float(a.steer_gain_range[0]), float(a.steer_gain_range[1]))
+    if g_lo <= 0.0 or g_hi < g_lo:
+        raise ConfigError("steer_gain_range must be positive with lo <= hi")
+    d_lo = int(a.command_delay_substeps_range[0])
+    d_hi = int(a.command_delay_substeps_range[1])
+    if d_lo < 0 or d_hi < d_lo:
+        raise ConfigError("command_delay_substeps_range must be >= 0 with lo <= hi")
     if w.static_opponents_per_world < 0:
         raise ConfigError("static_opponents_per_world must be non-negative")
     if w.static_opponents_per_world >= w.max_agents_per_world:
@@ -706,6 +737,14 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
     rc = cfg.reward_conditioning
     if rc.x_drive_a < 1.0 or rc.x_accel_a < 1.0:
         raise ConfigError("reward conditioning X(a) scale factors must be >= 1")
+    if not (0.0 < rc.vmax_scale_min <= 1.0 <= rc.vmax_scale_max):
+        raise ConfigError(
+            "vmax_scale_min must be in (0, 1] and vmax_scale_max must be >= 1"
+        )
+    if p.caps_spatial_coef < 0.0 or p.caps_spatial_std < 0.0:
+        raise ConfigError("ppo caps_spatial_coef/std must be non-negative")
+    if p.caps_temporal_coef < 0.0:
+        raise ConfigError("ppo.caps_temporal_coef must be non-negative")
 
     if p.rollout_length <= 0 or p.num_epochs <= 0 or p.minibatch_size <= 0:
         raise ConfigError("ppo rollout_length/num_epochs/minibatch_size must be > 0")

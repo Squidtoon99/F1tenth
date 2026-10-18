@@ -60,10 +60,14 @@ def async_respawn_kernel(
     contact_closing_speed: wp.array(dtype=wp.float32),
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
     sensor_noise_seed: wp.array(dtype=wp.int32),
     lidar_range_noise_std: wp.array(dtype=wp.float32),
     lidar_dropout_prob: wp.array(dtype=wp.float32),
@@ -93,6 +97,16 @@ def async_respawn_kernel(
     spawn_margin: float,
     clearance: float,
     max_rejects: int,
+    width_scale: wp.array(dtype=wp.float32),
+    physics_randomize: int,
+    mu_lo: float,
+    mu_hi: float,
+    steer_gain_lo: float,
+    steer_gain_hi: float,
+    delay_lo: int,
+    delay_hi: int,
+    default_steer_gain: float,
+    default_delay: int,
 ):
     i = wp.tid()
     if reset_mask[i] == 0:
@@ -132,8 +146,9 @@ def async_respawn_kernel(
             segment = a + segment_local
             following = a + ((segment_local + 1) % count)
             alpha = wp.randf(rng)
-            wr = width_right[segment] - spawn_margin
-            wl = width_left[segment] - spawn_margin
+            scale = width_scale[i]
+            wr = width_right[segment] * scale - spawn_margin
+            wl = width_left[segment] * scale - spawn_margin
             if wr < 0.0:
                 wr = 0.0
             if wl < 0.0:
@@ -189,11 +204,29 @@ def async_respawn_kernel(
     vehicle.vx = speed
     store_vehicle(vehicles, i, vehicle)
     vehicles.mass[i] = default_mass
-    vehicles.mu[i] = default_mu
     vehicles.drive_scale[i] = 1.0
     vehicles.steer_scale[i] = 1.0
     vehicles.accel_scale[i] = 1.0
     vehicles.vmax_scale[i] = 1.0
+    if physics_randomize != 0:
+        vehicles.mu[i] = mu_lo + wp.randf(rng) * (mu_hi - mu_lo)
+        vehicles.steer_gain[i] = (
+            steer_gain_lo + wp.randf(rng) * (steer_gain_hi - steer_gain_lo)
+        )
+        span = delay_hi - delay_lo + 1
+        delay = delay_lo + int(wp.randf(rng) * float(span))
+        if delay > delay_hi:
+            delay = delay_hi
+        vehicles.command_delay[i] = delay
+    else:
+        vehicles.mu[i] = default_mu
+        vehicles.steer_gain[i] = default_steer_gain
+        vehicles.command_delay[i] = default_delay
+    vehicles.steer_logical[i] = 0.0
+    vehicles.i_drive[i] = 0.0
+    vehicles.i_brake[i] = 0.0
+    vehicles.i_drive_cmd[i] = 0.0
+    vehicles.i_brake_cmd[i] = 0.0
     w = speed / wheel_radius
     vehicles.omega[i] = wp.vec4f(w, w, w, w)
 
@@ -214,7 +247,10 @@ def async_respawn_kernel(
     frenet_s[i] = fr.s
     prev_s[i] = fr.s
     frenet_ey[i] = fr.ey
-    boundary_distance[i] = fr.boundary_distance
+    scale = width_scale[i]
+    boundary_distance[i] = wp.min(
+        fr.width_left * scale - fr.ey, fr.width_right * scale + fr.ey
+    )
     progress_s[i] = 0.0
     episode_step[i] = 0
     stalled_steps[i] = 0
@@ -230,10 +266,14 @@ def async_respawn_kernel(
     # Proprioception reads these on the first post-respawn observation.
     executed_long_0[i] = 0.0
     executed_long_1[i] = 0.0
+    executed_long_2[i] = 0.0
     executed_steer_0[i] = 0.0
     executed_steer_1[i] = 0.0
     executed_steer_2[i] = 0.0
     executed_steer_3[i] = 0.0
+    executed_steer_4[i] = 0.0
+    executed_steer_5[i] = 0.0
+    executed_steer_6[i] = 0.0
 
     sensor_noise_seed[i] = _mix_seed(global_seed, wid, slot, ep + 99)
     lidar_range_noise_std[i] = wp.randf(rng) * 0.05
@@ -266,6 +306,13 @@ def style_scatter_kernel(
     steer_scale: wp.array(dtype=wp.float32),
     accel_scale: wp.array(dtype=wp.float32),
     vmax_scale: wp.array(dtype=wp.float32),
+    c_f: wp.array(dtype=wp.float32),
+    c_r: wp.array(dtype=wp.float32),
+    lat_stiffness_scale: float,
+    gravity: float,
+    wheelbase: float,
+    lf: float,
+    lr: float,
 ):
     """Sample a private style row for each reset slot from a fixed style pool."""
     i = wp.tid()
@@ -285,3 +332,7 @@ def style_scatter_kernel(
     steer_scale[i] = out_styles[i, _IDX_STEER_SCALE]
     accel_scale[i] = out_styles[i, _IDX_ACCEL_SCALE]
     vmax_scale[i] = out_styles[i, _IDX_VMAX_SCALE]
+    weight = mass[i] * gravity
+    scale = lat_stiffness_scale * weight / wp.max(wheelbase, 1.0e-9)
+    c_f[i] = scale * lr
+    c_r[i] = scale * lf

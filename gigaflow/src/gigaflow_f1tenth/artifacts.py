@@ -47,6 +47,8 @@ def condition_schema(cfg: ExperimentConfig) -> dict[str, Any]:
         "enabled": rc.enabled,
         "x_drive_a": rc.x_drive_a,
         "x_accel_a": rc.x_accel_a,
+        "vmax_scale_min": rc.vmax_scale_min,
+        "vmax_scale_max": rc.vmax_scale_max,
         "omit_comfort": True,
         "omit_goal_stop_line": True,
         "deployment_styles": sorted(DEPLOYMENT_STYLES),

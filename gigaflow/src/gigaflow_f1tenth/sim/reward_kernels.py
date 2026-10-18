@@ -41,6 +41,7 @@ def slot_reward_geom_kernel(
     out_track_length: wp.array(dtype=wp.float32),
     out_half_width: wp.array(dtype=wp.float32),
     out_tangent_yaw: wp.array(dtype=wp.float32),
+    width_scale: wp.array(dtype=wp.float32),
 ):
     i = wp.tid()
     if active[i] == 0:
@@ -61,7 +62,9 @@ def slot_reward_geom_kernel(
     atlas_seg = a + seg
     txy = tangent[atlas_seg]
     out_track_length[i] = track_length_tbl[tid]
-    out_half_width[i] = 0.5 * (width_right[atlas_seg] + width_left[atlas_seg])
+    out_half_width[i] = (
+        0.5 * (width_right[atlas_seg] + width_left[atlas_seg]) * width_scale[i]
+    )
     out_tangent_yaw[i] = wp.atan2(txy[1], txy[0])
 
 

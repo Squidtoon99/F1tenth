@@ -449,6 +449,7 @@ class ConditionedLidarGRUActor(nn.Module):
         reset_mask: torch.Tensor | None = None,
         pre_tanh: torch.Tensor | None = None,
         return_diagnostics: bool = False,
+        return_mean: bool = False,
     ) -> tuple:
         """Recurrent PPO seam: return (log_prob[B,T], entropy[B,T], hidden[B,H])."""
         if sensor_obs.dim() != 3 or sensor_obs.shape[-1] != self._shapes.sensor_obs_dim:
@@ -485,6 +486,9 @@ class ConditionedLidarGRUActor(nn.Module):
             )
         if steps == 0:
             empty = sensor_obs.new_zeros(batch, 0)
+            if return_mean:
+                mean0 = sensor_obs.new_zeros(batch, 0, self._shapes.action_dim)
+                return empty, empty, hidden, mean0
             return empty, empty, hidden
 
         flat_obs = sensor_obs.reshape(batch * steps, self._shapes.sensor_obs_dim)
@@ -509,15 +513,27 @@ class ConditionedLidarGRUActor(nn.Module):
             ent.view(batch, steps),
             h,
         )
-        if not return_diagnostics:
-            return result
-        with torch.amp.autocast(device_type=flat_h.device.type, enabled=False):
-            log_std = torch.clamp(
-                self.log_std_layer(self.net(flat_h.to(dtype=torch.float32))),
-                LOG_STD_MIN,
-                LOG_STD_MAX,
-            )
-        return (*result, log_std.view(batch, steps, self._shapes.action_dim))
+        extras: list[torch.Tensor] = []
+        if return_diagnostics or return_mean:
+            with torch.amp.autocast(device_type=flat_h.device.type, enabled=False):
+                net_out = self.net(flat_h.to(dtype=torch.float32))
+                if return_diagnostics:
+                    extras.append(
+                        torch.clamp(
+                            self.log_std_layer(net_out),
+                            LOG_STD_MIN,
+                            LOG_STD_MAX,
+                        ).view(batch, steps, self._shapes.action_dim)
+                    )
+                if return_mean:
+                    extras.append(
+                        (ACT_LIMIT * torch.tanh(self.mu_layer(net_out))).view(
+                            batch, steps, self._shapes.action_dim
+                        )
+                    )
+        if extras:
+            return (*result, *extras)
+        return result
 
 
 class ConditionedLidarFeedForwardActor(nn.Module):
@@ -644,6 +660,7 @@ class ConditionedLidarFeedForwardActor(nn.Module):
         reset_mask: torch.Tensor | None = None,
         pre_tanh: torch.Tensor | None = None,
         return_diagnostics: bool = False,
+        return_mean: bool = False,
     ) -> tuple:
         """Feed-forward / frame-stack PPO seam (ignores reset_mask / hidden carry)."""
         del reset_mask
@@ -664,6 +681,7 @@ class ConditionedLidarFeedForwardActor(nn.Module):
         logps = []
         ents = []
         log_stds = []
+        means = []
         for t in range(steps):
             step = sensor_obs[:, t]
             if self.frame_stack > 1:
@@ -680,21 +698,28 @@ class ConditionedLidarFeedForwardActor(nn.Module):
             )
             logps.append(logp)
             ents.append(ent)
-            if return_diagnostics:
+            if return_diagnostics or return_mean:
                 with torch.amp.autocast(device_type=trunk.device.type, enabled=False):
-                    log_stds.append(
-                        torch.clamp(
-                            self.log_std_layer(
-                                self.net(trunk.to(dtype=torch.float32))
-                            ),
-                            LOG_STD_MIN,
-                            LOG_STD_MAX,
+                    net_out = self.net(trunk.to(dtype=torch.float32))
+                    if return_diagnostics:
+                        log_stds.append(
+                            torch.clamp(
+                                self.log_std_layer(net_out),
+                                LOG_STD_MIN,
+                                LOG_STD_MAX,
+                            )
                         )
-                    )
+                    if return_mean:
+                        means.append(ACT_LIMIT * torch.tanh(self.mu_layer(net_out)))
         result = torch.stack(logps, dim=1), torch.stack(ents, dim=1), hidden
-        if not return_diagnostics:
-            return result
-        return (*result, torch.stack(log_stds, dim=1))
+        extras: list[torch.Tensor] = []
+        if return_diagnostics:
+            extras.append(torch.stack(log_stds, dim=1))
+        if return_mean:
+            extras.append(torch.stack(means, dim=1))
+        if extras:
+            return (*result, *extras)
+        return result
 
 
 def build_actor(

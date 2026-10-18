@@ -8,9 +8,8 @@ from gigaflow_f1tenth.sim.geometry import project_window, wrapped_delta
 from gigaflow_f1tenth.sim.vehicle import (
     SimParams,
     VehicleBuffers,
-    apply_command,
+    apply_command_and_integrate_env,
     clear_vehicle,
-    integrate_vehicle_substep,
     load_vehicle,
     store_vehicle,
     vehicle_is_finite,
@@ -39,24 +38,18 @@ def physics_control_kernel(
     prev_x[i] = vehicle.x
     prev_y[i] = vehicle.y
     prev_yaw[i] = vehicle.yaw
-    vehicle = apply_command(
+    # Bound is compile-time; live cadence is control_interval (≤ MAX_PHYSICS_SUBSTEPS).
+    substeps = control_interval
+    if substeps > MAX_PHYSICS_SUBSTEPS:
+        substeps = MAX_PHYSICS_SUBSTEPS
+    vehicle = apply_command_and_integrate_env(
         vehicle,
         actions[i],
-        vehicles.steer_scale[i],
-        vehicles.accel_scale[i],
+        vehicles,
+        i,
         params,
+        substeps,
     )
-    mass = vehicles.mass[i]
-    mu = vehicles.mu[i]
-    drive_scale = vehicles.drive_scale[i]
-    vmax_scale = vehicles.vmax_scale[i]
-    # Bound is compile-time; live cadence is control_interval (≤ MAX_PHYSICS_SUBSTEPS).
-    for s in range(MAX_PHYSICS_SUBSTEPS):
-        if s >= control_interval:
-            break
-        vehicle = integrate_vehicle_substep(
-            vehicle, mass, mu, drive_scale, vmax_scale, params
-        )
     store_vehicle(vehicles, i, vehicle)
 
 
@@ -83,6 +76,7 @@ def progress_wall_kernel(
     offsets: wp.array(dtype=wp.int32),
     track_length: wp.array(dtype=wp.float32),
     car_half_width: wp.float32,
+    width_scale: wp.array(dtype=wp.float32),
 ):
     i = wp.tid()
     if active[i] == 0:
@@ -118,10 +112,13 @@ def progress_wall_kernel(
     frenet_ey[i] = fr.ey
     frenet_segment[i] = fr.segment
     progress_s[i] = progress_s[i] + ds
-    boundary_distance[i] = fr.boundary_distance
-    # Footprint wall contact when boundary clearance < half-width.
+    scale = width_scale[i]
+    boundary_distance[i] = wp.min(
+        fr.width_left * scale - fr.ey, fr.width_right * scale + fr.ey
+    )
+    # Footprint wall contact when scaled corridor clearance < half-width.
     wall = wp.uint8(0)
-    if fr.boundary_distance < car_half_width:
+    if boundary_distance[i] < car_half_width:
         wall = wp.uint8(1)
     wall_contact[i] = wall
     # Baseline progress reward (private conditioning owned by later phase).
@@ -224,16 +221,24 @@ def push_command_history_kernel(
     steer: wp.array(dtype=wp.float32),
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
 ):
     i = wp.tid()
     if active[i] == 0:
         return
+    executed_long_2[i] = executed_long_1[i]
     executed_long_1[i] = executed_long_0[i]
     executed_long_0[i] = applied_effort[i]
+    executed_steer_6[i] = executed_steer_5[i]
+    executed_steer_5[i] = executed_steer_4[i]
+    executed_steer_4[i] = executed_steer_3[i]
     executed_steer_3[i] = executed_steer_2[i]
     executed_steer_2[i] = executed_steer_1[i]
     executed_steer_1[i] = executed_steer_0[i]

@@ -29,8 +29,8 @@ def test_cadence_fidelity_selects_passing_interval():
     assert report["ok"]
     assert report["selected"] is not None
     selected = int(report["selected"]["control_interval"])
-    assert selected in {4, 5, 10, 20}
+    assert selected in {2, 4, 5, 10}
     by_iv = {c["control_interval"]: c for c in report["candidates"]}
-    assert by_iv[20]["passed"]
+    assert by_iv[10]["passed"]
     passing = [c["control_interval"] for c in report["candidates"] if c["passed"]]
     assert selected == min(passing)

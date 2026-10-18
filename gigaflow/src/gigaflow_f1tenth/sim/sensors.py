@@ -240,10 +240,14 @@ def _write_proprio(
     sensor: SensorParams,
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
     output: wp.array2d(dtype=wp.float32),
 ):
     output[slot, IMU_START + 0] = vehicle.ax
@@ -252,18 +256,17 @@ def _write_proprio(
     output[slot, IMU_START + 3] = 0.0
     output[slot, IMU_START + 4] = 0.0
     output[slot, IMU_START + 5] = vehicle.yaw_rate
-    omega = vehicles.omega[slot]
-    mean_omega = 0.25 * (omega[0] + omega[1] + omega[2] + omega[3])
-    output[slot, VESC_SPEED] = mean_omega * 0.053
+    # VESC speed is body vx (ADR 0033); current stays scale * applied_effort.
+    output[slot, VESC_SPEED] = vehicle.vx
     output[slot, VESC_CURRENT] = sensor.vesc_current_scale * vehicle.applied_effort
     output[slot, THROTTLE_CURRENT] = executed_long_0[slot]
-    output[slot, THROTTLE_PRED] = executed_long_1[slot]
+    output[slot, THROTTLE_PRED] = executed_long_2[slot]
     output[slot, STEER_T] = executed_steer_0[slot]
-    output[slot, STEER_T1] = executed_steer_1[slot]
-    output[slot, STEER_T2] = executed_steer_2[slot]
-    output[slot, STEER_DELTA0] = executed_steer_0[slot] - executed_steer_1[slot]
-    output[slot, STEER_DELTA1] = executed_steer_1[slot] - executed_steer_2[slot]
-    output[slot, STEER_DELTA2] = executed_steer_2[slot] - executed_steer_3[slot]
+    output[slot, STEER_T1] = executed_steer_2[slot]
+    output[slot, STEER_T2] = executed_steer_4[slot]
+    output[slot, STEER_DELTA0] = executed_steer_0[slot] - executed_steer_2[slot]
+    output[slot, STEER_DELTA1] = executed_steer_2[slot] - executed_steer_4[slot]
+    output[slot, STEER_DELTA2] = executed_steer_4[slot] - executed_steer_6[slot]
 
 
 @wp.func
@@ -361,10 +364,14 @@ def lidar_and_proprio_kernel(
     lidar_sector_width: wp.array(dtype=wp.int32),
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
     edt_distance: wp.array(dtype=wp.float32),
     edt_offsets: wp.array(dtype=wp.int32),
     edt_width: wp.array(dtype=wp.int32),
@@ -438,10 +445,14 @@ def lidar_and_proprio_kernel(
         sensor,
         executed_long_0,
         executed_long_1,
+        executed_long_2,
         executed_steer_0,
         executed_steer_1,
         executed_steer_2,
         executed_steer_3,
+        executed_steer_4,
+        executed_steer_5,
+        executed_steer_6,
         output,
     )
 
@@ -466,10 +477,14 @@ def lidar_and_proprio_kernel_global_scan(
     lidar_sector_width: wp.array(dtype=wp.int32),
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
     edt_distance: wp.array(dtype=wp.float32),
     edt_offsets: wp.array(dtype=wp.int32),
     edt_width: wp.array(dtype=wp.int32),
@@ -579,10 +594,14 @@ def lidar_and_proprio_kernel_global_scan(
         sensor,
         executed_long_0,
         executed_long_1,
+        executed_long_2,
         executed_steer_0,
         executed_steer_1,
         executed_steer_2,
         executed_steer_3,
+        executed_steer_4,
+        executed_steer_5,
+        executed_steer_6,
         output,
     )
 
@@ -607,10 +626,14 @@ def lidar_beam_parallel_kernel(
     lidar_sector_width: wp.array(dtype=wp.int32),
     executed_long_0: wp.array(dtype=wp.float32),
     executed_long_1: wp.array(dtype=wp.float32),
+    executed_long_2: wp.array(dtype=wp.float32),
     executed_steer_0: wp.array(dtype=wp.float32),
     executed_steer_1: wp.array(dtype=wp.float32),
     executed_steer_2: wp.array(dtype=wp.float32),
     executed_steer_3: wp.array(dtype=wp.float32),
+    executed_steer_4: wp.array(dtype=wp.float32),
+    executed_steer_5: wp.array(dtype=wp.float32),
+    executed_steer_6: wp.array(dtype=wp.float32),
     edt_distance: wp.array(dtype=wp.float32),
     edt_offsets: wp.array(dtype=wp.int32),
     edt_width: wp.array(dtype=wp.int32),
@@ -681,10 +704,14 @@ def lidar_beam_parallel_kernel(
             sensor,
             executed_long_0,
             executed_long_1,
+            executed_long_2,
             executed_steer_0,
             executed_steer_1,
             executed_steer_2,
             executed_steer_3,
+            executed_steer_4,
+            executed_steer_5,
+            executed_steer_6,
             output,
         )
 

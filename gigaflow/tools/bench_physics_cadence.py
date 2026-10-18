@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fidelity + throughput gate for physics substep cadences (control_dt=0.1s)."""
+"""Fidelity + throughput gate for physics substep cadences (control_dt=0.05s)."""
 
 from __future__ import annotations
 
@@ -17,15 +17,15 @@ from gigaflow_f1tenth.sim.geometry import make_synthetic_oval_atlas
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Candidates: (control_interval, sim_dt) with product == 0.1 s.
+# Candidates: (control_interval, sim_dt) with product == 0.05 s.
 CANDIDATES = (
-    (20, 0.005),
-    (10, 0.01),
-    (5, 0.02),
-    (4, 0.025),
+    (10, 0.005),
+    (5, 0.01),
+    (4, 0.0125),
+    (2, 0.025),
 )
 
-# Trajectory fidelity vs 20-substep reference (real sim behavior, not synthetic).
+# Trajectory fidelity vs 10-substep reference (real sim behavior, not synthetic).
 MAX_POS_ERR_M = 0.05
 MAX_YAW_ERR_RAD = 0.05
 MAX_SPEED_ERR_MPS = 0.15
@@ -38,7 +38,7 @@ def _cfg_for(interval: int, sim_dt: float, *, device: str, worlds: int, agents: 
         cfg.agents,
         control_interval=int(interval),
         sim_dt=float(sim_dt),
-        control_hz=10.0,
+        control_hz=1.0 / (float(interval) * float(sim_dt)),
         async_respawn=False,
     )
     worlds_c = replace(
@@ -138,7 +138,7 @@ def run_fidelity(device: str, steps: int, worlds: int, agents: int) -> dict:
             and max_prog <= MAX_PROGRESS_ERR_M
         )
         # Reference cadence always passes by definition.
-        if interval == 20:
+        if interval == 10:
             passed = finite
             max_pos = 0.0
             max_yaw = 0.0

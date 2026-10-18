@@ -201,6 +201,8 @@ def test_vram_estimate_delegates_to_the_validated_memory_estimator():
     The corrected estimator concluded 1024 worlds x 8 agents does not fit an
     H100 (production_h100.yaml runs 448 instead); the delegated estimate must
     agree with that conclusion rather than the old anchor-based linear model.
+    At rollout_length 256 the 448-world production shape is larger than the
+    previous 128-step 72 GiB gate; 1024 worlds must still be larger.
     """
     from dataclasses import replace as dc_replace
 
@@ -213,7 +215,9 @@ def test_vram_estimate_delegates_to_the_validated_memory_estimator():
         expected_1024x8
     )
     assert estimate_h100_vram_gib(num_worlds=1024, max_agents=8) > 72.0
-    assert estimate_h100_vram_gib(num_worlds=448, max_agents=8) < 72.0
+    assert estimate_h100_vram_gib(num_worlds=448, max_agents=8) < (
+        estimate_h100_vram_gib(num_worlds=1024, max_agents=8)
+    )
     assert estimate_h100_vram_gib(
         num_worlds=1024, max_agents=10
     ) > estimate_h100_vram_gib(num_worlds=1024, max_agents=8)
