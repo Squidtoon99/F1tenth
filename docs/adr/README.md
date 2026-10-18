@@ -89,3 +89,5 @@ trade-off. Routine work is captured by the PR instead (see
   beams; GRU and PPO kept; no 32-bin pool.
 - [0042](0042-sim-ready-v2-fitted-courtyard-plant.md) — Austin v6 and courtyard
   PPO use the frozen SIM_READY_V2 bag-fit plant; Galaxy/defaults stay unfitted.
+- [0043](0043-delete-tal-reward.md) — Delete the TAL speed-match reward
+  and its config key so a later patch cannot turn it back on.
