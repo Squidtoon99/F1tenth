@@ -433,6 +433,7 @@ class RewardParams:
     rear_end_any_contact: wp.int32
     wall_cost_mode: wp.int32
     wall_proximity_m: wp.float32
+    history_stride: wp.int32
 
 
 @wp.struct
@@ -1479,6 +1480,14 @@ def compute_reward_and_done(
     delta_t = theta_t - theta_prev
     prev_delta = env.prev_steer_delta[env_id]
     out.steering_change = -reward.steering_change * wp.abs(delta_t)
+    stride = reward.history_stride
+    if stride < 1:
+        stride = wp.int32(1)
+    ds0 = theta_t - env.executed_steer_history[env_id, stride]
+    ds1 = (
+        env.executed_steer_history[env_id, stride]
+        - env.executed_steer_history[env_id, 2 * stride]
+    )
     delta_sum = wp.abs(delta_t) + wp.abs(prev_delta)
     m_t = wp.float32(0.0)
     if (
@@ -1487,6 +1496,13 @@ def compute_reward_and_done(
         and delta_t * prev_delta < 0.0
     ):
         m_t = wp.float32(1.0)
+    elif (
+        wp.abs(ds0) > reward.steering_c_d
+        and wp.abs(ds1) > reward.steering_c_d
+        and ds0 * ds1 < 0.0
+    ):
+        m_t = wp.float32(1.0)
+        delta_sum = wp.abs(ds0) + wp.abs(ds1)
     out.steering_history = (
         -reward.steering_history
         * m_t
@@ -1521,7 +1537,7 @@ def compute_reward_and_done(
     if stopped_now and env.episode_step[env_id] > termination.minimum_stopped_step:
         env.stopped_streak[env_id] = env.stopped_streak[env_id] + 1
     else:
-        env.stopped_streak[env_id] = 0
+        env.stopped_streak[env_id] = wp.max(env.stopped_streak[env_id] - 1, 0)
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
     oob_done = boundary_event

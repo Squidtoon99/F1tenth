@@ -8,13 +8,14 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env.sensors import ACTOR_OBS_DIM
-from f1tenth_policy.layout import executed_plant_action
+from f1tenth_policy.layout import LIDAR_DIM, executed_plant_action
 from ppo import (
     PPOTrainer,
     action_reversal_penalty,
     caps_spatial_loss,
     caps_temporal_loss,
     grad_caps_temporal_loss,
+    spatial_caps_observation,
 )
 from qrsac import make_actor
 from qrsac.spinningup.core import GRU_HIDDEN_DIM
@@ -147,6 +148,20 @@ def test_caps_spatial_loss_zero_on_identical_means():
     other = mean.clone()
     other[..., 0] = 2.0
     assert float(caps_spatial_loss(mean, other)) == pytest.approx(1.0)
+
+
+def test_spatial_caps_observation_perturbs_lidar_only():
+    torch.manual_seed(0)
+    actor_seq = torch.zeros(2, 3, ACTOR_OBS_DIM)
+    actor_seq[..., LIDAR_DIM:] = torch.linspace(
+        0.1, 1.6, ACTOR_OBS_DIM - LIDAR_DIM
+    )
+    proprio = actor_seq[..., LIDAR_DIM:].clone()
+    perturbed = spatial_caps_observation(actor_seq, 0.05, LIDAR_DIM)
+    assert perturbed.shape == actor_seq.shape
+    assert torch.equal(perturbed[..., LIDAR_DIM:], proprio)
+    assert not torch.equal(perturbed[..., :LIDAR_DIM], actor_seq[..., :LIDAR_DIM])
+    assert torch.equal(actor_seq[..., :LIDAR_DIM], torch.zeros(2, 3, LIDAR_DIM))
 
 
 def test_grad_caps_coef_logs_positive_loss():

@@ -83,3 +83,23 @@ def test_stationary_startup_grace_precedes_not_moving_window(warp_runtime):
         assert fired
     finally:
         env.close()
+
+
+def test_not_moving_streak_decays_instead_of_resetting(warp_runtime):
+    del warp_runtime
+    env = _make_env(1)
+    try:
+        env.reset(seed=8)
+        state = env.read_state()
+        pose = state["base_pos"][0, :2].clone()
+        quat = state["base_quat"][0]
+        yaw = 2.0 * torch.atan2(quat[3], quat[0])
+        env.reset_to(pose, yaw, 3.0, seed=8)
+        env._env.tensor["stopped_streak"][0] = 20
+        throttle = torch.ones(1, 2, device=env.device)
+        throttle[:, 1] = 0.0
+        _, _, _, extras = env.step(throttle, n_steps=env.control_interval)
+        assert not bool(extras["termination"]["not_moving"][0])
+        assert int(env._env.tensor["stopped_streak"][0]) == 19
+    finally:
+        env.close()

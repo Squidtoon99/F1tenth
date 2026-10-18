@@ -722,6 +722,7 @@ class WarpF1tenthEnv:
                 f"got {proximity!r}"
             )
         params.wall_proximity_m = proximity
+        params.history_stride = max(1, int(self._sim_params.history_stride))
         return params
 
     def _build_termination_params(self):

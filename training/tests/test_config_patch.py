@@ -266,7 +266,9 @@ def test_v6_overlays_change_one_key():
         ],
         "austin_e2e_ppo_baseline_v6_grad_caps.json": ["ppo.grad_caps_coef"],
         "austin_e2e_ppo_baseline_v6_caps_spatial.json": [
-            "ppo.caps_spatial_coef"
+            "ppo.caps_coef",
+            "ppo.caps_spatial_coef",
+            "ppo.entropy_coef_horizon_transitions",
         ],
     }
     for name, keys in expected.items():
@@ -284,6 +286,8 @@ def test_v6_overlays_change_one_key():
         (config_dir / "austin_e2e_ppo_baseline_v6_caps_spatial.json").read_text()
     )
     assert spatial["ppo"]["caps_spatial_coef"] == pytest.approx(0.1)
+    assert spatial["ppo"]["caps_coef"] == pytest.approx(0.02)
+    assert spatial["ppo"]["entropy_coef_horizon_transitions"] == 96_000_000
 
 
 def test_build_config_rejects_invalid_patch():

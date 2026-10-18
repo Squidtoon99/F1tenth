@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from config import DEFAULT_CONFIG  # noqa: E402
+from config import DEFAULT_CONFIG, history_stride_for_dt  # noqa: E402
 from f1tenth_env import F1tenthEnv  # noqa: E402
 
 _C_S = 182.883569
@@ -40,26 +40,41 @@ def _lee_terms_from_thetas(
     c_s: float = _C_S,
     c_o: float = _C_O,
     c_d: float = _C_D,
+    history_stride: int = 2,
 ) -> list[tuple[float, float]]:
     """Lee steering terms from a realized absolute wheel-angle sequence (rad)."""
     prev_theta = 0.0
     prev_delta = 0.0
+    stride = max(1, int(history_stride))
+    hist = [0.0] * (2 * stride + 1)
     out: list[tuple[float, float]] = []
     for theta in thetas:
-        delta = float(theta) - prev_theta
+        theta = float(theta)
+        hist = [theta, *hist[:-1]]
+        delta = theta - prev_theta
         r_s = -lambda_s * abs(delta)
-        m_t = (
+        adjacent = (
             abs(delta) > c_d
             and abs(prev_delta) > c_d
             and delta * prev_delta < 0.0
         )
-        if m_t:
+        ds0 = hist[0] - hist[stride]
+        ds1 = hist[stride] - hist[2 * stride]
+        strided = (
+            abs(ds0) > c_d
+            and abs(ds1) > c_d
+            and ds0 * ds1 < 0.0
+        )
+        if adjacent:
             delta_sum = abs(delta) + abs(prev_delta)
+            r_h = -lambda_h * (1.0 + math.exp(-c_s * (delta_sum - c_o)))
+        elif strided:
+            delta_sum = abs(ds0) + abs(ds1)
             r_h = -lambda_h * (1.0 + math.exp(-c_s * (delta_sum - c_o)))
         else:
             r_h = 0.0
         out.append((r_s, r_h))
-        prev_theta = float(theta)
+        prev_theta = theta
         prev_delta = delta
     return out
 
@@ -126,7 +141,7 @@ def _step_steers(env: F1tenthEnv, steers: list[float]) -> list[tuple[float, floa
     return emitted
 
 
-def _cadence_lee_kwargs(control_dt: float) -> dict[str, float]:
+def _cadence_lee_kwargs(control_dt: float) -> dict:
     cadence = float(control_dt) / 0.1
     return {
         "lambda_s": _LAMBDA_S,
@@ -134,6 +149,7 @@ def _cadence_lee_kwargs(control_dt: float) -> dict[str, float]:
         "c_s": _C_S / cadence,
         "c_o": _C_O * cadence,
         "c_d": _C_D * cadence,
+        "history_stride": history_stride_for_dt(control_dt),
     }
 
 
@@ -207,8 +223,37 @@ def test_delta_lee_reversal_activates_history(warp_runtime):
         _assert_terms_match(emitted, expected)
         assert emitted[0][1] == pytest.approx(0.0)
         assert emitted[2][1] < 0.0
-        # Same-sign continuation after the reversal does not re-trigger history.
-        assert emitted[3][1] == pytest.approx(0.0)
+        assert emitted[3][1] < 0.0
+    finally:
+        env.close()
+
+
+def test_lee_helper_strided_reversal_on_seven_step_slalom():
+    actions = [1.0] * 7 + [-1.0] * 7
+    terms = _lee_terms_from_thetas(
+        _realized_thetas(actions), **_cadence_lee_kwargs(0.05)
+    )
+    history_hits = [index for index, (_, history) in enumerate(terms) if history < 0.0]
+    assert 7 in history_hits
+    assert any(index > 7 for index in history_hits)
+
+
+def test_delta_lee_strided_history_catches_seven_step_slalom(warp_runtime):
+    cfg = _build_cfg()
+    env = _make_env(cfg)
+    try:
+        env.reset(seed=11)
+        actions = [1.0] * 7 + [-1.0] * 7
+        emitted = _step_steers(env, actions)
+        expected = _lee_terms_from_thetas(
+            _realized_thetas(actions), **_cadence_lee_kwargs(env.control_dt)
+        )
+        _assert_terms_match(emitted, expected)
+        history_hits = [
+            index for index, (_, history) in enumerate(emitted) if history < 0.0
+        ]
+        assert 7 in history_hits
+        assert any(index > 7 for index in history_hits)
     finally:
         env.close()
 
