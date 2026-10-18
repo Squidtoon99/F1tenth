@@ -134,6 +134,8 @@ def test_dry_run_prints_fields_and_does_not_open_a_socket(tmp_path, monkeypatch,
     assert "running 6/8" in out
     assert "summary: dry run" in out
     assert "full lap: median 12.4s" in out
+    assert "kind: release" in out
+    assert "checkpoint: attach policy_1200000.pt" in out
     assert "overlay_follow.mp4" in out
     assert "reward.png" in out
     assert "laps.png" in out
@@ -160,25 +162,118 @@ def test_dry_run_exits_without_webhook(tmp_path, monkeypatch, capsys):
     assert "dry-run: not posting" in capsys.readouterr().out
 
 
-def test_refuses_oversize_before_posting(tmp_path, monkeypatch):
-    checkpoint, run_dir = _fixture(tmp_path)
-    monkeypatch.setattr(announce, "MAX_ATTACHMENT_BYTES", 10)
+def test_checkpoint_under_limit_is_attachment(tmp_path):
+    path = tmp_path / "policy_1.pt"
+    path.write_bytes(b"small")
 
     def boom(*_args, **_kwargs):
-        raise AssertionError("posted")
+        raise AssertionError("s3 upload called")
 
+    delivery = announce.deliver_checkpoint(
+        path, "policy_1.pt", limit=1024, upload=boom
+    )
+    assert delivery["mode"] == "attach"
+    assert delivery["filename"] == "policy_1.pt"
+    assert delivery["url"] is None
+    assert delivery["key"] is None
+    files = announce.named_files(
+        {
+            "video": None,
+            "reward": None,
+            "laps": None,
+            "policy_name": "policy_1.pt",
+            "checkpoint": path,
+        },
+        attach_checkpoint=delivery["mode"] == "attach",
+    )
+    assert files == [("policy_1.pt", path)]
+
+
+def test_checkpoint_over_limit_is_s3_upload(tmp_path):
+    path = tmp_path / "policy_1.pt"
+    path.write_bytes(b"too-big")
+    seen = {}
+
+    def fake_upload(uploaded, key):
+        seen["path"] = uploaded
+        seen["key"] = key
+        return announce.s3_object_url(key)
+
+    delivery = announce.deliver_checkpoint(
+        path,
+        "policy_1.pt",
+        run_id="stdmax-v6",
+        limit=2,
+        upload=fake_upload,
+    )
+    assert delivery["mode"] == "s3"
+    assert seen["path"] == path
+    assert seen["key"] == "rl/model-release/stdmax-v6/policy_1.pt"
+    assert delivery["url"] == (
+        "https://t3.storageapi.dev/storage-o9g473recrgmg1p06/"
+        "rl/model-release/stdmax-v6/policy_1.pt"
+    )
+    files = announce.named_files(
+        {
+            "video": None,
+            "reward": None,
+            "laps": None,
+            "policy_name": "policy_1.pt",
+            "checkpoint": path,
+        },
+        attach_checkpoint=delivery["mode"] == "attach",
+    )
+    assert files == []
+    embed = announce.build_embed(
+        {
+            "track": "t",
+            "training_time": "1s",
+            "throughput": "1 transitions/s",
+            "transitions": "1",
+            "policy": "v4, obs 1097",
+            "eval": "running 0/8 at 60 s",
+            "wandb": "not linked",
+            "kind": "loss",
+            "checkpoint_ref": delivery["url"],
+        },
+        "collapsed",
+        None,
+    )
+    values = {field["name"]: field["value"] for field in embed["fields"]}
+    assert embed["title"] == "F1TENTH policy loss"
+    assert values["Checkpoint"] == delivery["url"]
+
+
+def test_dry_run_oversize_checkpoint_does_not_call_s3_or_discord(
+    tmp_path, monkeypatch, capsys
+):
+    checkpoint, run_dir = _fixture(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("network called")
+
+    monkeypatch.setattr(announce, "MAX_ATTACHMENT_BYTES", 1)
+    monkeypatch.setattr(announce, "put_s3_object", boom)
     monkeypatch.setattr(announce.urllib.request, "urlopen", boom)
-    with pytest.raises(SystemExit, match="limit"):
-        announce.main(
-            [
-                "--checkpoint",
-                str(checkpoint),
-                "--run-dir",
-                str(run_dir),
-                "--summary",
-                "too big",
-            ]
-        )
+    announce.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--run-dir",
+            str(run_dir),
+            "--summary",
+            "too big",
+            "--kind",
+            "loss",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "kind: loss" in out
+    assert "checkpoint: s3 https://t3.storageapi.dev/storage-o9g473recrgmg1p06/" in out
+    assert "rl/model-release/stdmax-v6/policy_1200000.pt" in out
+    assert "dry-run: not posting" in out
+    assert "policy_1200000.pt" not in out.split("attachments:")[1]
 
 
 def test_refuses_gpu(tmp_path):
