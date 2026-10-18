@@ -1,0 +1,14 @@
+.env
+web/node_modules/
+web/.next/
+api/.venv/
+api/__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.pyc
+
+# Repo root ignores training output dirs named runs/ and wandb/.
+!web/app/runs/
+!web/app/runs/**
+!web/app/wandb/
+!web/app/wandb/**
