@@ -92,3 +92,5 @@ trade-off. Routine work is captured by the PR instead (see
 - [0042](0042-drop-fixed-speed-target.md) — Drop TAL and the 3.5 m/s horizon
   constant; freeze per-track episode seconds; start speeds are per-track
   (courtyard rest, Austin 2 m/s flying / 0–5 reset).
+- [0043](0043-delete-tal-reward.md) — Delete the TAL speed-match reward
+  and its config key so a later patch cannot turn it back on.

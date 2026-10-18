@@ -1683,17 +1683,6 @@ def validate_config_patch(
                 f"{'a mapping' if ref_is_map else 'a scalar'}, got "
                 f"{'a mapping' if val_is_map else 'a scalar'}"
             )
-        if path == "reward.reward_scales" and key == "tal":
-            if (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(float(value))
-                or float(value) != 0.0
-            ):
-                raise ValueError(
-                    "reward.reward_scales.tal must be 0; TAL including the "
-                    "constant speed target was removed"
-                )
         if ref_is_map:
             validate_config_patch(value, ref_val, loc)
 

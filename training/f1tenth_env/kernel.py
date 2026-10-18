@@ -556,7 +556,6 @@ class EnvBuffers:
     reward_passing: wp.array(dtype=wp.float32)
     reward_collision: wp.array(dtype=wp.float32)
     reward_rear_end: wp.array(dtype=wp.float32)
-    reward_tal: wp.array(dtype=wp.float32)
     done: wp.array(dtype=wp.bool)
     done_flags: wp.array(dtype=wp.int32)
     term_timeout: wp.array(dtype=wp.bool)
@@ -675,7 +674,6 @@ class RewardResult:
     passing: wp.float32
     collision: wp.float32
     rear_end: wp.float32
-    tal: wp.float32
     done: wp.bool
     done_flags: wp.int32
 
@@ -1476,7 +1474,6 @@ def compute_reward_and_done(
     if first_wall_contact:
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
-    out.tal = 0.0
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
     delta_t = theta_t - theta_prev
@@ -1554,7 +1551,6 @@ def compute_reward_and_done(
         + out.passing
         + out.collision
         + out.rear_end
-        + out.tal
     )
 
     out.done = (
@@ -1809,7 +1805,6 @@ def store_reward(
     env.reward_passing[env_id] = result.passing
     env.reward_collision[env_id] = result.collision
     env.reward_rear_end[env_id] = result.rear_end
-    env.reward_tal[env_id] = result.tal
     env.done[env_id] = result.done
     env.done_flags[env_id] = result.done_flags
     env.term_timeout[env_id] = (result.done_flags & 1) != 0

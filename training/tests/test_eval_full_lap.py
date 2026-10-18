@@ -160,7 +160,6 @@ def test_spawn_speed_standing_vs_flying():
 def test_extra_scripted_overtake_spec_matches_follow_video():
     flying = copy.deepcopy(DEFAULT_CONFIG)
     flying["env"]["opponent_strategy"] = None
-    flying["reward"]["reward_scales"]["tal"] = 0.0
     standing = copy.deepcopy(flying)
     standing["env"]["reset_stationary_probability"] = 1.0
     resolved = [
@@ -187,7 +186,6 @@ def test_extra_disturbance_and_generalization_specs():
     flying["env"]["opponent_strategy"] = None
     flying["env"]["steer_gain"] = 1.10714
     flying["env"]["warp_sim"]["steer_gain"] = 1.10714
-    flying["reward"]["reward_scales"]["tal"] = 0.0
     standing = copy.deepcopy(flying)
     standing["env"]["reset_stationary_probability"] = 1.0
     resolved = [
