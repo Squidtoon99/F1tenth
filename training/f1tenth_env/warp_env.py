@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from . import runtime as rt
 from .kernel import (
     ACTION_HISTORY,
     LONG_HISTORY,
+    MAX_OPPONENTS,
     STEER_HISTORY,
     OBS_DIM,
     CorridorDistanceField,
@@ -48,72 +50,85 @@ from .sensors import (
     sensor_actor_stage_kernel,
 )
 from .utils import (
+    SPAWN_SCENE_IDS,
+    apply_gigaflow_affine_variant,
     build_corridor_distance_field,
     build_warp_track_data,
+    hardest_corner_s,
+    load_gigaflow_track_arrays,
     load_occupancy_distance_field,
     load_track_state,
+    sample_gigaflow_layout,
+    scripted_hold_speed_mps,
 )
 
 
 class _VehicleStorage:
-    def __init__(self, num_envs: int, device: torch.device, params: VehicleParams):
+    def __init__(
+        self,
+        num_envs: int,
+        device: torch.device,
+        params: VehicleParams,
+        buffer_count: int | None = None,
+    ):
         def zeros(*shape):
             return torch.zeros(*shape, device=device, dtype=torch.float32)
 
+        n_buf = int(buffer_count or num_envs)
         c_f, c_r = params.axle_stiffness()
-        self.tensor = {
-            "x": zeros(num_envs),
-            "y": zeros(num_envs),
-            "yaw": zeros(num_envs),
-            "vx": zeros(num_envs),
-            "vy": zeros(num_envs),
-            "yaw_rate": zeros(num_envs),
-            "steer": zeros(num_envs),
-            "steer_logical": zeros(num_envs),
-            "i_drive": zeros(num_envs),
-            "i_brake": zeros(num_envs),
-            "i_drive_cmd": zeros(num_envs),
-            "i_brake_cmd": zeros(num_envs),
-            "applied_effort": zeros(num_envs),
-            "ax": zeros(num_envs),
-            "ay": zeros(num_envs),
-            "imu_gz": zeros(num_envs),
-            "omega": zeros(num_envs, 4),
-            "slip_ratio": zeros(num_envs, 4),
-            "slip_angle": zeros(num_envs, 4),
+        full = {
+            "x": zeros(n_buf),
+            "y": zeros(n_buf),
+            "yaw": zeros(n_buf),
+            "vx": zeros(n_buf),
+            "vy": zeros(n_buf),
+            "yaw_rate": zeros(n_buf),
+            "steer": zeros(n_buf),
+            "steer_logical": zeros(n_buf),
+            "i_drive": zeros(n_buf),
+            "i_brake": zeros(n_buf),
+            "i_drive_cmd": zeros(n_buf),
+            "i_brake_cmd": zeros(n_buf),
+            "applied_effort": zeros(n_buf),
+            "ax": zeros(n_buf),
+            "ay": zeros(n_buf),
+            "imu_gz": zeros(n_buf),
+            "omega": zeros(n_buf, 4),
+            "slip_ratio": zeros(n_buf, 4),
+            "slip_angle": zeros(n_buf, 4),
             "load_ratio": torch.ones(
-                num_envs, 4, device=device, dtype=torch.float32
+                n_buf, 4, device=device, dtype=torch.float32
             ),
             "mass": torch.full(
-                (num_envs,), params.mass, device=device, dtype=torch.float32
+                (n_buf,), params.mass, device=device, dtype=torch.float32
             ),
             "mu": torch.full(
-                (num_envs,), params.tire_mu, device=device, dtype=torch.float32
+                (n_buf,), params.tire_mu, device=device, dtype=torch.float32
             ),
             "drive_scale": torch.ones(
-                num_envs, device=device, dtype=torch.float32
+                n_buf, device=device, dtype=torch.float32
             ),
-            "steer_bias": zeros(num_envs),
+            "steer_bias": zeros(n_buf),
             "izz": torch.full(
-                (num_envs,), params.izz, device=device, dtype=torch.float32
+                (n_buf,), params.izz, device=device, dtype=torch.float32
             ),
             "c_f": torch.full(
-                (num_envs,), c_f, device=device, dtype=torch.float32
+                (n_buf,), c_f, device=device, dtype=torch.float32
             ),
             "c_r": torch.full(
-                (num_envs,), c_r, device=device, dtype=torch.float32
+                (n_buf,), c_r, device=device, dtype=torch.float32
             ),
             "steer_lag": torch.full(
-                (num_envs,), params.t_delta, device=device, dtype=torch.float32
+                (n_buf,), params.t_delta, device=device, dtype=torch.float32
             ),
             "steer_rate": torch.full(
-                (num_envs,),
+                (n_buf,),
                 STEER_RATE_UNBOUNDED,
                 device=device,
                 dtype=torch.float32,
             ),
             "steer_gain": torch.full(
-                (num_envs,),
+                (n_buf,),
                 params.steer_gain,
                 device=device,
                 dtype=torch.float32,
@@ -126,13 +141,17 @@ class _VehicleStorage:
             "slip_angle",
             "load_ratio",
         }
-        for name, tensor in self.tensor.items():
+        for name, tensor in full.items():
             if name in vector_fields:
                 setattr(
                     self.buffers, name, wp.from_torch(tensor, dtype=wp.vec4f)
                 )
             else:
                 setattr(self.buffers, name, wp.from_torch(tensor))
+        if n_buf == num_envs:
+            self.tensor = full
+        else:
+            self.tensor = {name: tensor[:num_envs] for name, tensor in full.items()}
 
 
 class _EnvironmentStorage:
@@ -147,7 +166,6 @@ class _EnvironmentStorage:
         "reward_passing",
         "reward_collision",
         "reward_rear_end",
-        "reward_tal",
         "prev_s",
         "prev_opponent_s",
         "prev_steer_delta",
@@ -205,6 +223,7 @@ class _EnvironmentStorage:
         "action_latency",
         "observation_latency",
         "opponent_mode",
+        "opponent_count",
         "contact",
         "valid",
     )
@@ -274,6 +293,22 @@ class _EnvironmentStorage:
         self.tensor["terminal_raw_obs"] = torch.zeros(
             num_envs, OBS_DIM, device=device, dtype=torch.float32
         )
+        slot_n = num_envs * MAX_OPPONENTS
+        self.tensor["slot_target_speed"] = torch.zeros(
+            slot_n, device=device, dtype=torch.float32
+        )
+        self.tensor["slot_offset"] = torch.zeros(
+            slot_n, device=device, dtype=torch.float32
+        )
+        self.tensor["slot_mode"] = torch.zeros(
+            slot_n, device=device, dtype=torch.int32
+        )
+        self.tensor["slot_class"] = torch.full(
+            (slot_n,), -1, device=device, dtype=torch.int32
+        )
+        self.tensor["slot_segment"] = torch.zeros(
+            slot_n, device=device, dtype=torch.int32
+        )
 
         self.buffers = EnvBuffers()
         vector_fields = {
@@ -317,6 +352,11 @@ class _EnvironmentStorage:
             "contact",
             "contact_closing_speed",
             "valid",
+            "opponent_count",
+            "slot_target_speed",
+            "slot_offset",
+            "slot_mode",
+            "slot_segment",
         ):
             tensor = self.tensor[name]
             if name in {
@@ -424,43 +464,56 @@ class WarpF1tenthEnv:
         )
 
         workspace = str(Path(__file__).resolve().parents[1])
-        self.track_state = load_track_state(
-            env_cfg.get("track"), workspace, self.device
+        self._workspace = workspace
+        self._gigaflow_sampling = bool(
+            env_cfg.get("gigaflow_track_sampling", False)
         )
-        self.centerline = self.track_state["centerline"]
-        self.w_tr_left = self.track_state["w_tr_left"]
-        self.w_tr_right = self.track_state["w_tr_right"]
-        self._track_host = build_warp_track_data(self.track_state)
-        self.track_length = self._track_host.length
-        self._track = _TrackStorage(self._track_host, self.wp_device)
+        self.gigaflow_track = None
+        self.gigaflow_variant = None
+        self._gigaflow_reset_count = 0
         self.sensor_cfg = self._resolve_sensor_cfg()
-        lidar_map_yaml = self.sensor_cfg.get("lidar_map_yaml")
-        if lidar_map_yaml:
-            lidar_map_yaml = Path(lidar_map_yaml)
-            if not lidar_map_yaml.is_absolute():
-                lidar_map_yaml = Path(workspace) / lidar_map_yaml
-            self._corridor_host = load_occupancy_distance_field(
-                lidar_map_yaml,
-                expected_sha256=self.sensor_cfg.get("lidar_map_sha256"),
-                variant_count=int(
-                    self.sensor_cfg.get("lidar_map_variant_count", 1)
-                ),
-                max_wall_offset_m=float(
-                    self.sensor_cfg.get("lidar_wall_offset_max_m", 0.0)
-                ),
-                variant_seed=int(
-                    self.sensor_cfg.get("lidar_map_variant_seed", 0)
-                ),
+        if self._gigaflow_sampling:
+            track_name, variant_id = sample_gigaflow_layout(
+                np.random.default_rng(0)
             )
+            self._apply_gigaflow_layout(track_name, variant_id)
         else:
-            self._corridor_host = build_corridor_distance_field(
-                self.centerline,
-                self.w_tr_left,
-                self.w_tr_right,
+            self.track_state = load_track_state(
+                env_cfg.get("track"), workspace, self.device
             )
-        self._corridor = _CorridorDistanceStorage(
-            self._corridor_host, self.wp_device
-        )
+            self.centerline = self.track_state["centerline"]
+            self.w_tr_left = self.track_state["w_tr_left"]
+            self.w_tr_right = self.track_state["w_tr_right"]
+            self._track_host = build_warp_track_data(self.track_state)
+            self.track_length = self._track_host.length
+            self._track = _TrackStorage(self._track_host, self.wp_device)
+            lidar_map_yaml = self.sensor_cfg.get("lidar_map_yaml")
+            if lidar_map_yaml:
+                lidar_map_yaml = Path(lidar_map_yaml)
+                if not lidar_map_yaml.is_absolute():
+                    lidar_map_yaml = Path(workspace) / lidar_map_yaml
+                self._corridor_host = load_occupancy_distance_field(
+                    lidar_map_yaml,
+                    expected_sha256=self.sensor_cfg.get("lidar_map_sha256"),
+                    variant_count=int(
+                        self.sensor_cfg.get("lidar_map_variant_count", 1)
+                    ),
+                    max_wall_offset_m=float(
+                        self.sensor_cfg.get("lidar_wall_offset_max_m", 0.0)
+                    ),
+                    variant_seed=int(
+                        self.sensor_cfg.get("lidar_map_variant_seed", 0)
+                    ),
+                )
+            else:
+                self._corridor_host = build_corridor_distance_field(
+                    self.centerline,
+                    self.w_tr_left,
+                    self.w_tr_right,
+                )
+            self._corridor = _CorridorDistanceStorage(
+                self._corridor_host, self.wp_device
+            )
         self._validate_native_actor_beams()
         self._sensor_params = self._build_sensor_params()
         self.num_lidar_beams = int(self._sensor_params.num_beams)
@@ -485,7 +538,10 @@ class WarpF1tenthEnv:
             self.num_envs, self.device, self.vehicle_params
         )
         self._opponent = _VehicleStorage(
-            self.num_envs, self.device, self.vehicle_params
+            self.num_envs,
+            self.device,
+            self.vehicle_params,
+            buffer_count=self.num_envs * MAX_OPPONENTS,
         )
         self._env = _EnvironmentStorage(self.num_envs, self.device)
         self._obs_params = self._build_obs_params()
@@ -590,6 +646,69 @@ class WarpF1tenthEnv:
 
         self.extras = self._build_extras()
         self.reset()
+
+    def _apply_gigaflow_layout(self, track_name: str, variant_id: str) -> None:
+        centerline, w_left, w_right = load_gigaflow_track_arrays(
+            track_name, self._workspace
+        )
+        centerline, w_left, w_right = apply_gigaflow_affine_variant(
+            centerline, w_left, w_right, variant_id
+        )
+        self.gigaflow_track = track_name
+        self.gigaflow_variant = variant_id
+        logging.info("gigaflow track=%s variant=%s", track_name, variant_id)
+        self.track_state = {
+            "centerline": centerline,
+            "w_tr_left": w_left,
+            "w_tr_right": w_right,
+            "w_tr_left_torch": torch.as_tensor(
+                w_left, device=self.device, dtype=rt.tc_float
+            ),
+            "w_tr_right_torch": torch.as_tensor(
+                w_right, device=self.device, dtype=rt.tc_float
+            ),
+            "track_geom_cache": {},
+        }
+        self.centerline = centerline
+        self.w_tr_left = w_left
+        self.w_tr_right = w_right
+        self._track_host = build_warp_track_data(self.track_state)
+        self.track_length = self._track_host.length
+        self._track = _TrackStorage(self._track_host, self.wp_device)
+        self._corridor_host = build_corridor_distance_field(
+            centerline, w_left, w_right
+        )
+        self._corridor = _CorridorDistanceStorage(
+            self._corridor_host, self.wp_device
+        )
+        if hasattr(self, "_reset_params"):
+            self._sync_layout_reset_params()
+
+    def _sync_layout_reset_params(self) -> None:
+        params = self._reset_params
+        corner = self.env_cfg.get("corner_s_m")
+        if corner is None:
+            corner = hardest_corner_s(self.centerline)
+        params.corner_s = float(corner)
+        hold = self.env_cfg.get("scripted_hold_speed_mps")
+        if hold is None:
+            hold = scripted_hold_speed_mps(self.centerline)
+        params.scripted_hold_speed = float(hold)
+
+    def _maybe_resample_gigaflow_track(self, seed: int | None, full_reset: bool) -> None:
+        if not self._gigaflow_sampling:
+            return
+        resample = full_reset and (
+            self._gigaflow_reset_count > 0 or seed is not None
+        )
+        if resample:
+            rng_seed = int(seed) if seed is not None else self._gigaflow_reset_count
+            track_name, variant_id = sample_gigaflow_layout(
+                np.random.default_rng(rng_seed)
+            )
+            self._apply_gigaflow_layout(track_name, variant_id)
+        if full_reset:
+            self._gigaflow_reset_count += 1
 
     def _resolve_sensor_cfg(self):
         override = self.env_cfg.get("sensor")
@@ -719,14 +838,6 @@ class WarpF1tenthEnv:
             "continuous": 1,
             "continuous_quadratic": 2,
         }[wall_cost_mode]
-        params.tal_scale = float(scales.get("tal", 0.0))
-        params.tal_v_ref = float(
-            self.env_cfg.get("expected_lap_speed_mps", 3.5)
-        )
-        params.tal_kp_lateral = float(self.env_cfg.get("opponent_kp_ey", 1.0))
-        params.tal_kp_heading = float(
-            self.env_cfg.get("opponent_kh_heading", 1.0)
-        )
         proximity = float(self.reward_cfg.get("wall_proximity_m", 0.0))
         if not math.isfinite(proximity) or proximity < 0.0:
             raise ValueError(
@@ -932,6 +1043,34 @@ class WarpF1tenthEnv:
             minimum, maximum = interval(key, (0.0, 0.0))
             setattr(params, f"{field}_min", minimum)
             setattr(params, f"{field}_max", maximum)
+        if self.has_opponent:
+            raw_opponents = self.env_cfg.get("num_opponents")
+            if raw_opponents is None:
+                n_opp = 1
+            else:
+                n_opp = int(raw_opponents)
+            if n_opp <= 0:
+                n_opp = 1
+        else:
+            n_opp = 0
+        params.num_opponents = max(0, min(MAX_OPPONENTS, n_opp))
+        scene = str(self.env_cfg.get("spawn_scene", "nearby")).lower()
+        if scene not in SPAWN_SCENE_IDS:
+            raise ValueError(f"unknown spawn_scene {scene!r}")
+        params.spawn_scene = int(SPAWN_SCENE_IDS[scene])
+        corner = self.env_cfg.get("corner_s_m")
+        if corner is None:
+            corner = hardest_corner_s(self.centerline)
+        params.corner_s = float(corner)
+        params.ego_pace = float(self.env_cfg.get("ego_pace_mps", 0.0))
+        hold = self.env_cfg.get("scripted_hold_speed_mps")
+        if hold is None:
+            hold = scripted_hold_speed_mps(self.centerline)
+        params.scripted_hold_speed = float(hold)
+        params.num_envs = int(self.num_envs)
+        params.use_speed_classes = int(
+            bool(self.env_cfg.get("use_speed_classes", False))
+        )
         return params
 
     def _build_opponent_params(self):
@@ -1001,7 +1140,6 @@ class WarpF1tenthEnv:
                     "passing": tensors["reward_passing"],
                     "collision": tensors["reward_collision"],
                     "rear_end": tensors["reward_rear_end"],
-                    "tal": tensors["reward_tal"],
                 },
             },
             "termination": {
@@ -1062,6 +1200,25 @@ class WarpF1tenthEnv:
                 "dr/vesc_speed_noise_std": tensors["vesc_speed_noise_std"],
                 "dr/vesc_current_noise_std": tensors["vesc_current_noise_std"],
             },
+            "gigaflow_track": self.gigaflow_track,
+            "gigaflow_variant": self.gigaflow_variant,
+            "scenario_id": torch.full(
+                (self.num_envs,),
+                int(self.env_cfg.get("scenario_id", -1)),
+                device=self.device,
+                dtype=torch.int32,
+            ),
+            "opponent_count": tensors["opponent_count"],
+            "slot_class": tensors["slot_class"].view(
+                MAX_OPPONENTS, self.num_envs
+            ).transpose(0, 1),
+            "slot_target_speed": tensors["slot_target_speed"].view(
+                MAX_OPPONENTS, self.num_envs
+            ).transpose(0, 1),
+            "slot_mode": tensors["slot_mode"].view(
+                MAX_OPPONENTS, self.num_envs
+            ).transpose(0, 1),
+            "v2_policy_ckpt": self.env_cfg.get("v2_policy_ckpt"),
         }
 
     def _stream(self):
@@ -1245,6 +1402,10 @@ class WarpF1tenthEnv:
         else:
             self._reset_mask.zero_()
             self._reset_mask[envs_idx] = True
+        self._maybe_resample_gigaflow_track(seed, bool(self._reset_mask.all()))
+        if self._gigaflow_sampling:
+            self.extras["gigaflow_track"] = self.gigaflow_track
+            self.extras["gigaflow_variant"] = self.gigaflow_variant
         wp.launch(
             reset_envs_kernel,
             dim=self.num_envs,
@@ -1441,9 +1602,14 @@ class WarpF1tenthEnv:
                 self._ego_speed_cap_mps,
                 self.control_interval,
             ]
+        if self.has_opponent:
+            n_slots = max(1, int(self._reset_params.num_opponents))
+            physics_dim = (1 + n_slots) * self.num_envs
+        else:
+            physics_dim = self.num_envs
         wp.launch(
             physics_kernel,
-            dim=2 * self.num_envs if self.has_opponent else self.num_envs,
+            dim=physics_dim,
             inputs=physics_inputs,
             device=self.wp_device,
             stream=self._stream(),

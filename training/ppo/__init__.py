@@ -14,6 +14,7 @@ from .ppo import (
     compute_gae,
     explained_variance,
     pure_timeout_mask,
+    stratified_env_permutation,
     value_prediction_loss,
 )
 from .residual import mix_residual_actions, residual_alpha
@@ -36,5 +37,6 @@ __all__ = [
     "mix_residual_actions",
     "pure_timeout_mask",
     "residual_alpha",
+    "stratified_env_permutation",
     "value_prediction_loss",
 ]

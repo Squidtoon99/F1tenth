@@ -26,6 +26,7 @@ from f1tenth_sim.params import SimParams
 from .kernel import (
     CorridorDistanceField,
     EnvBuffers,
+    MAX_OPPONENTS,
     OpponentParams,
     ResetParams,
     SensorParams,
@@ -135,6 +136,7 @@ def sensor_view_seed(seed: wp.int32, view_id: wp.int32) -> wp.int32:
 def lidar_beam_range(
     ego: VehicleLocal,
     opponent: VehicleLocal,
+    opponent_buffers: VehicleBuffers,
     env_id: wp.int32,
     beam_id: wp.int32,
     env: EnvBuffers,
@@ -183,17 +185,23 @@ def lidar_beam_range(
     if has_opponent != 0:
         half_length = 0.5 * opponent_params.car_length
         half_width = 0.5 * opponent_params.car_width
-        opp_hit = ray_obb_distance(
-            origin,
-            direction,
-            opponent.x,
-            opponent.y,
-            opponent.yaw,
-            half_length,
-            half_width,
-        )
-        if opp_hit < hit:
-            hit = opp_hit
+        count = env.opponent_count[env_id]
+        for slot in range(MAX_OPPONENTS):
+            if slot >= count:
+                break
+            idx = slot * reset.num_envs + env_id
+            other = load_vehicle(opponent_buffers, idx)
+            opp_hit = ray_obb_distance(
+                origin,
+                direction,
+                other.x,
+                other.y,
+                other.yaw,
+                half_length,
+                half_width,
+            )
+            if opp_hit < hit:
+                hit = opp_hit
 
     if hit < sensor.range_min:
         hit = sensor.range_max
@@ -263,6 +271,7 @@ def lidar_solo_kernel(
     ranges[env_id, beam_id] = lidar_beam_range(
         ego,
         opponent,
+        ego_buffers,
         env_id,
         beam_id,
         env,
@@ -295,6 +304,7 @@ def lidar_stage_kernel(
     ranges[env_id, beam_id] = lidar_beam_range(
         ego,
         opponent,
+        opponent_buffers,
         env_id,
         beam_id,
         env,
@@ -481,6 +491,7 @@ def sensor_actor_solo_kernel(
     output[env_id, beam_id] = lidar_beam_range(
         ego,
         opponent,
+        ego_buffers,
         env_id,
         beam_id,
         env,
@@ -529,6 +540,7 @@ def sensor_actor_stage_kernel(
     output[env_id, beam_id] = lidar_beam_range(
         ego,
         opponent,
+        opponent_buffers,
         env_id,
         beam_id,
         env,

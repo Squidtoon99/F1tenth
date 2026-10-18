@@ -87,3 +87,11 @@ trade-off. Routine work is captured by the PR instead (see
   (Cartesian-polar + LS3C), imagination-trained actor, encoder+actor deploy.
 - [0041](0041-tinylidarnet-encoder.md) — TinyLidarNet 1D CNN on raw 1081
   beams; GRU and PPO kept; no 32-bin pool.
+- [0042](0042-sim-ready-v2-fitted-courtyard-plant.md) — Austin v6 and courtyard
+  PPO use the frozen SIM_READY_V2 bag-fit plant; Galaxy/defaults stay unfitted.
+- [0043](0043-gigaflow-track-affine-sampling.md) — Each reset draws one public
+  f1tenth_racetracks map and one of six affine variants; courtyard/IV stay out.
+- [0044](0044-curvature-limited-scripted-opponent.md) — Scripted centerline
+  follower uses curvature-preview speed and steer feedforward (8–9 m/s Austin).
+- [0045](0045-sophy-multi-scenario.md) — Sophy 1v0–1v7, grid, and hard-corner
+  scenes on SIM_READY_V2; no slipstream; faster slots stub a V2 policy copy.

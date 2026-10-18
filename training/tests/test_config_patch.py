@@ -98,7 +98,7 @@ def test_patch_scripted_opponent_without_cli_flag():
     assert cfg["obs"]["enable_opponent_obs"] is False
     assert cfg["obs"]["num_actor_obs"] == 1097
     assert cfg["reward"]["reward_scales"]["passing"] == 3.0
-    assert cfg["reward"]["reward_scales"]["tal"] == 0.2
+    assert "tal" not in cfg["reward"]["reward_scales"]
 
 
 def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
@@ -164,6 +164,14 @@ def test_validate_rejects_unknown_reward_scale_key():
         ValueError, match="unknown config key 'reward.reward_scales.bogus'"
     ):
         validate_config_patch({"reward": {"reward_scales": {"bogus": 1.0}}})
+
+
+def test_tal_reward_scale_is_removed():
+    assert "tal" not in DEFAULT_CONFIG["reward"]["reward_scales"]
+    with pytest.raises(
+        ValueError, match="unknown config key 'reward.reward_scales.tal'"
+    ):
+        validate_config_patch({"reward": {"reward_scales": {"tal": 0.2}}})
 
 
 def test_validate_rejects_type_mismatch():
@@ -250,7 +258,7 @@ def test_tal_v6_overlays_change_one_key():
     )
     expected = {
         "austin_e2e_ppo_baseline_v6_wall_proximity.json": [
-            "reward.wall_proximity_m"
+            "reward"
         ],
         "austin_e2e_ppo_baseline_v6_grad_caps.json": ["ppo.grad_caps_coef"],
         "austin_e2e_ppo_baseline_v6_caps_spatial.json": [

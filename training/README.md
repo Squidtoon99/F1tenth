@@ -63,6 +63,12 @@ python standalone_trainer.py --num-envs 1024 --total-transitions 256000000
 python standalone_trainer.py --device cuda --num-envs 1024 --config my_run.json
 ```
 
+Sophy-style nearby / grid / corner mixing (no slipstream) is
+`configs/sophy_multi_scenario.json`. It inherits the SIM_READY_V2 plant and the
+23 public Gigaflow tracks. Each transition carries `scenario_id`; PPO minibatches
+keep every scene's share. Faster-than-scripted opponents stay stubbed until a V2
+checkpoint is set on `env.v2_policy_ckpt`.
+
 Training domain randomization is always enabled. Evaluation and deterministic
 tests use the nominal profile.
 

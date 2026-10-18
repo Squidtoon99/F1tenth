@@ -11,8 +11,8 @@
       5.0
     ],
     "opponent_lateral_offset_m": 0.15,
-    "f_drive_max": 26.5,
-    "f_brake_max": 23.1,
+    "f_drive_max": 21.46877492171339,
+    "f_brake_max": 9.139188067139935,
     "power_max": 320.0,
     "ego_speed_cap_mps": 0.0,
     "reset_stationary_probability": 0.0,
@@ -22,12 +22,12 @@
     "i_brake_max_a": 40.0,
     "i_slew_a_per_s": 200.0,
     "t_delta": 0.09,
-    "steer_gain": 1.10714,
+    "steer_gain": 1.0511988660159353,
     "warp_sim": {
       "izz": 0.13,
-      "lat_stiffness_scale": 11.0,
-      "steer_gain": 1.10714,
-      "c_coast": 0.0
+      "lat_stiffness_scale": 5.329306089973615,
+      "steer_gain": 1.0511988660159353,
+      "c_coast": 4.804781294740983
     },
     "domain_randomization": {
       "enabled": true,
@@ -111,10 +111,5 @@
         "lidar_wall_offset_max_m": 0.0
       }
     }
-  ],
-  "reward": {
-    "reward_scales": {
-      "tal": 0.2
-    }
-  }
+  ]
 }
