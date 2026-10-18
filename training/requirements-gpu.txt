@@ -22,6 +22,7 @@ tqdm
 python-dotenv
 rerun-sdk
 wandb
+scipy
 
 # Eval rollout visualization (eval_visualize.py / eval_viz.py): live view via
 # rerun-sdk above; mp4 encoding via opencv + imageio(ffmpeg).
