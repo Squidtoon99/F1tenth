@@ -82,7 +82,7 @@ def create_app() -> Flask:
         with connect() as conn:
             return runs(conn)
 
-    @app.get("/api/runs/<uuid:run_id>")
+    @app.get("/api/runs/<run_id>")
     def run_route(run_id):
         with connect() as conn:
             payload = run_detail(conn, run_id)
@@ -90,7 +90,7 @@ def create_app() -> Flask:
             abort(404)
         return payload
 
-    @app.get("/api/runs/<uuid:run_id>/chart.png")
+    @app.get("/api/runs/<run_id>/chart.png")
     def chart_route(run_id):
         with connect() as conn:
             found = chart_inputs(conn, run_id)

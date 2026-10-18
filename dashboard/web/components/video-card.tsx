@@ -9,7 +9,7 @@ export function VideoCard({ video }: { video: VideoRow }) {
   const [playing, setPlaying] = useState(false);
   const size = video.width && video.height ? `${video.width}×${video.height}` : null;
   return (
-    <Card className="transition duration-200 hover:-translate-y-1 hover:shadow-[0_0_48px_rgba(255,90,31,0.28)]">
+    <Card className="transition duration-200 hover:-translate-y-0.5">
       <button type="button" className="block w-full text-left" onClick={() => setPlaying(true)}>
         <div className="text-xs uppercase tracking-wide text-muted">{video.kind}</div>
         <div className="mt-2 text-lg">{video.run_name ?? "Clip"}</div>

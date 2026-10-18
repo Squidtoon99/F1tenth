@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 from seed_data import EPISODE_MARKS
 
 BG = (22, 22, 24)
-ORANGE = (255, 90, 31)
-ORANGE_2 = (255, 138, 61)
+ORANGE = (58, 160, 200)
+ORANGE_2 = (110, 231, 240)
 MUTED = (154, 154, 158)
 TEXT = (244, 244, 245)
 W, H = 960, 420

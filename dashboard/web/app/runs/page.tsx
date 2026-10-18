@@ -25,7 +25,7 @@ export default function RunsPage() {
           {data.runs.map((run) => (
             <tr key={run.id} className="border-t border-white/[0.06]">
               <td className="px-4 py-3">
-                <Link href={`/runs/${run.id}`} className="hover:text-orange">{run.name}</Link>
+                <Link href={`/runs/${run.id}`} className="hover:text-accent-2">{run.name}</Link>
               </td>
               <td className="px-4 py-3 tabular-nums">{run.seed ?? "—"}</td>
               <td className="px-4 py-3">{run.plant ?? "—"}</td>

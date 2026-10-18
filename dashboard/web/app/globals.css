@@ -4,11 +4,13 @@
   --color-bg: #0b0b0c;
   --color-elevated: #121214;
   --color-card: #161618;
-  --color-hot: #1c1210;
+  --color-hot: #11161c;
   --color-text: #f4f4f5;
   --color-muted: #9a9a9e;
-  --color-orange: #ff5a1f;
-  --color-orange-2: #ff8a3d;
+  --color-accent: #3aa0c8;
+  --color-accent-2: #6ee7f0;
+  --color-orange: #3aa0c8;
+  --color-orange-2: #6ee7f0;
   --color-green: #3ddc97;
   --color-red: #ff4d4f;
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
@@ -22,12 +24,6 @@ body {
 body {
   background-color: #0b0b0c;
   color: #f4f4f5;
-  background-image: radial-gradient(
-    ellipse 80% 40% at 50% 0%,
-    rgba(255, 90, 31, 0.18),
-    #0b0b0c 100%
-  );
-  background-attachment: fixed;
 }
 
 * {

@@ -12,7 +12,7 @@ export function RoundGauge({ used, budget }: { used: number; budget: number }) {
         cy="100"
         r={radius}
         fill="none"
-        stroke="#FF5A1F"
+        stroke="#3AA0C8"
         strokeWidth="12"
         strokeLinecap="round"
         strokeDasharray={`${circ * pct} ${circ}`}
@@ -45,7 +45,7 @@ export function HalfGauge({ rate }: { rate: number | null }) {
       <path
         d="M20 100 A80 80 0 0 1 180 100"
         fill="none"
-        stroke="#FF5A1F"
+        stroke="#3AA0C8"
         strokeWidth="14"
         strokeLinecap="round"
         strokeDasharray={`${length * pct} ${length}`}
@@ -72,7 +72,7 @@ export function ResourceBars({
           </div>
           <div className="h-2 rounded-full bg-white/5">
             <div
-              className="h-2 rounded-full bg-orange"
+              className="h-2 rounded-full bg-gradient-to-r from-accent to-accent-2"
               style={{ width: `${Math.round(row.fraction * 100)}%` }}
             />
           </div>

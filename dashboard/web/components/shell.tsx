@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Clapperboard,
   Cpu,
   Flag,
   GitFork,
@@ -22,18 +21,15 @@ import type { Overview } from "@/util/types";
 import { useApi } from "@/util/use-api";
 
 const NAV = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/tree", label: "Tree", icon: GitFork },
+  { href: "/", label: "Tree", icon: GitFork },
+  { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/runs", label: "Runs", icon: Flag },
-  { href: "/videos", label: "Videos", icon: Clapperboard },
   { href: "/policies", label: "Policies", icon: Cpu },
 ];
 
 const TABS = [
-  { href: "/", label: "Overview" },
-  { href: "/tree", label: "Tree" },
+  { href: "/", label: "Tree" },
   { href: "/evals", label: "Evals" },
-  { href: "/videos", label: "Videos" },
   { href: "/wandb", label: "wandb" },
   { href: "/files", label: "Files" },
 ];
@@ -52,7 +48,7 @@ function activeNav(pathname: string, href: string) {
 
 export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { data } = useApi<Overview>("/api/overview");
+  const { data } = useApi<Overview>("/api/overview", 15000);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -75,7 +71,7 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="sticky top-0 flex h-screen w-[240px] shrink-0 flex-col bg-elevated">
         <div className="flex h-16 items-center gap-2 px-5">
-          <span className="h-3.5 w-3.5 rounded-[4px] bg-orange shadow-[0_0_16px_rgba(255,90,31,0.85)]" />
+          <span className="h-3.5 w-3.5 rounded-[4px] bg-gradient-to-br from-accent to-accent-2" />
           <span className="text-lg tracking-tight">Garage</span>
         </div>
         <nav className="flex flex-col gap-1 px-3">
@@ -88,7 +84,9 @@ export function Shell({ children }: { children: ReactNode }) {
                 href={item.href}
                 className={cn(
                   "flex items-center gap-3 rounded-full px-3 py-2 text-sm",
-                  active ? "bg-orange text-white" : "text-muted hover:text-text",
+                  active
+                    ? "bg-gradient-to-r from-accent to-accent-2 text-[#061018]"
+                    : "text-muted hover:text-text",
                 )}
               >
                 <Icon size={16} />
@@ -107,9 +105,9 @@ export function Shell({ children }: { children: ReactNode }) {
             <div className="mt-1 truncate text-xs text-muted">{data?.best?.name}</div>
             <Button
               className="mt-4 w-full"
-              disabled={!data?.best}
+              disabled={!data?.best?.checkpoint_id}
               onClick={() => {
-                if (!data?.best) return;
+                if (!data?.best?.checkpoint_id) return;
                 downloadCheckpoint(data.best.checkpoint_id, data.best.staged).catch((reason: unknown) => {
                   window.alert(reason instanceof Error ? reason.message : "Download failed");
                 });
@@ -177,7 +175,9 @@ export function Shell({ children }: { children: ReactNode }) {
                   href={tab.href}
                   className={cn(
                     "rounded-full px-4 py-2 text-sm",
-                    active ? "bg-orange text-white" : "text-muted hover:text-text",
+                    active
+                      ? "bg-gradient-to-r from-accent to-accent-2 text-[#061018]"
+                      : "text-muted hover:text-text",
                   )}
                 >
                   {tab.label}

@@ -131,7 +131,7 @@ def experiments():
         },
         {
             "slug": "actionchunk-notal-v6-B",
-            "name": "Action chunk no-TAL s42",
+            "name": "Action chunk progress-reward s42",
             "parent": "opponents-notal-v6-B",
             "kind": "ablation",
             "one_change": "action chunk H=4",
@@ -156,7 +156,7 @@ def experiments():
         },
         {
             "slug": "actionchunk-notal-v6-B-s43",
-            "name": "Action chunk no-TAL s43",
+            "name": "Action chunk progress-reward s43",
             "parent": "actionchunk-notal-v6-B",
             "kind": "ablation",
             "one_change": "seed 43",
@@ -181,10 +181,10 @@ def experiments():
         },
         {
             "slug": "opponents-notal-v6-B",
-            "name": "Opponents no-TAL s42",
+            "name": "Opponents progress-reward s42",
             "parent": None,
             "kind": "ablation",
-            "one_change": "TAL off, spawn 2.0 m/s",
+            "one_change": "progress reward, spawn 2.0 m/s",
             "verdict": "keep",
             "created_at": "2026-10-17T16:06:00Z",
             "run": _run(
@@ -200,7 +200,7 @@ def experiments():
         },
         {
             "slug": "opponents-notal-v6-B-s43",
-            "name": "Opponents no-TAL s43",
+            "name": "Opponents progress-reward s43",
             "parent": "opponents-notal-v6-B",
             "kind": "ablation",
             "one_change": "seed 43",

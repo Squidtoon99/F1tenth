@@ -16,7 +16,7 @@ export function Card({
       className={cn(
         "rounded-2xl border p-4",
         hot
-          ? "border-[rgba(255,90,31,0.45)] bg-hot shadow-[0_0_48px_rgba(255,90,31,0.28)]"
+          ? "border-[rgba(58,160,200,0.45)] bg-hot"
           : "border-white/[0.06] bg-card",
         className,
       )}

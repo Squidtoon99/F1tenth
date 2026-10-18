@@ -16,7 +16,7 @@ export default function WandbPage() {
           <div className="text-lg">{run.name}</div>
           <img src={run.src} alt={run.name} className="mt-3 w-full rounded-2xl" />
           {run.wandb_url ? (
-            <a className="mt-3 inline-block text-sm text-orange" href={run.wandb_url}>
+            <a className="mt-3 inline-block text-sm text-accent-2" href={run.wandb_url}>
               {run.wandb_url}
             </a>
           ) : null}

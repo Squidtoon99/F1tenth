@@ -13,7 +13,10 @@ cd api && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cd web && npm install && npm run dev
 ```
 
-Open `http://127.0.0.1:3000`. Bind stays on localhost.
+Open `http://127.0.0.1:3000`. Bind stays on localhost. The tree is the
+main view. It is built from the store TSV, later scored arms, and a poll
+of wandb `f1tenth-genesis` plus local trainer dirs. Videos live on the
+run page.
 
 Tigris keys belong in `dashboard/.env` only. A checkpoint that is only on disk
 is copied into the bucket under `dashboard/` and then downloaded.

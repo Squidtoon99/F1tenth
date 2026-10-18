@@ -9,7 +9,8 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "h-10 bg-orange px-4 text-white hover:brightness-110",
+        primary:
+          "h-10 bg-gradient-to-r from-accent to-accent-2 px-4 text-[#061018] hover:brightness-110",
         ghost: "h-10 border border-white/10 bg-transparent px-4 text-text hover:bg-white/5",
       },
     },

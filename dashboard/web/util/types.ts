@@ -17,20 +17,47 @@ export type Overview = {
     name: string;
     lap: number;
     completion: number;
-    checkpoint_id: string;
+    checkpoint_id: string | null;
     staged: boolean;
   } | null;
+  live?: string[];
 };
+
+export type VideoRow = {
+  id: string;
+  kind: string;
+  duration_s: number | null;
+  width: number | null;
+  height: number | null;
+  run_name: string | null;
+  step: number | null;
+  stream: string;
+  run_id?: string;
+};
+
+export type LiveState = {
+  state: string | null;
+  source: string | null;
+  transitions: number | null;
+  completion: number | null;
+  crash: number | null;
+  lifespan: number | null;
+} | null;
 
 export type TreeNode = {
   id: string;
   slug: string;
   name: string;
   parent_id: string | null;
+  parent_slug?: string | null;
   one_change: string;
   verdict: string;
   lap: number | null;
+  completion?: number | null;
   run_id: string;
+  wandb_run_id?: string;
+  live?: LiveState;
+  video?: VideoRow | null;
 };
 
 export type RunRow = {
@@ -46,6 +73,8 @@ export type RunRow = {
   stop_reason: string | null;
   budget: number | null;
   one_change: string;
+  result?: string;
+  live?: LiveState;
 };
 
 export type EvalRow = {
@@ -64,18 +93,6 @@ export type EvalRow = {
   run_id?: string;
 };
 
-export type VideoRow = {
-  id: string;
-  kind: string;
-  duration_s: number | null;
-  width: number | null;
-  height: number | null;
-  run_name: string | null;
-  step: number | null;
-  stream: string;
-  run_id?: string;
-};
-
 export type CheckpointRow = {
   id: string;
   step: number;
@@ -89,10 +106,38 @@ export type CheckpointRow = {
   key: string;
 };
 
+export type ModelChannel = {
+  name: string;
+  size: number | null;
+  note: string;
+};
+
+export type TimelineItem = {
+  slug: string;
+  name: string;
+  one_change: string;
+  result: string;
+  verdict: string;
+  lap: number | null;
+  run_id: string;
+};
+
 export type RunDetail = {
   run: RunRow;
   experiment: { name: string; verdict: string; one_change: string; kind: string };
   evals: EvalRow[];
   videos: VideoRow[];
+  model_io: {
+    kind: string;
+    inputs: ModelChannel[];
+    outputs: ModelChannel[];
+    actor_dim: number | null;
+    action_dim: number | null;
+  };
+  timeline: TimelineItem[];
+  series: {
+    laps: { step: number; lap: number }[];
+    episode: { step: number; seconds: number }[];
+  };
   chart: { title: string; src: string; wandb_url: string | null };
 };
