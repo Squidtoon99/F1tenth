@@ -12,7 +12,7 @@ export const metadata: Metadata = { title: "Garage" };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${outfit.className} antialiased`}>
         <Shell>{children}</Shell>
       </body>
