@@ -110,10 +110,5 @@
         "lidar_wall_offset_max_m": 0.0
       }
     }
-  ],
-  "reward": {
-    "reward_scales": {
-      "tal": 0.2
-    }
-  }
+  ]
 }

@@ -421,7 +421,6 @@ class RewardParams:
     oob_impact_coefficient: wp.float32
     steering_change: wp.float32
     steering_history: wp.float32
-    max_steer: wp.float32
     steering_c_s: wp.float32
     steering_c_o: wp.float32
     steering_c_d: wp.float32
@@ -433,11 +432,8 @@ class RewardParams:
     global_scale: wp.float32
     rear_end_any_contact: wp.int32
     wall_cost_mode: wp.int32
-    tal_scale: wp.float32
-    tal_v_ref: wp.float32
-    tal_kp_lateral: wp.float32
-    tal_kp_heading: wp.float32
     wall_proximity_m: wp.float32
+    history_stride: wp.int32
 
 
 @wp.struct
@@ -561,7 +557,6 @@ class EnvBuffers:
     reward_passing: wp.array(dtype=wp.float32)
     reward_collision: wp.array(dtype=wp.float32)
     reward_rear_end: wp.array(dtype=wp.float32)
-    reward_tal: wp.array(dtype=wp.float32)
     done: wp.array(dtype=wp.bool)
     done_flags: wp.array(dtype=wp.int32)
     term_timeout: wp.array(dtype=wp.bool)
@@ -680,7 +675,6 @@ class RewardResult:
     passing: wp.float32
     collision: wp.float32
     rear_end: wp.float32
-    tal: wp.float32
     done: wp.bool
     done_flags: wp.int32
 
@@ -1481,35 +1475,19 @@ def compute_reward_and_done(
     if first_wall_contact:
         out.boundary_contact = -reward.boundary_contact_coefficient
     vel_world = body_velocity_world(ego)
-    out.tal = 0.0
-    if reward.tal_scale != 0.0:
-        track_speed = wp.dot(vel_world, ego_frenet.tangent)
-        lookahead = wp.float32(0.5) * wp.abs(track_speed)
-        if lookahead < 0.05:
-            ahead = wp.atan2(ego_frenet.tangent[1], ego_frenet.tangent[0])
-        else:
-            ahead = track_heading_ahead(ego_frenet, track, lookahead)
-        heading_err = wrap_angle(ego.yaw - ahead)
-        cross_track = wp.atan(
-            reward.tal_kp_lateral
-            * ego_frenet.ey
-            / wp.max(wp.abs(track_speed) + 0.5, 0.5)
-        )
-        delta_ref = wp.clamp(
-            -(reward.tal_kp_heading * heading_err + cross_track),
-            -reward.max_steer,
-            reward.max_steer,
-        )
-        out.tal = reward.tal_scale * (
-            1.0
-            - wp.abs(track_speed - reward.tal_v_ref)
-            - wp.abs(ego.steer_logical - delta_ref)
-        )
     theta_t = env.executed_steer_history[env_id, 0]
     theta_prev = env.executed_steer_history[env_id, 1]
     delta_t = theta_t - theta_prev
     prev_delta = env.prev_steer_delta[env_id]
     out.steering_change = -reward.steering_change * wp.abs(delta_t)
+    stride = reward.history_stride
+    if stride < 1:
+        stride = wp.int32(1)
+    ds0 = theta_t - env.executed_steer_history[env_id, stride]
+    ds1 = (
+        env.executed_steer_history[env_id, stride]
+        - env.executed_steer_history[env_id, 2 * stride]
+    )
     delta_sum = wp.abs(delta_t) + wp.abs(prev_delta)
     m_t = wp.float32(0.0)
     if (
@@ -1518,6 +1496,13 @@ def compute_reward_and_done(
         and delta_t * prev_delta < 0.0
     ):
         m_t = wp.float32(1.0)
+    elif (
+        wp.abs(ds0) > reward.steering_c_d
+        and wp.abs(ds1) > reward.steering_c_d
+        and ds0 * ds1 < 0.0
+    ):
+        m_t = wp.float32(1.0)
+        delta_sum = wp.abs(ds0) + wp.abs(ds1)
     out.steering_history = (
         -reward.steering_history
         * m_t
@@ -1552,7 +1537,7 @@ def compute_reward_and_done(
     if stopped_now and env.episode_step[env_id] > termination.minimum_stopped_step:
         env.stopped_streak[env_id] = env.stopped_streak[env_id] + 1
     else:
-        env.stopped_streak[env_id] = 0
+        env.stopped_streak[env_id] = wp.max(env.stopped_streak[env_id] - 1, 0)
 
     timeout = env.episode_step[env_id] >= termination.maximum_episode_steps
     oob_done = boundary_event
@@ -1582,7 +1567,6 @@ def compute_reward_and_done(
         + out.passing
         + out.collision
         + out.rear_end
-        + out.tal
     )
 
     out.done = (
@@ -1837,7 +1821,6 @@ def store_reward(
     env.reward_passing[env_id] = result.passing
     env.reward_collision[env_id] = result.collision
     env.reward_rear_end[env_id] = result.rear_end
-    env.reward_tal[env_id] = result.tal
     env.done[env_id] = result.done
     env.done_flags[env_id] = result.done_flags
     env.term_timeout[env_id] = (result.done_flags & 1) != 0

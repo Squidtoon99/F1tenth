@@ -62,7 +62,7 @@ def test_action_chunk_arm_config_turns_h4_on():
     assert cfg["env"]["num_actions"] == 2
     assert cfg["env"]["opponent_strategy"] == "scripted"
     assert cfg["schedule"]["total_transitions"] == 256000000
-    assert cfg["reward"]["reward_scales"]["tal"] == pytest.approx(0.2)
+    assert "tal" not in cfg["reward"]["reward_scales"]
     assert cfg["ppo"].get("caps_spatial_coef", 0.0) == pytest.approx(0.0)
     assert cfg["policy_format_version"] == ACTION_CHUNK_POLICY_FORMAT_VERSION
     assert cfg_action_horizon(cfg) == 4
