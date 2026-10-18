@@ -1318,8 +1318,11 @@ def centerline_tracking_action(
     steering = (steering_target - vehicle.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    steer_frac = wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)
-    steer_scale = wp.max(wp.float32(0.45), 1.0 - 0.55 * steer_frac * steer_frac)
+    steer_scale = wp.max(
+        wp.float32(0.3),
+        1.0
+        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
+    )
     speed_cmd = wp.min(
         steer_scale * target_speed,
         curvature_limited_speed(frenet, track, target_speed),
