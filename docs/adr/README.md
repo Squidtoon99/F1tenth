@@ -94,3 +94,5 @@ trade-off. Routine work is captured by the PR instead (see
 - [0044](0044-gigaflow-own-agent-conditioning.md) — Own-agent C_dynamics and
   C_reward on the 1097-d lidar actor and 392-d privileged critic; self-play
   copies of π; Table A3 knobs.
+- [0045](0045-delete-tal-reward.md) — Delete the TAL speed-match reward
+  and its config key so a later patch cannot turn it back on.

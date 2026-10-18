@@ -192,7 +192,6 @@ DEFAULT_CONFIG = {
             "rear_end": 0.5,
             "steering_change": 0.5,
             "steering_history": 5.0,
-            "tal": 0.0,
         },
     },
     "model": {
