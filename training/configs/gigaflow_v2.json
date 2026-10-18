@@ -99,10 +99,5 @@
         "reset_stationary_probability": 1.0
       }
     }
-  ],
-  "reward": {
-    "reward_scales": {
-      "tal": 0.2
-    }
-  }
+  ]
 }

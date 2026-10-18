@@ -459,7 +459,7 @@ def test_austin_e2e_ppo_baseline_v6_dr_config():
     assert dr["action_latency_steps_range"] == [0, 3]
     assert cfg["env"]["t_delta"] == 0.09
     assert cfg["env"]["steer_gain"] == 1.10714
-    assert cfg["reward"]["reward_scales"]["tal"] == 0.2
+    assert "tal" not in cfg["reward"].get("reward_scales", {})
     assert cfg["ppo"]["entropy_coef"] == 0.01
     assert cfg["ppo"]["entropy_coef_end"] == 0.0
     assert cfg["ppo"]["entropy_coef_horizon_transitions"] == 32000000

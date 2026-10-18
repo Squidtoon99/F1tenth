@@ -168,10 +168,5 @@
         "use_speed_classes": true
       }
     }
-  ],
-  "reward": {
-    "reward_scales": {
-      "tal": 0.2
-    }
-  }
+  ]
 }
