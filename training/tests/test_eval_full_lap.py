@@ -154,9 +154,11 @@ def test_extra_scripted_overtake_spec_matches_follow_video():
     extra = extra_scripted_overtake_spec(resolved)
     assert extra["name"] == SCRIPTED_OVERTAKE_NAME
     assert extra["opponent_ahead_m"] == pytest.approx(FOLLOW_OPPONENT_AHEAD_M)
-    assert extra["opponent_speed_mps"] == pytest.approx(FOLLOW_OPPONENT_SPEED_MPS)
+    assert extra["opponent_speed_mps"] is None
     assert extra["opponent_ahead_m"] == pytest.approx(3.0)
-    assert extra["opponent_speed_mps"] == pytest.approx(2.0)
+    assert extra["opponent_speed_range"] == pytest.approx(
+        tuple(DEFAULT_CONFIG["env"]["opponent_target_speed_range"])
+    )
     assert extra["cfg"]["env"]["opponent_strategy"] == "scripted"
     assert flying["env"]["opponent_strategy"] is None
     assert standing["env"]["opponent_strategy"] is None

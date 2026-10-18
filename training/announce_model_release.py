@@ -315,16 +315,29 @@ def _rollout_to_npz(env, actor, normalizer, cfg, npz_path, **deps) -> str:
     travel = np.cumsum(np.linalg.norm(np.diff(center, axis=0), axis=1))
     opp_i = int(np.searchsorted(travel, 3.0)) + 1
     opp_i = min(max(opp_i, 1), len(center) - 1)
+    from eval_full_lap import (
+        apply_opponent_target_speeds,
+        resolve_eval_opponent_speed_range,
+        sample_opponent_speeds,
+    )
+
+    opp_lo, opp_hi = resolve_eval_opponent_speed_range(
+        cfg["env"], cfg.get("reward")
+    )
+    opp_speeds = sample_opponent_speeds(
+        CARS, opp_lo, opp_hi, np.random.default_rng(int(seed))
+    )
     raw, _extras = env.reset_to(
         p0,
         yaw0,
         2.0,
         opponent_pose=center[opp_i],
         opponent_yaw=yaw0,
-        opponent_speed=2.0,
+        opponent_speed=opp_speeds,
         seed=seed,
         with_sensors=True,
     )
+    apply_opponent_target_speeds(env, opp_speeds)
     obs = raw["actor"].to(torch.float32)
     recurrent = deps["actor_is_recurrent"](actor)
     hidden = None
@@ -410,6 +423,11 @@ def _rollout_to_npz(env, actor, normalizer, cfg, npz_path, **deps) -> str:
         payload[f"ego_speed_{i}"] = np.asarray(ego_speed[i], dtype=np.float64)
         payload[f"opp_xy_{i}"] = np.asarray(opp_xy[i], dtype=np.float64)
         payload[f"opp_yaw_{i}"] = np.asarray(opp_yaw[i], dtype=np.float64)
+    payload["opponent_speed_seed"] = np.int64(seed)
+    payload["opponent_speed_range"] = np.asarray(
+        [opp_lo, opp_hi], dtype=np.float64
+    )
+    payload["opponent_speeds_mps"] = np.asarray(opp_speeds, dtype=np.float64)
     np.savez(npz_path, **payload)
     running, n = running_count(lengths)
     return f"{running}/{n}"

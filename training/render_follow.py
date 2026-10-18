@@ -1,6 +1,7 @@
 """Render a zoomed follow-camera overlay video from saved rollout trajectories."""
 
 import argparse
+import math
 
 import cv2
 import imageio.v2 as imageio
@@ -15,6 +16,12 @@ BG = (16, 17, 20)
 C_EDGE = (90, 110, 200)
 C_CENTER = (70, 72, 82)
 C_TEXT = (235, 235, 235)
+C_THROTTLE = (70, 210, 90)
+C_BRAKE = (230, 55, 55)
+C_BAR_BG = (38, 40, 48)
+C_PANEL = (22, 24, 30)
+C_TICK = (140, 142, 150)
+WHEEL_LOCK_DEG = 90.0
 
 
 def rect(x, y, yaw, length, width):
@@ -22,6 +29,124 @@ def rect(x, y, yaw, length, width):
     hl, hw = 0.5 * length, 0.5 * width
     pts = np.array([[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]])
     return pts @ np.array([[c, s], [-s, c]]) + np.array([x, y])
+
+
+def _bar(frame, x, y, w, h, fill, color):
+    fill = float(np.clip(fill, 0.0, 1.0))
+    cv2.rectangle(frame, (x, y), (x + w, y + h), C_BAR_BG, -1)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (90, 92, 102), 1, cv2.LINE_AA)
+    fh = int(round((h - 2) * fill))
+    if fh > 0:
+        cv2.rectangle(
+            frame,
+            (x + 1, y + h - 1 - fh),
+            (x + w - 1, y + h - 1),
+            color,
+            -1,
+        )
+    for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+        ty = y + h - 1 - int(round((h - 2) * frac))
+        cv2.line(frame, (x - 4, ty), (x, ty), C_TICK, 1, cv2.LINE_AA)
+        cv2.line(frame, (x + w, ty), (x + w + 4, ty), C_TICK, 1, cv2.LINE_AA)
+
+
+def _wheel_rgba(radius, lock_frac):
+    pad = 8
+    size = 2 * radius + 2 * pad
+    img = np.zeros((size, size, 4), dtype=np.uint8)
+    c = size // 2
+    rim = (245, 245, 248, 255)
+    spoke = (220, 222, 230, 255)
+    hub = (200, 202, 210, 255)
+    cv2.circle(img, (c, c), radius, rim, 6, cv2.LINE_AA)
+    cv2.circle(img, (c, c), radius - 9, (70, 72, 80, 255), 2, cv2.LINE_AA)
+    inner, outer = 11, radius - 7
+    for deg in (0.0, 180.0, 90.0):
+        rad = math.radians(deg)
+        x0 = int(round(c + inner * math.cos(rad)))
+        y0 = int(round(c + inner * math.sin(rad)))
+        x1 = int(round(c + outer * math.cos(rad)))
+        y1 = int(round(c + outer * math.sin(rad)))
+        cv2.line(img, (x0, y0), (x1, y1), spoke, 5, cv2.LINE_AA)
+    cv2.circle(img, (c, c), 10, hub, -1, cv2.LINE_AA)
+    cv2.circle(img, (c, c), 10, rim, 2, cv2.LINE_AA)
+    marker = np.array(
+        [
+            [c, c - radius + 1],
+            [c - 8, c - radius + 18],
+            [c + 8, c - radius + 18],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(img, marker, (90, 255, 130, 255), cv2.LINE_AA)
+    angle = float(np.clip(lock_frac, -1.0, 1.0)) * WHEEL_LOCK_DEG
+    rot = cv2.getRotationMatrix2D((c, c), angle, 1.0)
+    return cv2.warpAffine(
+        img,
+        rot,
+        (size, size),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+
+
+def _blit_rgba(dst, overlay, x, y):
+    h, w = overlay.shape[:2]
+    x0, y0 = max(x, 0), max(y, 0)
+    x1, y1 = min(x + w, dst.shape[1]), min(y + h, dst.shape[0])
+    if x0 >= x1 or y0 >= y1:
+        return
+    patch = overlay[y0 - y:y1 - y, x0 - x:x1 - x]
+    alpha = patch[:, :, 3:4].astype(np.float32) / 255.0
+    roi = dst[y0:y1, x0:x1].astype(np.float32)
+    dst[y0:y1, x0:x1] = np.clip(
+        alpha * patch[:, :, :3].astype(np.float32) + (1.0 - alpha) * roi, 0, 255
+    ).astype(np.uint8)
+
+
+def draw_controls_hud(frame, throttle_frac, brake_frac, steer_rad, max_steer_rad):
+    bar_w, bar_h = 20, 112
+    gap = 18
+    wheel_r = 48
+    margin = 14
+    panel_w = 250
+    panel_h = 168
+    h, w = frame.shape[:2]
+    x1 = w - margin
+    y0 = margin
+    x0 = x1 - panel_w
+    cv2.rectangle(frame, (x0, y0), (x1, y0 + panel_h), C_PANEL, -1)
+    cv2.rectangle(frame, (x0, y0), (x1, y0 + panel_h), (70, 72, 82), 1, cv2.LINE_AA)
+    bx = x0 + 28
+    by = y0 + 18
+    _bar(frame, bx, by, bar_w, bar_h, throttle_frac, C_THROTTLE)
+    _bar(frame, bx + bar_w + gap, by, bar_w, bar_h, brake_frac, C_BRAKE)
+    for frac, text in ((1.0, "100"), (0.5, "50"), (0.0, "0")):
+        ty = by + bar_h - 1 - int(round((bar_h - 2) * frac))
+        cv2.putText(
+            frame, text, (x0 + 4, ty + 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.32, C_TICK, 1, cv2.LINE_AA,
+        )
+    t_pct = int(round(100.0 * float(np.clip(throttle_frac, 0.0, 1.0))))
+    b_pct = int(round(100.0 * float(np.clip(brake_frac, 0.0, 1.0))))
+    cv2.putText(
+        frame, f"T {t_pct}%", (bx - 8, by + bar_h + 18),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.4, C_THROTTLE, 1, cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame, f"B {b_pct}%", (bx + bar_w + gap - 10, by + bar_h + 18),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.4, C_BRAKE, 1, cv2.LINE_AA,
+    )
+    lock_frac = float(steer_rad) / max(float(max_steer_rad), 1e-6)
+    wheel = _wheel_rgba(wheel_r, lock_frac)
+    wx = x0 + 118
+    wy = y0 + 8
+    _blit_rgba(frame, wheel, wx, wy)
+    steer_deg = float(steer_rad) * 180.0 / math.pi
+    cv2.putText(
+        frame, f"{steer_deg:+5.1f} deg", (wx + 6, y0 + panel_h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.48, C_TEXT, 1, cv2.LINE_AA,
+    )
 
 
 def main():
@@ -46,6 +171,23 @@ def main():
     ego_sp = [d[f"ego_speed_{i}"] for i in range(n)]
     opp_xy = [d[f"opp_xy_{i}"] for i in range(n)]
     opp_yaw = [d[f"opp_yaw_{i}"] for i in range(n)]
+    has_hud = all(
+        key in d for key in (
+            "ego_i_drive_cmd_0", "ego_i_brake_cmd_0", "ego_steer_logical_0",
+            "i_drive_max_a", "i_brake_max_a", "max_steer_rad",
+        )
+    )
+    if has_hud:
+        i_drive_max = float(d["i_drive_max_a"])
+        i_brake_max = float(d["i_brake_max_a"])
+        max_steer = float(d["max_steer_rad"])
+        throttle = np.clip(
+            d["ego_i_drive_cmd_0"] / max(i_drive_max, 1e-6), 0.0, 1.0
+        )
+        brake = np.clip(
+            d["ego_i_brake_cmd_0"] / max(i_brake_max, 1e-6), 0.0, 1.0
+        )
+        steer_rad = np.asarray(d["ego_steer_logical_0"], dtype=np.float64)
 
     total = int(lengths.max())
     stop = min(total, int(lengths.max()) if crashed.all() else total)
@@ -102,7 +244,9 @@ def main():
             o = to_px(rect(opp_xy[i][idx[i]][0], opp_xy[i][idx[i]][1],
                            opp_yaw[i][idx[i]], car_l, car_w))
             cv2.fillPoly(frame, [o], OPP_COLOR)
-            cv2.polylines(frame, [o], True, (40, 40, 40), 1, cv2.LINE_AA)
+            cv2.polylines(
+                frame, [o], True, CAR_COLORS[i % len(CAR_COLORS)], 2, cv2.LINE_AA
+            )
 
         n_alive = len(alive)
         cv2.putText(frame, f"t = {t / args.fps:5.1f} s", (14, 28),
@@ -115,8 +259,18 @@ def main():
         if v:
             cv2.putText(frame, f"v {np.mean(v):4.1f} m/s", (14, 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
-        cv2.rectangle(frame, (W - 210, 14), (W - 194, 26), OPP_COLOR, -1)
-        cv2.putText(frame, "centerline opponent", (W - 186, 26),
+        if has_hud:
+            fi = min(idx[0], len(throttle) - 1)
+            draw_controls_hud(
+                frame, float(throttle[fi]), float(brake[fi]),
+                float(steer_rad[fi]), max_steer,
+            )
+            legend_y = 196
+        else:
+            legend_y = 14
+        cv2.rectangle(frame, (W - 210, legend_y), (W - 194, legend_y + 12),
+                      OPP_COLOR, -1)
+        cv2.putText(frame, "centerline opponent", (W - 186, legend_y + 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, C_TEXT, 1, cv2.LINE_AA)
         writer.append_data(frame)
 
