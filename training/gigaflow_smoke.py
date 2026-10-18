@@ -42,10 +42,10 @@ def _cfg(num_envs: int):
     patch = json.loads(
         (_TRAINING_ROOT / "configs" / "gigaflow_v2.json").read_text()
     )
+    patch["scenarios"] = []
     args, explicit = parse_args([])
     args.num_envs = int(num_envs)
     cfg = build_config(args, patch=patch, explicit=explicit)
-    cfg["scenarios"] = []
     cfg["ppo"]["rollout_steps"] = 4
     cfg["ppo"]["env_minibatches"] = int(num_envs)
     cfg["ppo"]["epochs"] = 1
