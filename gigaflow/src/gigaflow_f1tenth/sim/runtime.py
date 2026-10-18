@@ -312,6 +312,15 @@ class WarpNAgentSimulator:
         t.steer_scale.copy_(mat[:, CONDITION_FIELD_NAMES.index("steer_scale")])
         t.accel_scale.copy_(mat[:, CONDITION_FIELD_NAMES.index("accel_scale")])
         t.vmax_scale.copy_(mat[:, CONDITION_FIELD_NAMES.index("vmax_scale")])
+        self._refresh_axle_stiffness()
+
+    def _refresh_axle_stiffness(self) -> None:
+        t = self.buffers.torch_arrays
+        p = self.vehicle_params
+        weight = t.mass * float(p.gravity)
+        scale = float(p.lat_stiffness_scale) * weight / max(float(p.wheelbase), 1.0e-9)
+        t.c_f.copy_(scale * float(p.lr))
+        t.c_r.copy_(scale * float(p.lf))
 
     def resample_styles_for_mask(
         self, mask: torch.Tensor, seed: int
@@ -339,6 +348,13 @@ class WarpNAgentSimulator:
                 self.buffers.steer_scale,
                 self.buffers.accel_scale,
                 self.buffers.vmax_scale,
+                self.buffers.c_f,
+                self.buffers.c_r,
+                float(self.vehicle_params.lat_stiffness_scale),
+                float(self.vehicle_params.gravity),
+                float(self.vehicle_params.wheelbase),
+                float(self.vehicle_params.lf),
+                float(self.vehicle_params.lr),
             ],
             device=self.buffers.wp_device,
         )
@@ -471,10 +487,14 @@ class WarpNAgentSimulator:
                 self.buffers.contact_closing_speed,
                 self.buffers.executed_long_0,
                 self.buffers.executed_long_1,
+                self.buffers.executed_long_2,
                 self.buffers.executed_steer_0,
                 self.buffers.executed_steer_1,
                 self.buffers.executed_steer_2,
                 self.buffers.executed_steer_3,
+                self.buffers.executed_steer_4,
+                self.buffers.executed_steer_5,
+                self.buffers.executed_steer_6,
                 self.buffers.sensor_noise_seed,
                 self.buffers.lidar_range_noise_std,
                 self.buffers.lidar_dropout_prob,
@@ -556,10 +576,14 @@ class WarpNAgentSimulator:
             self.buffers.lidar_sector_width,
             self.buffers.executed_long_0,
             self.buffers.executed_long_1,
+            self.buffers.executed_long_2,
             self.buffers.executed_steer_0,
             self.buffers.executed_steer_1,
             self.buffers.executed_steer_2,
             self.buffers.executed_steer_3,
+            self.buffers.executed_steer_4,
+            self.buffers.executed_steer_5,
+            self.buffers.executed_steer_6,
             self.wp_edt,
             self.wp_edt_offsets,
             self.wp_edt_width,
@@ -767,16 +791,28 @@ class WarpNAgentSimulator:
         t.vy[flat] = 0.0
         t.yaw_rate[flat] = 0.0
         t.steer[flat] = 0.0
-        t.effort_state[flat] = 0.0
+        t.steer_logical[flat] = 0.0
+        t.i_drive[flat] = 0.0
+        t.i_brake[flat] = 0.0
+        t.i_drive_cmd[flat] = 0.0
+        t.i_brake_cmd[flat] = 0.0
         t.applied_effort[flat] = 0.0
         t.ax[flat] = 0.0
         t.ay[flat] = 0.0
+        t.imu_gz[flat] = 0.0
         t.mass[flat] = float(self.vehicle_params.mass)
         t.mu[flat] = float(self.vehicle_params.tire_mu)
         t.drive_scale[flat] = 1.0
         t.steer_scale[flat] = 1.0
         t.accel_scale[flat] = 1.0
         t.vmax_scale[flat] = 1.0
+        t.izz[flat] = float(self.vehicle_params.izz)
+        c_f, c_r = self.vehicle_params.axle_stiffness()
+        t.c_f[flat] = float(c_f)
+        t.c_r[flat] = float(c_r)
+        t.steer_lag[flat] = float(self.vehicle_params.t_delta)
+        t.steer_rate[flat] = 1.0e6
+        t.steer_gain[flat] = float(self.vehicle_params.steer_gain)
         t.frenet_segment[flat] = int(pose["segment"])
         t.frenet_s[flat] = float(pose["s"])
         t.prev_s[flat] = float(pose["s"])
@@ -795,10 +831,14 @@ class WarpNAgentSimulator:
         t.wall_contact[flat] = 0
         t.executed_long_0[flat] = 0.0
         t.executed_long_1[flat] = 0.0
+        t.executed_long_2[flat] = 0.0
         t.executed_steer_0[flat] = 0.0
         t.executed_steer_1[flat] = 0.0
         t.executed_steer_2[flat] = 0.0
         t.executed_steer_3[flat] = 0.0
+        t.executed_steer_4[flat] = 0.0
+        t.executed_steer_5[flat] = 0.0
+        t.executed_steer_6[flat] = 0.0
         t.sensor_noise_seed[flat] = mix_seed(seed, world_id, slot, episode_id + 99)
         t.lidar_range_noise_std[flat] = float(corr["range_noise_std"])
         t.lidar_dropout_prob[flat] = float(corr["dropout_prob"])
@@ -979,10 +1019,14 @@ class WarpNAgentSimulator:
                 self.buffers.steer,
                 self.buffers.executed_long_0,
                 self.buffers.executed_long_1,
+                self.buffers.executed_long_2,
                 self.buffers.executed_steer_0,
                 self.buffers.executed_steer_1,
                 self.buffers.executed_steer_2,
                 self.buffers.executed_steer_3,
+                self.buffers.executed_steer_4,
+                self.buffers.executed_steer_5,
+                self.buffers.executed_steer_6,
             ],
             device=self.buffers.wp_device,
         )

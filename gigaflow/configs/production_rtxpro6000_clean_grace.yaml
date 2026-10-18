@@ -23,9 +23,9 @@ worlds:
 agents:
   car_length_m: 0.568
   car_width_m: 0.296
-  control_hz: 10.0
+  control_hz: 20.0
   sim_dt: 0.005
-  control_interval: 20
+  control_interval: 10
   lidar_dim: 1081
   proprio_dim: 16
   sensor_obs_dim: 1097
@@ -49,7 +49,7 @@ reward_conditioning:
   enable_zero_sum: false
 
 ppo:
-  rollout_length: 128
+  rollout_length: 256
   gamma: 0.999
   gae_lambda: 0.95
   clip_ratio: 0.2
@@ -102,7 +102,7 @@ ablations:
 
 profiling:
   enabled: true
-  estimate_bytes_budget: 90000000000
+  estimate_bytes_budget: 125000000000
   report_interval_updates: 10
 
 wandb:

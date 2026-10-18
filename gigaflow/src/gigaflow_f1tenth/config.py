@@ -18,9 +18,10 @@ SENSOR_OBS_DIM = LIDAR_DIM + PROPRIO_DIM
 ACTION_DIM = 2
 GRU_HIDDEN_DIM = 512
 CNN_PROJECTION_DIM = 256
-CONTROL_HZ = 10.0
+CONTROL_HZ = 20.0
 SIM_DT = 0.005
-CONTROL_INTERVAL = 20
+CONTROL_INTERVAL = 10
+MAX_PHYSICS_SUBSTEPS = 20
 CAR_LENGTH_M = 0.568
 CAR_WIDTH_M = 0.296
 
@@ -31,8 +32,8 @@ BYTES_PER_BOOL = 1
 # Privileged compact agent-state / critic element width (shared packing).
 # Includes track-local frenet_segment so pack/restore keeps projection lock, and
 # the command history / wheel speeds the proprioception channels are rebuilt from.
-AGENT_STATE_DIM = 45
-CRITIC_ELEMENT_DIM = 45
+AGENT_STATE_DIM = 59
+CRITIC_ELEMENT_DIM = 59
 # Upstream f1tenth_racetracks pin ships this many centerlines (see track_pin.json).
 PINNED_UPSTREAM_TRACK_COUNT = 23
 
@@ -109,9 +110,13 @@ class RewardConditioningConfig:
 
 @dataclass(frozen=True)
 class PPOConfig:
-    rollout_length: int = 128
+    rollout_length: int = 256
     gamma: float = 0.999
     gae_lambda: float = 0.95
+    caps_spatial_coef: float = 0.1
+    caps_spatial_std: float = 0.05
+    caps_coef: float = 0.0
+    grad_caps_coef: float = 0.0
     clip_ratio: float = 0.2
     ent_coef: float | None = 0.01
     ent_coef_initial: float | None = None
@@ -662,10 +667,10 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("sensor_obs_dim/action_dim diverge from package layout")
     if a.control_interval <= 0 or a.sim_dt <= 0.0 or a.control_hz <= 0.0:
         raise ConfigError("control_interval, sim_dt, and control_hz must be positive")
-    if a.control_interval > CONTROL_INTERVAL:
+    if a.control_interval > MAX_PHYSICS_SUBSTEPS:
         raise ConfigError(
             f"control_interval={a.control_interval} exceeds fused max "
-            f"{CONTROL_INTERVAL}"
+            f"{MAX_PHYSICS_SUBSTEPS}"
         )
     control_dt = a.control_interval * a.sim_dt
     expected_dt = 1.0 / a.control_hz

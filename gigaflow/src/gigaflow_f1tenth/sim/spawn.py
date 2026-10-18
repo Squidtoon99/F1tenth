@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from gigaflow_f1tenth.config import ExperimentConfig, episode_steps
+from gigaflow_f1tenth.sim.vehicle import VehicleParams
 from gigaflow_f1tenth.sim.geometry import SimTrackGeometry, project_frenet_numpy
 from gigaflow_f1tenth.tracks import sample_active_counts as atlas_sample_active_counts
 from gigaflow_f1tenth.tracks import sample_track_ids as atlas_sample_track_ids
@@ -369,7 +370,11 @@ def apply_static_pins(
     arrays.vy[mask] = 0.0
     arrays.yaw_rate[mask] = 0.0
     arrays.steer[mask] = 0.0
-    arrays.effort_state[mask] = -1.0
+    arrays.steer_logical[mask] = 0.0
+    arrays.i_drive[mask] = 0.0
+    arrays.i_brake[mask] = float(VehicleParams.i_brake_max_a)
+    arrays.i_drive_cmd[mask] = 0.0
+    arrays.i_brake_cmd[mask] = float(VehicleParams.i_brake_max_a)
     arrays.applied_effort[mask] = -1.0
     arrays.ax[mask] = 0.0
     arrays.ay[mask] = 0.0

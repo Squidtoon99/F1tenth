@@ -166,7 +166,8 @@ def test_reward_geometry_uses_local_segment_on_nonzero_offset():
 
 
 def test_compact_state_roundtrip_preserves_frenet_segment_and_step_parity():
-    assert STATE_INDEX["frenet_segment"] == AGENT_STATE_DIM - 1
+    assert "frenet_segment" in STATE_INDEX
+    assert STATE_INDEX["executed_steer_6"] == AGENT_STATE_DIM - 1
     cfg = _two_world_cfg(async_respawn=False)
     atlas = make_offset_mismatch_atlas()
     geom = build_sim_geometry_from_atlas(atlas)

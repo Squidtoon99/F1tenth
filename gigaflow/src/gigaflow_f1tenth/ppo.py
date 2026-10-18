@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import math
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -84,7 +85,13 @@ class PPOUpdateStats:
     actor_kl_rejection_reason: str = ""
     actor_kl_warmup_active: bool = False
     rollback_free_accepted_updates: int = 0
+    caps_spatial_loss: float = 0.0
     telemetry: dict[str, float] = field(default_factory=dict)
+
+
+def caps_spatial_loss(mean_actions: Tensor, perturbed_mean: Tensor) -> Tensor:
+    delta = mean_actions - perturbed_mean
+    return delta.square().sum(dim=-1).mean()
 
 
 class CollectEvaluateParityError(RuntimeError):
@@ -208,7 +215,8 @@ def evaluate_actions_sequence(
     actions: Tensor,
     reset_mask: Tensor | None = None,
     pre_tanh: Tensor | None = None,
-) -> tuple[Tensor, Tensor, Tensor]:
+    return_mean: bool = False,
+) -> tuple:
     """Score stored action sequences; prefers actor.evaluate_actions_sequence.
 
     Fallback walks encode_trunk + GRU + MLP head when the conditioned-model
@@ -225,9 +233,10 @@ def evaluate_actions_sequence(
                 actions,
                 reset_mask=reset_mask,
                 pre_tanh=pre_tanh,
+                return_mean=return_mean,
             )
         except TypeError:
-            # Tiny/test actors may not accept pre_tanh yet.
+            # Tiny/test actors may not accept pre_tanh / return_mean yet.
             return actor.evaluate_actions_sequence(
                 sensor_obs,
                 private_condition,
@@ -703,6 +712,17 @@ class RecurrentPPO:
         self.num_epochs = int(cfg.ppo.num_epochs)
         self.minibatch_size = int(cfg.ppo.minibatch_size)
         self.rollout_length = int(cfg.ppo.rollout_length)
+        self.caps_spatial_coef = float(cfg.ppo.caps_spatial_coef)
+        self.caps_spatial_std = float(cfg.ppo.caps_spatial_std)
+        eval_fn = getattr(actor, "evaluate_actions_sequence", None)
+        try:
+            eval_params = (
+                inspect.signature(eval_fn).parameters if eval_fn is not None else {}
+            )
+        except (TypeError, ValueError):
+            eval_params = {}
+        if "return_mean" not in eval_params:
+            self.caps_spatial_coef = 0.0
         self.value_clip = bool(cfg.ppo.value_clip)
         if self.value_clip:
             raise ValueError("value_clip must be false (paper-aligned PPO)")
@@ -1097,6 +1117,7 @@ class RecurrentPPO:
             "clip_fraction": 0.0,
             "actor_grad_norm": 0.0,
             "critic_grad_norm": 0.0,
+            "caps_spatial_loss": 0.0,
         }
         actor_steps = 0
         critic_steps = 0
@@ -1174,7 +1195,8 @@ class RecurrentPPO:
                     continue
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
-                new_logp, new_entropy, _ = evaluate_actions_sequence(
+                want_mean = self.caps_spatial_coef > 0.0
+                scored = evaluate_actions_sequence(
                     self.actor,
                     obs_seq,
                     cond,
@@ -1182,7 +1204,10 @@ class RecurrentPPO:
                     act_seq,
                     reset_mask=reset_seq,
                     pre_tanh=pre_seq,
+                    return_mean=want_mean,
                 )
+                new_logp, new_entropy, _ = scored[:3]
+                new_mean = scored[3] if want_mean and len(scored) >= 4 else None
                 new_logp_t = new_logp.transpose(0, 1).to(dtype=torch.float32)
                 new_ent_t = new_entropy.transpose(0, 1).to(dtype=torch.float32)
                 log_ratio = new_logp_t - mb_old_logp
@@ -1197,6 +1222,24 @@ class RecurrentPPO:
                 entropy = (new_ent_t * mb_keep).sum() / keep_denom
                 entropy_loss = -ent_coef * entropy
                 policy_loss = surrogate_loss + entropy_loss
+                caps_spatial = policy_loss.new_zeros(())
+                if new_mean is not None and self.caps_spatial_coef > 0.0:
+                    noise = torch.randn_like(obs_seq) * self.caps_spatial_std
+                    spat_out = evaluate_actions_sequence(
+                        self.actor,
+                        obs_seq + noise,
+                        cond,
+                        hidden,
+                        act_seq,
+                        reset_mask=reset_seq,
+                        pre_tanh=pre_seq,
+                        return_mean=True,
+                    )
+                    if len(spat_out) >= 4:
+                        caps_spatial = caps_spatial_loss(new_mean, spat_out[3])
+                        policy_loss = (
+                            policy_loss + self.caps_spatial_coef * caps_spatial
+                        )
                 if not torch.isfinite(policy_loss.detach()):
                     continue
                 policy_loss.backward()
@@ -1217,6 +1260,7 @@ class RecurrentPPO:
                 metric_sums["entropy"] += float(entropy.detach())
                 metric_sums["clip_fraction"] += float(clip_frac.detach())
                 metric_sums["actor_grad_norm"] += float(actor_grad_norm)
+                metric_sums["caps_spatial_loss"] += float(caps_spatial.detach())
                 actor_steps += 1
 
                 with torch.no_grad():
@@ -1442,6 +1486,7 @@ class RecurrentPPO:
             rollback_stop_requested=rollback_stop_requested,
             actor_kl_rejection_reason=actor_kl_rejection_reason,
             actor_kl_warmup_active=actor_kl_warmup_active,
+            caps_spatial_loss=metric_sums["caps_spatial_loss"] / actor_denom,
             rollback_free_accepted_updates=self.rollback_free_accepted_updates,
             telemetry=telemetry,
         )

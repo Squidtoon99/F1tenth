@@ -48,7 +48,7 @@ REWARD_TOTAL_CLAMP = 100.0
 
 # Estimable dynamics defaults (F1TENTH-ish); not imported from training/.
 # Matches VehicleParams.mass, the physics default (sim/vehicle.py).
-DEFAULT_MASS_KG = 3.74
+DEFAULT_MASS_KG = 3.444
 MASS_KG_RANGE = (3.0, 4.0)
 
 PASSING_GATE_AHEAD_M = 40.0

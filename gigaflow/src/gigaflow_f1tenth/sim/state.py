@@ -11,7 +11,11 @@ import warp as wp
 
 from gigaflow_f1tenth.config import ExperimentConfig
 from gigaflow_f1tenth.sim.layout_local import SENSOR_OBS_DIM
-from gigaflow_f1tenth.sim.vehicle import VehicleBuffers, VehicleParams
+from gigaflow_f1tenth.sim.vehicle import (
+    STEER_RATE_UNBOUNDED,
+    VehicleBuffers,
+    VehicleParams,
+)
 
 
 @dataclass(frozen=True)
@@ -69,10 +73,15 @@ class SoaArrays:
     vy: torch.Tensor
     yaw_rate: torch.Tensor
     steer: torch.Tensor
-    effort_state: torch.Tensor
+    steer_logical: torch.Tensor
+    i_drive: torch.Tensor
+    i_brake: torch.Tensor
+    i_drive_cmd: torch.Tensor
+    i_brake_cmd: torch.Tensor
     applied_effort: torch.Tensor
     ax: torch.Tensor
     ay: torch.Tensor
+    imu_gz: torch.Tensor
     omega: torch.Tensor
     mass: torch.Tensor
     mu: torch.Tensor
@@ -80,6 +89,12 @@ class SoaArrays:
     steer_scale: torch.Tensor
     accel_scale: torch.Tensor
     vmax_scale: torch.Tensor
+    izz: torch.Tensor
+    c_f: torch.Tensor
+    c_r: torch.Tensor
+    steer_lag: torch.Tensor
+    steer_rate: torch.Tensor
+    steer_gain: torch.Tensor
     frenet_s: torch.Tensor
     frenet_ey: torch.Tensor
     frenet_segment: torch.Tensor
@@ -108,10 +123,14 @@ class SoaArrays:
     stalled_steps: torch.Tensor
     executed_long_0: torch.Tensor
     executed_long_1: torch.Tensor
+    executed_long_2: torch.Tensor
     executed_steer_0: torch.Tensor
     executed_steer_1: torch.Tensor
     executed_steer_2: torch.Tensor
     executed_steer_3: torch.Tensor
+    executed_steer_4: torch.Tensor
+    executed_steer_5: torch.Tensor
+    executed_steer_6: torch.Tensor
 
 
 class SimulatorBuffers:
@@ -152,22 +171,31 @@ class SimulatorBuffers:
         self.vy = f32()
         self.yaw_rate = f32()
         self.steer = f32()
-        self.effort_state = f32()
+        self.steer_logical = f32()
+        self.i_drive = f32()
+        self.i_brake = f32()
+        self.i_drive_cmd = f32()
+        self.i_brake_cmd = f32()
         self.applied_effort = f32()
         self.ax = f32()
         self.ay = f32()
+        self.imu_gz = f32()
         self.omega = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
         self.slip_ratio = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
         self.slip_angle = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
         self.load_ratio = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
-        self.fx_lag = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
-        self.fy_lag = wp.zeros(n, dtype=wp.vec4f, device=self.wp_device)
         self.mass = f32()
         self.mu = f32()
         self.drive_scale = f32()
         self.steer_scale = f32()
         self.accel_scale = f32()
         self.vmax_scale = f32()
+        self.izz = f32()
+        self.c_f = f32()
+        self.c_r = f32()
+        self.steer_lag = f32()
+        self.steer_rate = f32()
+        self.steer_gain = f32()
 
         self.frenet_s = f32()
         self.frenet_ey = f32()
@@ -200,10 +228,14 @@ class SimulatorBuffers:
         self.stalled_steps = i32()
         self.executed_long_0 = f32()
         self.executed_long_1 = f32()
+        self.executed_long_2 = f32()
         self.executed_steer_0 = f32()
         self.executed_steer_1 = f32()
         self.executed_steer_2 = f32()
         self.executed_steer_3 = f32()
+        self.executed_steer_4 = f32()
+        self.executed_steer_5 = f32()
+        self.executed_steer_6 = f32()
 
         # Broadphase scratch (fixed capacity).
         max_pairs = max(n * max(cfg.worlds.max_agents_per_world, 1), 1)
@@ -236,22 +268,31 @@ class SimulatorBuffers:
         buf.vy = self.vy
         buf.yaw_rate = self.yaw_rate
         buf.steer = self.steer
-        buf.effort_state = self.effort_state
+        buf.steer_logical = self.steer_logical
+        buf.i_drive = self.i_drive
+        buf.i_brake = self.i_brake
+        buf.i_drive_cmd = self.i_drive_cmd
+        buf.i_brake_cmd = self.i_brake_cmd
         buf.applied_effort = self.applied_effort
         buf.ax = self.ax
         buf.ay = self.ay
+        buf.imu_gz = self.imu_gz
         buf.omega = self.omega
         buf.slip_ratio = self.slip_ratio
         buf.slip_angle = self.slip_angle
         buf.load_ratio = self.load_ratio
-        buf.fx_lag = self.fx_lag
-        buf.fy_lag = self.fy_lag
         buf.mass = self.mass
         buf.mu = self.mu
         buf.drive_scale = self.drive_scale
         buf.steer_scale = self.steer_scale
         buf.accel_scale = self.accel_scale
         buf.vmax_scale = self.vmax_scale
+        buf.izz = self.izz
+        buf.c_f = self.c_f
+        buf.c_r = self.c_r
+        buf.steer_lag = self.steer_lag
+        buf.steer_rate = self.steer_rate
+        buf.steer_gain = self.steer_gain
         return buf
 
     def _wp_to_torch(self, arr) -> torch.Tensor:
@@ -277,10 +318,15 @@ class SimulatorBuffers:
             vy=self._wp_to_torch(self.vy),
             yaw_rate=self._wp_to_torch(self.yaw_rate),
             steer=self._wp_to_torch(self.steer),
-            effort_state=self._wp_to_torch(self.effort_state),
+            steer_logical=self._wp_to_torch(self.steer_logical),
+            i_drive=self._wp_to_torch(self.i_drive),
+            i_brake=self._wp_to_torch(self.i_brake),
+            i_drive_cmd=self._wp_to_torch(self.i_drive_cmd),
+            i_brake_cmd=self._wp_to_torch(self.i_brake_cmd),
             applied_effort=self._wp_to_torch(self.applied_effort),
             ax=self._wp_to_torch(self.ax),
             ay=self._wp_to_torch(self.ay),
+            imu_gz=self._wp_to_torch(self.imu_gz),
             omega=self._wp_to_torch(self.omega),
             mass=self._wp_to_torch(self.mass),
             mu=self._wp_to_torch(self.mu),
@@ -288,6 +334,12 @@ class SimulatorBuffers:
             steer_scale=self._wp_to_torch(self.steer_scale),
             accel_scale=self._wp_to_torch(self.accel_scale),
             vmax_scale=self._wp_to_torch(self.vmax_scale),
+            izz=self._wp_to_torch(self.izz),
+            c_f=self._wp_to_torch(self.c_f),
+            c_r=self._wp_to_torch(self.c_r),
+            steer_lag=self._wp_to_torch(self.steer_lag),
+            steer_rate=self._wp_to_torch(self.steer_rate),
+            steer_gain=self._wp_to_torch(self.steer_gain),
             frenet_s=self._wp_to_torch(self.frenet_s),
             frenet_ey=self._wp_to_torch(self.frenet_ey),
             frenet_segment=self._wp_to_torch(self.frenet_segment),
@@ -316,10 +368,14 @@ class SimulatorBuffers:
             stalled_steps=self._wp_to_torch(self.stalled_steps),
             executed_long_0=self._wp_to_torch(self.executed_long_0),
             executed_long_1=self._wp_to_torch(self.executed_long_1),
+            executed_long_2=self._wp_to_torch(self.executed_long_2),
             executed_steer_0=self._wp_to_torch(self.executed_steer_0),
             executed_steer_1=self._wp_to_torch(self.executed_steer_1),
             executed_steer_2=self._wp_to_torch(self.executed_steer_2),
             executed_steer_3=self._wp_to_torch(self.executed_steer_3),
+            executed_steer_4=self._wp_to_torch(self.executed_steer_4),
+            executed_steer_5=self._wp_to_torch(self.executed_steer_5),
+            executed_steer_6=self._wp_to_torch(self.executed_steer_6),
         )
 
     @property
@@ -357,8 +413,12 @@ class SimulatorBuffers:
         self._torch.steer_scale.fill_(1.0)
         self._torch.accel_scale.fill_(1.0)
         self._torch.vmax_scale.fill_(1.0)
-        ones = torch.ones(n, 4, device=self.torch_device, dtype=torch.float32)
-        # load_ratio default 1 via warp array init is zero; set via numpy copy.
+        self._torch.izz.fill_(float(params.izz))
+        c_f, c_r = params.axle_stiffness()
+        self._torch.c_f.fill_(float(c_f))
+        self._torch.c_r.fill_(float(c_r))
+        self._torch.steer_lag.fill_(float(params.t_delta))
+        self._torch.steer_rate.fill_(float(STEER_RATE_UNBOUNDED))
+        self._torch.steer_gain.fill_(float(params.steer_gain))
         lr = np.ones((n, 4), dtype=np.float32)
         wp.copy(self.load_ratio, wp.array(lr, dtype=wp.vec4f, device=self.wp_device))
-        del ones

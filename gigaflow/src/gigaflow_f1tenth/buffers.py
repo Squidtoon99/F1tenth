@@ -62,7 +62,23 @@ STATE_INDEX = {
     "omega_2": 42,
     "omega_3": 43,
     "frenet_segment": 44,
+    "steer_logical": 45,
+    "i_drive": 46,
+    "i_brake": 47,
+    "i_drive_cmd": 48,
+    "i_brake_cmd": 49,
+    "c_f": 50,
+    "c_r": 51,
+    "izz": 52,
+    "steer_gain": 53,
+    "steer_lag": 54,
+    "executed_long_2": 55,
+    "executed_steer_4": 56,
+    "executed_steer_5": 57,
+    "executed_steer_6": 58,
 }
+
+assert max(STATE_INDEX.values()) + 1 == AGENT_STATE_DIM
 
 
 @dataclass(frozen=True)
@@ -200,6 +216,20 @@ def pack_compact_agent_state(arrays: Any) -> Tensor:
     out[:, 39] = arrays.executed_steer_3.to(dtype=torch.float32)
     out[:, 40:44] = arrays.omega.to(dtype=torch.float32)
     out[:, 44] = arrays.frenet_segment.to(dtype=torch.float32)
+    out[:, 45] = arrays.steer_logical.to(dtype=torch.float32)
+    out[:, 46] = arrays.i_drive.to(dtype=torch.float32)
+    out[:, 47] = arrays.i_brake.to(dtype=torch.float32)
+    out[:, 48] = arrays.i_drive_cmd.to(dtype=torch.float32)
+    out[:, 49] = arrays.i_brake_cmd.to(dtype=torch.float32)
+    out[:, 50] = arrays.c_f.to(dtype=torch.float32)
+    out[:, 51] = arrays.c_r.to(dtype=torch.float32)
+    out[:, 52] = arrays.izz.to(dtype=torch.float32)
+    out[:, 53] = arrays.steer_gain.to(dtype=torch.float32)
+    out[:, 54] = arrays.steer_lag.to(dtype=torch.float32)
+    out[:, 55] = arrays.executed_long_2.to(dtype=torch.float32)
+    out[:, 56] = arrays.executed_steer_4.to(dtype=torch.float32)
+    out[:, 57] = arrays.executed_steer_5.to(dtype=torch.float32)
+    out[:, 58] = arrays.executed_steer_6.to(dtype=torch.float32)
     return out
 
 
@@ -260,6 +290,20 @@ def unpack_compact_agent_state(state: Tensor, arrays: Any) -> None:
     arrays.frenet_segment.copy_(
         s[:, 44].round().to(dtype=arrays.frenet_segment.dtype)
     )
+    arrays.steer_logical.copy_(s[:, 45])
+    arrays.i_drive.copy_(s[:, 46])
+    arrays.i_brake.copy_(s[:, 47])
+    arrays.i_drive_cmd.copy_(s[:, 48])
+    arrays.i_brake_cmd.copy_(s[:, 49])
+    arrays.c_f.copy_(s[:, 50])
+    arrays.c_r.copy_(s[:, 51])
+    arrays.izz.copy_(s[:, 52])
+    arrays.steer_gain.copy_(s[:, 53])
+    arrays.steer_lag.copy_(s[:, 54])
+    arrays.executed_long_2.copy_(s[:, 55])
+    arrays.executed_steer_4.copy_(s[:, 56])
+    arrays.executed_steer_5.copy_(s[:, 57])
+    arrays.executed_steer_6.copy_(s[:, 58])
 
 
 class TensorRolloutBuffer:

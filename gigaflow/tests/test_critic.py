@@ -273,7 +273,7 @@ def test_track_preview_ablation_reduces_value_prediction_error():
     own preview window, exactly what a value function needs to anticipate
     corner-entry speed. Both probes are trained identically from the same
     ``pack_critic_features`` output on a real stadium track (straight and
-    constant-curvature arc zones) - one keeps only the raw 45-D compact ego
+    constant-curvature arc zones) - one keeps only the raw compact ego
     state ("agent-only": pose/velocity, no environment knowledge beyond its
     own point), the other keeps the full ego branch with the concatenated
     ordered track preview.

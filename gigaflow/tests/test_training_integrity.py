@@ -263,10 +263,14 @@ def test_async_respawn_clears_executed_command_history():
     history = (
         t.executed_long_0,
         t.executed_long_1,
+        t.executed_long_2,
         t.executed_steer_0,
         t.executed_steer_1,
         t.executed_steer_2,
         t.executed_steer_3,
+        t.executed_steer_4,
+        t.executed_steer_5,
+        t.executed_steer_6,
     )
     sim.step(actions)
     assert max(abs(float(arr[0].item())) for arr in history) > 0.0

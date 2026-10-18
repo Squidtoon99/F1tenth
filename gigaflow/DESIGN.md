@@ -42,13 +42,13 @@ Authority for shapes, units, masks, and module seams.
 | CNN projection | `256` | before condition concat into GRU |
 | Actor MLP | `[1024, 1024, 1024]` | squashed Gaussian head |
 | Critic set | `[B, N, D]` + mask `[B, N]` | unordered; masked max-pool |
-| Critic ego branch | `[B, 45 + 100]` | compact state ‖ ordered track preview (never pooled) |
+| Critic ego branch | `[B, 59 + 100]` | compact state ‖ ordered track preview (never pooled) |
 | Track preview | `[B, K=20, 5]` flattened to 100 | ego-frame (x, y), right/left half-width, curvature; nearest-first |
 | World slots | `S = num_worlds * max_agents_per_world` | flattened `(world, slot)` |
 | Compact rollout | state/next_state/actions/rewards/masks/seeds/h0/obs digest | **no** full obs storage |
-| Compact state | `[S, 45]` | pose/dynamics/corruption/active/command history/wheel `omega`/`frenet_segment` |
+| Compact state | `[S, 59]` | pose/V2 internals/corruption/active/command history/wheel `omega`/`frenet_segment` |
 
-Cadence: `sim_dt = 0.005 s`, `control_interval = 20`, `control_hz = 10`.  
+Cadence: `sim_dt = 0.005 s`, `control_interval = 10`, `control_hz = 20`.  
 Vehicle footprint: `0.568 × 0.296 m`.  
 Pinned upstream tracks: **23** (`PINNED_UPSTREAM_TRACK_COUNT`).
 

@@ -125,7 +125,7 @@ def test_production_configs_use_scale_adjusted_ppo(name: str):
     assert cfg.ppo.target_kl == 0.0
     assert cfg.ppo.learning_rate == pytest.approx(1.0e-4)
     assert cfg.ppo.num_epochs == 3
-    assert cfg.ppo.rollout_length == 128
+    assert cfg.ppo.rollout_length == 256
     assert cfg.ppo.clip_ratio == pytest.approx(0.2)
     assert cfg.ppo.ent_coef == pytest.approx(0.01)
     assert cfg.ppo.vf_coef == pytest.approx(0.5)

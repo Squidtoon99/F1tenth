@@ -24,7 +24,7 @@ def test_encode_hello_includes_track_catalog():
             checkpoint="actor.pt",
             seed=0,
             device="cpu",
-            control_hz=10.0,
+            control_hz=20.0,
             car_length=0.568,
             car_width=0.296,
             car_height=0.24992,

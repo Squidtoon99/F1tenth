@@ -33,7 +33,7 @@ python -m gigaflow_f1tenth validate-config --config configs/default.yaml
 ```
 
 Startup validation checks sensor layout parity (1097-D), control cadence
-(`20 × 0.005 s = 10 Hz`), PPO constraints, ablation seams, and a rough memory budget.
+(`10 × 0.005 s = 20 Hz`), PPO constraints, ablation seams, and a rough memory budget.
 
 ## Track atlas preparation
 
