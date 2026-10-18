@@ -1296,23 +1296,37 @@ def centerline_tracking_action(
     lateral_offset: wp.float32,
 ) -> wp.vec2f:
     track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
-    heading = track_heading_ahead(frenet, track, wp.float32(1.0))
+    abs_speed = wp.abs(track_speed)
+    lookahead = wp.min(wp.float32(2.5), wp.float32(0.5) * abs_speed)
+    heading_now = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    if lookahead < 0.05:
+        heading = heading_now
+    else:
+        heading = track_heading_ahead(frenet, track, lookahead)
     heading_error = wrap_angle(vehicle.yaw - heading)
     ey_corr = frenet.ey - lateral_offset
     cross_track = wp.atan(
         kp_lateral
         * ey_corr
-        / wp.max(wp.abs(track_speed) + 0.5, 0.5)
+        / wp.max(abs_speed + 0.5, 0.5)
     )
     steering_target = wp.clamp(
-        -(2.0 * kp_heading * heading_error + cross_track),
+        -(1.4 * kp_heading * heading_error + cross_track),
         -sim.max_steer,
         sim.max_steer,
     )
     steering = (steering_target - vehicle.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    speed_cmd = curvature_limited_speed(frenet, track, target_speed)
+    steer_scale = wp.max(
+        wp.float32(0.3),
+        1.0
+        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
+    )
+    speed_cmd = wp.min(
+        steer_scale * target_speed,
+        curvature_limited_speed(frenet, track, target_speed),
+    )
     throttle = kp_speed * (speed_cmd - track_speed)
     return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
