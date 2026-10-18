@@ -65,7 +65,7 @@ from config import (
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.sensors import ACTOR_LIDAR_DIM
-from f1tenth_env.utils import episode_length_for_track
+from f1tenth_env.utils import episode_length_for_track, track_reset_speed_mps
 from evaluation import actor_is_recurrent, deterministic_rollout
 from fixed_opponents import FixedChampionManager, load_opponent_pool
 from dreamer import DreamerTrainer
@@ -1363,11 +1363,13 @@ def apply_scenario_patch(cfg: dict, scenario: dict, workspace_dir: str) -> dict:
         merged["env"]["episode_length"] = episode_length_for_track(
             track=merged["env"]["track"],
             workspace_dir=workspace_dir,
-            ref_lap_speed_mps=float(
-                merged["env"].get("expected_lap_speed_mps", 3.5)
-            ),
-            lap_multiplier=float(merged["env"].get("episode_lap_multiplier", 3.0)),
         )
+    if "track" in env_patch:
+        lo, hi = track_reset_speed_mps(merged["env"]["track"])
+        if "reset_speed_min_mps" not in env_patch:
+            merged["env"]["reset_speed_min_mps"] = lo
+        if "reset_speed_max_mps" not in env_patch:
+            merged["env"]["reset_speed_max_mps"] = hi
     return merged
 
 
@@ -1681,6 +1683,17 @@ def validate_config_patch(
                 f"{'a mapping' if ref_is_map else 'a scalar'}, got "
                 f"{'a mapping' if val_is_map else 'a scalar'}"
             )
+        if path == "reward.reward_scales" and key == "tal":
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) != 0.0
+            ):
+                raise ValueError(
+                    "reward.reward_scales.tal must be 0; TAL including the "
+                    "constant speed target was removed"
+                )
         if ref_is_map:
             validate_config_patch(value, ref_val, loc)
 
@@ -1837,14 +1850,18 @@ def build_config(
     cli_override("selfplay_anchor_prob", "selfplay", "anchor_prob")
 
     # Episode horizon: patch value or track-derived default (no CLI duplicate).
-    if not (patch and "episode_length" in patch.get("env", {})):
+    env_patch = (patch or {}).get("env", {})
+    if "episode_length" not in env_patch:
         workspace_dir = str(Path(__file__).resolve().parent)
         cfg["env"]["episode_length"] = episode_length_for_track(
             track=cfg["env"]["track"],
             workspace_dir=workspace_dir,
-            ref_lap_speed_mps=float(cfg["env"].get("expected_lap_speed_mps", 3.5)),
-            lap_multiplier=float(cfg["env"].get("episode_lap_multiplier", 3.0)),
         )
+    lo, hi = track_reset_speed_mps(cfg["env"]["track"])
+    if "reset_speed_min_mps" not in env_patch:
+        cfg["env"]["reset_speed_min_mps"] = lo
+    if "reset_speed_max_mps" not in env_patch:
+        cfg["env"]["reset_speed_max_mps"] = hi
 
     cfg["env"]["domain_randomization"] = {
         **cfg["env"]["domain_randomization"],

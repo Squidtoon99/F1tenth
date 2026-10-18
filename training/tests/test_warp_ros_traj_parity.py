@@ -36,4 +36,4 @@ def test_warp_ros_replay_matches_training_obs_and_action(warp_runtime):
     assert report["first_obs"] is None, report["first_obs"]
     assert report["first_raw_action"] is None, report["first_raw_action"]
     assert report["first_realized"] is None, report["first_realized"]
-    assert report["spawn_speed_mps"] == pytest.approx(3.5)
+    assert report["spawn_speed_mps"] == pytest.approx(1.5)

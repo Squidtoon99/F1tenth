@@ -87,3 +87,8 @@ trade-off. Routine work is captured by the PR instead (see
   (Cartesian-polar + LS3C), imagination-trained actor, encoder+actor deploy.
 - [0041](0041-tinylidarnet-encoder.md) — TinyLidarNet 1D CNN on raw 1081
   beams; GRU and PPO kept; no 32-bin pool.
+- [0042](0042-sim-ready-v2-fitted-courtyard-plant.md) — Austin v6 and courtyard
+  PPO use the frozen SIM_READY_V2 bag-fit plant; Galaxy/defaults stay unfitted.
+- [0042](0042-drop-fixed-speed-target.md) — Drop TAL and the 3.5 m/s horizon
+  constant; freeze per-track episode seconds; start speeds are per-track
+  (courtyard rest, Austin 2 m/s flying / 0–5 reset).
