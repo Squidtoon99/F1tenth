@@ -18,6 +18,7 @@
     "reset_stationary_probability": 0.0,
     "reset_post_brake_history_probability": 0.5,
     "reset_speed_min_mps": 0.0,
+    "reset_speed_max_mps": 5.0,
     "i_drive_max_a": 80.0,
     "i_brake_max_a": 40.0,
     "i_slew_a_per_s": 200.0,
@@ -114,7 +115,7 @@
   ],
   "reward": {
     "reward_scales": {
-      "tal": 0.2
+      "tal": 0.0
     }
   }
 }

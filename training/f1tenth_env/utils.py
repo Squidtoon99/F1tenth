@@ -268,30 +268,80 @@ def track_loop_length(centerline: np.ndarray) -> float:
     return float(np.linalg.norm(seg, axis=-1).sum())
 
 
+# Episode timeout in seconds. Horizon only — not a reward and not a spawn.
+# Policy and reward code must not read this table. Values are the durations
+# in effect on 2026-10-16 (then max(60, loop_m / 3.5 * 3) on the bundled
+# centerlines): Austin 421.04 m → 360.89 s, IV_2026_SIM 282.42 m → 242.07 s,
+# ECSS_Floor 122.69 m → 105.16 s; courtyard_2 and Galaxy_1 sit on the 60 s
+# floor. Frozen so dropping the 3.5 m/s constant does not shorten episodes.
+TRACK_EPISODE_HORIZON_S = {
+    "Austin": 360.893132534167,
+    "IV_2026_SIM": 242.073798428679,
+    "courtyard_2": 60.0,
+    "Galaxy_1": 60.0,
+    "ECSS_Floor": 105.163347080419,
+}
+
+# Training reset envelope (m/s). Not a reward and not a target pace. Policy
+# and reward code must not read this table. 7 m/s is the on-car overspeed
+# brake, not a spawn. Courtyard radii cannot take 3.5 m/s (ADR 0030).
+TRACK_RESET_SPEED_MPS = {
+    "Austin": (0.0, 5.0),
+    "IV_2026_SIM": (1.0, 3.0),
+    "ECSS_Floor": (0.0, 2.5),
+    "Galaxy_1": (0.0, 1.5),
+    "courtyard_2": (0.0, 1.0),
+}
+
+# Flying-eval spawn (m/s). Standing eval is always rest. Deterministic; not
+# sampled. Not a reward. Unknown tracks spawn from rest, never at 7 m/s.
+TRACK_FLYING_SPAWN_MPS = {
+    "Austin": 2.0,
+    "IV_2026_SIM": 1.5,
+    "ECSS_Floor": 1.0,
+    "Galaxy_1": 0.5,
+    "courtyard_2": 0.0,
+}
+
+
+def _track_table_key(track: str | None) -> str | None:
+    if track is None:
+        return None
+    name = str(track)
+    if name.endswith(".csv"):
+        name = Path(name).name.replace("_centerline.csv", "")
+    return name
+
+
 def episode_length_for_track(
     track: str | None,
-    workspace_dir: str,
-    ref_lap_speed_mps: float = 3.5,
-    lap_multiplier: float = 3.0,
-    min_s: float = 60.0,
+    workspace_dir: str = "",
 ) -> float:
-    """Episode length (seconds) sized to ``lap_multiplier`` laps at a reference pace.
+    """Episode timeout (seconds) for ``track``. Horizon only, not a pace."""
+    del workspace_dir
+    name = _track_table_key(track)
+    if name is None or name not in TRACK_EPISODE_HORIZON_S:
+        raise ValueError(
+            f"no frozen episode horizon for track {track!r}; set env.episode_length"
+        )
+    return float(TRACK_EPISODE_HORIZON_S[name])
 
-    GT Sophy base scenarios ran for a fixed 150 s; here we derive a comparable
-    multi-lap horizon from the actual centerline length so each track gets enough
-    time for several laps plus overtakes instead of the previous single-lap 45 s.
 
-    Reads only the centerline CSV (no device tensors), so it is safe to call
-    before the runtime dtype/device is configured during config construction.
-    """
-    data = resolve_track_data(track, workspace_dir)
-    if data is None or data.dtype.names is None:
-        raise ValueError(f"Could not parse track csv data from {track}")
-    centerline = np.stack([data["x_m"], data["y_m"]], axis=-1).astype(np.float32)
-    length_m = track_loop_length(centerline)
-    return max(
-        float(min_s), (length_m / float(ref_lap_speed_mps)) * float(lap_multiplier)
-    )
+def track_reset_speed_mps(track: str | None) -> tuple[float, float]:
+    """Training reset [min, max] m/s for ``track``. Not a reward."""
+    name = _track_table_key(track)
+    if name is None or name not in TRACK_RESET_SPEED_MPS:
+        return (0.0, 1.0)
+    lo, hi = TRACK_RESET_SPEED_MPS[name]
+    return (float(lo), float(hi))
+
+
+def track_flying_spawn_mps(track: str | None) -> float:
+    """Flying-eval spawn m/s for ``track``. Rest if unknown. Not a reward."""
+    name = _track_table_key(track)
+    if name is None or name not in TRACK_FLYING_SPAWN_MPS:
+        return 0.0
+    return float(TRACK_FLYING_SPAWN_MPS[name])
 
 
 def compute_track_boundaries(

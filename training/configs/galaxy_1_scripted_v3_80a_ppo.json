@@ -16,6 +16,7 @@
     "ego_speed_cap_mps": 0.0,
     "reset_stationary_probability": 0.25,
     "reset_speed_min_mps": 0.0,
+    "reset_speed_max_mps": 1.5,
     "i_drive_max_a": 80.0,
     "i_brake_max_a": 40.0,
     "i_slew_a_per_s": 200.0,

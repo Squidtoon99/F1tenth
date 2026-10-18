@@ -52,6 +52,7 @@ from .utils import (
     build_warp_track_data,
     load_occupancy_distance_field,
     load_track_state,
+    track_reset_speed_mps,
 )
 
 
@@ -688,9 +689,6 @@ class WarpF1tenthEnv:
         )
         params.steering_change = float(scales.get("steering_change", 0.0))
         params.steering_history = float(scales.get("steering_history", 0.0))
-        params.max_steer = float(
-            self.env_cfg.get("delta_max", self.env_cfg.get("max_steer", 0.33))
-        )
         params.steering_c_s = float(
             self.reward_cfg.get("steering_history_c_s", 182.883569)
         ) / cadence
@@ -719,14 +717,12 @@ class WarpF1tenthEnv:
             "continuous": 1,
             "continuous_quadratic": 2,
         }[wall_cost_mode]
-        params.tal_scale = float(scales.get("tal", 0.0))
-        params.tal_v_ref = float(
-            self.env_cfg.get("expected_lap_speed_mps", 3.5)
-        )
-        params.tal_kp_lateral = float(self.env_cfg.get("opponent_kp_ey", 1.0))
-        params.tal_kp_heading = float(
-            self.env_cfg.get("opponent_kh_heading", 1.0)
-        )
+        tal_scale = float(scales.get("tal", 0.0))
+        if tal_scale != 0.0:
+            raise ValueError(
+                "reward.reward_scales.tal must be 0; TAL including the "
+                "constant speed target was removed"
+            )
         proximity = float(self.reward_cfg.get("wall_proximity_m", 0.0))
         if not math.isfinite(proximity) or proximity < 0.0:
             raise ValueError(
@@ -788,12 +784,9 @@ class WarpF1tenthEnv:
         params.spawn_margin = float(
             self.env_cfg.get("reset_spawn_margin_m", 0.2)
         )
-        params.speed_min = float(
-            self.env_cfg.get("reset_speed_min_mps", 1.0)
-        )
-        params.speed_max = float(
-            self.env_cfg.get("reset_speed_max_mps", 4.0)
-        )
+        lo, hi = track_reset_speed_mps(self.env_cfg.get("track"))
+        params.speed_min = float(self.env_cfg.get("reset_speed_min_mps", lo))
+        params.speed_max = float(self.env_cfg.get("reset_speed_max_mps", hi))
         params.stationary_probability = float(
             self.env_cfg.get("reset_stationary_probability", 0.0)
         )
@@ -1641,7 +1634,7 @@ class WarpF1tenthEnv:
     def centerline_base_action(self, target_speed=None):
         if target_speed is None:
             target_speed = float(
-                self.env_cfg.get("expected_lap_speed_mps", 3.5)
+                self.env_cfg.get("opponent_target_speed", 2.5)
             )
         if self._base_action is None:
             self._base_action = torch.zeros(
