@@ -192,3 +192,75 @@ def test_scripted_opponent_tracks_centerline_and_speed(
             )
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("target_speed", [8.0, 9.0])
+def test_scripted_opponent_austin_holds_high_speed(warp_runtime, target_speed):
+    num_envs = 2
+    control_interval = int(DEFAULT_CONFIG["env"]["control_interval"])
+    control_dt = control_interval * float(DEFAULT_CONFIG["env"]["sim_dt"])
+    cfg = _build_cfg(track="Austin", target_speed=target_speed, gap_m=25.0)
+    cfg["env"]["episode_length"] = 180.0
+
+    torch.manual_seed(0)
+    env = _make_env(cfg, num_envs)
+    try:
+        env.reset()
+        track_len = float(env.track_length)
+        prev_s = env.extras["metrics"]["opponent_s"].clone()
+        body_speeds: list[torch.Tensor] = []
+        clearances: list[np.ndarray] = []
+        forward_progress = torch.zeros((num_envs,), dtype=torch.float32)
+        lap_time = torch.full((num_envs,), float("nan"))
+        warmup_steps = 200
+        measure_steps = 2600
+        for step_i in range(warmup_steps + measure_steps):
+            actions = torch.zeros(num_envs, 2, device=env.device)
+            _obs, _reward, _done, extras = env.step(
+                actions, n_steps=control_interval
+            )
+            s_now = extras["metrics"]["opponent_s"]
+            ds = _wrap_ds(s_now - prev_s, track_len)
+            prev_s = s_now.clone()
+            if step_i < warmup_steps:
+                continue
+            elapsed = (step_i - warmup_steps + 1) * control_dt
+            forward_progress += torch.clamp(ds, min=0.0)
+            unfinished = torch.isnan(lap_time) & (forward_progress >= track_len)
+            lap_time = torch.where(
+                unfinished,
+                torch.full_like(lap_time, elapsed),
+                lap_time,
+            )
+            opp = env._opponent.tensor
+            body_v = torch.stack([opp["vx"], opp["vy"]], dim=-1)
+            body_speeds.append(torch.linalg.norm(body_v, dim=-1))
+            clearances.append(_opponent_corridor_clearance(env))
+
+        mean_body_speed = float(torch.stack(body_speeds).mean().item())
+        min_clearance = float(np.stack(clearances).min())
+        mean_progress = float(forward_progress.mean().item())
+        assert min_clearance > -0.6, (
+            f"Austin {target_speed} m/s: left the track / cut infield "
+            f"(min clearance {min_clearance:.3f} m)"
+        )
+        assert torch.isfinite(lap_time).all(), (
+            f"Austin {target_speed} m/s: opponent did not complete a lap "
+            f"(progress {mean_progress:.1f} m / {track_len:.1f} m)"
+        )
+        mean_lap = float(lap_time.mean().item())
+        max_lap = track_len / 3.0
+        assert mean_lap <= max_lap, (
+            f"Austin {target_speed} m/s: lap {mean_lap:.2f} s slower than "
+            f"{max_lap:.2f} s"
+        )
+        assert mean_body_speed > 3.0, (
+            f"Austin {target_speed} m/s: mean speed {mean_body_speed:.3f} "
+            f"below 3 m/s"
+        )
+        assert mean_body_speed < target_speed + 1.5, (
+            f"Austin {target_speed} m/s: mean speed {mean_body_speed:.3f} "
+            f"overshot target"
+        )
+    finally:
+        env.close()

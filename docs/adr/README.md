@@ -91,3 +91,5 @@ trade-off. Routine work is captured by the PR instead (see
   PPO use the frozen SIM_READY_V2 bag-fit plant; Galaxy/defaults stay unfitted.
 - [0043](0043-gigaflow-track-affine-sampling.md) — Each reset draws one public
   f1tenth_racetracks map and one of six affine variants; courtyard/IV stay out.
+- [0044](0044-curvature-limited-scripted-opponent.md) — Scripted centerline
+  follower uses curvature-preview speed and steer feedforward (8–9 m/s Austin).
