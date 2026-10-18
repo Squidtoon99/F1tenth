@@ -35,6 +35,7 @@ from f1tenth_policy import (
     actor_architecture_from_module,
     actor_from_architecture,
     architectures_match,
+    normalize_actor_architecture,
     build_sensor_artifact_payload,
     deploy_actor_state_dict,
     validate_sensor_policy_artifact,
@@ -102,7 +103,11 @@ from qrsac.spinningup.core import (
 
 # Compatibility alias used by recurrent actor / artifact tests.
 reference_actor_from_architecture = actor_from_architecture
-_REEXPORTS = (architectures_match, SENSOR_POLICY_FORMAT_VERSION)
+_REEXPORTS = (
+    architectures_match,
+    normalize_actor_architecture,
+    SENSOR_POLICY_FORMAT_VERSION,
+)
 
 LOGGER_NAME = "standalone_trainer"
 RESUME_STATE_FILENAME = "resume_state.pt"

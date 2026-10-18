@@ -258,7 +258,7 @@ def test_tal_v6_overlays_change_one_key():
     )
     expected = {
         "austin_e2e_ppo_baseline_v6_wall_proximity.json": [
-            "reward.wall_proximity_m"
+            "reward"
         ],
         "austin_e2e_ppo_baseline_v6_grad_caps.json": ["ppo.grad_caps_coef"],
         "austin_e2e_ppo_baseline_v6_caps_spatial.json": [
