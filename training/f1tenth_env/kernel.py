@@ -1257,22 +1257,29 @@ def curvature_limited_speed(
     target_speed: wp.float32,
 ) -> wp.float32:
     a_lat = wp.float32(5.5)
-    a_brake = wp.float32(5.0)
-    chord = wp.float32(2.0)
+    a_brake = wp.float32(2.0)
+    horizon = wp.float32(32.0)
     min_v2 = target_speed * target_speed
     heading_prev = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    prev_s = wp.float32(0.0)
-    for i in range(16):
-        sample_s = chord * wp.float32(i + 1)
-        heading = track_heading_ahead(frenet, track, sample_s)
-        ds = wp.max(sample_s - prev_s, 0.2)
+    segment = frenet.segment
+    covered = wp.float32(0.0)
+    available = (1.0 - frenet.t) * track.segment_length[segment]
+    for _ in range(MAX_FORWARD_SEGMENTS):
+        if covered >= horizon:
+            break
+        heading = wp.atan2(
+            track.tangent[segment][1], track.tangent[segment][0]
+        )
+        ds = wp.max(available, 0.05)
         kappa = wp.abs(wrap_angle(heading - heading_prev)) / ds
         v_corner2 = a_lat / wp.max(kappa, 1.0e-4)
-        v_allow2 = v_corner2 + 2.0 * a_brake * sample_s
+        v_allow2 = v_corner2 + 2.0 * a_brake * wp.max(covered, 0.5)
         if v_allow2 < min_v2:
             min_v2 = v_allow2
         heading_prev = heading
-        prev_s = sample_s
+        covered = covered + available
+        segment = wrap_segment(segment + 1, track.count)
+        available = track.segment_length[segment]
     return wp.sqrt(wp.max(min_v2, 0.0))
 
 
