@@ -389,6 +389,7 @@ class WarpNAgentSimulator:
                 self._wp_track_length_slot,
                 self._wp_half_width,
                 self._wp_tangent_yaw,
+                self.buffers.width_scale,
             ],
             device=self.buffers.wp_device,
         )
@@ -524,6 +525,16 @@ class WarpNAgentSimulator:
                 0.2,
                 0.25,
                 64,
+                self.buffers.width_scale,
+                int(cfg.agents.physics_randomize),
+                float(cfg.agents.mu_range[0]),
+                float(cfg.agents.mu_range[1]),
+                float(cfg.agents.steer_gain_range[0]),
+                float(cfg.agents.steer_gain_range[1]),
+                int(cfg.agents.command_delay_substeps_range[0]),
+                int(cfg.agents.command_delay_substeps_range[1]),
+                float(self.vehicle_params.steer_gain),
+                int(self.vehicle_params.command_delay_substeps),
             ],
             device=self.buffers.wp_device,
         )
@@ -675,9 +686,15 @@ class WarpNAgentSimulator:
         t.episode_id.zero_()
         t.episode_step.zero_()
         t.progress_s.zero_()
-        self._spawn_stats = {"requested": int(counts.sum()), "realized": 0, "rejects": 0}
-
         device = self.buffers.torch_device
+        scales = np.asarray(cfg.worlds.width_scales, dtype=np.float32)
+        picked = np.random.default_rng(seed + 31).choice(scales, size=n_worlds)
+        t.width_scale.copy_(
+            torch.as_tensor(
+                np.repeat(picked, n_agents), device=device, dtype=torch.float32
+            )
+        )
+        self._spawn_stats = {"requested": int(counts.sum()), "realized": 0, "rejects": 0}
         n_slots = self.layout.num_slots
         static_mask = None
         pins: tuple[torch.Tensor, ...] | None = None
@@ -780,6 +797,7 @@ class WarpNAgentSimulator:
             existing,
             car_length=cfg.agents.car_length_m,
             car_width=cfg.agents.car_width_m,
+            width_scale=float(t.width_scale[flat].item()),
         )
         corr = sample_lidar_corruption(rng)
         wheel = float(self.vehicle_params.wheel_radius)
@@ -801,7 +819,6 @@ class WarpNAgentSimulator:
         t.ay[flat] = 0.0
         t.imu_gz[flat] = 0.0
         t.mass[flat] = float(self.vehicle_params.mass)
-        t.mu[flat] = float(self.vehicle_params.tire_mu)
         t.drive_scale[flat] = 1.0
         t.steer_scale[flat] = 1.0
         t.accel_scale[flat] = 1.0
@@ -812,7 +829,15 @@ class WarpNAgentSimulator:
         t.c_r[flat] = float(c_r)
         t.steer_lag[flat] = float(self.vehicle_params.t_delta)
         t.steer_rate[flat] = 1.0e6
-        t.steer_gain[flat] = float(self.vehicle_params.steer_gain)
+        if cfg.agents.physics_randomize:
+            t.mu[flat] = float(rng.uniform(*cfg.agents.mu_range))
+            t.steer_gain[flat] = float(rng.uniform(*cfg.agents.steer_gain_range))
+            delay_lo, delay_hi = cfg.agents.command_delay_substeps_range
+            t.command_delay[flat] = int(rng.integers(int(delay_lo), int(delay_hi) + 1))
+        else:
+            t.mu[flat] = float(self.vehicle_params.tire_mu)
+            t.steer_gain[flat] = float(self.vehicle_params.steer_gain)
+            t.command_delay[flat] = int(self.vehicle_params.command_delay_substeps)
         t.frenet_segment[flat] = int(pose["segment"])
         t.frenet_s[flat] = float(pose["s"])
         t.prev_s[flat] = float(pose["s"])
@@ -1007,6 +1032,7 @@ class WarpNAgentSimulator:
                 self.wp_offsets,
                 self.wp_track_length,
                 half_w,
+                self.buffers.width_scale,
             ],
             device=self.buffers.wp_device,
         )

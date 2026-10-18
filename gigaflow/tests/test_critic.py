@@ -318,7 +318,7 @@ def test_track_preview_ablation_reduces_value_prediction_error():
     agent_only_input = state[:, kinematic_cols]
 
     def _fit_linear_probe(
-        inputs: torch.Tensor, target: torch.Tensor, *, steps: int = 400
+        inputs: torch.Tensor, target: torch.Tensor, *, steps: int = 1200
     ) -> float:
         torch.manual_seed(0)
         probe = torch.nn.Linear(inputs.shape[-1], 1)

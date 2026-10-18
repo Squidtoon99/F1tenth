@@ -101,6 +101,7 @@ def spawn_agent_pose(
     speed_max: float = 3.0,
     yaw_jitter: float = 0.15,
     max_rejects: int = 64,
+    width_scale: float = 1.0,
 ) -> dict[str, float | int]:
     a = int(geom.offsets[track_id])
     b = int(geom.offsets[track_id + 1])
@@ -111,12 +112,13 @@ def spawn_agent_pose(
     cum = geom.cum_length[a:b]
     seg = geom.segment_length[a:b]
     count = b - a
+    scale = float(width_scale)
     for _ in range(max_rejects):
         segment = int(rng.integers(0, count))
         alpha = float(rng.random())
         following = (segment + 1) % count
-        wr = max(float(widths[segment, 0]) - spawn_margin, 0.0)
-        wl = max(float(widths[segment, 1]) - spawn_margin, 0.0)
+        wr = max(float(widths[segment, 0]) * scale - spawn_margin, 0.0)
+        wl = max(float(widths[segment, 1]) * scale - spawn_margin, 0.0)
         lateral = float(rng.uniform(-wr, wl))
         center = centerline[segment] + alpha * (
             centerline[following] - centerline[segment]
@@ -148,7 +150,12 @@ def spawn_agent_pose(
             "segment": int(fr["segment"]),
             "s": float(fr["s"]),
             "ey": float(fr["ey"]),
-            "boundary_distance": float(fr["boundary_distance"]),
+            "boundary_distance": float(
+                min(
+                    float(fr["width_left"]) * scale - float(fr["ey"]),
+                    float(fr["width_right"]) * scale + float(fr["ey"]),
+                )
+            ),
             "rejected": 0,
         }
     segment = int(rng.integers(0, count))
@@ -173,7 +180,12 @@ def spawn_agent_pose(
         "segment": int(fr["segment"]),
         "s": float(fr["s"]),
         "ey": float(fr["ey"]),
-        "boundary_distance": float(fr["boundary_distance"]),
+        "boundary_distance": float(
+            min(
+                float(fr["width_left"]) * scale - float(fr["ey"]),
+                float(fr["width_right"]) * scale + float(fr["ey"]),
+            )
+        ),
         "rejected": 1,
     }
 

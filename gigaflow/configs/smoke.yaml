@@ -34,6 +34,7 @@ agents:
   episode_seconds_min: 30.0
   episode_seconds_max: 120.0
   async_respawn: true
+  physics_randomize: false
 
 reward_conditioning:
   enabled: true

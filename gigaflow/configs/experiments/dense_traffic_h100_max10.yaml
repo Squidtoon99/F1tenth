@@ -13,11 +13,9 @@ tracks:
 worlds:
   num_worlds: 352
   max_agents_per_world: 10
-  solo_world_fraction: 0.05
-  density_bins:
-  - sparse
-  - medium
-  - dense
+  solo_world_fraction: 0.25
+  density_bins: [sparse, dense]
+  width_scales: [0.8, 1.2]
   device: cuda
 agents:
   car_length_m: 0.568

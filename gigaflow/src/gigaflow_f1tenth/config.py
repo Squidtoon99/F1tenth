@@ -65,6 +65,8 @@ class WorldsConfig:
     max_agents_per_world: int
     solo_world_fraction: float = 0.05
     density_bins: tuple[str, ...] = ("sparse", "medium", "dense")
+    # Per-world corridor scale drawn on reset_all (1.0 leaves atlas widths).
+    width_scales: tuple[float, ...] = (1.0,)
     device: str = "cuda"
     # Immobile "static opponent" slots reserved per world (paper's obstacle
     # agents); they count against max_agents_per_world rather than growing it.
@@ -93,6 +95,10 @@ class AgentsConfig:
     async_respawn: bool = True
     actor_variant: str = "gru"
     frame_stack: int = 1
+    physics_randomize: bool = True
+    mu_range: tuple[float, float] = (0.55, 0.85)
+    steer_gain_range: tuple[float, float] = (0.84, 1.26)
+    command_delay_substeps_range: tuple[int, int] = (0, 4)
 
 
 @dataclass(frozen=True)
@@ -264,6 +270,10 @@ def _from_mapping(cls: type, data: Mapping[str, Any]):
         value = data[f.name]
         if f.name in {
             "density_bins",
+            "width_scales",
+            "mu_range",
+            "steer_gain_range",
+            "command_delay_substeps_range",
             "actor_mlp_sizes",
             "seeds",
             "suite",
@@ -695,6 +705,18 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("solo_world_fraction must be in [0, 1]")
     if not w.density_bins:
         raise ConfigError("density_bins must be non-empty")
+    if not w.width_scales or any(float(s) <= 0.0 for s in w.width_scales):
+        raise ConfigError("width_scales must be positive")
+    mu_lo, mu_hi = (float(a.mu_range[0]), float(a.mu_range[1]))
+    if mu_lo <= 0.0 or mu_hi < mu_lo:
+        raise ConfigError("mu_range must be positive with lo <= hi")
+    g_lo, g_hi = (float(a.steer_gain_range[0]), float(a.steer_gain_range[1]))
+    if g_lo <= 0.0 or g_hi < g_lo:
+        raise ConfigError("steer_gain_range must be positive with lo <= hi")
+    d_lo = int(a.command_delay_substeps_range[0])
+    d_hi = int(a.command_delay_substeps_range[1])
+    if d_lo < 0 or d_hi < d_lo:
+        raise ConfigError("command_delay_substeps_range must be >= 0 with lo <= hi")
     if w.static_opponents_per_world < 0:
         raise ConfigError("static_opponents_per_world must be non-negative")
     if w.static_opponents_per_world >= w.max_agents_per_world:

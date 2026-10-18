@@ -76,6 +76,7 @@ def progress_wall_kernel(
     offsets: wp.array(dtype=wp.int32),
     track_length: wp.array(dtype=wp.float32),
     car_half_width: wp.float32,
+    width_scale: wp.array(dtype=wp.float32),
 ):
     i = wp.tid()
     if active[i] == 0:
@@ -111,10 +112,13 @@ def progress_wall_kernel(
     frenet_ey[i] = fr.ey
     frenet_segment[i] = fr.segment
     progress_s[i] = progress_s[i] + ds
-    boundary_distance[i] = fr.boundary_distance
-    # Footprint wall contact when boundary clearance < half-width.
+    scale = width_scale[i]
+    boundary_distance[i] = wp.min(
+        fr.width_left * scale - fr.ey, fr.width_right * scale + fr.ey
+    )
+    # Footprint wall contact when scaled corridor clearance < half-width.
     wall = wp.uint8(0)
-    if fr.boundary_distance < car_half_width:
+    if boundary_distance[i] < car_half_width:
         wall = wp.uint8(1)
     wall_contact[i] = wall
     # Baseline progress reward (private conditioning owned by later phase).

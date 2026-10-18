@@ -95,6 +95,8 @@ class SoaArrays:
     steer_lag: torch.Tensor
     steer_rate: torch.Tensor
     steer_gain: torch.Tensor
+    command_delay: torch.Tensor
+    width_scale: torch.Tensor
     frenet_s: torch.Tensor
     frenet_ey: torch.Tensor
     frenet_segment: torch.Tensor
@@ -196,6 +198,8 @@ class SimulatorBuffers:
         self.steer_lag = f32()
         self.steer_rate = f32()
         self.steer_gain = f32()
+        self.command_delay = i32()
+        self.width_scale = f32()
 
         self.frenet_s = f32()
         self.frenet_ey = f32()
@@ -293,6 +297,7 @@ class SimulatorBuffers:
         buf.steer_lag = self.steer_lag
         buf.steer_rate = self.steer_rate
         buf.steer_gain = self.steer_gain
+        buf.command_delay = self.command_delay
         return buf
 
     def _wp_to_torch(self, arr) -> torch.Tensor:
@@ -340,6 +345,8 @@ class SimulatorBuffers:
             steer_lag=self._wp_to_torch(self.steer_lag),
             steer_rate=self._wp_to_torch(self.steer_rate),
             steer_gain=self._wp_to_torch(self.steer_gain),
+            command_delay=self._wp_to_torch(self.command_delay),
+            width_scale=self._wp_to_torch(self.width_scale),
             frenet_s=self._wp_to_torch(self.frenet_s),
             frenet_ey=self._wp_to_torch(self.frenet_ey),
             frenet_segment=self._wp_to_torch(self.frenet_segment),
@@ -420,5 +427,7 @@ class SimulatorBuffers:
         self._torch.steer_lag.fill_(float(params.t_delta))
         self._torch.steer_rate.fill_(float(STEER_RATE_UNBOUNDED))
         self._torch.steer_gain.fill_(float(params.steer_gain))
+        self._torch.command_delay.fill_(int(params.command_delay_substeps))
+        self._torch.width_scale.fill_(1.0)
         lr = np.ones((n, 4), dtype=np.float32)
         wp.copy(self.load_ratio, wp.array(lr, dtype=wp.vec4f, device=self.wp_device))

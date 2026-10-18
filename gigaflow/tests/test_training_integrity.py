@@ -701,7 +701,7 @@ def test_lap_time_tracks_commanded_speed_on_a_circular_track():
     radius = 8.0
     atlas = make_synthetic_oval_atlas(radius=radius, max_agents=1)
     lap_distance = LAP_COMPLETION_FRACTION * float(atlas.lengths[0])
-    cfg = _lap_time_cfg(max_agents=1, soak_steps=400)
+    cfg = _lap_time_cfg(max_agents=1, soak_steps=800)
 
     laps = {}
     for speed in (2.0, 3.0):

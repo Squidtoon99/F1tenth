@@ -97,6 +97,16 @@ def async_respawn_kernel(
     spawn_margin: float,
     clearance: float,
     max_rejects: int,
+    width_scale: wp.array(dtype=wp.float32),
+    physics_randomize: int,
+    mu_lo: float,
+    mu_hi: float,
+    steer_gain_lo: float,
+    steer_gain_hi: float,
+    delay_lo: int,
+    delay_hi: int,
+    default_steer_gain: float,
+    default_delay: int,
 ):
     i = wp.tid()
     if reset_mask[i] == 0:
@@ -136,8 +146,9 @@ def async_respawn_kernel(
             segment = a + segment_local
             following = a + ((segment_local + 1) % count)
             alpha = wp.randf(rng)
-            wr = width_right[segment] - spawn_margin
-            wl = width_left[segment] - spawn_margin
+            scale = width_scale[i]
+            wr = width_right[segment] * scale - spawn_margin
+            wl = width_left[segment] * scale - spawn_margin
             if wr < 0.0:
                 wr = 0.0
             if wl < 0.0:
@@ -193,11 +204,24 @@ def async_respawn_kernel(
     vehicle.vx = speed
     store_vehicle(vehicles, i, vehicle)
     vehicles.mass[i] = default_mass
-    vehicles.mu[i] = default_mu
     vehicles.drive_scale[i] = 1.0
     vehicles.steer_scale[i] = 1.0
     vehicles.accel_scale[i] = 1.0
     vehicles.vmax_scale[i] = 1.0
+    if physics_randomize != 0:
+        vehicles.mu[i] = mu_lo + wp.randf(rng) * (mu_hi - mu_lo)
+        vehicles.steer_gain[i] = (
+            steer_gain_lo + wp.randf(rng) * (steer_gain_hi - steer_gain_lo)
+        )
+        span = delay_hi - delay_lo + 1
+        delay = delay_lo + int(wp.randf(rng) * float(span))
+        if delay > delay_hi:
+            delay = delay_hi
+        vehicles.command_delay[i] = delay
+    else:
+        vehicles.mu[i] = default_mu
+        vehicles.steer_gain[i] = default_steer_gain
+        vehicles.command_delay[i] = default_delay
     vehicles.steer_logical[i] = 0.0
     vehicles.i_drive[i] = 0.0
     vehicles.i_brake[i] = 0.0
@@ -223,7 +247,10 @@ def async_respawn_kernel(
     frenet_s[i] = fr.s
     prev_s[i] = fr.s
     frenet_ey[i] = fr.ey
-    boundary_distance[i] = fr.boundary_distance
+    scale = width_scale[i]
+    boundary_distance[i] = wp.min(
+        fr.width_left * scale - fr.ey, fr.width_right * scale + fr.ey
+    )
     progress_s[i] = 0.0
     episode_step[i] = 0
     stalled_steps[i] = 0

@@ -111,7 +111,7 @@ def test_learner_slots_stay_trainable_on_reset():
     sim = build_simulator(cfg, atlas, "cpu")
     t = sim.buffers.torch_arrays
     n = int(t.x.shape[0])
-    sim.reset(seed=0)
+    sim.reset_all(0)
     assert int(t.trainable.sum().item()) == int(t.active.sum().item())
     assert cfg.agents.condition_dim == 10
     actions = torch.zeros(n, 2)

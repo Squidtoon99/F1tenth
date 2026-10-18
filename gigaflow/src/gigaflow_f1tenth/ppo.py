@@ -225,19 +225,31 @@ def evaluate_actions_sequence(
     Prefer ``pre_tanh`` (collection sample) over atanh(action) recovery.
     """
     if hasattr(actor, "evaluate_actions_sequence"):
+        fn = actor.evaluate_actions_sequence
+        kwargs: dict[str, Any] = {
+            "reset_mask": reset_mask,
+            "pre_tanh": pre_tanh,
+            "return_mean": return_mean,
+        }
         try:
-            return actor.evaluate_actions_sequence(
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if params and not any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
+        try:
+            return fn(
                 sensor_obs,
                 private_condition,
                 hidden,
                 actions,
-                reset_mask=reset_mask,
-                pre_tanh=pre_tanh,
-                return_mean=return_mean,
+                **kwargs,
             )
         except TypeError:
             # Tiny/test actors may not accept pre_tanh / return_mean yet.
-            return actor.evaluate_actions_sequence(
+            return fn(
                 sensor_obs,
                 private_condition,
                 hidden,

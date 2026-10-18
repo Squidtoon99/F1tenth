@@ -119,6 +119,7 @@ class VehicleBuffers:
     steer_lag: wp.array(dtype=wp.float32)
     steer_rate: wp.array(dtype=wp.float32)
     steer_gain: wp.array(dtype=wp.float32)
+    command_delay: wp.array(dtype=wp.int32)
 
 
 @dataclass
@@ -474,8 +475,9 @@ def apply_command_and_integrate(
     steer_gain: wp.float32,
     params: SimParams,
     substeps: wp.int32,
+    command_delay: wp.int32,
 ) -> VehicleLocal:
-    delay = wp.int32(params.command_delay_substeps)
+    delay = command_delay
     if delay >= substeps:
         delay = wp.int32(0)
     vehicle.ax = 0.0
@@ -537,6 +539,7 @@ def apply_command_and_integrate_env(
         buffers.steer_gain[index] * buffers.steer_scale[index],
         params,
         substeps,
+        buffers.command_delay[index],
     )
 
 

@@ -10,8 +10,9 @@ tracks:
 worlds:
   num_worlds: 64
   max_agents_per_world: 8
-  solo_world_fraction: 0.05
-  density_bins: [sparse, medium, dense]
+  solo_world_fraction: 0.25
+  density_bins: [sparse, dense]
+  width_scales: [0.8, 1.2]
   device: cuda
 
 agents:
@@ -33,6 +34,10 @@ agents:
   episode_seconds_min: 120.0
   episode_seconds_max: 360.0
   async_respawn: true
+  physics_randomize: true
+  mu_range: [0.55, 0.85]
+  steer_gain_range: [0.84, 1.26]
+  command_delay_substeps_range: [0, 4]
 
 reward_conditioning:
   enabled: true

@@ -15,22 +15,16 @@ from gigaflow_f1tenth.trainer import ReconstructionParityError, build_trainer
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "configs" / "smoke.yaml"
 
-# Channels added to the compact state so proprioception is reconstructible.
+# Compact-state channels that reconstruct the 16 proprio slots at 20 Hz
+# (history stride 2). Intermediate ticks and wheel omega are not in 1097:
+# VESC speed is body vx.
 REPLAY_ONLY_CHANNELS = (
     "executed_long_0",
-    "executed_long_1",
     "executed_long_2",
     "executed_steer_0",
-    "executed_steer_1",
     "executed_steer_2",
-    "executed_steer_3",
     "executed_steer_4",
-    "executed_steer_5",
     "executed_steer_6",
-    "omega_0",
-    "omega_1",
-    "omega_2",
-    "omega_3",
 )
 
 
