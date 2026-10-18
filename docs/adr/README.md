@@ -87,3 +87,5 @@ trade-off. Routine work is captured by the PR instead (see
   (Cartesian-polar + LS3C), imagination-trained actor, encoder+actor deploy.
 - [0041](0041-tinylidarnet-encoder.md) — TinyLidarNet 1D CNN on raw 1081
   beams; GRU and PPO kept; no 32-bin pool.
+- [0042](0042-curvature-limited-scripted-opponent.md) — Scripted centerline
+  follower uses curvature-preview speed and steer feedforward (8–9 m/s Austin).
