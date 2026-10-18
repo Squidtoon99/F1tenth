@@ -19,7 +19,12 @@ from f1tenth_env.utils import (
     polygon_self_intersects,
     sample_gigaflow_layout,
 )
-from standalone_trainer import build_config, parse_args, validate_config_patch
+from standalone_trainer import (
+    build_config,
+    parse_args,
+    resolve_training_scenarios,
+    validate_config_patch,
+)
 
 _TRAINING_ROOT = Path(__file__).resolve().parents[1]
 _SMALL_TRACK = "Oschersleben"
@@ -124,8 +129,36 @@ def test_gigaflow_v2_config_uses_v2_plant_and_sampling():
     assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(5.329306089973615)
     assert cfg["sensor"]["lidar_map_yaml"] is None
     names = [scenario["name"] for scenario in cfg["scenarios"]]
-    assert names == ["solo_flying", "solo_standing"]
+    assert names == ["solo_flying", "solo_standing", "selfplay"]
+    assert env["gigaflow_conditioning"] is True
+    assert cfg["obs"]["num_actor_obs"] == 1107
+    assert cfg["obs"]["num_obs"] == 402
+    assert cfg["obs"]["enable_opponent_obs"] is False
+    assert cfg["ppo"]["value_clip"] == 0.0
+    assert cfg["ppo"]["actor_lr"] == pytest.approx(5e-4)
+    assert cfg["ppo"]["lr_schedule"] == "cosine"
+    assert cfg["ppo"]["gamma"] == pytest.approx(0.999)
+    assert cfg["ppo"]["advantage_filter_mode"] == "running_max"
+    assert cfg["ppo"]["orthogonal_init"] is True
+    assert cfg["reward"]["reward_scales"]["tal"] == 0.0
+    assert cfg["scenarios"][2]["env"]["opponent_strategy"] == "policy"
     blob = path.read_text()
     for blocked in GIGAFLOW_BLOCKED_TRACKS:
         assert blocked not in blob
         assert blocked not in json.dumps(cfg["scenarios"])
+
+
+def test_self_play_cli_keeps_solo_scenarios_without_opponents():
+    path = _TRAINING_ROOT / "configs" / "gigaflow_v2.json"
+    patch = json.loads(path.read_text())
+    args, explicit = parse_args(["--self-play"])
+    args.num_envs = 8
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    assert cfg["env"]["opponent_strategy"] == "policy"
+    resolved = resolve_training_scenarios(cfg, 8, str(_TRAINING_ROOT))
+    by_name = {
+        spec["name"]: spec["cfg"]["env"]["opponent_strategy"] for spec in resolved
+    }
+    assert by_name["solo_flying"] is None
+    assert by_name["solo_standing"] is None
+    assert by_name["selfplay"] == "policy"

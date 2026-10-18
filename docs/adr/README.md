@@ -91,3 +91,6 @@ trade-off. Routine work is captured by the PR instead (see
   PPO use the frozen SIM_READY_V2 bag-fit plant; Galaxy/defaults stay unfitted.
 - [0043](0043-gigaflow-track-affine-sampling.md) — Each reset draws one public
   f1tenth_racetracks map and one of six affine variants; courtyard/IV stay out.
+- [0044](0044-gigaflow-own-agent-conditioning.md) — Own-agent C_dynamics and
+  C_reward on the 1097-d lidar actor and 392-d privileged critic; self-play
+  copies of π; Table A3 knobs.

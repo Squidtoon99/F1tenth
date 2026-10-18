@@ -35,6 +35,20 @@ from .kernel import (
     reset_to_kernel,
     transaction_stage_kernel,
 )
+from .gigaflow_cond import (
+    C_ACCEL,
+    C_BOUNDARY,
+    C_COLLISION,
+    C_COMFORT,
+    C_LANE,
+    C_STEER,
+    C_THROTTLE,
+    C_VEL,
+    GIGAFLOW_C_DIM,
+    GIGAFLOW_C_NAMES,
+    sample_agent_conditioning,
+    speed_cap_from_c,
+)
 from .opponents import MixedOpponentController, PolicyOpponent, make_opponent
 from .sensors import (
     ACTOR_IMU_DIM,
@@ -399,7 +413,6 @@ class WarpF1tenthEnv:
             raise ValueError("Warp environment supports float32 only")
         self.num_envs = int(num_envs)
         self.num_actions = 2
-        self.num_obs = OBS_DIM
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
         self.reward_cfg = reward_cfg
@@ -408,8 +421,30 @@ class WarpF1tenthEnv:
         self.device = torch.device(rt.device)
         if self.device.type not in ("cpu", "cuda"):
             raise ValueError("Warp environment supports CPU and CUDA devices")
-        if int(obs_cfg["num_obs"]) != OBS_DIM:
-            raise ValueError("Warp environment requires the fixed 392-d observation")
+        self._gigaflow_conditioning = bool(
+            env_cfg.get("gigaflow_conditioning", False)
+        )
+        self._gigaflow_c_dim = (
+            GIGAFLOW_C_DIM if self._gigaflow_conditioning else 0
+        )
+        expected_critic = OBS_DIM + self._gigaflow_c_dim
+        expected_actor = ACTOR_OBS_DIM + self._gigaflow_c_dim
+        if int(obs_cfg["num_obs"]) != expected_critic:
+            raise ValueError(
+                "Warp observation dim mismatch: "
+                f"obs.num_obs={obs_cfg['num_obs']} expected {expected_critic}"
+            )
+        actor_obs_cfg = int(obs_cfg.get("num_actor_obs", ACTOR_OBS_DIM))
+        if actor_obs_cfg != expected_actor:
+            raise ValueError(
+                "Warp actor observation dim mismatch: "
+                f"obs.num_actor_obs={actor_obs_cfg} expected {expected_actor}"
+            )
+        self.num_obs = expected_critic
+        self._gigaflow_nominal_speed = float(
+            env_cfg.get("gigaflow_nominal_speed_mps", 6.0)
+        )
+        self._gigaflow_rng = np.random.default_rng(0)
         self.dt = float(env_cfg.get("sim_dt", 0.005))
         self.control_interval = int(env_cfg.get("control_interval", 10))
         if self.dt != 0.005:
@@ -437,10 +472,19 @@ class WarpF1tenthEnv:
         self._gigaflow_reset_count = 0
         self.sensor_cfg = self._resolve_sensor_cfg()
         if self._gigaflow_sampling:
-            track_name, variant_id = sample_gigaflow_layout(
-                np.random.default_rng(0)
-            )
-            self._apply_gigaflow_layout(track_name, variant_id)
+            force_track = env_cfg.get("gigaflow_force_track")
+            force_variant = env_cfg.get("gigaflow_force_variant")
+            if force_track and force_variant:
+                self._apply_gigaflow_layout(str(force_track), str(force_variant))
+            else:
+                track_name, variant_id = sample_gigaflow_layout(
+                    np.random.default_rng(0)
+                )
+                if force_track:
+                    track_name = str(force_track)
+                if force_variant:
+                    variant_id = str(force_variant)
+                self._apply_gigaflow_layout(track_name, variant_id)
         else:
             self.track_state = load_track_state(
                 env_cfg.get("track"), workspace, self.device
@@ -482,7 +526,7 @@ class WarpF1tenthEnv:
         self._sensor_params = self._build_sensor_params()
         self.num_lidar_beams = int(self._sensor_params.num_beams)
         self.num_imu = IMU_DIM
-        self.num_actor_obs = ACTOR_OBS_DIM
+        self.num_actor_obs = ACTOR_OBS_DIM + self._gigaflow_c_dim
 
         self.vehicle_params = VehicleParams.from_config(env_cfg)
         self._sim_params = self.vehicle_params.to_warp(
@@ -515,7 +559,10 @@ class WarpF1tenthEnv:
 
         self._obs = [
             torch.zeros(
-                self.num_envs, OBS_DIM, device=self.device, dtype=torch.float32
+                self.num_envs,
+                self.num_obs,
+                device=self.device,
+                dtype=torch.float32,
             )
             for _ in range(2)
         ]
@@ -534,12 +581,25 @@ class WarpF1tenthEnv:
         self._actor_obs = [
             torch.zeros(
                 self.num_envs,
-                ACTOR_OBS_DIM,
+                self.num_actor_obs,
                 device=self.device,
                 dtype=torch.float32,
             )
             for _ in range(2)
         ]
+        self._c_ego = torch.zeros(
+            self.num_envs,
+            max(self._gigaflow_c_dim, 1),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._c_opp = torch.zeros_like(self._c_ego)
+        self._terminal_critic_full = torch.zeros(
+            self.num_envs,
+            self.num_obs,
+            device=self.device,
+            dtype=torch.float32,
+        )
         self._opponent_actor_obs = [
             torch.zeros_like(self._actor_obs[0]),
             torch.zeros_like(self._actor_obs[0]),
@@ -646,10 +706,21 @@ class WarpF1tenthEnv:
     def _maybe_resample_gigaflow_track(self, seed: int | None, full_reset: bool) -> None:
         if not self._gigaflow_sampling:
             return
+        force_track = self.env_cfg.get("gigaflow_force_track")
+        force_variant = self.env_cfg.get("gigaflow_force_variant")
         resample = full_reset and (
             self._gigaflow_reset_count > 0 or seed is not None
         )
-        if resample:
+        if force_track or force_variant:
+            track_name = str(force_track or self.gigaflow_track)
+            variant_id = str(force_variant or self.gigaflow_variant)
+            if (
+                resample
+                or self.gigaflow_track != track_name
+                or self.gigaflow_variant != variant_id
+            ):
+                self._apply_gigaflow_layout(track_name, variant_id)
+        elif resample:
             rng_seed = int(seed) if seed is not None else self._gigaflow_reset_count
             track_name, variant_id = sample_gigaflow_layout(
                 np.random.default_rng(rng_seed)
@@ -657,6 +728,124 @@ class WarpF1tenthEnv:
             self._apply_gigaflow_layout(track_name, variant_id)
         if full_reset:
             self._gigaflow_reset_count += 1
+
+    def _sample_gigaflow_conditioning(self, mask: torch.Tensor) -> None:
+        if not self._gigaflow_conditioning:
+            return
+        rows = mask.to(device=self.device, dtype=torch.bool)
+        n = int(rows.sum().item())
+        if n == 0:
+            return
+        length = float(self.env_cfg.get("car_length", 0.568))
+        width = float(self.env_cfg.get("car_width", 0.296))
+        ego_np = sample_agent_conditioning(
+            self._gigaflow_rng, n, car_length=length, car_width=width
+        )
+        self._c_ego[rows] = torch.as_tensor(
+            ego_np, device=self.device, dtype=torch.float32
+        )
+        if self.has_opponent:
+            opp_np = sample_agent_conditioning(
+                self._gigaflow_rng, n, car_length=length, car_width=width
+            )
+            self._c_opp[rows] = torch.as_tensor(
+                opp_np, device=self.device, dtype=torch.float32
+            )
+        else:
+            self._c_opp[rows] = self._c_ego[rows]
+
+    def _apply_gigaflow_plant(self, mask: torch.Tensor) -> None:
+        if not self._gigaflow_conditioning:
+            return
+        rows = mask.to(device=self.device, dtype=torch.bool)
+        if not bool(rows.any()):
+            return
+        base_gain = float(self.vehicle_params.steer_gain)
+        c = self._c_ego[rows]
+        self._ego.tensor["drive_scale"][rows] = c[:, C_THROTTLE] * c[:, C_ACCEL]
+        self._ego.tensor["steer_gain"][rows] = base_gain * c[:, C_STEER]
+        if self.has_opponent:
+            oc = self._c_opp[rows]
+            self._opponent.tensor["drive_scale"][rows] = (
+                oc[:, C_THROTTLE] * oc[:, C_ACCEL]
+            )
+            self._opponent.tensor["steer_gain"][rows] = base_gain * oc[:, C_STEER]
+            caps = speed_cap_from_c(
+                oc[:, C_VEL].detach().cpu().numpy(),
+                self._gigaflow_nominal_speed,
+            )
+            self._env.tensor["opponent_speed_cap"][rows] = torch.as_tensor(
+                caps, device=self.device, dtype=torch.float32
+            )
+
+    def _write_conditioning_columns(self, *, stamp_terminal: bool = True) -> None:
+        if not self._gigaflow_conditioning:
+            return
+        for buf in self._actor_obs:
+            buf[:, ACTOR_OBS_DIM:].copy_(self._c_ego)
+        for buf in self._obs:
+            buf[:, OBS_DIM:].copy_(self._c_ego)
+        if self.has_opponent:
+            for buf in self._opponent_actor_obs:
+                buf[:, ACTOR_OBS_DIM:].copy_(self._c_opp)
+        if stamp_terminal:
+            term = self._env.tensor["terminal_critic_obs"]
+            self._terminal_critic_full[:, :OBS_DIM] = term
+            self._terminal_critic_full[:, OBS_DIM:] = self._c_ego
+            self.extras["observations"]["terminal_critic"] = (
+                self._terminal_critic_full
+            )
+        self.extras["observations"]["actor"] = self.actor_obs_buf
+        self.extras["observations"]["critic"] = self.obs_buf
+        if self._should_render_opponent_actor():
+            self.extras["observations"]["opponent_actor"] = (
+                self.opponent_actor_obs_buf
+            )
+
+    def _apply_gigaflow_reward(self) -> None:
+        if not self._gigaflow_conditioning:
+            return
+        tensors = self._env.tensor
+        c = self._c_ego
+        scaled = (
+            c[:, C_LANE] * tensors["reward_progress"]
+            + c[:, C_COLLISION] * tensors["reward_collision"]
+            + c[:, C_BOUNDARY]
+            * (
+                tensors["reward_wall_contact"]
+                + tensors["reward_boundary_contact"]
+                + tensors["reward_oob_impact"]
+            )
+            + c[:, C_COMFORT]
+            * (
+                tensors["reward_steering_change"]
+                + tensors["reward_steering_history"]
+            )
+            + tensors["reward_passing"]
+            + tensors["reward_rear_end"]
+            + tensors["reward_tal"]
+        )
+        tensors["reward"].copy_(scaled)
+
+    def _cap_ego_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        if not self._gigaflow_conditioning:
+            return actions
+        cap = self._gigaflow_nominal_speed * self._c_ego[:, C_VEL]
+        vx = self._ego.tensor["vx"]
+        over = vx >= cap
+        cap_effort = (2.0 * (cap - vx)).clamp(-1.0, 0.0)
+        out = actions.clone()
+        out[:, 0] = torch.where(over, torch.minimum(out[:, 0], cap_effort), out[:, 0])
+        return out
+
+    def _log_gigaflow_metrics(self) -> None:
+        if not self._gigaflow_conditioning:
+            return
+        metrics = self.extras.setdefault("metrics", {})
+        for index, name in enumerate(GIGAFLOW_C_NAMES):
+            metrics[f"gigaflow/c_ego_{name}"] = self._c_ego[:, index]
+            if self.has_opponent:
+                metrics[f"gigaflow/c_opp_{name}"] = self._c_opp[:, index]
 
     def _resolve_sensor_cfg(self):
         override = self.env_cfg.get("sensor")
@@ -1054,7 +1243,11 @@ class WarpF1tenthEnv:
         return {
             "observations": {
                 "critic": self.obs_buf,
-                "terminal_critic": tensors["terminal_critic_obs"],
+                "terminal_critic": (
+                    self._terminal_critic_full
+                    if self._gigaflow_conditioning
+                    else tensors["terminal_critic_obs"]
+                ),
             },
             "rewards": {
                 "total": tensors["reward"],
@@ -1343,6 +1536,8 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        self._sample_gigaflow_conditioning(self._reset_mask)
+        self._apply_gigaflow_plant(self._reset_mask)
         if self._policy_opponent is not None:
             self._policy_opponent.reset(self._reset_mask)
             if self._opponent_resample_cb is not None:
@@ -1353,16 +1548,16 @@ class WarpF1tenthEnv:
             self.opponent_actor_obs_buf = self._opponent_actor_obs[
                 self._active_obs
             ]
-            self.extras["observations"]["actor"] = self.actor_obs_buf
+            self._write_conditioning_columns()
+            self._log_gigaflow_metrics()
             if self._should_render_opponent_actor():
-                self.extras["observations"]["opponent_actor"] = (
-                    self.opponent_actor_obs_buf
-                )
                 if self._policy_opponent is not None:
                     self._fill_policy_actions(
                         self.opponent_actor_obs_buf, row_mask=self._reset_mask
                     )
             return self._sensor_obs_dict(), self.extras
+        self._write_conditioning_columns()
+        self._log_gigaflow_metrics()
         return self.obs_buf, self.extras
 
     def reset_to(
@@ -1449,6 +1644,8 @@ class WarpF1tenthEnv:
         )
         self.obs_buf = self._obs[self._active_obs]
         self.extras["observations"]["critic"] = self.obs_buf
+        self._sample_gigaflow_conditioning(self._reset_mask)
+        self._apply_gigaflow_plant(self._reset_mask)
         if self._policy_opponent is not None:
             self._policy_opponent.reset(self._reset_mask)
             if self._opponent_resample_cb is not None:
@@ -1459,16 +1656,16 @@ class WarpF1tenthEnv:
             self.opponent_actor_obs_buf = self._opponent_actor_obs[
                 self._active_obs
             ]
-            self.extras["observations"]["actor"] = self.actor_obs_buf
+            self._write_conditioning_columns()
+            self._log_gigaflow_metrics()
             if self._should_render_opponent_actor():
-                self.extras["observations"]["opponent_actor"] = (
-                    self.opponent_actor_obs_buf
-                )
                 if self._policy_opponent is not None:
                     self._fill_policy_actions(
                         self.opponent_actor_obs_buf, row_mask=self._reset_mask
                     )
             return self._sensor_obs_dict(), self.extras
+        self._write_conditioning_columns()
+        self._log_gigaflow_metrics()
         return self.obs_buf, self.extras
 
     def step(self, actions, n_steps=None, with_sensors=False):
@@ -1485,6 +1682,7 @@ class WarpF1tenthEnv:
                 f"actions shape={tuple(incoming.shape)}; "
                 f"expected ({self.num_envs}, 2)"
             )
+        incoming = self._cap_ego_actions(incoming)
         self.actions.copy_(incoming)
         self._policy_actions()
         inactive = 1 - self._active_obs
@@ -1541,6 +1739,15 @@ class WarpF1tenthEnv:
             device=self.wp_device,
             stream=self._stream(),
         )
+        if self._gigaflow_conditioning:
+            bool(self.reset_buf.any())
+            self._apply_gigaflow_reward()
+            self._write_conditioning_columns(stamp_terminal=True)
+            done = self.reset_buf
+            if bool(done.any()):
+                self._sample_gigaflow_conditioning(done)
+                self._apply_gigaflow_plant(done)
+                self._write_conditioning_columns(stamp_terminal=False)
         sensor_launches = 0
         if with_sensors:
             sensor_launches = self._render_actor_observations(inactive)
@@ -1582,12 +1789,9 @@ class WarpF1tenthEnv:
         self.actor_obs_buf = self._actor_obs[inactive]
         self.opponent_actor_obs_buf = self._opponent_actor_obs[inactive]
         self.extras["observations"]["critic"] = self.obs_buf
+        self._write_conditioning_columns(stamp_terminal=False)
+        self._log_gigaflow_metrics()
         if with_sensors:
-            self.extras["observations"]["actor"] = self.actor_obs_buf
-            if self._should_render_opponent_actor():
-                self.extras["observations"]["opponent_actor"] = (
-                    self.opponent_actor_obs_buf
-                )
             return (
                 self._sensor_obs_dict(),
                 self.reward_buf,

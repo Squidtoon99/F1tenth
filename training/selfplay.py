@@ -174,6 +174,25 @@ class SelfPlayManager:
             return self.pool[-1]
         return random.choice(list(self.pool))
 
+    @staticmethod
+    def _iter_envs(env):
+        if env is None:
+            return ()
+        if isinstance(env, (list, tuple)):
+            return tuple(item for item in env if item is not None)
+        return (env,)
+
+    def _push_snapshot(self, env, snap: SelfPlaySnapshot) -> int:
+        targets = self._iter_envs(env)
+        for item in targets:
+            item.refresh_opponent_policy(
+                snap["actor"],
+                snap["mean"],
+                snap["var"],
+                actor_architecture=snap.get("actor_architecture"),
+            )
+        return len(targets)
+
     def maybe_refresh(self, env: F1tenthEnv, transitions: int) -> bool:
         if not self.pool:
             return False
@@ -185,21 +204,19 @@ class SelfPlayManager:
         snap = self._sample_snapshot()
         if snap is None:
             return False
-        env.refresh_opponent_policy(
-            snap["actor"],
-            snap["mean"],
-            snap["var"],
-            actor_architecture=snap.get("actor_architecture"),
-        )
+        n_env = self._push_snapshot(env, snap)
+        if n_env == 0:
+            return False
         self.opponent_transitions = snap["transitions"]
         self._last_refresh_transitions = transitions
         self.log.info(
             "Self-play opponent refreshed at transitions=%d from snapshot "
-            "transitions=%d (pool_size=%d sample=%s)",
+            "transitions=%d (pool_size=%d sample=%s n_env=%d)",
             transitions,
             snap["transitions"],
             len(self.pool),
             self.sample_mode,
+            n_env,
         )
         return True
 
@@ -207,31 +224,23 @@ class SelfPlayManager:
         if not self.pool:
             return
         snap = self.pool[-1]
-        env.refresh_opponent_policy(
-            snap["actor"],
-            snap["mean"],
-            snap["var"],
-            actor_architecture=snap.get("actor_architecture"),
-        )
+        n_env = self._push_snapshot(env, snap)
+        if n_env == 0:
+            return
         self.opponent_transitions = snap["transitions"]
         self.log.info(
             "Self-play opponent bootstrapped from snapshot transitions=%d "
-            "(pool_size=%d)",
+            "(pool_size=%d n_env=%d)",
             snap["transitions"],
             len(self.pool),
+            n_env,
         )
 
     def refresh_eval_opponent(self, env: F1tenthEnv) -> bool:
         snap = self._sample_snapshot()
         if snap is None:
             return False
-        env.refresh_opponent_policy(
-            snap["actor"],
-            snap["mean"],
-            snap["var"],
-            actor_architecture=snap.get("actor_architecture"),
-        )
-        return True
+        return self._push_snapshot(env, snap) > 0
 
     def record_episode_outcomes(self, ego_minus_opp_gap: torch.Tensor) -> None:
         wins = (ego_minus_opp_gap > 0).sum().item()

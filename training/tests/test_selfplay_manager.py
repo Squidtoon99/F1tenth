@@ -159,6 +159,25 @@ def test_refresh_cadence_gating():
     assert env.call_count == 2
 
 
+def test_refresh_applies_one_snapshot_to_every_env():
+    mgr = SelfPlayManager(
+        pool_size=5,
+        snapshot_interval_transitions=1,
+        refresh_interval_transitions=50,
+    )
+    models = _make_models()
+    normalizer = ObsNormalizer(OBS_DIM, DEVICE)
+    first = _recording_env()
+    second = _recording_env()
+    mgr.seed_snapshot(
+        SelfPlayManager.make_snapshot(models, normalizer, transitions=0)
+    )
+    assert mgr.maybe_refresh([first, second], 50)
+    assert first.call_count == 1
+    assert second.call_count == 1
+    assert first.last_args[3] == second.last_args[3]
+
+
 def test_sample_latest():
     mgr = SelfPlayManager(
         pool_size=5,

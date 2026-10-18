@@ -162,6 +162,24 @@ def action_reversal_penalty(
     return penalty, rates
 
 
+def advantage_filter_running_max_mask(
+    advantages,
+    *,
+    enabled,
+    eta,
+    running_max,
+):
+    abs_adv = advantages.abs()
+    batch_max = float(abs_adv.max()) if abs_adv.numel() > 0 else 0.0
+    updated_max = max(float(running_max), batch_max)
+    if not enabled:
+        keep = torch.ones_like(advantages, dtype=torch.bool)
+        return keep, 0.0, updated_max
+    threshold = float(eta) * updated_max
+    keep = abs_adv >= threshold
+    return keep, threshold, updated_max
+
+
 def advantage_filter_keep_mask(
     advantages,
     *,
@@ -298,6 +316,8 @@ class PPOTrainer:
         compile_mode="default",
         advantage_filter_enabled=True,
         advantage_filter_discard_fraction=0.05,
+        advantage_filter_mode="quantile",
+        advantage_filter_eta=0.01,
         lidar_aug_enabled=False,
         lidar_aug_max_shift_beams=0,
         lr_schedule="constant",
@@ -361,6 +381,19 @@ class PPOTrainer:
         self.advantage_filter_discard_fraction = float(
             advantage_filter_discard_fraction
         )
+        self.advantage_filter_mode = str(advantage_filter_mode)
+        if self.advantage_filter_mode not in ("quantile", "running_max"):
+            raise ValueError(
+                "advantage_filter_mode must be 'quantile' or 'running_max', "
+                f"got {advantage_filter_mode!r}"
+            )
+        self.advantage_filter_eta = float(advantage_filter_eta)
+        if not math.isfinite(self.advantage_filter_eta) or self.advantage_filter_eta < 0.0:
+            raise ValueError(
+                "advantage_filter_eta must be a finite number >= 0, got "
+                f"{advantage_filter_eta!r}"
+            )
+        self._adv_abs_running_max = 0.0
         self.lidar_aug_enabled = bool(lidar_aug_enabled)
         self.lidar_aug_max_shift_beams = int(lidar_aug_max_shift_beams)
         self.caps_coef = float(caps_coef)
@@ -757,11 +790,21 @@ class PPOTrainer:
                 f"rollout has {steps} steps; expected fixed length {self.rollout_steps}"
             )
         raw_advantages = rollout.advantages
-        keep_mask, eta = advantage_filter_keep_mask(
-            raw_advantages,
-            enabled=self.advantage_filter_enabled,
-            discard_fraction=self.advantage_filter_discard_fraction,
-        )
+        if self.advantage_filter_mode == "running_max":
+            keep_mask, eta, self._adv_abs_running_max = (
+                advantage_filter_running_max_mask(
+                    raw_advantages,
+                    enabled=self.advantage_filter_enabled,
+                    eta=self.advantage_filter_eta,
+                    running_max=self._adv_abs_running_max,
+                )
+            )
+        else:
+            keep_mask, eta = advantage_filter_keep_mask(
+                raw_advantages,
+                enabled=self.advantage_filter_enabled,
+                discard_fraction=self.advantage_filter_discard_fraction,
+            )
         retained = int(keep_mask.sum().item())
         total = keep_mask.numel()
         discard_rate = 1.0 - (retained / total)

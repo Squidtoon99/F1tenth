@@ -506,6 +506,12 @@ def _make_policy_opponent(
 
     obs_dim = int(obs_cfg.get("num_actor_obs", obs_cfg["num_obs"]))
     act_dim = int(env_cfg.get("num_actions", 2))
+    lidar_dim = int(env_cfg.get("lidar_dim", 1081))
+    proprio_dim = obs_dim - lidar_dim
+    if proprio_dim <= 0:
+        raise ValueError(
+            f"opponent actor obs_dim={obs_dim} must exceed lidar_dim={lidar_dim}"
+        )
     actor_type = env_cfg.get("actor_type", "lidar_cnn_gru")
     hidden = list(
         env_cfg.get(
@@ -526,6 +532,8 @@ def _make_policy_opponent(
         act_limit=1.0,
         lidar_pool_bins=lidar_pool_bins,
         lidar_projection_dim=lidar_projection_dim,
+        lidar_dim=lidar_dim,
+        proprio_dim=proprio_dim,
     ).to(device=device, dtype=torch.float32)
 
     obs_mean = obs_var = None
