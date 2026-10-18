@@ -14,6 +14,8 @@ import urllib.request
 from netrc import netrc
 from pathlib import Path
 
+from catalog import SCORE_FORMULA, performance_score
+
 LIVE_IDS = (
     "spatialcaps-v2-B",
     "simv2-progress-s42",
@@ -243,4 +245,12 @@ def apply(attempt: dict, live: dict | None) -> dict:
         "crash": live.get("crash"),
         "lifespan": live.get("lifespan"),
     }
+    out["score"] = performance_score(
+        out.get("lap"),
+        out.get("completion"),
+        out.get("crash"),
+        out.get("overtakes"),
+        out.get("steer_reversal"),
+    )
+    out["score_formula"] = SCORE_FORMULA
     return out

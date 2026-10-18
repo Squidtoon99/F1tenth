@@ -69,6 +69,22 @@ def test_tree_attempts():
         "spatialcaps-v2-B", "simv2-progress-s42", "gigaflow-v2",
         "sophy-multi-v2-B",
     ]
+    assert "110 / lap" in payload["score_formula"]
+    assert by_slug["actionchunk-notal-v6-B"]["score"] is not None
+
+
+def test_run_preview_is_video_first():
+    http = client()
+    runs = http.get("/api/runs").get_json()["runs"]
+    row = next(item for item in runs if item["wandb_run_id"] == "actionchunk-notal-v6-B")
+    preview = http.get(f"/api/runs/{row['id']}/preview").get_json()
+    assert preview["run"]["id"] == row["id"]
+    assert "progress-reward" in preview["run"]["name"]
+    assert "TAL" not in preview["run"]["name"]
+    assert "series" not in preview
+    assert "evals" not in preview
+    assert "score_formula" not in preview
+    assert preview["videos"]
 
 
 def test_run_evals_videos_policies():

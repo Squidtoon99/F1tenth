@@ -26,6 +26,7 @@ from queries import (  # noqa: E402
     overview,
     policies,
     run_detail,
+    run_preview,
     runs,
     search,
     set_checkpoint_key,
@@ -81,6 +82,14 @@ def create_app() -> Flask:
     def runs_route():
         with connect() as conn:
             return runs(conn)
+
+    @app.get("/api/runs/<run_id>/preview")
+    def run_preview_route(run_id):
+        with connect() as conn:
+            payload = run_preview(conn, run_id)
+        if payload is None:
+            abort(404)
+        return payload
 
     @app.get("/api/runs/<run_id>")
     def run_route(run_id):

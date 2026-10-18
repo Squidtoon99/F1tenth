@@ -5,13 +5,13 @@ import * as React from "react";
 import { cn } from "@/util/cn";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center rounded-full text-sm font-medium transition disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center text-xs font-medium transition disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
         primary:
-          "h-10 bg-gradient-to-r from-accent to-accent-2 px-4 text-[#061018] hover:brightness-110",
-        ghost: "h-10 border border-white/10 bg-transparent px-4 text-text hover:bg-white/5",
+          "h-6 bg-gradient-to-r from-accent to-accent-2 px-2 text-[#061018] hover:brightness-110",
+        ghost: "h-6 border border-white/10 bg-transparent px-2 text-text hover:bg-white/5",
       },
     },
     defaultVariants: { variant: "primary" },

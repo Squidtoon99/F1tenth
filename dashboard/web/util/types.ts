@@ -54,6 +54,10 @@ export type TreeNode = {
   verdict: string;
   lap: number | null;
   completion?: number | null;
+  crash?: number | null;
+  overtakes?: number | null;
+  steer_reversal?: number | null;
+  score?: number | null;
   run_id: string;
   wandb_run_id?: string;
   live?: LiveState;
@@ -75,6 +79,7 @@ export type RunRow = {
   one_change: string;
   result?: string;
   live?: LiveState;
+  score?: number | null;
 };
 
 export type EvalRow = {
@@ -140,4 +145,12 @@ export type RunDetail = {
     episode: { step: number; seconds: number }[];
   };
   chart: { title: string; src: string; wandb_url: string | null };
+  score?: number | null;
+  score_formula?: string;
+  score_note?: string;
+};
+
+export type RunPreview = {
+  run: { id: string; name: string; slug: string; verdict: string; one_change: string };
+  videos: VideoRow[];
 };

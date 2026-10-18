@@ -1,22 +1,13 @@
 "use client";
 
-import {
-  Cpu,
-  Flag,
-  GitFork,
-  LayoutDashboard,
-  Search,
-} from "lucide-react";
+import { Cpu, Flag, GitFork, LayoutDashboard, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { cn } from "@/util/cn";
-import { downloadCheckpoint } from "@/util/download";
-import { fmtDelta, fmtStat, trimNum } from "@/util/format";
 import type { Overview } from "@/util/types";
 import { useApi } from "@/util/use-api";
 
@@ -68,13 +59,13 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [query]);
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="sticky top-0 flex h-screen w-[240px] shrink-0 flex-col bg-elevated">
-        <div className="flex h-16 items-center gap-2 px-5">
-          <span className="h-3.5 w-3.5 rounded-[4px] bg-gradient-to-br from-accent to-accent-2" />
-          <span className="text-lg tracking-tight">Garage</span>
+    <div className="flex min-h-screen text-xs">
+      <aside className="sticky top-0 flex h-screen w-44 shrink-0 flex-col border-r border-white/[0.06] bg-elevated">
+        <div className="flex h-9 items-center gap-1.5 px-3">
+          <span className="h-2.5 w-2.5 bg-gradient-to-br from-accent to-accent-2" />
+          <span className="text-sm tracking-tight">Garage</span>
         </div>
-        <nav className="flex flex-col gap-1 px-3">
+        <nav className="flex flex-col">
           {NAV.map((item) => {
             const Icon = item.icon;
             const active = activeNav(pathname, item.href);
@@ -83,65 +74,49 @@ export function Shell({ children }: { children: ReactNode }) {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 rounded-full px-3 py-2 text-sm",
+                  "flex items-center gap-2 border-l-2 px-3 py-1.5",
                   active
-                    ? "bg-gradient-to-r from-accent to-accent-2 text-[#061018]"
-                    : "text-muted hover:text-text",
+                    ? "border-accent-2 bg-white/[0.04] text-text"
+                    : "border-transparent text-muted hover:bg-white/[0.03] hover:text-text",
                 )}
               >
-                <Icon size={16} />
+                <Icon size={12} />
                 {item.label}
               </Link>
             );
           })}
         </nav>
-        <div className="mt-auto p-3">
-          <Card hot>
-            <div className="text-xs text-muted">Current best</div>
-            <div className="mt-2 text-3xl tabular-nums">{data?.best ? `${trimNum(data.best.lap, 1)}s` : "—"}</div>
-            <div className="mt-1 text-sm text-muted tabular-nums">
-              {data?.best ? trimNum(data.best.completion) : "—"} completion
-            </div>
-            <div className="mt-1 truncate text-xs text-muted">{data?.best?.name}</div>
-            <Button
-              className="mt-4 w-full"
-              disabled={!data?.best?.checkpoint_id}
-              onClick={() => {
-                if (!data?.best?.checkpoint_id) return;
-                downloadCheckpoint(data.best.checkpoint_id, data.best.staged).catch((reason: unknown) => {
-                  window.alert(reason instanceof Error ? reason.message : "Download failed");
-                });
-              }}
-            >
-              Download
-            </Button>
-          </Card>
+        <div className="mt-auto border-t border-white/[0.06] px-3 py-2 text-[11px] text-muted">
+          <div>Best {data?.best ? data.best.name : "—"}</div>
+          <div className="tabular-nums text-text">
+            {data?.best ? `${data.best.lap.toFixed(1)}s` : "—"}
+          </div>
         </div>
       </aside>
       <div className="min-w-0 flex-1">
-        <header className="sticky top-0 z-20 flex items-center gap-3 bg-elevated/90 px-6 py-4 backdrop-blur">
-          <div className="relative w-full max-w-xl">
-            <Search size={16} className="pointer-events-none absolute left-3 top-3 text-muted" />
+        <header className="sticky top-0 z-20 flex h-9 items-center gap-2 border-b border-white/[0.06] bg-elevated px-3">
+          <div className="relative w-full max-w-md">
+            <Search size={12} className="pointer-events-none absolute left-2 top-1.5 text-muted" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search runs and checkpoints"
-              className="h-10 w-full rounded-full border border-white/[0.06] bg-bg pl-9 pr-4 text-sm outline-none placeholder:text-muted"
+              placeholder="Search"
+              className="h-6 w-full border border-white/[0.08] bg-bg pl-6 pr-2 text-xs outline-none placeholder:text-muted"
             />
             {hits ? (
-              <div className="absolute mt-2 w-full rounded-2xl border border-white/[0.06] bg-card p-2">
+              <div className="absolute mt-1 w-full border border-white/[0.08] bg-card">
                 {hits.runs.map((run) => (
-                  <Link key={run.id} href={`/runs/${run.id}`} className="block rounded-xl px-3 py-2 text-sm hover:bg-white/5" onClick={() => setQuery("")}>
+                  <Link key={run.id} href={`/runs/${run.id}`} className="block px-2 py-1 hover:bg-white/5" onClick={() => setQuery("")}>
                     {run.name}
                   </Link>
                 ))}
                 {hits.checkpoints.map((ckpt) => (
-                  <Link key={ckpt.id} href={`/runs/${ckpt.run_id}`} className="block rounded-xl px-3 py-2 text-sm text-muted hover:bg-white/5" onClick={() => setQuery("")}>
+                  <Link key={ckpt.id} href={`/runs/${ckpt.run_id}`} className="block px-2 py-1 text-muted hover:bg-white/5" onClick={() => setQuery("")}>
                     {ckpt.run_name} · {ckpt.step.toLocaleString()}
                   </Link>
                 ))}
                 {!hits.runs.length && !hits.checkpoints.length ? (
-                  <div className="px-3 py-2 text-sm text-muted">No matches</div>
+                  <div className="px-2 py-1 text-muted">No matches</div>
                 ) : null}
               </div>
             ) : null}
@@ -149,44 +124,26 @@ export function Shell({ children }: { children: ReactNode }) {
           <a href="/api/export" className="ml-auto">
             <Button variant="ghost">Export</Button>
           </a>
-          <Button onClick={() => setNoteOpen(true)}>New note</Button>
+          <Button onClick={() => setNoteOpen(true)}>Note</Button>
         </header>
-        <main className="px-6 pb-10">
-          <section className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-            {(data?.stats ?? []).map((stat) => (
-              <Card key={stat.label}>
-                <div className="text-sm text-muted">{stat.label}</div>
-                <div className="mt-3 text-4xl tabular-nums tracking-tight">{fmtStat(stat.value, stat.unit)}</div>
-                <div className="mt-3 text-sm tabular-nums">
-                  <span className={stat.delta != null && stat.delta > 0 ? "text-green" : stat.delta != null && stat.delta < 0 ? "text-red" : "text-muted"}>
-                    {fmtDelta(stat.delta, stat.unit)}
-                  </span>
-                  {stat.versus ? <span className="ml-2 text-muted">vs {stat.versus}</span> : null}
-                </div>
-              </Card>
-            ))}
-          </section>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {TABS.map((tab) => {
-              const active = pathname === tab.href;
-              return (
-                <Link
-                  key={tab.href}
-                  href={tab.href}
-                  className={cn(
-                    "rounded-full px-4 py-2 text-sm",
-                    active
-                      ? "bg-gradient-to-r from-accent to-accent-2 text-[#061018]"
-                      : "text-muted hover:text-text",
-                  )}
-                >
-                  {tab.label}
-                </Link>
-              );
-            })}
-          </div>
-          <div className="mt-4">{children}</div>
-        </main>
+        <div className="flex gap-3 border-b border-white/[0.06] px-3">
+          {TABS.map((tab) => {
+            const active = pathname === tab.href;
+            return (
+              <Link
+                key={tab.href}
+                href={tab.href}
+                className={cn(
+                  "border-b-2 py-1.5",
+                  active ? "border-accent-2 text-text" : "border-transparent text-muted hover:text-text",
+                )}
+              >
+                {tab.label}
+              </Link>
+            );
+          })}
+        </div>
+        <main className="px-3 py-2">{children}</main>
       </div>
       <NoteDialog open={noteOpen} onOpenChange={setNoteOpen} />
     </div>
@@ -214,16 +171,16 @@ function NoteDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title="New note">
-      <p className="mb-3 text-sm text-muted">A note only. This does not start training.</p>
+      <p className="mb-2 text-xs text-muted">A note only. This does not start training.</p>
       <textarea
         value={body}
         onChange={(event) => setBody(event.target.value)}
-        className="h-28 w-full rounded-2xl border border-white/[0.06] bg-bg p-3 text-sm outline-none"
+        className="h-24 w-full border border-white/[0.08] bg-bg p-2 text-xs outline-none"
         placeholder="What changed"
       />
-      {error ? <p className="mt-2 text-sm text-red">{error}</p> : null}
+      {error ? <p className="mt-1 text-xs text-red">{error}</p> : null}
       <Button
-        className="mt-3"
+        className="mt-2"
         onClick={() => {
           setError(null);
           fetch("/api/notes", {
@@ -244,9 +201,9 @@ function NoteDialog({
       >
         Save note
       </Button>
-      <ul className="mt-4 flex flex-col gap-2">
+      <ul className="mt-2 flex flex-col gap-1">
         {saved.map((note) => (
-          <li key={note.id} className="text-sm text-muted">{note.body}</li>
+          <li key={note.id} className="text-xs text-muted">{note.body}</li>
         ))}
       </ul>
     </Dialog>

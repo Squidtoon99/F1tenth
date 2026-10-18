@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 
 from catalog import (
+    SCORE_FORMULA,
+    SCORE_NOTE,
     all_evals,
     ancestor_path,
     attempts,
@@ -57,6 +59,7 @@ def _pub_attempt(row):
         "budget": row.get("budget") or BUDGETS.get(row["wandb_run_id"]),
         "result": row["result"],
         "live": row.get("live"),
+        "score": row.get("score"),
     }
 
 
@@ -231,6 +234,10 @@ def tree(conn):
                 "verdict": row["result"],
                 "lap": _num(row.get("lap")),
                 "completion": _num(row.get("completion")),
+                "crash": _num(row.get("crash")),
+                "overtakes": _num(row.get("overtakes")),
+                "steer_reversal": _num(row.get("steer_reversal")),
+                "score": _num(row.get("score")),
                 "run_id": row["run_id"],
                 "wandb_run_id": row["wandb_run_id"],
                 "live": row.get("live"),
@@ -239,6 +246,8 @@ def tree(conn):
             for row in _catalog()
         ],
         "live": list(LIVE_IDS),
+        "score_formula": SCORE_FORMULA,
+        "score_note": SCORE_NOTE,
     }
 
 
@@ -328,6 +337,26 @@ def run_detail(conn, run_id):
             "src": f"/api/runs/{attempt['run_id']}/chart.png",
             "wandb_url": attempt["wandb_url"],
         },
+        "score": attempt.get("score"),
+        "score_formula": SCORE_FORMULA,
+        "score_note": SCORE_NOTE,
+    }
+
+
+def run_preview(conn, run_id):
+    del conn
+    attempt = find_attempt(str(run_id))
+    if attempt is None:
+        return None
+    return {
+        "run": {
+            "id": attempt["run_id"],
+            "name": attempt["name"],
+            "slug": attempt["slug"],
+            "verdict": attempt["result"],
+            "one_change": attempt["one_change"],
+        },
+        "videos": attempt.get("videos") or videos_for(attempt["slug"]),
     }
 
 

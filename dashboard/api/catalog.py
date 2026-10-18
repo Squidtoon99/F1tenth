@@ -15,6 +15,15 @@ from pathlib import Path
 NS = uuid.UUID("a3f1c2d4-5b6e-4789-8abc-def012345678")
 NS_NAME = "garage-seed"
 W = "https://wandb.ai/squidtoon99-ut-dallas/f1tenth-genesis/runs"
+LAP_REF_S = 110.0
+SCORE_FORMULA = (
+    "100 × completion × (1 − crash) × (110 / lap) "
+    "× (1 + 0.05 × overtakes) × (1 − min(reversal, 1))"
+)
+SCORE_NOTE = (
+    "110 s is the progress-reward flying-lap reference. "
+    "Missing crash, overtakes, or reversal count as 0."
+)
 
 DEFAULT_STORE = Path(
     "/run/user/1000/cursor_agent_stores/"
@@ -214,6 +223,29 @@ def public_text(text: str) -> str:
     return out
 
 
+def performance_score(lap, completion, crash, overtakes, reversal):
+    if lap is None or completion is None:
+        return None
+    try:
+        lap = float(lap)
+        completion = float(completion)
+    except (TypeError, ValueError):
+        return None
+    if lap <= 0:
+        return None
+    crash = 0.0 if crash is None else float(crash)
+    overtakes = 0.0 if overtakes is None else float(overtakes)
+    reversal = 0.0 if reversal is None else float(reversal)
+    return (
+        100.0
+        * completion
+        * (1.0 - crash)
+        * (LAP_REF_S / lap)
+        * (1.0 + 0.05 * overtakes)
+        * (1.0 - min(reversal, 1.0))
+    )
+
+
 def result_of(verdict: str) -> str:
     key = (verdict or "").strip().lower()
     if key in PASS:
@@ -333,28 +365,28 @@ def later_arms() -> list[dict]:
         _arm(
             "spatialcaps-v6-B", "opponents-v6-B", "caps_spatial_coef=0.1",
             "pass", 42, "Austin v6", 512_229_376, 117.5, 1.0, 0.0, 0.531,
-            "finished", "Spatial CAPS",
+            "finished", "Spatial CAPS", 0.093,
         ),
         _arm(
             "spatialcaps-v6-B-s43", "spatialcaps-v6-B", "seed 43",
             "pass", 43, "Austin v6", 512_229_376, 113.883, 1.0, 0.0, 0.562,
-            "finished", "Spatial CAPS",
+            "finished", "Spatial CAPS", 0.252,
         ),
         _arm(
             "actionchunk-v6-B", "opponents-v6-B", "action chunk H=4",
             "pass", 42, "Austin v6", 256_000_000, 115.9, 0.984, 0.016, 0.625,
-            "finished", "Action chunk",
+            "finished", "Action chunk", 0.197,
         ),
         _arm(
             "tinylidarnet-v6-B", "opponents-v6-B", "TinyLidarNet GRU",
             "fail", 42, "Austin v6", 256_000_000, None, 0.0, 1.0, 0.375,
-            "finished", "TinyLidarNet",
+            "finished", "TinyLidarNet", 0.109,
         ),
         _arm(
             "opponents-notal-v6-B", "opponents-v6-B",
             "progress reward, spawn 2.0 m/s",
             "pass", 42, "Austin v6", 256_114_688, 58.133, 0.984, 0.016, 3.656,
-            "finished", "Opponents progress-reward",
+            "finished", "Opponents progress-reward", 0.164,
         ),
         _arm(
             "opponents-notal-v6-B-s43", "opponents-notal-v6-B", "seed 43",
@@ -365,12 +397,12 @@ def later_arms() -> list[dict]:
             "actionchunk-notal-v6-B", "opponents-notal-v6-B",
             "action chunk H=4",
             "pass", 42, "Austin v6", 256_008_192, 55.8, 0.984, 0.188, 3.406,
-            "finished", "Action chunk progress-reward",
+            "finished", "Action chunk progress-reward", 0.200,
         ),
         _arm(
             "actionchunk-notal-v6-B-s43", "actionchunk-notal-v6-B", "seed 43",
             "fail", 43, "Austin v6", 256_114_688, 57.4, 0.656, 0.906, 1.531,
-            "finished", "Action chunk progress-reward",
+            "finished", "Action chunk progress-reward", 0.207,
         ),
         _arm(
             "opponents-notal-fastopp-v6-B", "opponents-notal-v6-B",
@@ -405,7 +437,7 @@ def later_arms() -> list[dict]:
 
 def _arm(
     slug, parent, change, verdict, seed, plant, transitions, lap,
-    completion, crash, overtakes, stop, title,
+    completion, crash, overtakes, stop, title, reversal=None,
 ):
     name = f"{title} s{seed}" if seed is not None else title
     return {
@@ -421,7 +453,7 @@ def _arm(
         "completion": completion,
         "crash": crash,
         "overtakes": overtakes,
-        "steer_reversal": None,
+        "steer_reversal": reversal,
         "spawn_mps": 2.0 if "notal" in slug else 3.5,
         "stop_reason": stop,
         "name": name,
@@ -498,6 +530,14 @@ def _finalize(row: dict) -> dict:
         "video": videos[0] if videos else None,
         "videos": videos,
         "model_io": model_io(slug),
+        "score": performance_score(
+            row.get("lap"),
+            row.get("completion"),
+            row.get("crash"),
+            row.get("overtakes"),
+            row.get("steer_reversal"),
+        ),
+        "score_formula": SCORE_FORMULA,
     }
     return item
 

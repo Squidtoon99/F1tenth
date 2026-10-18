@@ -1,51 +1,63 @@
 "use client";
 
-import { AreaSeries } from "@/components/run-chart";
-import { HalfGauge, ResourceBars, RoundGauge } from "@/components/gauges";
-import { Card } from "@/components/ui/card";
-import type { Overview } from "@/util/types";
+import Link from "next/link";
+
+import { trimNum } from "@/util/format";
+import type { TreeNode } from "@/util/types";
 import { useApi } from "@/util/use-api";
 
+type TreePayload = {
+  nodes: TreeNode[];
+  live: string[];
+  score_formula: string;
+  score_note: string;
+};
+
 export default function OverviewPage() {
-  const { data, error } = useApi<Overview>("/api/overview", 15000);
-  if (error) return <p className="text-sm text-muted">Garage API is not running.</p>;
-  if (!data) return <p className="text-sm text-muted">Loading</p>;
+  const { data, error } = useApi<TreePayload>("/api/tree", 15000);
+  if (error) return <p className="text-muted">Garage API is not running.</p>;
+  if (!data) return <p className="text-muted">Loading</p>;
+  const live = new Set(data.live);
+  const rows = data.nodes.filter((node) => live.has(node.slug) || node.verdict === "running");
   return (
-    <div className="grid grid-cols-12 gap-4">
-      <Card className="col-span-12 min-h-[420px] xl:col-span-6">
-        <div className="text-sm text-muted">Lap time</div>
-        <div className="mt-1 text-lg">Over attempts</div>
-        <div className="mt-4 h-[320px]">
-          <AreaSeries points={data.laps} xKey="label" yKey="lap" unit="s" />
-        </div>
-      </Card>
-      <div className="col-span-12 flex flex-col gap-4 md:col-span-6 xl:col-span-3">
-        <Card>
-          <div className="text-sm text-muted">Episode length</div>
-          <div className="mt-1 text-lg">{data.episode?.run_name ?? "—"}</div>
-          <div className="mt-4 h-56">
-            {data.episode ? (
-              <AreaSeries points={data.episode.marks} xKey="step" yKey="seconds" unit="s" />
-            ) : null}
-          </div>
-        </Card>
-        <Card>
-          <div className="mb-3 text-sm text-muted">Scenarios</div>
-          <ResourceBars rows={data.scenarios} />
-        </Card>
-      </div>
-      <div className="col-span-12 flex flex-col gap-4 md:col-span-6 xl:col-span-3">
-        <Card>
-          <div className="text-sm text-muted">Transitions</div>
-          <div className="mt-1 truncate text-lg">{data.gauge?.label ?? "—"}</div>
-          {data.gauge ? <RoundGauge used={data.gauge.used} budget={data.gauge.budget} /> : null}
-        </Card>
-        <Card>
-          <div className="text-sm text-muted">Crash rate</div>
-          <div className="mt-1 truncate text-lg">{data.crash.label ?? "—"}</div>
-          <HalfGauge rate={data.crash.rate} />
-        </Card>
-      </div>
+    <div>
+      <table className="w-full text-left">
+        <thead className="text-muted">
+          <tr>
+            {["Live run", "Result", "Score", "Lap", "Comp", "Crash", "Steps"].map((label) => (
+              <th key={label} className="px-1.5 py-1 font-normal">{label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((node) => (
+            <tr key={node.id}>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5">
+                <Link href={`/runs/${node.run_id}`} className="hover:text-accent-2">{node.name}</Link>
+              </td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 text-accent-2">{node.verdict}</td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                {node.score == null ? "—" : trimNum(node.score, 1)}
+              </td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                {node.lap == null ? "—" : `${trimNum(node.lap, 1)}s`}
+              </td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                {node.completion == null ? "—" : trimNum(node.completion)}
+              </td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                {node.crash == null ? "—" : trimNum(node.crash)}
+              </td>
+              <td className="border-t border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                {node.live?.transitions == null ? "—" : Math.round(node.live.transitions).toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-2 text-[11px] text-muted">
+        score = {data.score_formula}. {data.score_note}
+      </p>
     </div>
   );
 }

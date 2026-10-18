@@ -13,54 +13,20 @@ function resultClass(verdict: string) {
   return "text-muted";
 }
 
-function NodeVideo({ node }: { node: TreeNode }) {
-  if (node.video?.stream) {
-    return (
-      <video
-        className="h-14 w-[88px] shrink-0 rounded-md bg-black object-cover"
-        muted
-        playsInline
-        preload="metadata"
-        src={node.video.stream}
-      />
-    );
-  }
-  return (
-    <div className="flex h-14 w-[88px] shrink-0 items-center justify-center rounded-md border border-dashed border-white/10 text-[10px] text-muted">
-      No clip
-    </div>
-  );
+function cell(value: number | null | undefined, digits = 3) {
+  return value == null ? "—" : trimNum(value, digits);
 }
 
-function NodeRow({ node, depth }: { node: TreeNode; depth: number }) {
-  const live = node.live?.state === "running" || node.verdict === "running";
-  return (
-    <Link
-      href={`/runs/${node.run_id}`}
-      className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]"
-      style={{ paddingLeft: 8 + depth * 18 }}
-    >
-      <NodeVideo node={node} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm">{node.name}</span>
-          <span className={`text-[10px] uppercase tracking-wide ${resultClass(node.verdict)}`}>
-            {live ? "running" : node.verdict}
-          </span>
-        </div>
-        <div className="truncate text-xs text-muted">{node.one_change}</div>
-      </div>
-      <div className="w-16 shrink-0 text-right text-sm tabular-nums">
-        {node.lap == null ? "—" : `${trimNum(node.lap, 1)}s`}
-      </div>
-    </Link>
-  );
-}
+type TreePayload = {
+  nodes: TreeNode[];
+  score_formula: string;
+  score_note: string;
+};
 
 export function TreeView() {
-  const { data, error } = useApi<{ nodes: TreeNode[] }>("/api/tree", 12000);
-  if (error) return <p className="text-sm text-muted">Garage API is not running.</p>;
-  if (!data) return <p className="text-sm text-muted">Loading</p>;
+  const { data, error } = useApi<TreePayload>("/api/tree", 12000);
+  if (error) return <p className="text-muted">Garage API is not running.</p>;
+  if (!data) return <p className="text-muted">Loading</p>;
   const children = new Map<string, TreeNode[]>();
   data.nodes.forEach((node) => {
     const key = node.parent_id ?? "root";
@@ -75,10 +41,52 @@ export function TreeView() {
   };
   walk("root", 0);
   return (
-    <div className="rounded-2xl border border-white/[0.06] bg-card py-1">
-      {rows.map(({ node, depth }) => (
-        <NodeRow key={node.id} node={node} depth={depth} />
-      ))}
+    <div>
+      <table className="w-full border-collapse text-left">
+        <thead className="sticky top-9 bg-elevated text-muted">
+          <tr>
+            {["Attempt", "Result", "Score", "Lap", "Comp", "Crash", "Ovt", "Rev", "Clip"].map((label) => (
+              <th key={label} className="border-b border-white/[0.08] px-1.5 py-1 font-normal">
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ node, depth }) => {
+            const live = node.live?.state === "running" || node.verdict === "running";
+            return (
+              <tr key={node.id} className="hover:bg-white/[0.03]">
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5">
+                  <Link href={`/runs/${node.run_id}`} className="block hover:text-accent-2">
+                    <span style={{ paddingLeft: depth * 12 }}>{node.name}</span>
+                    <span className="ml-2 text-muted">{node.one_change}</span>
+                  </Link>
+                </td>
+                <td className={`border-b border-white/[0.04] px-1.5 py-0.5 ${resultClass(node.verdict)}`}>
+                  {live ? "running" : node.verdict}
+                </td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                  {cell(node.score, 1)}
+                </td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">
+                  {node.lap == null ? "—" : `${trimNum(node.lap, 1)}s`}
+                </td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">{cell(node.completion)}</td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">{cell(node.crash)}</td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">{cell(node.overtakes)}</td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 tabular-nums">{cell(node.steer_reversal)}</td>
+                <td className="border-b border-white/[0.04] px-1.5 py-0.5 text-muted">
+                  {node.video?.stream ? "yes" : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="mt-2 text-[11px] text-muted">
+        score = {data.score_formula}. {data.score_note}
+      </p>
     </div>
   );
 }

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from catalog import attempts, public_text, videos_for
+import pytest
+
+from catalog import SCORE_FORMULA, attempts, performance_score, public_text, videos_for
 from live import LIVE_IDS, apply
+from queries import run_preview
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 
@@ -60,6 +63,30 @@ def test_web_does_not_open_the_database():
     assert "psycopg" not in blob
     assert "DATABASE_URL" not in blob
     assert "TIGRIS" not in blob
+
+
+def test_score_uses_the_five_metrics():
+    assert "completion" in SCORE_FORMULA
+    assert "crash" in SCORE_FORMULA
+    assert "110 / lap" in SCORE_FORMULA
+    assert "overtakes" in SCORE_FORMULA
+    assert "reversal" in SCORE_FORMULA
+    expected = performance_score(55.8, 0.984, 0.188, 3.406, 0.200)
+    assert expected is not None and expected > 0
+    row = next(item for item in attempts() if item["slug"] == "actionchunk-notal-v6-B")
+    assert row["score"] == pytest.approx(expected)
+    assert performance_score(None, 1.0, 0.0, 0.0, 0.0) is None
+
+
+def test_run_preview_is_name_and_video_only():
+    row = next(item for item in attempts() if item["slug"] == "actionchunk-notal-v6-B")
+    preview = run_preview(None, row["run_id"])
+    assert preview is not None
+    assert preview["run"]["name"] == row["name"]
+    assert "series" not in preview
+    assert "evals" not in preview
+    assert "score_formula" not in preview
+    assert preview["videos"]
 
 
 def test_live_overlay_marks_training():
