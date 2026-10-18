@@ -572,6 +572,31 @@ def test_courtyard_2_e2e_ppo_merged_patch_is_80a_drive_40a_brake():
     assert default_dr["lidar_range_noise_std_range"] == [0.0, 0.0]
 
 
+def test_austin_e2e_ppo_baseline_v6_loads_sim_ready_v2_fit():
+    root = Path(__file__).resolve().parents[1]
+    patch = json.loads((root / "configs" / "austin_e2e_ppo_baseline_v6.json").read_text())
+    args, explicit = parse_args([])
+    cfg = build_config(args, patch=patch, explicit=explicit)
+    env = cfg["env"]
+    assert env["f_drive_max"] == pytest.approx(21.46877492171339)
+    assert env["f_brake_max"] == pytest.approx(9.139188067139935)
+    assert env["t_delta"] == pytest.approx(0.09)
+    assert env["steer_gain"] == pytest.approx(1.0511988660159353)
+    assert env["warp_sim"]["c_coast"] == pytest.approx(4.804781294740983)
+    assert env["warp_sim"]["steer_gain"] == pytest.approx(1.0511988660159353)
+    assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(5.329306089973615)
+    params = VehicleParams.from_config(env)
+    assert params.f_drive_max == pytest.approx(21.46877492171339)
+    assert params.f_brake_max == pytest.approx(9.139188067139935)
+    assert params.c_coast == pytest.approx(4.804781294740983)
+    assert params.steer_gain == pytest.approx(1.0511988660159353)
+    assert params.t_delta == pytest.approx(0.09)
+    assert params.lat_stiffness_scale == pytest.approx(5.329306089973615)
+    default_params = VehicleParams.from_config(DEFAULT_CONFIG["env"])
+    assert default_params.f_drive_max == pytest.approx(26.5)
+    assert default_params.lat_stiffness_scale == pytest.approx(11.0)
+
+
 def test_galaxy_1_scripted_inherits_default_sensor_dr():
     root = Path(__file__).resolve().parents[1]
     patch = json.loads(

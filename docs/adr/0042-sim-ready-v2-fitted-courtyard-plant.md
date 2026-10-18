@@ -1,4 +1,4 @@
-# 0042 — Use the frozen SIM_READY_V2 fit as the courtyard training plant
+# 0042 — Use the frozen SIM_READY_V2 fit as the training plant
 
 - Status: Accepted
 - Date: 2026-10-17
@@ -9,15 +9,15 @@
 
 The reduced bicycle in [0033](0033-reduced-bicycle-simulator.md) still trains
 on the unfitted prior (26.5/23.1 N, coast 0, steer gain 1.10714, lateral scale
-11.0). SIM_READY_V2 froze a courtyard bag fit of that same plant. New courtyard
-PPO runs should load those fitted scalars rather than the default unfitted
-bicycle. Live Austin scripted-opponent configs and checkpoints stay on the
-prior plant.
+11.0). SIM_READY_V2 froze a courtyard bag fit of that same plant. New Austin
+and courtyard PPO runs should load those fitted scalars rather than the
+default unfitted bicycle. Live run directories and checkpoints are not
+converted.
 
 ## Decision
 
-1. Set `training/configs/courtyard_2_e2e_ppo.json` to the frozen SIM_READY_V2
-   fit:
+1. Set `training/configs/austin_e2e_ppo_baseline_v6.json` and
+   `training/configs/courtyard_2_e2e_ppo.json` to the frozen SIM_READY_V2 fit:
 
    | Parameter | Value |
    | --- | ---: |
@@ -28,19 +28,22 @@ prior plant.
    | Steering lag | 0.09 s, retained prior |
    | Lateral stiffness scale | 5.3293060900 |
 
-   *Why:* this is the selected free/full replay estimate. `--config
-   training/configs/courtyard_2_e2e_ppo.json` selects the plant for new runs.
-2. Leave `DEFAULT_CONFIG`, Galaxy, and Austin baseline/fastopp JSON on the
-   unfitted 0033 prior. Do not convert old checkpoints.
-   *Why:* live Austin jobs and their artifacts are a different plant; mixing
-   them with the courtyard fit would silently retune running work.
+   *Why:* this is the selected free/full replay estimate. Austin training,
+   including opponents-notal, uses `--config
+   training/configs/austin_e2e_ppo_baseline_v6.json`. Courtyard uses
+   `--config training/configs/courtyard_2_e2e_ppo.json`.
+2. Leave `DEFAULT_CONFIG` and Galaxy on the unfitted 0033 prior. Do not
+   convert old checkpoints or edit the live `F1tenth-opponents-notal` tree.
+   *Why:* already-running jobs keep the plant they started with; new runs
+   pick the fit from the Austin/courtyard JSON.
 3. Do not edit the fitted numbers to chase a better score, and do not treat
    this as a physical-deployment certificate.
    *Why:* SIM_READY_V2 already records that angular/radius parity still fails.
 
 ## Consequences
 
-New courtyard PPO runs that pass `--config
-training/configs/courtyard_2_e2e_ppo.json` load the fitted plant through
-`VehicleParams.from_config`. Other scenario files keep 26.5/23.1 N, coast 0,
-gain 1.10714 and lateral scale 11.0. Deployment configuration is unchanged.
+New Austin PPO runs that pass `--config
+training/configs/austin_e2e_ppo_baseline_v6.json` load the fitted plant
+through `VehicleParams.from_config`. Courtyard PPO does the same via its
+config. `DEFAULT_CONFIG` and Galaxy keep 26.5/23.1 N, coast 0, gain 1.10714
+and lateral scale 11.0. Deployment configuration is unchanged.
