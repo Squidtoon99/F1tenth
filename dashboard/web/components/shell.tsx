@@ -1,6 +1,16 @@
 "use client";
 
-import { Cpu, Flag, Gauge, GitFork, LayoutDashboard, Search } from "lucide-react";
+import {
+  ClipboardList,
+  Cpu,
+  Flag,
+  Folder,
+  Gauge,
+  GitFork,
+  LayoutDashboard,
+  LineChart,
+  Search,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
@@ -15,15 +25,11 @@ const NAV = [
   { href: "/", label: "Tree", icon: GitFork },
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/runs", label: "Runs", icon: Flag },
+  { href: "/evals", label: "Evals", icon: ClipboardList },
+  { href: "/wandb", label: "wandb", icon: LineChart },
+  { href: "/files", label: "Files", icon: Folder },
   { href: "/policies", label: "Policies", icon: Cpu },
   { href: "/race", label: "Race", icon: Gauge },
-];
-
-const TABS = [
-  { href: "/", label: "Tree" },
-  { href: "/evals", label: "Evals" },
-  { href: "/wandb", label: "wandb" },
-  { href: "/files", label: "Files" },
 ];
 
 type SearchHit = {
@@ -127,23 +133,6 @@ export function Shell({ children }: { children: ReactNode }) {
           </a>
           <Button onClick={() => setNoteOpen(true)}>Note</Button>
         </header>
-        <div className="flex gap-3 border-b border-white/[0.06] px-3">
-          {TABS.map((tab) => {
-            const active = pathname === tab.href;
-            return (
-              <Link
-                key={tab.href}
-                href={tab.href}
-                className={cn(
-                  "border-b-2 py-1.5",
-                  active ? "border-accent-2 text-text" : "border-transparent text-muted hover:text-text",
-                )}
-              >
-                {tab.label}
-              </Link>
-            );
-          })}
-        </div>
         <main className="px-3 py-2">{children}</main>
       </div>
       <NoteDialog open={noteOpen} onOpenChange={setNoteOpen} />

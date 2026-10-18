@@ -150,7 +150,7 @@ export default function RacePage() {
       <iframe
         title="Race"
         src="/api/race/ui/index.html?transport=http&embed=1"
-        className="h-[calc(100vh-88px)] w-full border border-white/[0.06] bg-black"
+        className="h-[calc(100vh-60px)] w-full border border-white/[0.06] bg-black"
       />
     </div>
   );
