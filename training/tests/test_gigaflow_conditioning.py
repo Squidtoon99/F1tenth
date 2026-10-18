@@ -14,6 +14,8 @@ import torch.nn as nn
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.gigaflow_cond import (
+    C_ACCEL,
+    C_THROTTLE,
     C_VEL,
     GIGAFLOW_ACTOR_OBS_DIM,
     GIGAFLOW_C_DIM,
@@ -151,18 +153,21 @@ def test_two_agents_different_c_speed_caps_on_width_variant():
         assert critic.shape[-1] == GIGAFLOW_CRITIC_OBS_DIM
         assert extras["gigaflow_track"] == "Oschersleben"
         assert extras["gigaflow_variant"] == "width_0.8"
+        env._c_ego[:, C_THROTTLE] = 1.0
+        env._c_ego[:, C_ACCEL] = 1.0
         env._c_ego[:, C_VEL] = torch.tensor([1.0 / 1.5, 1.5])
         env._apply_gigaflow_plant(torch.ones(2, dtype=torch.bool))
         env._write_conditioning_columns()
         caps = speed_cap_from_c(env._c_ego[:, C_VEL].numpy(), 6.0)
         assert caps[0] == pytest.approx(4.0)
         assert caps[1] == pytest.approx(9.0)
+        assert torch.allclose(env._ego.tensor["drive_scale"], torch.ones(2))
         assert not torch.equal(actor[0, -GIGAFLOW_C_DIM:], actor[1, -GIGAFLOW_C_DIM:])
         assert torch.equal(
             critic[:, GIGAFLOW_CRITIC_OBS_DIM - GIGAFLOW_C_DIM :],
             env._c_ego,
         )
-        for _ in range(12):
+        for _ in range(40):
             actions = torch.zeros(2, 2)
             actions[:, 0] = 1.0
             raw, reward, done, extras = env.step(
@@ -176,7 +181,8 @@ def test_two_agents_different_c_speed_caps_on_width_variant():
             assert extras["gigaflow_variant"] == "width_0.8"
         vx = env._ego.tensor["vx"]
         assert torch.isfinite(vx).all()
-        assert float(vx[1]) > float(vx[0])
+        assert float(vx[0]) <= 4.35
+        assert float(vx[1]) > float(vx[0]) + 0.4
         assert critic.shape[-1] == 402
         assert actor[:, :ACTOR_LIDAR_DIM].shape[-1] == ACTOR_LIDAR_DIM
     finally:
