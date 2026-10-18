@@ -32,12 +32,13 @@ through the infield.
    `a_lat` sits below `μ g`. The loop only advances `segment` / `covered` —
    the same pattern as `track_heading_ahead` — so Warp actually runs it.
 
-2. Keep Stanley cross-track, add `atan(L κ)` feedforward from the same
-   lookahead heading, and cap lookahead at `min(2.5, max(1.5, 0.75 |v|))`.
-   Drop the 0.3× steer-proportional scale.
-   *Why:* heading from the current tangent is late once steer lag is in play;
-   feedforward turns in before the tire saturates. The 2.5 m cap stops the
-   0.75 s chord from cutting the infield at 8–9 m/s.
+2. Stanley heading is the current centerline tangent, not a far lookahead
+   point. Add `atan(L κ)` feedforward from the heading 1 m ahead. Drop the
+   0.3× steer-proportional scale.
+   *Why:* a 2.5 m lookahead on Austin's R ≈ 1.1 m hairpins is a chord through
+   the infield (sagitta ≳ corridor half-width). Local tangent + 1 m bicycle
+   feedforward turns in without aiming across the infield. Steer lag is
+   handled by slowing 18 m out, not by lengthening the look point.
 
 Apply the same law in `centerline_tracking_action` (scripted opponent and the
 optional residual ego base). Courtyard and IV keep using the same preview, so
