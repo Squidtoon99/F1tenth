@@ -19,18 +19,18 @@ _POLICY = str(_TRAINING_ROOT.parent / "libs" / "f1tenth_policy")
 if _POLICY not in sys.path:
     sys.path.insert(0, _POLICY)
 
-from f1tenth_env import F1tenthEnv
-from f1tenth_env import runtime as rt
-from f1tenth_env.gigaflow_cond import (
+from f1tenth_env import F1tenthEnv  # noqa: E402
+from f1tenth_env import runtime as rt  # noqa: E402
+from f1tenth_env.gigaflow_cond import (  # noqa: E402
     C_VEL,
     GIGAFLOW_ACTOR_OBS_DIM,
     GIGAFLOW_CRITIC_OBS_DIM,
     format_gigaflow_spec,
     speed_cap_from_c,
 )
-from f1tenth_env.sensors import ACTOR_LIDAR_DIM
-from f1tenth_policy.normalizer import ObsNormalizer
-from standalone_trainer import (
+from f1tenth_env.sensors import ACTOR_LIDAR_DIM  # noqa: E402
+from f1tenth_policy.normalizer import ObsNormalizer  # noqa: E402
+from standalone_trainer import (  # noqa: E402
     build_config,
     build_ppo_models,
     parse_args,
