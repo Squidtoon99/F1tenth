@@ -58,6 +58,17 @@ REFERENCE_MODE_MIN_CRASH = "min-crash"
 REFERENCE_MODES = (REFERENCE_MODE_ZERO_CRASH, REFERENCE_MODE_MIN_CRASH)
 
 
+def migrate_legacy_model_config(cfg: dict) -> dict:
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        return cfg
+    hidden = model.pop("hidden_layers", None)
+    if hidden is not None:
+        model.setdefault("actor_hidden_layers", hidden)
+        model.setdefault("critic_hidden_layers", list(hidden))
+    return cfg
+
+
 def _read_config_json(path: Path) -> dict:
     data = json.loads(path.read_text())
     if isinstance(data, dict) and "config" in data:
@@ -335,7 +346,6 @@ def evaluate_checkpoint(
     from f1tenth_env import runtime as rt
     from standalone_trainer import (
         episode_length_for_track,
-        migrate_legacy_model_config,
         select_device,
     )
 
