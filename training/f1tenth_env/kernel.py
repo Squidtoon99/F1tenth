@@ -1251,6 +1251,47 @@ def push_executed_longitudinal(
 
 
 @wp.func
+def curvature_limited_speed(
+    frenet: FrenetState,
+    track: TrackData,
+    target_speed: wp.float32,
+) -> wp.float32:
+    a_lat = wp.float32(8.0)
+    a_brake = wp.float32(6.0)
+    chord = wp.float32(4.0)
+    n_samples = 8
+    min_v2 = target_speed * target_speed
+    heading_prev = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    prev_s = wp.float32(0.0)
+    segment = frenet.segment
+    covered = wp.float32(0.0)
+    available = (1.0 - frenet.t) * track.segment_length[segment]
+    sample_i = 1
+    for _ in range(MAX_FORWARD_SEGMENTS):
+        if sample_i > n_samples:
+            break
+        sample_s = chord * wp.float32(sample_i)
+        if covered + available >= sample_s:
+            heading = wp.atan2(
+                track.tangent[segment][1], track.tangent[segment][0]
+            )
+            ds = wp.max(sample_s - prev_s, 0.2)
+            kappa = wp.abs(wrap_angle(heading - heading_prev)) / ds
+            v_corner2 = a_lat / wp.max(kappa, 1.0e-4)
+            v_allow2 = v_corner2 + 2.0 * a_brake * sample_s
+            if v_allow2 < min_v2:
+                min_v2 = v_allow2
+            heading_prev = heading
+            prev_s = sample_s
+            sample_i = sample_i + 1
+        else:
+            covered = covered + available
+            segment = wrap_segment(segment + 1, track.count)
+            available = track.segment_length[segment]
+    return wp.sqrt(wp.max(min_v2, 0.0))
+
+
+@wp.func
 def centerline_tracking_action(
     vehicle: VehicleLocal,
     frenet: FrenetState,
@@ -1263,11 +1304,9 @@ def centerline_tracking_action(
     lateral_offset: wp.float32,
 ) -> wp.vec2f:
     track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
-    lookahead = wp.float32(0.5) * wp.abs(track_speed)
-    if lookahead < 0.05:
-        heading = wp.atan2(frenet.tangent[1], frenet.tangent[0])
-    else:
-        heading = track_heading_ahead(frenet, track, lookahead)
+    lookahead = wp.max(wp.float32(1.5), 0.75 * wp.abs(track_speed))
+    heading_now = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    heading = track_heading_ahead(frenet, track, lookahead)
     heading_error = wrap_angle(vehicle.yaw - heading)
     ey_corr = frenet.ey - lateral_offset
     cross_track = wp.atan(
@@ -1275,20 +1314,18 @@ def centerline_tracking_action(
         * ey_corr
         / wp.max(wp.abs(track_speed) + 0.5, 0.5)
     )
+    kappa_ff = wrap_angle(heading - heading_now) / wp.max(lookahead, 0.5)
+    delta_ff = wp.atan(sim.wheelbase * kappa_ff)
     steering_target = wp.clamp(
-        -(kp_heading * heading_error + cross_track),
+        delta_ff - (kp_heading * heading_error + cross_track),
         -sim.max_steer,
         sim.max_steer,
     )
     steering = (steering_target - vehicle.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    speed_scale = wp.max(
-        wp.float32(0.3),
-        1.0
-        - 0.7 * (wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)),
-    )
-    throttle = kp_speed * (speed_scale * target_speed - track_speed)
+    speed_cmd = curvature_limited_speed(frenet, track, target_speed)
+    throttle = kp_speed * (speed_cmd - track_speed)
     return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
