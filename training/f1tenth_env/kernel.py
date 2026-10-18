@@ -1502,7 +1502,6 @@ def compute_reward_and_done(
         )
         out.tal = reward.tal_scale * (
             1.0
-            - wp.abs(track_speed - reward.tal_v_ref)
             - wp.abs(ego.steer_logical - delta_ref)
         )
     theta_t = env.executed_steer_history[env_id, 0]
