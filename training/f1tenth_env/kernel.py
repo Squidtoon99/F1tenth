@@ -1256,8 +1256,8 @@ def curvature_limited_speed(
     track: TrackData,
     target_speed: wp.float32,
 ) -> wp.float32:
-    a_lat = wp.float32(7.0)
-    a_brake = wp.float32(1.5)
+    a_lat = wp.float32(4.0)
+    a_brake = wp.float32(1.2)
     horizon = wp.float32(40.0)
     min_v2 = target_speed * target_speed
     heading_prev = wp.atan2(frenet.tangent[1], frenet.tangent[0])
@@ -1296,13 +1296,13 @@ def centerline_tracking_action(
     lateral_offset: wp.float32,
 ) -> wp.vec2f:
     track_speed = wp.dot(body_velocity_world(vehicle), frenet.tangent)
-    body_speed = wp.sqrt(vehicle.vx * vehicle.vx + vehicle.vy * vehicle.vy)
     abs_speed = wp.abs(track_speed)
-    lookahead = wp.min(
-        wp.float32(1.2),
-        wp.max(wp.float32(0.8), 0.20 * abs_speed),
-    )
-    heading = track_heading_ahead(frenet, track, lookahead)
+    lookahead = wp.min(wp.float32(2.5), wp.float32(0.5) * abs_speed)
+    heading_now = wp.atan2(frenet.tangent[1], frenet.tangent[0])
+    if lookahead < 0.05:
+        heading = heading_now
+    else:
+        heading = track_heading_ahead(frenet, track, lookahead)
     heading_error = wrap_angle(vehicle.yaw - heading)
     ey_corr = frenet.ey - lateral_offset
     cross_track = wp.atan(
@@ -1318,10 +1318,13 @@ def centerline_tracking_action(
     steering = (steering_target - vehicle.steer_logical) / wp.max(
         sim.steering_delta_max, 1.0e-6
     )
-    speed_cmd = curvature_limited_speed(frenet, track, target_speed)
-    if wp.abs(steering_target) > 0.85 * sim.max_steer:
-        speed_cmd = wp.min(speed_cmd, wp.float32(4.5))
-    throttle = kp_speed * (speed_cmd - body_speed)
+    steer_frac = wp.abs(steering_target) / wp.max(sim.max_steer, 1.0e-6)
+    steer_scale = wp.max(wp.float32(0.45), 1.0 - 0.55 * steer_frac * steer_frac)
+    speed_cmd = wp.min(
+        steer_scale * target_speed,
+        curvature_limited_speed(frenet, track, target_speed),
+    )
+    throttle = kp_speed * (speed_cmd - track_speed)
     return wp.vec2f(wp.clamp(throttle, -1.0, 1.0), steering)
 
 
