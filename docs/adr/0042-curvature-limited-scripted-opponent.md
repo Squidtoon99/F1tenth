@@ -31,13 +31,11 @@ the infield once the car is no longer crawling.
    *Why:* this is the look that finished 8.0–9.0 m/s cruise on the CSV.
    Shorter looks with faster corners still left the 2.5 m `|ey|` bar.
 
-3. Accept a centerline corner limit: on-track Austin mean body speed stays
-   ~4 m/s. A 7–9 m/s flying-lap mean is not available without leaving the
-   track or cutting the infield.
-   *Why:* T1 and the other 0.4 m kinks require ~2.5–4 m/s on the centerline.
-   Any closed-loop attempt to take them at ≥5 m/s went to `|ey|_max` 6–13 m.
-   A 7 m/s mean needs those kinks at ≥5 m/s or a raceline that uses more
-   than 2.5 m of lateral room.
+3. Keep this follower as the on-track scripted opponent. Opponents faster
+   than its mean ~4 m/s Austin pace use a copy of the baseline policy, not
+   a hotter centerline cruise.
+   *Why:* T1 and the other 0.4 m kinks require ~2.5–4 m/s on the CSV.
+   Raising the 0.3× crawl to chase a 7–9 m/s flying mean left the track.
 
 Apply the same law in `centerline_tracking_action` (scripted opponent and the
 optional residual ego base). Courtyard and IV keep using the same preview.
@@ -47,6 +45,6 @@ optional residual ego base). Courtyard and IV keep using the same preview.
 Closed-loop scripted opponents complete Austin flying laps at 8 and 9 m/s
 cruise targets without cutting the infield (`|ey|_max ≈ 1.4–1.6 m`). Mean
 body speed stays ~4 m/s. Straights see the cruise; hairpins crawl at 0.3×.
-This does not keep up with a 7.2 m/s ego on average. Training configs that
-sample 2–4 m/s are unchanged — this is the follower, not the default speed
-range.
+Training configs that sample 2–4 m/s are unchanged — this is the follower,
+not the default speed range. Faster opponents are a frozen baseline-policy
+copy, not this kernel.
