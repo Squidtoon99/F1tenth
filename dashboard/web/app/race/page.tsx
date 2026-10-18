@@ -85,14 +85,14 @@ export default function RacePage() {
   }
 
   return (
-    <div className="grid grid-cols-[220px_minmax(0,1fr)] gap-2">
-      <div>
-        <label className="mb-2 block text-muted">
+    <div className="-mx-3 -my-2 flex h-[calc(100vh-2.25rem)] flex-col">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.06] px-2">
+        <label className="flex items-center gap-1 text-muted">
           Track
           <select
             value={trackValue}
             onChange={(event) => setTrack(event.target.value)}
-            className="mt-1 h-6 w-full border border-white/[0.08] bg-bg px-1 text-xs"
+            className="h-6 border border-white/[0.08] bg-bg px-1 text-xs text-text"
           >
             {(tracks.data?.tracks ?? []).map((name) => (
               <option key={name} value={name}>
@@ -101,56 +101,64 @@ export default function RacePage() {
             ))}
           </select>
         </label>
-        <div className="max-h-[calc(100vh-160px)] overflow-auto">
-          {groups.map((group) => (
-            <div key={group.key} className="mb-2">
-              <div className="text-muted">{kindLabel(group.key === "unread" ? null : group.key)}</div>
-              {group.rows.map((row) => {
-                const disabled = !row.available || !row.path;
-                const checked = row.path ? picked.includes(row.path) : false;
-                return (
-                  <label
-                    key={`${row.run}-${row.name}-${row.step ?? "disk"}`}
-                    className="flex items-start gap-1 py-0.5"
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-0.5"
-                      disabled={disabled}
-                      checked={checked}
-                      onChange={() => row.path && toggle(row.path)}
-                    />
-                    <span>
-                      <span className="block">{row.name}</span>
-                      <span className="block text-[11px] text-muted">
-                        {row.run}
-                        {row.step != null ? ` · ${row.step.toLocaleString()}` : ""}
-                        {disabled ? " · file missing" : ""}
+        <details className="relative">
+          <summary className="cursor-pointer list-none border border-white/[0.08] px-1.5 py-0.5">
+            Models ({picked.length})
+          </summary>
+          <div className="absolute left-0 z-20 mt-1 max-h-64 w-72 overflow-auto border border-white/[0.08] bg-bg p-1">
+            {groups.map((group) => (
+              <div key={group.key} className="mb-1">
+                <div className="text-muted">
+                  {kindLabel(group.key === "unread" ? null : group.key)}
+                </div>
+                {group.rows.map((row) => {
+                  const disabled = !row.available || !row.path;
+                  const checked = row.path ? picked.includes(row.path) : false;
+                  return (
+                    <label
+                      key={`${row.run}-${row.name}-${row.step ?? "disk"}`}
+                      className="flex items-start gap-1 py-0.5"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        disabled={disabled}
+                        checked={checked}
+                        onChange={() => row.path && toggle(row.path)}
+                      />
+                      <span>
+                        <span className="block">{row.name}</span>
+                        <span className="block text-[11px] text-muted">
+                          {row.run}
+                          {row.step != null ? ` · ${row.step.toLocaleString()}` : ""}
+                          {disabled ? " · file missing" : ""}
+                        </span>
                       </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          ))}
-          {models.error ? <p className="text-red">Garage API is not running.</p> : null}
-          {!models.data && !models.error ? <p className="text-muted">Loading</p> : null}
-        </div>
+                    </label>
+                  );
+                })}
+              </div>
+            ))}
+            {models.error ? <p className="text-red">Garage API is not running.</p> : null}
+            {!models.data && !models.error ? <p className="text-muted">Loading</p> : null}
+          </div>
+        </details>
         <Button onClick={() => void race()} disabled={picked.length === 0 || !trackValue}>
           Race
         </Button>
-        {status ? <p className="mt-1 text-muted">{status}</p> : null}
+        {status ? <span className="text-muted">{status}</span> : null}
         {models.data && !models.data.viewer ? (
-          <p className="mt-1 text-red">Viewer build is missing.</p>
+          <span className="text-red">Viewer build is missing.</span>
         ) : null}
         {tracks.data && !tracks.data.cache ? (
-          <p className="mt-1 text-muted">Track cache is not built yet.</p>
+          <span className="text-muted">Track cache is not built yet.</span>
         ) : null}
       </div>
       <iframe
         title="Race"
         src="/api/race/ui/index.html?transport=http&embed=1"
-        className="h-[calc(100vh-60px)] w-full border border-white/[0.06] bg-black"
+        allowFullScreen
+        className="min-h-0 w-full flex-1 border-0 bg-black"
       />
     </div>
   );

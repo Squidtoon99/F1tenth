@@ -23,6 +23,26 @@ body,
   height: 100%;
 }
 
+#chrome {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+#chrome button {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #6a7a90;
+  background: #141a22;
+  color: #e8eef6;
+  border-radius: 2px;
+}
+
 #hud {
   position: absolute;
   left: 12px;
@@ -31,6 +51,15 @@ body,
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
+}
+
+html[data-embed="1"] #hud,
+#hud.is-hidden {
+  display: none;
+}
+
+#hud.is-visible {
+  display: flex;
 }
 
 #status {

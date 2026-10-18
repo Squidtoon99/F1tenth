@@ -226,6 +226,7 @@ def _viewer_suite_config(
     dense_environment_count: int = 1,
     obstacles_per_environment: int = 0,
     racer_count: int | None = None,
+    sensor_cadence: bool = False,
 ) -> ExperimentConfig:
     raw = _suite_world_overrides(suite, cfg)
     raw["seed"] = int(seed)
@@ -248,6 +249,15 @@ def _viewer_suite_config(
         int(worlds["max_agents_per_world"]) + int(obstacles_per_environment)
     )
     raw["worlds"] = worlds
+    if sensor_cadence:
+        from gigaflow_f1tenth.viewer.drivers import sensor_control_spec
+
+        hz, interval, _delta = sensor_control_spec()
+        agents = dict(raw["agents"])
+        agents["control_hz"] = hz
+        agents["control_interval"] = interval
+        agents["sim_dt"] = 1.0 / (hz * interval)
+        raw["agents"] = agents
     evaluation = dict(raw["evaluation"])
     evaluation["num_worlds"] = int(worlds["num_worlds"])
     evaluation["sync_no_respawn"] = True
@@ -498,6 +508,8 @@ class CheckpointReplay:
         self._obstacle_pin: tuple[torch.Tensor, ...] | None = None
         self._hidden: torch.Tensor | None = None
         self._last_actions: torch.Tensor | None = None
+        self._command_history: Any = None
+        self._held_actions: torch.Tensor | None = None
         self.reset()
 
     @classmethod
@@ -698,9 +710,13 @@ class CheckpointReplay:
             .astype(np.float32, copy=False)
         )
 
+    def _uses_sensor_cadence(self) -> bool:
+        return any(getattr(driver, "family", "") == "sensor" for driver in self._drivers)
+
     def _rebuild_sim(self) -> None:
         self.atlas = select_track_view(self.atlas_full, self.source_track_id)
         self.track_name = self.available_tracks[self.source_track_id]
+        sensor = self._uses_sensor_cadence()
         self._suite_cfg = _viewer_suite_config(
             self.base_cfg,
             self.suite,
@@ -708,10 +724,25 @@ class CheckpointReplay:
             self.dense_environment_count,
             self.obstacles_per_environment,
             self._racer_count,
+            sensor_cadence=sensor,
         )
         self.sim = build_simulator(
             self._suite_cfg, self.atlas, self.device, sync_no_respawn=True
         )
+        if sensor:
+            from gigaflow_f1tenth.viewer.drivers import (
+                StridedCommandHistory,
+                install_sensor_command_scale,
+            )
+
+            install_sensor_command_scale(self.sim)
+            self._command_history = StridedCommandHistory()
+            self._held_actions = torch.zeros(
+                self.sim.layout.num_slots, 2, device=self.device
+            )
+        else:
+            self._command_history = None
+            self._held_actions = None
         self.reset()
 
     def set_track(
@@ -840,6 +871,10 @@ class CheckpointReplay:
             [style for _ in range(self.sim.layout.num_slots)]
         )
         n = self.sim.layout.num_slots
+        if self._command_history is not None:
+            self._command_history.reset(n, self.device)
+        if self._held_actions is not None:
+            self._held_actions.zero_()
         if self._drivers:
             for driver in self._drivers:
                 driver.reset(n, self.device)
@@ -992,11 +1027,27 @@ class CheckpointReplay:
             if not slots:
                 continue
             idx = torch.as_tensor(slots, device=self.device, dtype=torch.long)
+            repeat = (
+                self._command_history is not None
+                and driver.family != "sensor"
+                and self.step_index % 2 == 1
+                and self._held_actions is not None
+            )
+            if repeat:
+                actions.index_copy_(
+                    0, idx, self._held_actions.index_select(0, idx)
+                )
+                continue
+            rows = obs.index_select(0, idx)
+            if self._command_history is not None:
+                rows = self._command_history.project(rows, idx)
             acted = driver.act(
-                obs.index_select(0, idx),
+                rows,
                 idx,
                 live_cond.index_select(0, idx),
             )
+            if self._held_actions is not None and driver.family != "sensor":
+                self._held_actions.index_copy_(0, idx, acted)
             actions.index_copy_(0, idx, acted)
         return actions
 
@@ -1012,6 +1063,9 @@ class CheckpointReplay:
         t0 = time.perf_counter()
         actions = self._policy_actions()
         out = self._step_simulator(actions)
+        if self._command_history is not None:
+            state = self.sim.buffers.torch_arrays
+            self._command_history.push(state.steer, state.applied_effort)
         self._last_actions = actions
         elapsed = max(time.perf_counter() - t0, 1e-9)
         self.sim_fps = 1.0 / elapsed

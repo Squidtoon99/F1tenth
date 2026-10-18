@@ -38,6 +38,9 @@ function requireEl<T extends Element>(sel: string): T {
 }
 
 const canvas = requireEl<HTMLCanvasElement>("#scene");
+const hudEl = requireEl<HTMLDivElement>("#hud");
+const hudBtn = requireEl<HTMLButtonElement>("#btn-hud");
+const fullscreenBtn = requireEl<HTMLButtonElement>("#btn-fullscreen");
 const statusEl = requireEl<HTMLDivElement>("#status");
 const pauseBtn = requireEl<HTMLButtonElement>("#btn-pause");
 const resetBtn = requireEl<HTMLButtonElement>("#btn-reset");
@@ -561,7 +564,49 @@ function frame(nowMs: number): void {
   requestAnimationFrame(frame);
 }
 
-if (pageParams.get("embed") === "1") {
+const embedded = pageParams.get("embed") === "1";
+let hudVisible = !embedded;
+
+function setHud(visible: boolean): void {
+  hudVisible = visible;
+  hudEl.classList.toggle("is-hidden", !visible);
+  hudEl.classList.toggle("is-visible", visible);
+  hudBtn.setAttribute("aria-pressed", visible ? "true" : "false");
+  hudBtn.textContent = visible ? "Hide HUD" : "Show HUD";
+  if (!visible) {
+    analysisEl.hidden = true;
+  } else {
+    analysisEl.hidden = !showAnalysis.checked;
+  }
+}
+
+setHud(hudVisible);
+
+hudBtn.addEventListener("click", () => {
+  setHud(!hudVisible);
+});
+
+function syncFullscreenLabel(): void {
+  fullscreenBtn.textContent = document.fullscreenElement
+    ? "Exit fullscreen"
+    : "Fullscreen";
+}
+
+fullscreenBtn.addEventListener("click", () => {
+  const root = document.getElementById("app");
+  if (!root) {
+    return;
+  }
+  if (document.fullscreenElement) {
+    void document.exitFullscreen();
+    return;
+  }
+  void root.requestFullscreen();
+});
+
+document.addEventListener("fullscreenchange", syncFullscreenLabel);
+
+if (embedded) {
   document.querySelector("#checkpoint-block")?.setAttribute("hidden", "");
 }
 

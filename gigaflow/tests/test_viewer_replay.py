@@ -163,7 +163,52 @@ def test_lineup_gives_each_model_its_own_car(
         "gigaflow-gru",
         "gigaflow-feedforward",
     ]
+    assert replay.control_hz == pytest.approx(10.0)
     assert np.isfinite(poses).all()
+
+
+def test_sensor_lineup_steps_at_the_training_rate(
+    smoke_cache: Path, smoke_actor: Path, tmp_path: Path
+):
+    from f1tenth_policy.actor import actor_architecture_from_module, make_actor
+
+    policy = tmp_path / "policy_cnn.pt"
+    actor = make_actor(1097, 2, [32], gru_hidden_dim=32, lidar_projection_dim=32)
+    torch.save(
+        {
+            "actor": actor.state_dict(),
+            "actor_architecture": actor_architecture_from_module(actor),
+            "obs_norm": {
+                "mean": torch.zeros(1097),
+                "var": torch.ones(1097),
+                "count": 1.0,
+            },
+        },
+        policy,
+    )
+    replay = CheckpointReplay.from_launch_args(
+        ViewerLaunchArgs(
+            checkpoint=smoke_actor,
+            config=SMOKE,
+            cache_dir=smoke_cache,
+            suite="solo",
+            seed=0,
+            device="cpu",
+            track="oval",
+            open_browser=False,
+        )
+    )
+    replay.set_lineup([policy])
+    assert replay.control_hz == pytest.approx(20.0)
+    assert int(replay.sim._control_interval) == 10
+    assert float(replay.sim.sim_params.steering_delta_max) == pytest.approx(
+        math.pi / 120.0
+    )
+    poses = replay.step()
+    assert poses.shape[0] == 1
+    assert np.isfinite(poses).all()
+    replay.set_lineup([smoke_actor])
+    assert replay.control_hz == pytest.approx(10.0)
 
 
 def test_runtime_suite_switch(smoke_cache: Path, smoke_actor: Path):

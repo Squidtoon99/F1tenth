@@ -4,10 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>gigaflow viewer</title>
+    <script>
+      if (new URLSearchParams(location.search).get("embed") === "1") {
+        document.documentElement.dataset.embed = "1";
+      }
+    </script>
   </head>
   <body>
     <div id="app">
       <canvas id="scene"></canvas>
+      <div id="chrome">
+        <button type="button" id="btn-hud" aria-controls="hud">Show HUD</button>
+        <button type="button" id="btn-fullscreen">Fullscreen</button>
+      </div>
       <div id="hud">
         <div id="status">connecting…</div>
         <div id="controls">

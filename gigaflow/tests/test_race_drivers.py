@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -134,6 +135,85 @@ def test_every_trained_kind_steps(tmp_path: Path):
         actions = _act(cfg, path)
         assert actions.shape == (1, 2)
         assert torch.isfinite(actions).all()
+
+
+def test_strided_history_uses_the_20hz_window():
+    from f1tenth_policy.layout import (  # noqa: E402
+        STEER_DELTA0,
+        STEER_DELTA2,
+        STEER_T,
+        STEER_T1,
+        STEER_T2,
+        THROTTLE_CURRENT,
+        THROTTLE_PRED,
+    )
+    from gigaflow_f1tenth.viewer.drivers import StridedCommandHistory  # noqa: E402
+
+    history = StridedCommandHistory()
+    history.reset(1, "cpu")
+    for index, angle in enumerate((0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30)):
+        history.push(torch.tensor([angle]), torch.tensor([float(index) / 10.0]))
+    out = history.project(torch.zeros(1, 1097), torch.zeros(1, dtype=torch.long))
+    assert float(out[0, STEER_T]) == pytest.approx(0.30)
+    assert float(out[0, STEER_T1]) == pytest.approx(0.20)
+    assert float(out[0, STEER_T2]) == pytest.approx(0.10)
+    assert float(out[0, STEER_DELTA0]) == pytest.approx(0.10)
+    assert float(out[0, STEER_DELTA2]) == pytest.approx(0.10)
+    assert float(out[0, THROTTLE_CURRENT]) == pytest.approx(0.6)
+    assert float(out[0, THROTTLE_PRED]) == pytest.approx(0.4)
+
+
+def test_sensor_command_plus_one_is_the_training_delta():
+    import math
+
+    import warp as wp
+
+    from gigaflow_f1tenth.sim.stages import physics_control_kernel  # noqa: E402
+    from gigaflow_f1tenth.sim.state import SimulatorBuffers  # noqa: E402
+    from gigaflow_f1tenth.sim.vehicle import VehicleParams  # noqa: E402
+    from gigaflow_f1tenth.viewer.drivers import sensor_control_spec  # noqa: E402
+    from gigaflow_f1tenth.viewer.replay import _viewer_suite_config  # noqa: E402
+
+    hz, interval, delta = sensor_control_spec()
+    assert hz == pytest.approx(20.0)
+    assert interval == 10
+    assert delta == pytest.approx(math.pi / 120.0)
+    cfg = load_config(SMOKE)
+    native = _viewer_suite_config(cfg, "solo", 0)
+    sensor = _viewer_suite_config(cfg, "solo", 0, sensor_cadence=True)
+    assert native.agents.control_hz == pytest.approx(10.0)
+    assert sensor.agents.control_hz == pytest.approx(hz)
+    assert sensor.agents.control_interval == interval
+    assert sensor.agents.control_interval * sensor.agents.sim_dt == pytest.approx(
+        1.0 / hz
+    )
+
+    params = VehicleParams(steering_action_mode="delta", steering_delta_max=delta)
+    buffers = SimulatorBuffers(cfg, "cpu")
+    buffers.seed_defaults(params)
+    sim_params = params.to_warp(sim_dt=0.005, control_dt=1.0 / hz)
+    arrays = buffers.torch_arrays
+    n = int(arrays.x.shape[0])
+    arrays.active[0] = 1
+    arrays.steer_scale[0] = 1.0
+    actions = torch.zeros(n, 2)
+    actions[0, 1] = 1.0
+    wp.launch(
+        physics_control_kernel,
+        dim=n,
+        inputs=[
+            buffers.vehicle_buffers(),
+            buffers.active,
+            wp.from_torch(actions, dtype=wp.vec2f),
+            buffers.prev_x,
+            buffers.prev_y,
+            buffers.prev_yaw,
+            sim_params,
+            interval,
+        ],
+        device=buffers.wp_device,
+    )
+    assert float(arrays.steer[0]) == pytest.approx(delta, rel=1e-5)
 
 
 def test_narrow_gigaflow_trunk_stays_out(tmp_path: Path):

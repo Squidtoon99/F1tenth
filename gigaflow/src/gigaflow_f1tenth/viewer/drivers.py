@@ -124,6 +124,7 @@ class RaceDriver:
         self.condition = condition
         self._normalizer = normalizer
         self.frame_stack = int(frame_stack)
+        self.family = family
         self._family = family
         self._hidden: torch.Tensor | None = None
         self._frames: torch.Tensor | None = None
@@ -155,10 +156,12 @@ class RaceDriver:
             actions = out.actions
             nxt = out.hidden
         else:
+            from f1tenth_policy.layout import executed_plant_action
+
             actions, _logp, nxt = self.actor.step(
                 obs, hidden, deterministic=True
             )
-            actions = actions[:, :2]
+            actions = executed_plant_action(actions)
         updated = self._hidden.clone()
         updated.index_copy_(0, slot_ids, nxt.detach())
         self._hidden = updated
@@ -250,3 +253,79 @@ def load_race_driver(
         frame_stack=_frame_stack_of(actor),
         family="gigaflow",
     )
+
+
+def sensor_control_spec() -> tuple[float, int, float]:
+    """Control rate and steer increment of an e2e sensor policy step."""
+    from f1tenth_policy.layout import CONTROL_HZ, STEERING_DELTA_MAX_RAD
+    from gigaflow_f1tenth.config import SIM_DT
+
+    hz = float(CONTROL_HZ)
+    interval = int(round((1.0 / hz) / float(SIM_DT)))
+    return hz, interval, float(STEERING_DELTA_MAX_RAD)
+
+
+def install_sensor_command_scale(sim: Any) -> None:
+    """Make +1 steer add the training delta, once per training control tick."""
+    hz, _interval, delta = sensor_control_spec()
+    sim.vehicle_params.steering_action_mode = "delta"
+    sim.vehicle_params.steering_delta_max = delta
+    sim.sim_params.steering_action_mode = 1
+    sim.sim_params.steering_delta_max = delta
+    sim.sim_params.control_dt = 1.0 / hz
+
+
+class StridedCommandHistory:
+    """0.30 s steer window and 0.10 s throttle predecessor at 20 Hz."""
+
+    def __init__(self) -> None:
+        self._steer: torch.Tensor | None = None
+        self._long: torch.Tensor | None = None
+        self._stride = 1
+        self._steer_len = 4
+        self._long_len = 2
+
+    def reset(self, n_slots: int, device: str) -> None:
+        from f1tenth_policy.layout import HISTORY_STRIDE, LONG_HISTORY, STEER_HISTORY
+
+        self._stride = int(HISTORY_STRIDE)
+        self._steer_len = int(STEER_HISTORY)
+        self._long_len = int(LONG_HISTORY)
+        self._steer = torch.zeros(int(n_slots), self._steer_len, device=device)
+        self._long = torch.zeros(int(n_slots), self._long_len, device=device)
+
+    def push(self, steer: torch.Tensor, effort: torch.Tensor) -> None:
+        if self._steer is None or self._long is None:
+            raise ViewerError("command history was pushed before reset")
+        self._steer = torch.roll(self._steer, shifts=1, dims=1)
+        self._steer[:, 0] = steer.detach()
+        self._long = torch.roll(self._long, shifts=1, dims=1)
+        self._long[:, 0] = effort.detach()
+
+    def project(self, rows: torch.Tensor, slot_ids: torch.Tensor) -> torch.Tensor:
+        from f1tenth_policy.layout import (
+            STEER_DELTA0,
+            STEER_DELTA1,
+            STEER_DELTA2,
+            STEER_T,
+            STEER_T1,
+            STEER_T2,
+            THROTTLE_CURRENT,
+            THROTTLE_PRED,
+        )
+
+        if self._steer is None or self._long is None:
+            raise ViewerError("command history was read before reset")
+        out = rows.clone()
+        step = self._stride
+        steer = self._steer.index_select(0, slot_ids)
+        long = self._long.index_select(0, slot_ids)
+        out[:, STEER_T] = steer[:, 0]
+        out[:, STEER_T1] = steer[:, step]
+        out[:, STEER_T2] = steer[:, 2 * step]
+        out[:, STEER_DELTA0] = steer[:, 0] - steer[:, step]
+        out[:, STEER_DELTA1] = steer[:, step] - steer[:, 2 * step]
+        out[:, STEER_DELTA2] = steer[:, 2 * step] - steer[:, 3 * step]
+        out[:, THROTTLE_CURRENT] = long[:, 0]
+        out[:, THROTTLE_PRED] = long[:, step]
+        return out
