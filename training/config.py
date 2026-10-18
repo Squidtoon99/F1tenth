@@ -93,6 +93,7 @@ DEFAULT_CONFIG = {
         },
         "longitudinal_mode": "force",
         "track": "IV_2026_SIM",
+        "gigaflow_track_sampling": False,
         "opponent_strategy": None,
         "opponent_mix": {
             "scripted_weight": 0.5,

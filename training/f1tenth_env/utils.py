@@ -315,6 +315,150 @@ def compute_track_boundaries(
     return left, right
 
 
+# Public f1tenth_racetracks ids (directory names). Courtyard and IV are out.
+GIGAFLOW_PUBLIC_TRACKS = (
+    "Austin",
+    "BrandsHatch",
+    "Budapest",
+    "Catalunya",
+    "Hockenheim",
+    "IMS",
+    "Melbourne",
+    "Mexico City",
+    "Montreal",
+    "Monza",
+    "MoscowRaceway",
+    "Nuerburgring",
+    "Oschersleben",
+    "Sakhir",
+    "SaoPaulo",
+    "Sepang",
+    "Shanghai",
+    "Silverstone",
+    "Sochi",
+    "Spa",
+    "Spielberg",
+    "YasMarina",
+    "Zandvoort",
+)
+GIGAFLOW_BLOCKED_TRACKS = frozenset(
+    {"courtyard", "courtyard_2", "IV_2026", "IV_2026_SIM"}
+)
+# Cusumano-Towner et al. 2025, arXiv 2502.03349v1: 128 affine variants of 8 maps.
+# Closed set: identity, mirror (reverse + swap L/R), half-width ×0.8/×1.2, compose.
+GIGAFLOW_AFFINE_VARIANTS = (
+    "identity",
+    "mirror",
+    "width_0.8",
+    "width_1.2",
+    "mirror_width_0.8",
+    "mirror_width_1.2",
+)
+
+
+def gigaflow_variant_ops(variant_id: str) -> tuple[bool, float]:
+    if variant_id not in GIGAFLOW_AFFINE_VARIANTS:
+        raise ValueError(f"unknown gigaflow variant id: {variant_id!r}")
+    mirrored = variant_id == "mirror" or variant_id.startswith("mirror_")
+    if variant_id in ("identity", "mirror"):
+        return mirrored, 1.0
+    if variant_id.endswith("0.8"):
+        return mirrored, 0.8
+    return mirrored, 1.2
+
+
+def apply_gigaflow_affine_variant(
+    centerline: np.ndarray,
+    w_tr_left: np.ndarray,
+    w_tr_right: np.ndarray,
+    variant_id: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mirrored, scale = gigaflow_variant_ops(variant_id)
+    point = np.asarray(centerline, dtype=np.float32)
+    left = np.asarray(w_tr_left, dtype=np.float32)
+    right = np.asarray(w_tr_right, dtype=np.float32)
+    if point.shape[0] != left.shape[0] or point.shape[0] != right.shape[0]:
+        raise ValueError("centerline and widths must have the same length")
+    if mirrored:
+        point = point[::-1].copy()
+        left, right = right[::-1].copy(), left[::-1].copy()
+    else:
+        point = point.copy()
+        left = left.copy()
+        right = right.copy()
+    if scale != 1.0:
+        left *= np.float32(scale)
+        right *= np.float32(scale)
+    return point, left, right
+
+
+def gigaflow_corridor_polygon(
+    centerline: np.ndarray,
+    w_tr_left: np.ndarray,
+    w_tr_right: np.ndarray,
+) -> np.ndarray:
+    left, right = compute_track_boundaries(centerline, w_tr_left, w_tr_right)
+    return np.concatenate([left, right[::-1]], axis=0)
+
+
+def polygon_self_intersects(ring: np.ndarray) -> bool:
+    pts = np.asarray(ring, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
+        raise ValueError("polygon ring must have shape (N, 2), N >= 4")
+    if np.linalg.norm(pts[0] - pts[-1]) > 1.0e-9:
+        pts = np.concatenate([pts, pts[:1]], axis=0)
+    nseg = pts.shape[0] - 1
+
+    def _orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def _proper_intersect(a1, a2, b1, b2):
+        o1 = _orient(a1, a2, b1)
+        o2 = _orient(a1, a2, b2)
+        o3 = _orient(b1, b2, a1)
+        o4 = _orient(b1, b2, a2)
+        return (o1 * o2) < 0.0 and (o3 * o4) < 0.0
+
+    for i in range(nseg):
+        a1, a2 = pts[i], pts[i + 1]
+        for j in range(i + 2, nseg):
+            if i == 0 and j == nseg - 1:
+                continue
+            if _proper_intersect(a1, a2, pts[j], pts[j + 1]):
+                return True
+    return False
+
+
+def sample_gigaflow_layout(rng: np.random.Generator) -> tuple[str, str]:
+    track = GIGAFLOW_PUBLIC_TRACKS[int(rng.integers(len(GIGAFLOW_PUBLIC_TRACKS)))]
+    variant = GIGAFLOW_AFFINE_VARIANTS[
+        int(rng.integers(len(GIGAFLOW_AFFINE_VARIANTS)))
+    ]
+    if track in GIGAFLOW_BLOCKED_TRACKS:
+        raise RuntimeError(f"sampled blocked track {track!r}")
+    return track, variant
+
+
+def load_gigaflow_track_arrays(
+    track_name: str, workspace_dir: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if track_name in GIGAFLOW_BLOCKED_TRACKS:
+        raise ValueError(f"blocked gigaflow track: {track_name!r}")
+    if track_name not in GIGAFLOW_PUBLIC_TRACKS:
+        raise ValueError(f"not a public gigaflow track: {track_name!r}")
+    data = resolve_track_data(track_name, workspace_dir)
+    if data is None or data.dtype.names is None:
+        raise ValueError(f"Could not parse track csv data from {track_name}")
+    required = {"x_m", "y_m", "w_tr_right_m", "w_tr_left_m"}
+    missing = required.difference(set(data.dtype.names))
+    if missing:
+        raise ValueError(f"Track csv missing required columns: {sorted(missing)}")
+    centerline = np.stack([data["x_m"], data["y_m"]], axis=-1).astype(np.float32)
+    w_tr_left = np.asarray(data["w_tr_left_m"], dtype=np.float32)
+    w_tr_right = np.asarray(data["w_tr_right_m"], dtype=np.float32)
+    return centerline, w_tr_left, w_tr_right
+
+
 @dataclass(frozen=True)
 class CorridorDistanceData:
     distance: np.ndarray

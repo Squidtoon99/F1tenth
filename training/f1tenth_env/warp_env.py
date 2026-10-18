@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -48,10 +49,13 @@ from .sensors import (
     sensor_actor_stage_kernel,
 )
 from .utils import (
+    apply_gigaflow_affine_variant,
     build_corridor_distance_field,
     build_warp_track_data,
+    load_gigaflow_track_arrays,
     load_occupancy_distance_field,
     load_track_state,
+    sample_gigaflow_layout,
 )
 
 
@@ -424,43 +428,56 @@ class WarpF1tenthEnv:
         )
 
         workspace = str(Path(__file__).resolve().parents[1])
-        self.track_state = load_track_state(
-            env_cfg.get("track"), workspace, self.device
+        self._workspace = workspace
+        self._gigaflow_sampling = bool(
+            env_cfg.get("gigaflow_track_sampling", False)
         )
-        self.centerline = self.track_state["centerline"]
-        self.w_tr_left = self.track_state["w_tr_left"]
-        self.w_tr_right = self.track_state["w_tr_right"]
-        self._track_host = build_warp_track_data(self.track_state)
-        self.track_length = self._track_host.length
-        self._track = _TrackStorage(self._track_host, self.wp_device)
+        self.gigaflow_track = None
+        self.gigaflow_variant = None
+        self._gigaflow_reset_count = 0
         self.sensor_cfg = self._resolve_sensor_cfg()
-        lidar_map_yaml = self.sensor_cfg.get("lidar_map_yaml")
-        if lidar_map_yaml:
-            lidar_map_yaml = Path(lidar_map_yaml)
-            if not lidar_map_yaml.is_absolute():
-                lidar_map_yaml = Path(workspace) / lidar_map_yaml
-            self._corridor_host = load_occupancy_distance_field(
-                lidar_map_yaml,
-                expected_sha256=self.sensor_cfg.get("lidar_map_sha256"),
-                variant_count=int(
-                    self.sensor_cfg.get("lidar_map_variant_count", 1)
-                ),
-                max_wall_offset_m=float(
-                    self.sensor_cfg.get("lidar_wall_offset_max_m", 0.0)
-                ),
-                variant_seed=int(
-                    self.sensor_cfg.get("lidar_map_variant_seed", 0)
-                ),
+        if self._gigaflow_sampling:
+            track_name, variant_id = sample_gigaflow_layout(
+                np.random.default_rng(0)
             )
+            self._apply_gigaflow_layout(track_name, variant_id)
         else:
-            self._corridor_host = build_corridor_distance_field(
-                self.centerline,
-                self.w_tr_left,
-                self.w_tr_right,
+            self.track_state = load_track_state(
+                env_cfg.get("track"), workspace, self.device
             )
-        self._corridor = _CorridorDistanceStorage(
-            self._corridor_host, self.wp_device
-        )
+            self.centerline = self.track_state["centerline"]
+            self.w_tr_left = self.track_state["w_tr_left"]
+            self.w_tr_right = self.track_state["w_tr_right"]
+            self._track_host = build_warp_track_data(self.track_state)
+            self.track_length = self._track_host.length
+            self._track = _TrackStorage(self._track_host, self.wp_device)
+            lidar_map_yaml = self.sensor_cfg.get("lidar_map_yaml")
+            if lidar_map_yaml:
+                lidar_map_yaml = Path(lidar_map_yaml)
+                if not lidar_map_yaml.is_absolute():
+                    lidar_map_yaml = Path(workspace) / lidar_map_yaml
+                self._corridor_host = load_occupancy_distance_field(
+                    lidar_map_yaml,
+                    expected_sha256=self.sensor_cfg.get("lidar_map_sha256"),
+                    variant_count=int(
+                        self.sensor_cfg.get("lidar_map_variant_count", 1)
+                    ),
+                    max_wall_offset_m=float(
+                        self.sensor_cfg.get("lidar_wall_offset_max_m", 0.0)
+                    ),
+                    variant_seed=int(
+                        self.sensor_cfg.get("lidar_map_variant_seed", 0)
+                    ),
+                )
+            else:
+                self._corridor_host = build_corridor_distance_field(
+                    self.centerline,
+                    self.w_tr_left,
+                    self.w_tr_right,
+                )
+            self._corridor = _CorridorDistanceStorage(
+                self._corridor_host, self.wp_device
+            )
         self._validate_native_actor_beams()
         self._sensor_params = self._build_sensor_params()
         self.num_lidar_beams = int(self._sensor_params.num_beams)
@@ -590,6 +607,56 @@ class WarpF1tenthEnv:
 
         self.extras = self._build_extras()
         self.reset()
+
+    def _apply_gigaflow_layout(self, track_name: str, variant_id: str) -> None:
+        centerline, w_left, w_right = load_gigaflow_track_arrays(
+            track_name, self._workspace
+        )
+        centerline, w_left, w_right = apply_gigaflow_affine_variant(
+            centerline, w_left, w_right, variant_id
+        )
+        self.gigaflow_track = track_name
+        self.gigaflow_variant = variant_id
+        logging.info("gigaflow track=%s variant=%s", track_name, variant_id)
+        self.track_state = {
+            "centerline": centerline,
+            "w_tr_left": w_left,
+            "w_tr_right": w_right,
+            "w_tr_left_torch": torch.as_tensor(
+                w_left, device=self.device, dtype=rt.tc_float
+            ),
+            "w_tr_right_torch": torch.as_tensor(
+                w_right, device=self.device, dtype=rt.tc_float
+            ),
+            "track_geom_cache": {},
+        }
+        self.centerline = centerline
+        self.w_tr_left = w_left
+        self.w_tr_right = w_right
+        self._track_host = build_warp_track_data(self.track_state)
+        self.track_length = self._track_host.length
+        self._track = _TrackStorage(self._track_host, self.wp_device)
+        self._corridor_host = build_corridor_distance_field(
+            centerline, w_left, w_right
+        )
+        self._corridor = _CorridorDistanceStorage(
+            self._corridor_host, self.wp_device
+        )
+
+    def _maybe_resample_gigaflow_track(self, seed: int | None, full_reset: bool) -> None:
+        if not self._gigaflow_sampling:
+            return
+        resample = full_reset and (
+            self._gigaflow_reset_count > 0 or seed is not None
+        )
+        if resample:
+            rng_seed = int(seed) if seed is not None else self._gigaflow_reset_count
+            track_name, variant_id = sample_gigaflow_layout(
+                np.random.default_rng(rng_seed)
+            )
+            self._apply_gigaflow_layout(track_name, variant_id)
+        if full_reset:
+            self._gigaflow_reset_count += 1
 
     def _resolve_sensor_cfg(self):
         override = self.env_cfg.get("sensor")
@@ -1062,6 +1129,8 @@ class WarpF1tenthEnv:
                 "dr/vesc_speed_noise_std": tensors["vesc_speed_noise_std"],
                 "dr/vesc_current_noise_std": tensors["vesc_current_noise_std"],
             },
+            "gigaflow_track": self.gigaflow_track,
+            "gigaflow_variant": self.gigaflow_variant,
         }
 
     def _stream(self):
@@ -1245,6 +1314,10 @@ class WarpF1tenthEnv:
         else:
             self._reset_mask.zero_()
             self._reset_mask[envs_idx] = True
+        self._maybe_resample_gigaflow_track(seed, bool(self._reset_mask.all()))
+        if self._gigaflow_sampling:
+            self.extras["gigaflow_track"] = self.gigaflow_track
+            self.extras["gigaflow_variant"] = self.gigaflow_variant
         wp.launch(
             reset_envs_kernel,
             dim=self.num_envs,
