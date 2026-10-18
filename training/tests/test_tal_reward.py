@@ -88,3 +88,29 @@ def test_tal_scale_changes_reward(warp_runtime):
     finally:
         env_off.close()
         env_on.close()
+
+
+def test_tal_ignores_fixed_speed_target(warp_runtime):
+    slow = _build_cfg(tal_scale=0.2)
+    fast = _build_cfg(tal_scale=0.2)
+    slow["env"]["expected_lap_speed_mps"] = 3.5
+    fast["env"]["expected_lap_speed_mps"] = 10.0
+    env_slow = _make_env(slow)
+    env_fast = _make_env(fast)
+    try:
+        env_slow.reset(seed=0)
+        env_fast.reset(seed=0)
+        actions = torch.zeros(2, 2, device=env_slow.device)
+        _, _, _, extras_slow = env_slow.step(
+            actions, n_steps=env_slow.control_interval
+        )
+        _, _, _, extras_fast = env_fast.step(
+            actions, n_steps=env_fast.control_interval
+        )
+        tal_slow = extras_slow["rewards"]["terms"]["tal"]
+        tal_fast = extras_fast["rewards"]["terms"]["tal"]
+        assert torch.equal(tal_slow, tal_fast)
+        assert tal_slow.abs().max() > 0.0
+    finally:
+        env_slow.close()
+        env_fast.close()
