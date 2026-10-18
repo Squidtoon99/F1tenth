@@ -131,10 +131,5 @@
         "reset_stationary_probability": 0.0
       }
     }
-  ],
-  "reward": {
-    "reward_scales": {
-      "tal": 0.0
-    }
-  }
+  ]
 }

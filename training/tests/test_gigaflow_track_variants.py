@@ -140,7 +140,7 @@ def test_gigaflow_v2_config_uses_v2_plant_and_sampling():
     assert cfg["ppo"]["gamma"] == pytest.approx(0.999)
     assert cfg["ppo"]["advantage_filter_mode"] == "running_max"
     assert cfg["ppo"]["orthogonal_init"] is True
-    assert cfg["reward"]["reward_scales"]["tal"] == 0.0
+    assert "tal" not in cfg["reward"]["reward_scales"]
     assert cfg["scenarios"][2]["env"]["opponent_strategy"] == "policy"
     blob = path.read_text()
     for blocked in GIGAFLOW_BLOCKED_TRACKS:
