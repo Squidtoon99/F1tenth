@@ -1,6 +1,7 @@
 .env
 web/node_modules/
 web/.next/
+web/tsconfig.tsbuildinfo
 api/.venv/
 api/__pycache__/
 **/__pycache__/

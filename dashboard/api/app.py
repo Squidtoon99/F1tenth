@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, jsonify, request, send_file
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -224,6 +224,47 @@ def create_app() -> Flask:
             status=status,
             headers=headers,
         )
+
+    @app.get("/api/race/models")
+    def race_models_route():
+        from race import race_catalog
+
+        with connect() as conn:
+            return race_catalog(conn)
+
+    @app.get("/api/race/tracks")
+    def race_tracks_route():
+        from race import race_tracks
+
+        return race_tracks()
+
+    @app.get("/api/race/frame")
+    def race_frame_route():
+        from race import session
+
+        return session().snapshot()
+
+    @app.post("/api/race/command")
+    def race_command_route():
+        from race import session
+        from gigaflow_f1tenth.viewer.replay import ViewerError
+
+        try:
+            session().apply_raw(request.get_data(as_text=True))
+        except (ViewerError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True})
+
+    @app.get("/api/race/ui/")
+    @app.get("/api/race/ui/<path:name>")
+    def race_ui(name: str = "index.html"):
+        from race import viewer_dist
+
+        dist = viewer_dist()
+        if not (dist / "index.html").is_file():
+            abort(404, "viewer build is missing")
+        asset = "index.html" if not name or name.endswith("/") else name
+        return send_from_directory(dist, asset)
 
     return app
 

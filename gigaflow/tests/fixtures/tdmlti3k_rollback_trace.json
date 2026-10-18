@@ -1,0 +1,18 @@
+{
+  "run_id": "tdmlti3k",
+  "rollback_updates": [1, 48, 68],
+  "final_update": 68,
+  "final_candidate_kl": 0.06012238934636116,
+  "old_policy": {
+    "actor_kl_hard": 0.05,
+    "actor_kl_warmup_updates": 0,
+    "actor_kl_stop_window_updates": 100,
+    "actor_kl_stop_window_count": 3
+  },
+  "new_policy": {
+    "actor_kl_hard": 0.20,
+    "actor_kl_warmup_updates": 200,
+    "actor_kl_stop_window_updates": 500,
+    "actor_kl_stop_window_count": 5
+  }
+}
