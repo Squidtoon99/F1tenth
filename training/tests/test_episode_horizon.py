@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import copy
 import inspect
 import os
 import sys
 
 import pytest
-import torch
 
 from standalone_trainer import validate_config_patch
 
@@ -15,7 +13,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from config import DEFAULT_CONFIG  # noqa: E402
-from f1tenth_env import F1tenthEnv  # noqa: E402
 from f1tenth_env.kernel import RewardParams  # noqa: E402
 from f1tenth_env.utils import (  # noqa: E402
     TRACK_EPISODE_HORIZON_S,
@@ -25,45 +22,6 @@ from f1tenth_env.utils import (  # noqa: E402
     track_flying_spawn_mps,
     track_reset_speed_mps,
 )
-
-
-def _build_cfg() -> dict:
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["env"]["domain_randomization"]["enabled"] = False
-    cfg["env"]["reset_spawn_yaw_jitter_rad"] = 0.0
-    cfg["env"]["reset_stationary_probability"] = 0.0
-    cfg["env"]["reset_speed_min_mps"] = 2.0
-    cfg["env"]["reset_speed_max_mps"] = 2.0
-    cfg["env"]["opponent_strategy"] = "none"
-    cfg["env"]["term_not_moving_time_s"] = 1e6
-    cfg["obs"]["enable_opponent_obs"] = False
-    scales = cfg["reward"]["reward_scales"]
-    for key in list(scales):
-        scales[key] = 0.0
-    cfg["reward"]["global_reward_scale"] = 1.0
-    cfg["reward"]["wall_contact_coefficient"] = 0.0
-    return cfg
-
-
-def _make_env(cfg: dict) -> F1tenthEnv:
-    return F1tenthEnv(
-        num_envs=2,
-        env_cfg=cfg["env"],
-        obs_cfg=cfg["obs"],
-        reward_cfg=cfg["reward"],
-        show_viewer=False,
-        enable_recording=False,
-    )
-
-
-def test_default_tal_scale_is_off():
-    assert DEFAULT_CONFIG["reward"]["reward_scales"]["tal"] == 0.0
-    validate_config_patch({"reward": {"reward_scales": {"tal": 0.0}}})
-
-
-def test_nonzero_tal_is_rejected():
-    with pytest.raises(ValueError, match="tal must be 0"):
-        validate_config_patch({"reward": {"reward_scales": {"tal": 0.2}}})
 
 
 def test_expected_lap_speed_key_is_gone():
@@ -118,25 +76,3 @@ def test_track_start_speeds_are_track_appropriate():
         assert speed < 7.0, name
     for name, (_lo, hi) in TRACK_RESET_SPEED_MPS.items():
         assert hi < 7.0, name
-
-
-def test_tal_scale_zero_emits_zero_term(warp_runtime):
-    cfg = _build_cfg()
-    env = _make_env(cfg)
-    try:
-        env.reset()
-        actions = torch.zeros(env.num_envs, 2, device=env.device)
-        _, reward, _, extras = env.step(actions, n_steps=env.control_interval)
-        tal = extras["rewards"]["terms"]["tal"]
-        assert float(tal.abs().max()) == 0.0
-        assert float(reward.abs().max()) == 0.0
-    finally:
-        env.close()
-
-
-def test_nonzero_tal_cannot_build_env(warp_runtime):
-    del warp_runtime
-    cfg = _build_cfg()
-    cfg["reward"]["reward_scales"]["tal"] = 0.2
-    with pytest.raises(ValueError, match="tal must be 0"):
-        _make_env(cfg)

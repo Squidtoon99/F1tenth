@@ -112,9 +112,6 @@
     }
   ],
   "reward": {
-    "reward_scales": {
-      "tal": 0.0
-    },
     "wall_proximity_m": 0.05
   }
 }

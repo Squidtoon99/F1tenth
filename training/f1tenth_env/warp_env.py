@@ -148,7 +148,6 @@ class _EnvironmentStorage:
         "reward_passing",
         "reward_collision",
         "reward_rear_end",
-        "reward_tal",
         "prev_s",
         "prev_opponent_s",
         "prev_steer_delta",
@@ -717,12 +716,6 @@ class WarpF1tenthEnv:
             "continuous": 1,
             "continuous_quadratic": 2,
         }[wall_cost_mode]
-        tal_scale = float(scales.get("tal", 0.0))
-        if tal_scale != 0.0:
-            raise ValueError(
-                "reward.reward_scales.tal must be 0; TAL including the "
-                "constant speed target was removed"
-            )
         proximity = float(self.reward_cfg.get("wall_proximity_m", 0.0))
         if not math.isfinite(proximity) or proximity < 0.0:
             raise ValueError(
@@ -994,7 +987,6 @@ class WarpF1tenthEnv:
                     "passing": tensors["reward_passing"],
                     "collision": tensors["reward_collision"],
                     "rear_end": tensors["reward_rear_end"],
-                    "tal": tensors["reward_tal"],
                 },
             },
             "termination": {

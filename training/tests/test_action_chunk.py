@@ -63,7 +63,7 @@ def test_action_chunk_arm_config_turns_h4_on():
     assert cfg["env"]["num_actions"] == 2
     assert cfg["env"]["opponent_strategy"] == "scripted"
     assert cfg["schedule"]["total_transitions"] == 256000000
-    assert cfg["reward"]["reward_scales"]["tal"] == pytest.approx(0.0)
+    assert "tal" not in cfg["reward"]["reward_scales"]
     assert cfg["env"]["reset_speed_min_mps"] == pytest.approx(0.0)
     assert cfg["env"]["reset_speed_max_mps"] == pytest.approx(5.0)
     assert cfg["env"]["track"] == "Austin"

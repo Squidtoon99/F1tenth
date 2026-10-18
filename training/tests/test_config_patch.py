@@ -85,10 +85,10 @@ def test_default_1v1_uses_lee_reward_scales():
 
 
 def test_patch_scripted_opponent_without_cli_flag():
-    tal_path = Path(__file__).resolve().parents[1] / (
+    v6_path = Path(__file__).resolve().parents[1] / (
         "configs/austin_e2e_ppo_baseline_v6.json"
     )
-    patch = json.loads(tal_path.read_text(encoding="utf-8"))
+    patch = json.loads(v6_path.read_text(encoding="utf-8"))
     patch["env"]["opponent_strategy"] = "scripted"
     args, explicit = parse_args([])
     cfg = build_config(args, patch=patch, explicit=explicit)
@@ -98,7 +98,7 @@ def test_patch_scripted_opponent_without_cli_flag():
     assert cfg["obs"]["enable_opponent_obs"] is False
     assert cfg["obs"]["num_actor_obs"] == 1097
     assert cfg["reward"]["reward_scales"]["passing"] == 3.0
-    assert cfg["reward"]["reward_scales"]["tal"] == 0.0
+    assert "tal" not in cfg["reward"]["reward_scales"]
 
 
 def test_training_defaults_use_20hz_1024_envs_and_3m_replay():
@@ -167,6 +167,18 @@ def test_validate_rejects_unknown_reward_scale_key():
         ValueError, match="unknown config key 'reward.reward_scales.bogus'"
     ):
         validate_config_patch({"reward": {"reward_scales": {"bogus": 1.0}}})
+
+
+def test_tal_reward_scale_cannot_be_reintroduced():
+    assert "tal" not in DEFAULT_CONFIG["reward"]["reward_scales"]
+    with pytest.raises(
+        ValueError, match="unknown config key 'reward.reward_scales.tal'"
+    ):
+        validate_config_patch({"reward": {"reward_scales": {"tal": 0.2}}})
+    with pytest.raises(
+        ValueError, match="unknown config key 'reward.reward_scales.tal'"
+    ):
+        validate_config_patch({"reward": {"reward_scales": {"tal": 0.0}}})
 
 
 def test_validate_rejects_type_mismatch():
@@ -246,14 +258,14 @@ def _overlay_diffs(base: dict, overlay: dict, prefix=""):
     return diffs
 
 
-def test_tal_v6_overlays_change_one_key():
+def test_v6_overlays_change_one_key():
     config_dir = Path(__file__).resolve().parents[1] / "configs"
     base = json.loads(
         (config_dir / "austin_e2e_ppo_baseline_v6.json").read_text()
     )
     expected = {
         "austin_e2e_ppo_baseline_v6_wall_proximity.json": [
-            "reward.wall_proximity_m"
+            "reward"
         ],
         "austin_e2e_ppo_baseline_v6_grad_caps.json": ["ppo.grad_caps_coef"],
         "austin_e2e_ppo_baseline_v6_caps_spatial.json": [
