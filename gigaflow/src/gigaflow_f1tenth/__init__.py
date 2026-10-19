@@ -2,6 +2,8 @@
 
 from gigaflow_f1tenth.config import (
     ACTION_DIM,
+    CNN_POOL_BINS,
+    CNN_POOL_MODE,
     CNN_PROJECTION_DIM,
     CONTROL_HZ,
     GRU_HIDDEN_DIM,
@@ -15,6 +17,8 @@ from gigaflow_f1tenth.config import (
 
 __all__ = [
     "ACTION_DIM",
+    "CNN_POOL_BINS",
+    "CNN_POOL_MODE",
     "CNN_PROJECTION_DIM",
     "CONTROL_HZ",
     "ExperimentConfig",

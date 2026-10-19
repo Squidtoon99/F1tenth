@@ -28,7 +28,9 @@ agents:
   sensor_obs_dim: 1097
   action_dim: 2
   gru_hidden_dim: 512
-  cnn_projection_dim: 256
+  cnn_projection_dim: 512
+  cnn_pool_mode: max
+  cnn_pool_bins: 64
   actor_mlp_sizes: [1024, 1024, 1024]
   condition_dim: 10
   target_laps: 2.0
