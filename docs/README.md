@@ -11,4 +11,10 @@
   contract and the C++/Python parity policy.
 - [adr/](adr/) — architecture decision records (timeline + current state).
 
+Nearby runbooks (not under `docs/`):
+[`../training/README.md`](../training/README.md),
+[`../sim/README.md`](../sim/README.md),
+[`../analysis/README.md`](../analysis/README.md),
+[`../deploy/README.md`](../deploy/README.md).
+
 For the high-level design, see [`../ARCHITECTURE.md`](../ARCHITECTURE.md).

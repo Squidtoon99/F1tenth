@@ -24,6 +24,7 @@ The modules are top-level (imported as `config`, `run_layout`, `standalone_train
 - `config.py` — `DEFAULT_CONFIG`.
 - `assets/` — bundled centerlines: `ecss_clean` (trainer default), `IV_2026_SIM`
   (gym / on-car cert map).
+- `analysis/` — Warp-env lap timing and 1v1 tournament (no ROS).
 - `tests/` — learner, replay, Warp physics, observation, reward, termination,
   opponent, export, and evaluation tests.
 
@@ -137,6 +138,22 @@ During training, periodic eval video:
 
 Live view needs `rerun-sdk`; mp4 needs `opencv-python` + `imageio[ffmpeg]` (in
 the requirements files).
+
+## After training (lap times + tournament)
+
+`training/analysis/` rolls checkpoints in the Warp env. Default `--track` is
+`Austin`, not `ecss_clean` / `IV_2026_SIM`. Pass `--track` to match the run.
+
+```bash
+.venv/bin/python training/analysis/lap_timing.py \
+  --run-dir outputs/runs/<id> --workers 8 --device cuda --track IV_2026_SIM
+
+.venv/bin/python training/analysis/tournament.py \
+  --run-dir outputs/runs/<id> --device cuda --track IV_2026_SIM
+```
+
+Tournament seeds from `<run>/lap_timing/car_lap_times.csv` by default. Details:
+[`analysis/README.md`](../analysis/README.md).
 
 ## Offboard / HPC
 
