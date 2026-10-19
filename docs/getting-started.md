@@ -138,7 +138,8 @@ flowchart LR
 - **macOS is CPU Warp only.** No MPS. Keep `--num-envs` small for tests.
 - **Gym vs training track.** Default trainer track is `ecss_clean`; gym cert is
   `IV_2026_SIM`. Pass `--track IV_2026_SIM` if the checkpoint must run in
-  `tools/sim.sh`.
+  `tools/sim.sh`. `training/analysis/` defaults to `Austin` — pass `--track` to
+  match the run.
 
 ## 3. Contribute a ROS node
 

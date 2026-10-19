@@ -7,7 +7,8 @@ map via a particle filter with GPU-accelerated ray casting.
   (track-centerline initialization, `/pf/relocalize_on_track`). See
   [`VENDORED.md`](VENDORED.md).
 - `range_libc/` — git submodule (`f1tenth/range_libc`); build dependency for the
-  particle filter.
+  particle filter. Clone with `--recurse-submodules`, or
+  `git submodule update --init src/localization/range_libc`.
 - `f1tenth_localization/` — launch files, PF/relocalize configs, and the
   `pf_relocalize` joystick helper node.
 
