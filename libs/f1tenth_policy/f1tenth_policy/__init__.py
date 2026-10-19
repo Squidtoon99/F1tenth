@@ -32,6 +32,9 @@ from f1tenth_policy.current import (
 from f1tenth_policy.layout import (
     ACTION_CHUNK_POLICY_FORMAT_VERSION,
     ACTOR_ARCHITECTURE_NAME,
+    ALLOWED_LIDAR_POOL_BINS,
+    ALLOWED_LIDAR_POOL_MODES,
+    CNN_CONV_OUT_BINS,
     LIDAR_DREAMER_ARCHITECTURE_NAME,
     TINYLIDARNET_ARCHITECTURE_NAME,
     ACTOR_LAYOUT_VERSION,
@@ -53,6 +56,7 @@ from f1tenth_policy.layout import (
     STEERING_DELTA_MAX_RAD,
     actor_action_dim,
     executed_plant_action,
+    normalize_lidar_pool_mode,
 )
 from f1tenth_policy.normalizer import ObsNormalizer, load_obs_normalizer
 from f1tenth_policy.steering import (
@@ -63,6 +67,9 @@ from f1tenth_policy.steering import (
 __all__ = [
     "ACTION_CHUNK_POLICY_FORMAT_VERSION",
     "ACTOR_ARCHITECTURE_NAME",
+    "ALLOWED_LIDAR_POOL_BINS",
+    "ALLOWED_LIDAR_POOL_MODES",
+    "CNN_CONV_OUT_BINS",
     "ACTOR_LAYOUT_VERSION",
     "ACTOR_OBS_DIM",
     "ARTIFACT_SCOPE_SIM_TRAINING",
@@ -107,6 +114,7 @@ __all__ = [
     "load_sensor_artifact",
     "make_actor",
     "normalize_actor_architecture",
+    "normalize_lidar_pool_mode",
     "steer_history_angles_and_deltas",
     "validate_sensor_policy_artifact",
 ]

@@ -95,9 +95,11 @@ from qrsac.replay import (
 )
 from qrsac.spinningup.core import (
     ALLOWED_LIDAR_POOL_BINS,
+    CNN_CONV_OUT_BINS,
     GRU_HIDDEN_DIM,
     LOG_STD_MAX,
     LOG_STD_MIN,
+    normalize_lidar_pool_mode,
 )
 
 # Compatibility alias used by recurrent actor / artifact tests.
@@ -811,8 +813,22 @@ def validate_model_architecture(cfg: dict) -> None:
             f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
     pool_bins = model.get("lidar_pool_bins")
+    pool_mode = normalize_lidar_pool_mode(
+        model.get("lidar_pool_mode", "adaptive_avg_1d")
+    )
     if actor_type != TINYLIDARNET_ARCHITECTURE_NAME:
-        if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
+        if pool_mode == "none":
+            if (
+                pool_bins is not None
+                and pool_bins not in ALLOWED_LIDAR_POOL_BINS
+                and pool_bins != CNN_CONV_OUT_BINS
+            ):
+                raise ValueError(
+                    f"model.lidar_pool_bins for lidar_pool_mode='none' must be "
+                    f"{CNN_CONV_OUT_BINS} (or one of {sorted(ALLOWED_LIDAR_POOL_BINS)}), "
+                    f"got {pool_bins!r}"
+                )
+        elif pool_bins not in ALLOWED_LIDAR_POOL_BINS:
             raise ValueError(
                 f"model.lidar_pool_bins must be one of "
                 f"{sorted(ALLOWED_LIDAR_POOL_BINS)}, got {pool_bins!r}"
@@ -1202,9 +1218,12 @@ def make_policy_network(cfg: dict):
     model = cfg["model"]
     ppo = cfg.get("ppo", {})
     dreamer = cfg.get("dreamer", {})
+    pool_mode = normalize_lidar_pool_mode(
+        model.get("lidar_pool_mode", "adaptive_avg_1d")
+    )
     pool_bins = model.get("lidar_pool_bins")
     if pool_bins is None:
-        pool_bins = 32
+        pool_bins = CNN_CONV_OUT_BINS if pool_mode == "none" else 32
     return make_actor(
         actor_type=model["actor_type"],
         obs_dim=cfg["obs"]["num_actor_obs"],
@@ -1213,6 +1232,7 @@ def make_policy_network(cfg: dict):
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=pool_bins,
+        lidar_pool_mode=pool_mode,
         lidar_projection_dim=model["lidar_projection_dim"],
         log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
         log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
@@ -1250,13 +1270,20 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
     same concrete actor as the learner (homogeneous self-play).
     """
     model = cfg["model"]
+    pool_mode = normalize_lidar_pool_mode(
+        model.get("lidar_pool_mode", "adaptive_avg_1d")
+    )
+    pool_bins = model.get("lidar_pool_bins")
+    if pool_bins is None:
+        pool_bins = CNN_CONV_OUT_BINS if pool_mode == "none" else 32
     return {
         **extra,
         **cfg["env"],
         "sensor": cfg["sensor"],
         "actor_type": model["actor_type"],
         "actor_hidden_layers": list(model["actor_hidden_layers"]),
-        "lidar_pool_bins": int(model["lidar_pool_bins"]),
+        "lidar_pool_bins": int(pool_bins),
+        "lidar_pool_mode": pool_mode,
         "lidar_projection_dim": int(model["lidar_projection_dim"]),
     }
 

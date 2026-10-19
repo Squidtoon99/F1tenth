@@ -194,6 +194,7 @@ DEFAULT_CONFIG = {
         "actor_hidden_layers": [1024, 1024, 1024],
         "critic_hidden_layers": [1024, 1024, 1024],
         "lidar_pool_bins": 32,
+        "lidar_pool_mode": "adaptive_avg_1d",
         "lidar_projection_dim": 256,
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
