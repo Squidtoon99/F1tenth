@@ -15,6 +15,7 @@ from gigaflow_f1tenth.config import (
     ACTION_DIM,
     ALLOWED_CNN_POOL_BINS,
     CNN_CONV_OUT_BINS,
+    CNN_POOL_BINS,
     CNN_POOL_MODE,
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
@@ -34,7 +35,7 @@ CNN_PADDING = (3, 2, 1)
 DEFAULT_ACTOR_MLP = (1024, 1024, 1024)
 ACTOR_ARCHITECTURE_NAME = "lidar_cnn_gru_conditioned"
 CONDITION_EMBED_DIM = 64
-LIDAR_POOL_BINS = 32
+LIDAR_POOL_BINS = CNN_POOL_BINS
 # Tight upper bound: std≫1 saturates tanh; atanh(action) then disagrees with the
 # sampled pre_tanh and PPO ratios / pre-update KL explode.
 LOG_STD_MAX = 0.5
@@ -271,7 +272,7 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[0],
                 padding=CNN_PADDING[0],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv1d(
                 CNN_CONV_CHANNELS[0],
                 CNN_CONV_CHANNELS[1],
@@ -279,7 +280,7 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[1],
                 padding=CNN_PADDING[1],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv1d(
                 CNN_CONV_CHANNELS[1],
                 CNN_CONV_CHANNELS[2],
@@ -287,7 +288,7 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[2],
                 padding=CNN_PADDING[2],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
         if self.pool_mode == "avg":
             self.pool: nn.Module = nn.AdaptiveAvgPool1d(self.pool_bins)
@@ -307,7 +308,7 @@ class LidarCNNEncoder(nn.Module):
             x = lidar
         x = self.conv(x)
         flat = self.pool(x).flatten(1)
-        return F.relu(self.projection(flat))
+        return F.relu(self.projection(flat), inplace=True)
 
 
 class ConditionEncoder(nn.Module):
@@ -315,9 +316,9 @@ class ConditionEncoder(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(condition_dim, embed_dim),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
         self.embed_dim = embed_dim
 

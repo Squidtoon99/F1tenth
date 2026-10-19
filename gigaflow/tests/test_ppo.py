@@ -878,7 +878,8 @@ def test_parity_gate_covers_slots_beyond_first_64():
             reset_mask=reset.transpose(0, 1).contiguous(),
             pre_tanh=pre.transpose(0, 1).contiguous(),
         )
-        old_logp = logp_bt.transpose(0, 1).clone()
+        reconstruct_logp = logp_bt.transpose(0, 1).clone()
+        old_logp = reconstruct_logp.clone()
         # Corrupt only slots the old first-64 gate would miss.
         old_logp[:, 64:] = old_logp[:, 64:] - 20.0
         batch = CompactRolloutBatch(
@@ -905,6 +906,7 @@ def test_parity_gate_covers_slots_beyond_first_64():
             ego_state=torch.randn(t, s, ego_dim),
             other_agents=torch.randn(t, s, n_others, el_dim),
             other_mask=torch.ones(t, s, n_others),
+            reconstruct_logp=reconstruct_logp,
         )
     with pytest.raises(CollectEvaluateParityError):
         learner.update(batch, prepared)

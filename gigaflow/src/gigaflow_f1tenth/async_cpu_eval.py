@@ -85,6 +85,10 @@ def cpu_hidden_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     env["WANDB_DISABLED"] = "true"
     env.pop("WANDB_RUN_ID", None)
     env.pop("WANDB_RESUME", None)
+    src = str(Path(__file__).resolve().parents[1])
+    current = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    if src not in current:
+        env["PYTHONPATH"] = os.pathsep.join([src, *current]) if current else src
     return env
 
 

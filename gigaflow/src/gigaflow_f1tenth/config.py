@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -17,10 +18,13 @@ PROPRIO_DIM = 16
 SENSOR_OBS_DIM = LIDAR_DIM + PROPRIO_DIM
 ACTION_DIM = 2
 GRU_HIDDEN_DIM = 512
-CNN_PROJECTION_DIM = 256
-CNN_POOL_BINS = 32
+CNN_PROJECTION_DIM = 512
+CNN_POOL_BINS = 64
 CNN_CONV_OUT_BINS = 91
-CNN_POOL_MODE = "avg"
+CNN_POOL_MODE = "max"
+# Untagged checkpoints predate pool_mode metadata and used avg/32/256.
+LEGACY_CNN_POOL_BINS = 32
+LEGACY_CNN_POOL_MODE = "avg"
 ALLOWED_CNN_POOL_BINS = (16, 32, 64)
 ALLOWED_CNN_POOL_MODES = ("avg", "max", "none")
 CONTROL_HZ = 20.0
@@ -54,6 +58,7 @@ GRU_BACKWARD_STATE_FLOATS_PER_HIDDEN = 8
 # Margin over the derived terms for cuDNN algorithm scratch and caching-allocator
 # block rounding, neither of which is a function of the config.
 ESTIMATE_SAFETY_MARGIN = 1.15
+CUDA_ALLOC_EXPANDABLE_SEGMENTS = "expandable_segments:True"
 
 
 @dataclass(frozen=True)
@@ -268,6 +273,22 @@ _CNN_POOL_MODE_ALIASES: dict[str, str] = {
 }
 
 
+def configure_cuda_allocator() -> None:
+    """Enable expandable caching-allocator segments before the first CUDA alloc.
+
+    The A40 smoke OOM was a contiguous 11.28 GiB CNN activation after PPO had
+    already reserved 21.72 GiB in minibatch-sized holes. Expandable segments
+    let that reservation satisfy the next large mapping. Must run before any
+    ``torch.cuda`` allocation.
+    """
+    key = "PYTORCH_CUDA_ALLOC_CONF"
+    current = os.environ.get(key, "")
+    parts = [part.strip() for part in current.split(",") if part.strip()]
+    if not any(part.startswith("expandable_segments") for part in parts):
+        parts.append(CUDA_ALLOC_EXPANDABLE_SEGMENTS)
+        os.environ[key] = ",".join(parts)
+
+
 def normalize_cnn_pool_mode(pool_mode: str) -> str:
     if not isinstance(pool_mode, str):
         raise ConfigError(
@@ -412,7 +433,10 @@ def prepared_inputs_bytes(cfg: ExperimentConfig) -> int:
     obs = cells * cfg.agents.sensor_obs_dim * BYTES_PER_FLOAT32
     ego_state = cells * arch["critic_ego_state_dim"] * BYTES_PER_FLOAT32
     bootstrap_values = cells * BYTES_PER_FLOAT32
-    return obs + ego_state + critic_set_bytes(cfg) + bootstrap_values
+    reconstruct_logp = cells * BYTES_PER_FLOAT32
+    return (
+        obs + ego_state + critic_set_bytes(cfg) + bootstrap_values + reconstruct_logp
+    )
 
 
 def ppo_update_bytes(cfg: ExperimentConfig) -> int:
@@ -498,17 +522,22 @@ def _conv_output_lengths(cfg: ExperimentConfig, arch: dict[str, Any]) -> list[in
 def _actor_activation_floats(
     cfg: ExperimentConfig, arch: dict[str, Any]
 ) -> list[int]:
-    """Elements of every tensor one agent-step produces in the actor, in order."""
+    """Elements of every tensor one agent-step produces in the actor, in order.
+
+    CNN and projection ReLU run inplace, so each conv occupies one live map
+    (not conv+relu duplicates). Peak no-grad live set is still two consecutive
+    conv maps while ``conv2`` reads ``conv1``.
+    """
     a = cfg.agents
     embed = arch["condition_embed"]
     floats = [a.lidar_dim]  # conv1 needs the sliced LiDAR window contiguous
     for channels, length in zip(
         arch["channels"], _conv_output_lengths(cfg, arch)
     ):
-        floats += [channels * length, channels * length]  # conv, relu
+        floats.append(channels * length)  # conv + inplace relu
     floats.append(arch["channels"][-1] * arch["pool_bins"])
-    floats += [a.cnn_projection_dim, a.cnn_projection_dim]  # projection, relu
-    floats += [embed] * 4  # condition encoder: two linear+relu pairs
+    floats.append(a.cnn_projection_dim)  # projection + inplace relu
+    floats += [embed] * 2  # condition encoder: two linear+inplace-relu
     floats.append(a.cnn_projection_dim + a.proprio_dim + embed)  # trunk cat
     floats += [
         a.gru_hidden_dim,
@@ -547,11 +576,10 @@ def _forward_live_floats(chain: list[int]) -> int:
 def full_rollout_scoring_bytes(cfg: ExperimentConfig) -> int:
     """Activations of the no-grad passes that score the whole rollout at once.
 
-    Rescoring in ``reconstruct_prepared``, the collect/evaluate parity gate, and
-    the critic's ``old_values`` / bootstrap passes all flatten ``[T, S]`` into one
-    batch, so their activations scale with every agent-step in the rollout — the
-    same dimensions the buffer terms scale with, and the largest single
-    allocation training makes.
+    ``reconstruct_prepared`` and the post-epoch KL diagnostic flatten ``[T, S]``
+    into one CNN batch. Inplace ReLU removes the duplicate conv map; peak live
+    set is still two consecutive conv activations (input+output of the next
+    ``Conv1d``).
     """
     arch = _architecture_constants(cfg)
     a = cfg.agents
@@ -594,9 +622,12 @@ def ppo_minibatch_backward_bytes(cfg: ExperimentConfig) -> int:
         n_slots, max(1, cfg.ppo.minibatch_size // max(1, cfg.ppo.rollout_length))
     )
     cells = mb_agents * cfg.ppo.rollout_length
-    retained = sum(_actor_activation_floats(cfg, arch)) + sum(
-        _critic_activation_floats(cfg, arch)
-    )
+    actor_retained = sum(_actor_activation_floats(cfg, arch))
+    # Spatial CAPS runs a second ``evaluate_actions_sequence`` whose graph stays
+    # alive until ``policy_loss.backward()``.
+    if float(cfg.ppo.caps_spatial_coef) > 0.0:
+        actor_retained *= 2
+    retained = actor_retained + sum(_critic_activation_floats(cfg, arch))
     workspace = (
         GRU_WORKSPACE_FLOATS_PER_HIDDEN * cfg.agents.gru_hidden_dim * mb_agents
     )

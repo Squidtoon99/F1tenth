@@ -171,6 +171,10 @@ class PreparedPPOInputs:
     old_values: Tensor | None = None  # [T, S]; computed if None
     last_values: Tensor | None = None  # [S]; bootstrap past the final step
     bootstrap_values: Tensor | None = None  # [T, S]; V(next_state) per step
+    # Frozen evaluate-path logp from reconstruct_prepared. Compared against
+    # ``batch.old_logp`` so a mutated logp still fail-fasts without a second
+    # full-rollout CNN.
+    reconstruct_logp: Tensor | None = None  # [T, S]
 
 
 def entropy_coefficient(cfg: ExperimentConfig, update_index: int) -> float:
@@ -696,22 +700,33 @@ def _rescore_actor(
 ) -> tuple[Tensor, Tensor, Tensor | None]:
     before = _rng_snapshot()
     log_std = None
-    if diagnostics:
-        try:
-            result = actor.evaluate_actions_sequence(
-                sensor_obs,
-                condition,
-                hidden,
-                actions,
-                reset_mask=reset_mask,
-                pre_tanh=pre_tanh,
-                return_diagnostics=True,
-            )
-            if len(result) == 4:
-                logp, entropy, _, log_std = result
-            else:
-                logp, entropy, _ = result
-        except TypeError:
+    with torch.inference_mode():
+        if diagnostics:
+            try:
+                result = actor.evaluate_actions_sequence(
+                    sensor_obs,
+                    condition,
+                    hidden,
+                    actions,
+                    reset_mask=reset_mask,
+                    pre_tanh=pre_tanh,
+                    return_diagnostics=True,
+                )
+                if len(result) == 4:
+                    logp, entropy, _, log_std = result
+                else:
+                    logp, entropy, _ = result
+            except TypeError:
+                logp, entropy, _ = evaluate_actions_sequence(
+                    actor,
+                    sensor_obs,
+                    condition,
+                    hidden,
+                    actions,
+                    reset_mask=reset_mask,
+                    pre_tanh=pre_tanh,
+                )
+        else:
             logp, entropy, _ = evaluate_actions_sequence(
                 actor,
                 sensor_obs,
@@ -721,16 +736,6 @@ def _rescore_actor(
                 reset_mask=reset_mask,
                 pre_tanh=pre_tanh,
             )
-    else:
-        logp, entropy, _ = evaluate_actions_sequence(
-            actor,
-            sensor_obs,
-            condition,
-            hidden,
-            actions,
-            reset_mask=reset_mask,
-            pre_tanh=pre_tanh,
-        )
     _assert_rng_unchanged(before)
     return logp.to(dtype=torch.float32), entropy.to(dtype=torch.float32), log_std
 
@@ -1096,70 +1101,50 @@ class RecurrentPPO:
                     "non-finite sensor_obs on advantage-filtered transitions"
                 )
 
-        # Hard collect/evaluate parity gate on every slot (frozen weights).
-        # Scoring a filtered subset instead would change the batch shape, and
-        # cuDNN/cuBLAS pick different kernels per shape: the resulting float32
-        # drift compounds through the recurrence and reaches ~5e-2 in log-prob,
-        # which is noise, not disagreement. Rows the filter dropped carry zero
-        # weight, so the full slot set reports the same statistics.
-        #
-        # Despite its name, this gate cannot see genuine collect-vs-evaluate
-        # divergence: trainer.reconstruct_prepared already overwrote `old_logp`
-        # (the collect-path value passed in via `batch`) with its own
-        # evaluate-path rescore, using the same frozen weights and the same
-        # whole-sequence batch shape as `new_logp_t` below. So both sides of
-        # this comparison are evaluate-path outputs, and it only bounds
-        # within-evaluate-path kernel nondeterminism, not the true collect vs.
-        # evaluate gap (measured up to 6.1e-3 in log-prob at production
-        # dimensions, and invisible here by construction). The bit-exact
-        # observation digest check in reconstruct_prepared is the real
-        # reconstruction guard. Restoring the collect-time old_logp here would
-        # reintroduce that ~6e-3 systematic ratio bias with no gate to catch
-        # it — do not do that without also changing this gate's inputs.
+        # reconstruct_prepared already wrote evaluate-path ``old_logp``. A
+        # second full-rollout CNN here only measured kernel noise and doubled
+        # peak VRAM. Compare against the reconstruct clone (when present) so
+        # a mutated ``old_logp`` still fail-fasts. Finite / pre_tanh checks
+        # remain; the observation digest is the reconstruction guard. Do not
+        # restore collect-time old_logp without changing this gate — that
+        # reintroduces the ~6e-3 ratio bias.
         pre_update_approx_kl = 0.0
         logp_delta_max = 0.0
         logp_delta_mean = 0.0
         action_pretanh_max_abs = 0.0
-        with torch.no_grad():
-            obs_d = sensor_obs.transpose(0, 1).contiguous()
-            act_d = actions.transpose(0, 1).contiguous()
-            reset_d = reset_mask.transpose(0, 1).contiguous()
-            pre_d = None
-            if pre_tanh is not None:
-                pre_d = pre_tanh.transpose(0, 1).contiguous()
-            if condition.ndim == 3:
-                cond_d = condition.transpose(0, 1).contiguous()
-            else:
-                cond_d = condition
-            # Actor rescoring stays FP32 to match collection logp exactly.
-            new_logp_d, _, _ = evaluate_actions_sequence(
-                self.actor,
-                obs_d,
-                cond_d,
-                gru_start,
-                act_d,
-                reset_mask=reset_d,
-                pre_tanh=pre_d,
+        obs_d = sensor_obs.transpose(0, 1).contiguous()
+        act_d = actions.transpose(0, 1).contiguous()
+        reset_d = reset_mask.transpose(0, 1).contiguous()
+        pre_d = None
+        if pre_tanh is not None:
+            pre_d = pre_tanh.transpose(0, 1).contiguous()
+        if condition.ndim == 3:
+            cond_d = condition.transpose(0, 1).contiguous()
+        else:
+            cond_d = condition
+        reconstruct_logp = old_logp
+        if prepared.reconstruct_logp is not None:
+            reconstruct_logp = prepared.reconstruct_logp.to(
+                device=device, dtype=torch.float32
             )
-            new_logp_t = new_logp_d.transpose(0, 1).to(dtype=torch.float32)
-            (
-                pre_update_approx_kl,
-                logp_delta_max,
-                logp_delta_mean,
-                action_pretanh_max_abs,
-            ) = _assert_collect_evaluate_parity(
-                new_logp_t=new_logp_t,
-                old_logp=old_logp,
-                keep_w=keep_w,
-                actions=actions,
-                pre_tanh=pre_tanh,
-                sensor_obs=sensor_obs,
-                condition=condition,
-                reset_mask=reset_mask,
-                gru_start=gru_start,
-                max_pre_update_kl=self.max_pre_update_kl,
-                max_logp_delta=self.max_logp_delta,
-            )
+        (
+            pre_update_approx_kl,
+            logp_delta_max,
+            logp_delta_mean,
+            action_pretanh_max_abs,
+        ) = _assert_collect_evaluate_parity(
+            new_logp_t=reconstruct_logp,
+            old_logp=old_logp,
+            keep_w=keep_w,
+            actions=actions,
+            pre_tanh=pre_tanh,
+            sensor_obs=sensor_obs,
+            condition=condition,
+            reset_mask=reset_mask,
+            gru_start=gru_start,
+            max_pre_update_kl=self.max_pre_update_kl,
+            max_logp_delta=self.max_logp_delta,
+        )
 
         mb_agents = agents_per_minibatch(
             self.minibatch_size, self.rollout_length, num_slots
@@ -1338,21 +1323,9 @@ class RecurrentPPO:
                 metric_sums["caps_temporal_loss"] += float(caps_temporal.detach())
                 actor_steps += 1
 
-                with torch.no_grad():
-                    rescored, _, _ = _rescore_actor(
-                        self.actor,
-                        obs_seq,
-                        cond,
-                        hidden,
-                        act_seq,
-                        reset_seq,
-                        pre_seq,
-                    )
-                    candidate_kl = float(
-                        _weighted_kl(
-                            rescored.transpose(0, 1), mb_old_logp, mb_keep
-                        ).item()
-                    )
+                candidate_kl = float(
+                    _weighted_kl(new_logp_t, mb_old_logp, mb_keep).item()
+                )
                 candidate_kl_max = max(candidate_kl_max, candidate_kl)
                 if (
                     self.actor_kl_hard is not None
@@ -1371,8 +1344,10 @@ class RecurrentPPO:
         full_rollout_kl = 0.0
         full_entropy = torch.zeros_like(old_logp)
         full_log_std = None
+        self.actor_optimizer.zero_grad(set_to_none=True)
+        self.critic_optimizer.zero_grad(set_to_none=True)
         if not actor_rolled_back:
-            with torch.no_grad():
+            with torch.inference_mode():
                 full_logp_d, full_entropy_d, full_log_std = _rescore_actor(
                     self.actor,
                     obs_d,

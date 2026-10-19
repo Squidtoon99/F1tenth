@@ -11,7 +11,13 @@ import numpy as np
 import torch
 
 from gigaflow_f1tenth import model as model_mod
-from gigaflow_f1tenth.config import ExperimentConfig, config_from_dict, config_to_dict
+from gigaflow_f1tenth.config import (
+    LEGACY_CNN_POOL_BINS,
+    LEGACY_CNN_POOL_MODE,
+    ExperimentConfig,
+    config_from_dict,
+    config_to_dict,
+)
 from gigaflow_f1tenth.evaluation import (
     _suite_world_overrides,
     load_actor_from_checkpoint,
@@ -363,8 +369,8 @@ def _load_native_condition_actor(
         action_dim=int(arch["action_dim"]),
         gru_hidden_dim=int(arch["gru_hidden_dim"]),
         cnn_projection_dim=int(arch["cnn_projection_dim"]),
-        cnn_pool_bins=int(arch.get("pool_bins", model_mod.LIDAR_POOL_BINS)),
-        cnn_pool_mode=str(arch.get("pool_mode", model_mod.CNN_POOL_MODE)),
+        cnn_pool_bins=int(arch.get("pool_bins", LEGACY_CNN_POOL_BINS)),
+        cnn_pool_mode=str(arch.get("pool_mode", LEGACY_CNN_POOL_MODE)),
         mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
     )
     # The actor class asserts the live schema width; this one carries its own.
