@@ -8,7 +8,7 @@ alwaysApply: false
 
 - Lint with [.flake8](.flake8): max line length 99; CI runs `ament_flake8`.
 - **No mocks.** Test against real modules and real behavior. Don't fake, stub, or
-  skip a heavy dependency (e.g. `genesis`, `torch`) to avoid exercising it — set up
+  skip a heavy dependency (e.g. `warp`, `torch`) to avoid exercising it — set up
   the real dependency so the test genuinely runs.
 - Deterministic randomness: seed with `np.random.default_rng(0)` in tests.
 - Prefer plain functions and the standard library over new frameworks or class
