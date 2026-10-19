@@ -2,7 +2,9 @@
 
 from f1tenth_policy.actor import (
     ALLOWED_LIDAR_POOL_BINS,
+    ALLOWED_LIDAR_POOL_MODES,
     CNN_CONV_CHANNELS,
+    CNN_CONV_OUT_BINS,
     CNN_KERNELS,
     CNN_PADDING,
     CNN_PROJECTION_DIM,
@@ -18,6 +20,7 @@ from f1tenth_policy.actor import (
     _squashed_gaussian_forward,
     make_actor as _make_actor,
     mlp,
+    normalize_lidar_pool_mode,
 )
 from f1tenth_policy.layout import ACTOR_ARCHITECTURE_NAME
 
@@ -43,6 +46,7 @@ def make_actor(
     deter_dim=256,
     stoch_dim=32,
     embed_dim=CNN_PROJECTION_DIM,
+    lidar_pool_mode="adaptive_avg_1d",
 ):
     import torch.nn as nn
 
@@ -67,13 +71,16 @@ def make_actor(
         deter_dim=deter_dim,
         stoch_dim=stoch_dim,
         embed_dim=embed_dim,
+        lidar_pool_mode=lidar_pool_mode,
     )
 
 
 __all__ = [
     "ALLOWED_LIDAR_POOL_BINS",
+    "ALLOWED_LIDAR_POOL_MODES",
     "ACTOR_ARCHITECTURE_NAME",
     "CNN_CONV_CHANNELS",
+    "CNN_CONV_OUT_BINS",
     "CNN_KERNELS",
     "CNN_PADDING",
     "CNN_PROJECTION_DIM",
@@ -88,6 +95,7 @@ __all__ = [
     "SquashedGaussianLidarGRUActor",
     "make_actor",
     "mlp",
+    "normalize_lidar_pool_mode",
     "_partition_invariant_standard_normal",
     "_squashed_gaussian_forward",
 ]

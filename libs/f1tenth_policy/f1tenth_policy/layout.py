@@ -58,7 +58,35 @@ OBS_NORM_CLIP = 10.0
 OBS_NORM_EPS = 1e-8
 GRU_HIDDEN_DIM = 512
 CNN_PROJECTION_DIM = 256
+CNN_CONV_OUT_BINS = 91
 ALLOWED_LIDAR_POOL_BINS = frozenset((16, 32, 64))
+ALLOWED_LIDAR_POOL_MODES = frozenset(
+    ("adaptive_avg_1d", "adaptive_max_1d", "none")
+)
+_LIDAR_POOL_MODE_ALIASES = {
+    "adaptive_avg_1d": "adaptive_avg_1d",
+    "avg": "adaptive_avg_1d",
+    "adaptive_max_1d": "adaptive_max_1d",
+    "max": "adaptive_max_1d",
+    "none": "none",
+}
+
+
+def normalize_lidar_pool_mode(pool_mode: str | None) -> str:
+    if pool_mode is None:
+        return "adaptive_avg_1d"
+    if not isinstance(pool_mode, str):
+        raise ValueError(
+            f"lidar_pool_mode must be one of {sorted(ALLOWED_LIDAR_POOL_MODES)}, "
+            f"got {pool_mode!r}"
+        )
+    canonical = _LIDAR_POOL_MODE_ALIASES.get(pool_mode.strip().lower())
+    if canonical is None:
+        raise ValueError(
+            f"lidar_pool_mode must be one of {sorted(ALLOWED_LIDAR_POOL_MODES)} "
+            f"(or shorthand 'avg', 'max', 'none'), got {pool_mode!r}"
+        )
+    return canonical
 
 
 def actor_action_dim(horizon=DEFAULT_ACTION_HORIZON, plant_dim=NUM_ACTIONS):

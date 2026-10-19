@@ -15,6 +15,8 @@ from torch.distributions.normal import Normal
 from f1tenth_policy.layout import (
     ACTOR_ARCHITECTURE_NAME,
     ALLOWED_LIDAR_POOL_BINS,
+    ALLOWED_LIDAR_POOL_MODES,
+    CNN_CONV_OUT_BINS,
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
     LIDAR_DIM,
@@ -22,7 +24,10 @@ from f1tenth_policy.layout import (
     NUM_ACTIONS,
     PROPRIO_DIM,
     TINYLIDARNET_ARCHITECTURE_NAME,
+    normalize_lidar_pool_mode,
 )
+
+_REEXPORTED_POOL_MODES = ALLOWED_LIDAR_POOL_MODES
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
@@ -141,14 +146,27 @@ class LidarCNNEncoder(nn.Module):
         lidar_dim=LIDAR_DIM,
         pool_bins=32,
         projection_dim=CNN_PROJECTION_DIM,
+        pool_mode="adaptive_avg_1d",
     ):
         super().__init__()
-        pool_bins = int(pool_bins)
-        if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
-            raise ValueError(
-                f"lidar_pool_bins must be one of {sorted(ALLOWED_LIDAR_POOL_BINS)}, "
-                f"got {pool_bins}"
-            )
+        self.pool_mode = normalize_lidar_pool_mode(pool_mode)
+        if self.pool_mode == "none":
+            if pool_bins is None:
+                pool_bins = CNN_CONV_OUT_BINS
+            pool_bins = int(pool_bins)
+            if pool_bins not in ALLOWED_LIDAR_POOL_BINS and pool_bins != CNN_CONV_OUT_BINS:
+                raise ValueError(
+                    f"lidar_pool_bins for pool_mode='none' must be {CNN_CONV_OUT_BINS} "
+                    f"(or one of {sorted(ALLOWED_LIDAR_POOL_BINS)}), got {pool_bins}"
+                )
+            pool_bins = CNN_CONV_OUT_BINS
+        else:
+            pool_bins = int(pool_bins)
+            if pool_bins not in ALLOWED_LIDAR_POOL_BINS:
+                raise ValueError(
+                    f"lidar_pool_bins must be one of {sorted(ALLOWED_LIDAR_POOL_BINS)}, "
+                    f"got {pool_bins}"
+                )
         self.lidar_dim = int(lidar_dim)
         self.pool_bins = pool_bins
         self.projection_dim = int(projection_dim)
@@ -178,7 +196,12 @@ class LidarCNNEncoder(nn.Module):
             ),
             nn.ReLU(),
         )
-        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        if self.pool_mode == "adaptive_avg_1d":
+            self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        elif self.pool_mode == "adaptive_max_1d":
+            self.pool = nn.AdaptiveMaxPool1d(self.pool_bins)
+        else:
+            self.pool = nn.Identity()
         self.projection = nn.Linear(
             CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
         )
@@ -277,6 +300,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         log_std_min=LOG_STD_MIN,
         log_std_max=LOG_STD_MAX,
         encoder_name="lidar_cnn",
+        pool_mode="adaptive_avg_1d",
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -317,16 +341,20 @@ class SquashedGaussianLidarGRUActor(nn.Module):
             )
         self.encoder_name = str(encoder_name)
         if self.encoder_name == "tinylidarnet":
+            self.pool_mode = "none"
             self.encoder = TinyLidarNetEncoder(
                 lidar_dim=self.lidar_dim,
                 projection_dim=self.projection_dim,
             )
         elif self.encoder_name == "lidar_cnn":
+            self.pool_mode = normalize_lidar_pool_mode(pool_mode)
             self.encoder = LidarCNNEncoder(
                 lidar_dim=self.lidar_dim,
                 pool_bins=self.pool_bins,
                 projection_dim=self.projection_dim,
+                pool_mode=self.pool_mode,
             )
+            self.pool_bins = self.encoder.pool_bins
         else:
             raise ValueError(
                 f"Unsupported encoder_name={self.encoder_name!r}"
@@ -375,7 +403,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                 "kernels": list(CNN_KERNELS),
                 "strides": list(CNN_STRIDES),
                 "padding": list(CNN_PADDING),
-                "pool": "adaptive_avg_1d",
+                "pool": self.pool_mode,
                 "pool_bins": self.pool_bins,
                 "projection_dim": self.projection_dim,
                 "gru_hidden_dim": self.gru_hidden_dim,
@@ -785,6 +813,7 @@ def make_actor(
     deter_dim=256,
     stoch_dim=32,
     embed_dim=CNN_PROJECTION_DIM,
+    lidar_pool_mode="adaptive_avg_1d",
 ):
     if actor_type == LIDAR_DREAMER_ARCHITECTURE_NAME:
         from f1tenth_policy.dreamer import LidarDreamerActor
@@ -839,6 +868,7 @@ def make_actor(
         gru_hidden_dim=gru_hidden_dim,
         log_std_min=log_std_min,
         log_std_max=log_std_max,
+        pool_mode=lidar_pool_mode,
     )
 
 
@@ -881,13 +911,16 @@ def actor_from_architecture(architecture: Mapping[str, Any]):
             f"{LIDAR_DREAMER_ARCHITECTURE_NAME!r}, or "
             f"{TINYLIDARNET_ARCHITECTURE_NAME!r}"
         )
+    pool_mode = normalize_lidar_pool_mode(arch.get("pool", "adaptive_avg_1d"))
+    default_bins = CNN_CONV_OUT_BINS if pool_mode == "none" else 32
     return make_actor(
         obs_dim=int(arch["obs_dim"]),
         act_dim=int(arch["action_dim"]),
         hidden_sizes=list(arch["hidden_layers"]),
         activation=nn.ReLU,
         act_limit=1.0,
-        lidar_pool_bins=int(arch.get("pool_bins", 32)),
+        lidar_pool_bins=int(arch.get("pool_bins", default_bins)),
+        lidar_pool_mode=pool_mode,
         lidar_projection_dim=int(
             arch.get("projection_dim", CNN_PROJECTION_DIM)
         ),

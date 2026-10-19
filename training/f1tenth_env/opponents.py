@@ -514,6 +514,7 @@ def _make_policy_opponent(
         )
     )
     lidar_pool_bins = int(env_cfg.get("lidar_pool_bins", 32))
+    lidar_pool_mode = env_cfg.get("lidar_pool_mode", "adaptive_avg_1d")
     lidar_projection_dim = int(env_cfg.get("lidar_projection_dim", 256))
     layout_version = int(obs_cfg.get("actor_layout_version", 2))
 
@@ -525,6 +526,7 @@ def _make_policy_opponent(
         activation=torch.nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=lidar_pool_bins,
+        lidar_pool_mode=lidar_pool_mode,
         lidar_projection_dim=lidar_projection_dim,
     ).to(device=device, dtype=torch.float32)
 
