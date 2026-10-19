@@ -13,12 +13,16 @@ from torch.distributions.normal import Normal
 
 from gigaflow_f1tenth.config import (
     ACTION_DIM,
+    ALLOWED_CNN_POOL_BINS,
+    CNN_CONV_OUT_BINS,
+    CNN_POOL_MODE,
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
     LIDAR_DIM,
     PROPRIO_DIM,
     SENSOR_OBS_DIM,
     ExperimentConfig,
+    normalize_cnn_pool_mode,
 )
 from gigaflow_f1tenth.normalization import SensorNormalizer
 from gigaflow_f1tenth.rewards import CONDITION_DIM
@@ -49,10 +53,16 @@ class ActorShapes:
     action_dim: int = ACTION_DIM
     gru_hidden_dim: int = GRU_HIDDEN_DIM
     cnn_projection_dim: int = CNN_PROJECTION_DIM
+    cnn_pool_bins: int = LIDAR_POOL_BINS
+    cnn_pool_mode: str = CNN_POOL_MODE
     mlp_sizes: tuple[int, ...] = DEFAULT_ACTOR_MLP
 
 
 def actor_shapes(cfg: ExperimentConfig) -> ActorShapes:
+    pool_mode = normalize_cnn_pool_mode(cfg.agents.cnn_pool_mode)
+    pool_bins = (
+        CNN_CONV_OUT_BINS if pool_mode == "none" else int(cfg.agents.cnn_pool_bins)
+    )
     return ActorShapes(
         sensor_obs_dim=cfg.agents.sensor_obs_dim,
         lidar_dim=cfg.agents.lidar_dim,
@@ -61,6 +71,8 @@ def actor_shapes(cfg: ExperimentConfig) -> ActorShapes:
         action_dim=cfg.agents.action_dim,
         gru_hidden_dim=cfg.agents.gru_hidden_dim,
         cnn_projection_dim=cfg.agents.cnn_projection_dim,
+        cnn_pool_bins=pool_bins,
+        cnn_pool_mode=pool_mode,
         mlp_sizes=cfg.agents.actor_mlp_sizes,
     )
 
@@ -230,11 +242,26 @@ class LidarCNNEncoder(nn.Module):
         pool_bins: int = LIDAR_POOL_BINS,
         projection_dim: int = CNN_PROJECTION_DIM,
         in_channels: int = 1,
+        pool_mode: str = CNN_POOL_MODE,
     ):
         super().__init__()
         self.lidar_dim = int(lidar_dim)
-        self.pool_bins = int(pool_bins)
+        self.pool_mode = normalize_cnn_pool_mode(pool_mode)
+        if self.pool_mode == "none":
+            length = self.lidar_dim
+            for kernel, stride, pad in zip(CNN_KERNELS, CNN_STRIDES, CNN_PADDING):
+                length = (length + 2 * pad - kernel) // stride + 1
+            self.pool_bins = int(length)
+        else:
+            bins = int(pool_bins)
+            if bins not in ALLOWED_CNN_POOL_BINS:
+                raise ValueError(
+                    f"pool_bins must be one of {ALLOWED_CNN_POOL_BINS}, got {pool_bins}"
+                )
+            self.pool_bins = bins
         self.projection_dim = int(projection_dim)
+        if self.projection_dim <= 0:
+            raise ValueError("projection_dim must be positive")
         self.in_channels = int(in_channels)
         self.conv = nn.Sequential(
             nn.Conv1d(
@@ -262,7 +289,12 @@ class LidarCNNEncoder(nn.Module):
             ),
             nn.ReLU(),
         )
-        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        if self.pool_mode == "avg":
+            self.pool: nn.Module = nn.AdaptiveAvgPool1d(self.pool_bins)
+        elif self.pool_mode == "max":
+            self.pool = nn.AdaptiveMaxPool1d(self.pool_bins)
+        else:
+            self.pool = nn.Identity()
         self.projection = nn.Linear(
             CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
         )
@@ -309,8 +341,10 @@ class ConditionedLidarGRUActor(nn.Module):
         self.sensor_normalizer = SensorNormalizer(shapes.sensor_obs_dim)
         self.encoder = LidarCNNEncoder(
             lidar_dim=shapes.lidar_dim,
+            pool_bins=shapes.cnn_pool_bins,
             projection_dim=shapes.cnn_projection_dim,
             in_channels=1,
+            pool_mode=shapes.cnn_pool_mode,
         )
         self.condition_encoder = ConditionEncoder(
             shapes.condition_dim, self.condition_embed_dim
@@ -552,8 +586,10 @@ class ConditionedLidarFeedForwardActor(nn.Module):
         self.sensor_normalizer = SensorNormalizer(shapes.sensor_obs_dim)
         self.encoder = LidarCNNEncoder(
             lidar_dim=shapes.lidar_dim,
+            pool_bins=shapes.cnn_pool_bins,
             projection_dim=shapes.cnn_projection_dim,
             in_channels=self.frame_stack,
+            pool_mode=shapes.cnn_pool_mode,
         )
         self.condition_encoder = ConditionEncoder(
             shapes.condition_dim, self.condition_embed_dim
@@ -762,7 +798,8 @@ def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:
         "cnn_kernels": list(CNN_KERNELS),
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": shapes.cnn_pool_bins,
+        "pool_mode": shapes.cnn_pool_mode,
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",
@@ -775,6 +812,9 @@ def actor_architecture_from_module(actor: nn.Module) -> dict[str, Any]:
     if not hasattr(actor, "shapes"):
         raise TypeError("actor must expose shapes()")
     shapes = actor.shapes()
+    encoder = getattr(actor, "encoder", None)
+    pool_bins = int(getattr(encoder, "pool_bins", shapes.cnn_pool_bins))
+    pool_mode = str(getattr(encoder, "pool_mode", shapes.cnn_pool_mode))
     meta = {
         "name": ACTOR_ARCHITECTURE_NAME,
         "sensor_obs_dim": shapes.sensor_obs_dim,
@@ -789,7 +829,8 @@ def actor_architecture_from_module(actor: nn.Module) -> dict[str, Any]:
         "cnn_kernels": list(CNN_KERNELS),
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": pool_bins,
+        "pool_mode": pool_mode,
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",

@@ -41,6 +41,8 @@ TRUNK_COMPAT_KEYS = (
     "action_dim",
     "gru_hidden_dim",
     "cnn_projection_dim",
+    "pool_bins",
+    "pool_mode",
     "mlp_sizes",
 )
 SENSOR_NORMALIZER_BUFFERS = frozenset(
@@ -361,6 +363,8 @@ def _load_native_condition_actor(
         action_dim=int(arch["action_dim"]),
         gru_hidden_dim=int(arch["gru_hidden_dim"]),
         cnn_projection_dim=int(arch["cnn_projection_dim"]),
+        cnn_pool_bins=int(arch.get("pool_bins", model_mod.LIDAR_POOL_BINS)),
+        cnn_pool_mode=str(arch.get("pool_mode", model_mod.CNN_POOL_MODE)),
         mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
     )
     # The actor class asserts the live schema width; this one carries its own.

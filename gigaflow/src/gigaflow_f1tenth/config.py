@@ -18,6 +18,11 @@ SENSOR_OBS_DIM = LIDAR_DIM + PROPRIO_DIM
 ACTION_DIM = 2
 GRU_HIDDEN_DIM = 512
 CNN_PROJECTION_DIM = 256
+CNN_POOL_BINS = 32
+CNN_CONV_OUT_BINS = 91
+CNN_POOL_MODE = "avg"
+ALLOWED_CNN_POOL_BINS = (16, 32, 64)
+ALLOWED_CNN_POOL_MODES = ("avg", "max", "none")
 CONTROL_HZ = 20.0
 SIM_DT = 0.005
 CONTROL_INTERVAL = 10
@@ -86,6 +91,8 @@ class AgentsConfig:
     action_dim: int = ACTION_DIM
     gru_hidden_dim: int = GRU_HIDDEN_DIM
     cnn_projection_dim: int = CNN_PROJECTION_DIM
+    cnn_pool_bins: int = CNN_POOL_BINS
+    cnn_pool_mode: str = CNN_POOL_MODE
     actor_mlp_sizes: tuple[int, ...] = (1024, 1024, 1024)
     condition_dim: int = 10
     target_laps: float = 3.0
@@ -252,6 +259,30 @@ class ConfigError(ValueError):
     """Raised when an experiment config fails validation."""
 
 
+_CNN_POOL_MODE_ALIASES: dict[str, str] = {
+    "avg": "avg",
+    "adaptive_avg_1d": "avg",
+    "max": "max",
+    "adaptive_max_1d": "max",
+    "none": "none",
+}
+
+
+def normalize_cnn_pool_mode(pool_mode: str) -> str:
+    if not isinstance(pool_mode, str):
+        raise ConfigError(
+            f"cnn_pool_mode must be a string in {ALLOWED_CNN_POOL_MODES}, "
+            f"got {pool_mode!r}"
+        )
+    key = pool_mode.strip().lower()
+    if key not in _CNN_POOL_MODE_ALIASES:
+        raise ConfigError(
+            f"cnn_pool_mode must be one of {ALLOWED_CNN_POOL_MODES}, "
+            f"got {pool_mode!r}"
+        )
+    return _CNN_POOL_MODE_ALIASES[key]
+
+
 def _as_tuple(value: Any) -> tuple:
     if isinstance(value, tuple):
         return value
@@ -376,7 +407,7 @@ def prepared_inputs_bytes(cfg: ExperimentConfig) -> int:
     ``critic.pack_critic_features``), so unlike the compact state it stores, it
     no longer aliases anything and is a second full-width copy.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     cells = _agent_steps(cfg)
     obs = cells * cfg.agents.sensor_obs_dim * BYTES_PER_FLOAT32
     ego_state = cells * arch["critic_ego_state_dim"] * BYTES_PER_FLOAT32
@@ -392,7 +423,7 @@ def ppo_update_bytes(cfg: ExperimentConfig) -> int:
     observations laid out as ``[B, T, obs]``: once over every kept slot (the logp
     rescore and the parity gate), and once per minibatch.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
     cells = _agent_steps(cfg)
     obs_dim = cfg.agents.sensor_obs_dim
@@ -411,7 +442,7 @@ def ppo_update_bytes(cfg: ExperimentConfig) -> int:
     return sanitized + scalars + all_slot_obs + minibatch_obs
 
 
-def _architecture_constants() -> dict[str, Any]:
+def _architecture_constants(cfg: ExperimentConfig | None = None) -> dict[str, Any]:
     """Layer geometry read from the modules themselves, never mirrored here."""
     from gigaflow_f1tenth.critic import (
         CRITIC_CONDITION_EMBED,
@@ -428,12 +459,25 @@ def _architecture_constants() -> dict[str, Any]:
         LIDAR_POOL_BINS,
     )
 
+    pool_bins = LIDAR_POOL_BINS
+    pool_mode = CNN_POOL_MODE
+    if cfg is not None:
+        pool_mode = normalize_cnn_pool_mode(cfg.agents.cnn_pool_mode)
+        if pool_mode == "none":
+            length = cfg.agents.lidar_dim
+            for kernel, stride, pad in zip(CNN_KERNELS, CNN_STRIDES, CNN_PADDING):
+                length = (length + 2 * pad - kernel) // stride + 1
+            pool_bins = length
+        else:
+            pool_bins = int(cfg.agents.cnn_pool_bins)
+
     return {
         "channels": CNN_CONV_CHANNELS,
         "kernels": CNN_KERNELS,
         "strides": CNN_STRIDES,
         "padding": CNN_PADDING,
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": pool_bins,
+        "pool_mode": pool_mode,
         "condition_embed": CONDITION_EMBED_DIM,
         "critic_hidden": CRITIC_ELEMENT_HIDDEN,
         "critic_condition_embed": CRITIC_CONDITION_EMBED,
@@ -509,7 +553,7 @@ def full_rollout_scoring_bytes(cfg: ExperimentConfig) -> int:
     same dimensions the buffer terms scale with, and the largest single
     allocation training makes.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     a = cfg.agents
     cells = _agent_steps(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
@@ -544,7 +588,7 @@ def ppo_minibatch_backward_bytes(cfg: ExperimentConfig) -> int:
     Epoch count does not enter: each minibatch frees its graph before the next
     one is built, so the peak is set by the minibatch shape alone.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
     mb_agents = min(
         n_slots, max(1, cfg.ppo.minibatch_size // max(1, cfg.ppo.rollout_length))
@@ -565,7 +609,7 @@ def _linear_params(in_dim: int, out_dim: int) -> int:
 
 def actor_parameter_count(cfg: ExperimentConfig) -> int:
     """Parameters of the recurrent baseline actor."""
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     a = cfg.agents
     embed = arch["condition_embed"]
     total = 0
@@ -587,7 +631,7 @@ def actor_parameter_count(cfg: ExperimentConfig) -> int:
 
 
 def critic_parameter_count(cfg: ExperimentConfig) -> int:
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     hidden = arch["critic_hidden"]
     embed = arch["critic_condition_embed"]
     total = _linear_params(CRITIC_ELEMENT_DIM, hidden) + _linear_params(hidden, hidden)
@@ -605,7 +649,7 @@ def model_state_bytes(cfg: ExperimentConfig) -> int:
     ``nn.GRU`` additionally keeps a flattened copy of its own weights for cuDNN.
     """
     a = cfg.agents
-    embed = _architecture_constants()["condition_embed"]
+    embed = _architecture_constants(cfg)["condition_embed"]
     gru_in = a.cnn_projection_dim + a.proprio_dim + embed
     gru_params = 3 * a.gru_hidden_dim * (gru_in + a.gru_hidden_dim + 2)
     params = actor_parameter_count(cfg) + critic_parameter_count(cfg)
@@ -696,6 +740,21 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("car dimensions must be positive")
     if a.condition_dim <= 0 or a.gru_hidden_dim <= 0:
         raise ConfigError("condition_dim and gru_hidden_dim must be positive")
+    if a.cnn_projection_dim <= 0:
+        raise ConfigError("cnn_projection_dim must be positive")
+    pool_mode = normalize_cnn_pool_mode(a.cnn_pool_mode)
+    if pool_mode == "none":
+        if a.cnn_pool_bins not in (*ALLOWED_CNN_POOL_BINS, CNN_CONV_OUT_BINS):
+            raise ConfigError(
+                f"cnn_pool_bins must be one of "
+                f"{(*ALLOWED_CNN_POOL_BINS, CNN_CONV_OUT_BINS)} when "
+                f"cnn_pool_mode='none', got {a.cnn_pool_bins}"
+            )
+    elif a.cnn_pool_bins not in ALLOWED_CNN_POOL_BINS:
+        raise ConfigError(
+            f"cnn_pool_bins must be one of {ALLOWED_CNN_POOL_BINS}, "
+            f"got {a.cnn_pool_bins}"
+        )
     if len(a.actor_mlp_sizes) < 1:
         raise ConfigError("actor_mlp_sizes must be non-empty")
     if a.episode_seconds_min <= 0.0 or a.episode_seconds_max < a.episode_seconds_min:
