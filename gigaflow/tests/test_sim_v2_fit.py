@@ -42,7 +42,7 @@ def test_fitted_scalars_on_vehicle_params():
     assert params.command_delay_substeps == 2
     assert params.tire_mu == pytest.approx(0.71)
     assert params.steering_delta_max == pytest.approx(STEERING_DELTA_MAX_RAD)
-    assert params.v_nom == pytest.approx(6.0)
+    assert params.v_nom == pytest.approx(9.0)
 
 
 def test_smoke_cadence_is_twenty_hz():

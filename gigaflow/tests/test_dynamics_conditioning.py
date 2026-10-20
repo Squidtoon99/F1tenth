@@ -125,8 +125,8 @@ def test_vmax_scale_enforces_eq6_ceiling_independently_of_drive_scale():
     late_v = speeds_v[-1]
     assert late_v[0] == pytest.approx(v_nom * 0.3, abs=0.08)
     assert late_v[1] == pytest.approx(v_nom * 1.5, abs=0.15)
-    assert late_v[0] < 2.0
-    assert late_v[1] > 8.5
+    assert late_v[0] < 3.0
+    assert late_v[1] > 12.0
     # IMU ax must match the clamped velocity change, not the unclipped drive force.
     assert abs(ax_v[-1][0]) < 0.5
     assert abs(ax_v[-1][1]) < 0.5
