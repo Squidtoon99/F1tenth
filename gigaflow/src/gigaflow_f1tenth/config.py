@@ -118,7 +118,7 @@ class RewardConditioningConfig:
     enabled: bool = True
     x_drive_a: float = 1.25
     x_accel_a: float = 1.5
-    # Apple C_vel: 50% U[min, 1] (1.5..6.0 m/s) and 50% U[1, max] (6.0..9.0 m/s).
+    # Apple C_vel: 50% U[min, 1] (2.25..9.0 m/s) and 50% U[1, max] (9.0..13.5 m/s).
     vmax_scale_min: float = 0.25
     vmax_scale_max: float = 1.5
     enable_finish_rank: bool = False
