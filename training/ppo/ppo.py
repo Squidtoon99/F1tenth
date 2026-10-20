@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 
-from f1tenth_policy.layout import executed_plant_action
+from f1tenth_policy.layout import LIDAR_DIM, executed_plant_action
 from f1tenth_policy.normalizer import ObsNormalizer
 
 
@@ -130,6 +130,18 @@ def caps_temporal_loss(mean_actions, reset_mask):
 def caps_spatial_loss(mean_actions, perturbed_mean):
     delta = mean_actions - perturbed_mean
     return delta.square().sum(dim=-1).mean()
+
+
+def spatial_caps_observation(actor_seq, std, lidar_dim=LIDAR_DIM):
+    lidar_dim = int(lidar_dim)
+    perturbed = actor_seq.clone()
+    if lidar_dim <= 0:
+        return perturbed
+    perturbed[..., :lidar_dim] = (
+        perturbed[..., :lidar_dim]
+        + torch.randn_like(perturbed[..., :lidar_dim]) * std
+    )
+    return perturbed
 
 
 def grad_caps_temporal_loss(mean_actions, reset_mask, eps=1e-6):
@@ -978,9 +990,11 @@ class PPOTrainer:
                     grad_caps_loss = grad_caps_temporal_loss(plant_mean, reset_seq)
                     policy_loss = policy_loss + self.grad_caps_coef * grad_caps_loss
                     if self.caps_spatial_coef > 0.0:
-                        noise = torch.randn_like(actor_seq) * self.caps_spatial_std
+                        spat_obs = spatial_caps_observation(
+                            actor_seq, self.caps_spatial_std, LIDAR_DIM
+                        )
                         spat_out = self._evaluate_actions_sequence(
-                            actor_seq + noise,
+                            spat_obs,
                             hidden,
                             action_seq,
                             reset_mask=reset_seq,

@@ -69,7 +69,11 @@ def test_sophy_config_uses_v2_plant_and_public_tracks():
     assert env["warp_sim"]["c_coast"] == pytest.approx(_V2_COAST)
     assert env["warp_sim"]["lat_stiffness_scale"] == pytest.approx(_V2_LAT)
     assert env["ego_pace_mps"] == pytest.approx(EGO_PACE_MPS)
+    assert env["ego_speed_cap_mps"] == pytest.approx(0.0)
     assert env["v2_policy_ckpt"] is None
+    assert "tal" not in cfg["reward"]["reward_scales"]
+    assert cfg["ppo"]["caps_coef"] == pytest.approx(0.02)
+    assert cfg["ppo"]["caps_spatial_coef"] == pytest.approx(0.1)
     assert cfg["obs"]["enable_opponent_obs"] is True
     assert cfg["obs"]["opponent_obs_dim"] == 8
     assert OBS_DIM - OBS_OPPONENT_START == 8

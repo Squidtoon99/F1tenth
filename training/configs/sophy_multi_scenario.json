@@ -89,6 +89,7 @@
     "entropy_coef_end": 0.0,
     "entropy_coef_horizon_transitions": 96000000,
     "entropy_from_squashed": false,
+    "caps_coef": 0.02,
     "caps_spatial_coef": 0.1
   },
   "scenarios": [
