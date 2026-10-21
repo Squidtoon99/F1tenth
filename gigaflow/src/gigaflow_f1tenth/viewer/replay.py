@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -29,7 +29,13 @@ from gigaflow_f1tenth.model import (
     architecture_metadata,
 )
 from gigaflow_f1tenth.rewards import deployment_style, styles_to_condition_batch
-from gigaflow_f1tenth.sim.spawn import apply_static_pins, place_static_opponents
+from gigaflow_f1tenth.sim.spawn import (
+    HEAD_TO_HEAD_DRIVE_SCALE,
+    apply_racer_pose,
+    apply_static_pins,
+    head_to_head_chaser_pose,
+    place_static_opponents,
+)
 from gigaflow_f1tenth.tracks import PackedTrackAtlasView, TrackError, load_atlas
 from gigaflow_f1tenth.visualization import CUBOID_HEIGHT_FRAC, track_lines
 from gigaflow_f1tenth.viewer.protocol import (
@@ -769,13 +775,25 @@ class CheckpointReplay:
         )
         racer_mask[racer_indices] = True
         self.sim.reset_agents(racer_mask, self.seed)
+        if self.suite == "head_to_head":
+            self._place_head_to_head_chaser(racer_indices)
         self._place_obstacles()
         style = deployment_style(
             self._suite_cfg.evaluation.conservative_deployment_style
         )
-        self.sim.apply_styles(
-            [style for _ in range(self.sim.layout.num_slots)]
-        )
+        styles = [style for _ in range(self.sim.layout.num_slots)]
+        if self.suite == "head_to_head":
+            chaser = replace(
+                style,
+                drive_scale=max(float(style.drive_scale), HEAD_TO_HEAD_DRIVE_SCALE),
+                vmax_scale=float(self._suite_cfg.reward_conditioning.vmax_scale_max),
+            )
+            for i, slot_t in enumerate(racer_indices):
+                if i == 0:
+                    continue
+                styles[int(slot_t.item())] = chaser
+            self._condition = None
+        self.sim.apply_styles(styles)
         n = self.sim.layout.num_slots
         self._hidden = self.actor.initial_hidden(n, self.device)
         self._last_actions = torch.zeros(
@@ -786,6 +804,24 @@ class CheckpointReplay:
         self.paused = False
         self.sim.rebuild_sensors()
         return self.poses()
+
+    def _place_head_to_head_chaser(self, racer_indices: torch.Tensor) -> None:
+        if int(racer_indices.numel()) < 2:
+            return
+        t = self.sim.buffers.torch_arrays
+        follow = int(racer_indices[0].item())
+        track_id = int(t.track_id[follow].item())
+        leader_speed = float(np.hypot(float(t.vx[follow]), float(t.vy[follow])))
+        pose = head_to_head_chaser_pose(
+            self.sim.geom,
+            track_id,
+            leader_s=float(t.frenet_s[follow].item()),
+            leader_speed=leader_speed,
+        )
+        for i, slot_t in enumerate(racer_indices):
+            if i == 0:
+                continue
+            apply_racer_pose(t, int(slot_t.item()), pose)
 
     def _place_obstacles(self) -> None:
         self._fixed_obstacles = []

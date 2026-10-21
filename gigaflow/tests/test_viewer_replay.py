@@ -14,8 +14,17 @@ from gigaflow_f1tenth.artifacts import (
 )
 from gigaflow_f1tenth.config import load_config
 from gigaflow_f1tenth.model import build_actor
-from gigaflow_f1tenth.sim.geometry import make_synthetic_oval_atlas
+from gigaflow_f1tenth.sim.geometry import (
+    build_sim_geometry_from_atlas,
+    make_synthetic_oval_atlas,
+)
 from gigaflow_f1tenth.sim.layout_local import LIDAR_DIM
+from gigaflow_f1tenth.sim.spawn import (
+    HEAD_TO_HEAD_BEHIND_GAP_M,
+    HEAD_TO_HEAD_DRIVE_SCALE,
+    HEAD_TO_HEAD_SPEED_DELTA_MPS,
+    head_to_head_chaser_pose,
+)
 from gigaflow_f1tenth.viewer.replay import (
     CheckpointReplay,
     ViewerError,
@@ -92,6 +101,27 @@ def test_validate_view_args_bad_suite(tmp_path: Path, smoke_actor: Path):
         validate_view_args(args)
 
 
+def _wrap_ds(ds: float, length: float) -> float:
+    half = 0.5 * length
+    ds = (ds + half) % length - half
+    return ds
+
+
+def test_head_to_head_chaser_pose_is_behind_and_faster():
+    geom = build_sim_geometry_from_atlas(make_synthetic_oval_atlas())
+    leader_s = 12.0
+    leader_speed = 3.0
+    pose = head_to_head_chaser_pose(
+        geom, 0, leader_s=leader_s, leader_speed=leader_speed
+    )
+    length = float(geom.track_length[0])
+    ds = _wrap_ds(float(pose["s"]) - leader_s, length)
+    assert ds == pytest.approx(-HEAD_TO_HEAD_BEHIND_GAP_M, abs=0.4)
+    assert float(pose["speed"]) == pytest.approx(
+        leader_speed + HEAD_TO_HEAD_SPEED_DELTA_MPS
+    )
+
+
 def test_select_track_and_resolve_name():
     atlas = make_synthetic_oval_atlas()
     view = select_track_view(atlas, 0)
@@ -159,6 +189,73 @@ def test_runtime_suite_switch(smoke_cache: Path, smoke_actor: Path):
         assert poses.shape[0] == 2
         assert int(np.sum(poses[:, 3] > 0.5)) == 2
     assert "oval" in replay.available_tracks
+
+
+def test_head_to_head_reset_spawns_faster_chaser_behind(
+    smoke_cache: Path, smoke_actor: Path
+):
+    h2h = CheckpointReplay.from_launch_args(
+        ViewerLaunchArgs(
+            checkpoint=smoke_actor,
+            config=SMOKE,
+            cache_dir=smoke_cache,
+            suite="head_to_head",
+            seed=0,
+            device="cpu",
+            track="oval",
+            open_browser=False,
+        )
+    )
+    t = h2h.sim.buffers.torch_arrays
+    racers = h2h._racer_indices()
+    assert int(racers.numel()) == 2
+    ego = int(racers[0].item())
+    opp = int(racers[1].item())
+    length = float(h2h.sim.geom.track_length[0])
+    ds = _wrap_ds(
+        float(t.frenet_s[opp].item()) - float(t.frenet_s[ego].item()), length
+    )
+    assert ds == pytest.approx(-HEAD_TO_HEAD_BEHIND_GAP_M, abs=0.5)
+    ego_speed = float(np.hypot(float(t.vx[ego]), float(t.vy[ego])))
+    opp_speed = float(np.hypot(float(t.vx[opp]), float(t.vy[opp])))
+    assert opp_speed == pytest.approx(
+        ego_speed + HEAD_TO_HEAD_SPEED_DELTA_MPS, abs=0.05
+    )
+    assert float(t.vmax_scale[opp]) > float(t.vmax_scale[ego])
+    assert float(t.drive_scale[opp]) >= HEAD_TO_HEAD_DRIVE_SCALE
+    assert h2h._condition is None
+
+    dense = CheckpointReplay.from_launch_args(
+        ViewerLaunchArgs(
+            checkpoint=smoke_actor,
+            config=SMOKE,
+            cache_dir=smoke_cache,
+            suite="dense",
+            seed=0,
+            device="cpu",
+            track="oval",
+            open_browser=False,
+        )
+    )
+    dt = dense.sim.buffers.torch_arrays
+    d_racers = dense._racer_indices()
+    d_ego = int(d_racers[0].item())
+    d_opp = int(d_racers[1].item())
+    assert float(dt.vmax_scale[d_opp]) == pytest.approx(float(dt.vmax_scale[d_ego]))
+    assert float(dt.drive_scale[d_opp]) == pytest.approx(float(dt.drive_scale[d_ego]))
+    solo = CheckpointReplay.from_launch_args(
+        ViewerLaunchArgs(
+            checkpoint=smoke_actor,
+            config=SMOKE,
+            cache_dir=smoke_cache,
+            suite="solo",
+            seed=0,
+            device="cpu",
+            track="oval",
+            open_browser=False,
+        )
+    )
+    assert solo.num_cars == 1
 
 
 def test_dense_environment_count_is_distinct_from_cars_per_environment(
