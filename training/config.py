@@ -152,7 +152,7 @@ DEFAULT_CONFIG = {
         "range_max_m": 30.0,
         "reliable_range_m": 10.0,
         "beam_decimation": 1,
-        "max_march_steps": 512,
+        "max_march_steps": 128,
         "lidar_offset_x": 0.27,
         "lidar_offset_y": 0.0,
         "lidar_offset_yaw": 0.0,

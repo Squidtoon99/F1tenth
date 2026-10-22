@@ -44,6 +44,8 @@ from .sensors import (
     NATIVE_NUM_BEAMS,
     VIEW_EGO,
     VIEW_OPPONENT,
+    attach_sensor_trig,
+    cache_lidar_heading_kernel,
     sensor_actor_solo_kernel,
     sensor_actor_stage_kernel,
 )
@@ -562,6 +564,12 @@ class WarpF1tenthEnv:
             self.num_envs, device=self.device, dtype=torch.bool
         )
         self._reset_mask_wp = wp.from_torch(self._reset_mask)
+        self._cuda_graphs = {}
+        self._cuda_graph_enabled = self.device.type == "cuda"
+        self._cuda_graph_warmup_left = 2
+        self._cuda_graph_status = (
+            "disabled_cpu" if not self._cuda_graph_enabled else "pending"
+        )
 
         def _fixed_buffer(cols):
             shape = (self.num_envs, cols) if cols > 1 else (self.num_envs,)
@@ -631,7 +639,8 @@ class WarpF1tenthEnv:
         params.lidar_offset_y = float(sensor.get("lidar_offset_y", 0.0))
         params.lidar_offset_yaw = float(sensor.get("lidar_offset_yaw", 0.0))
         params.lidar_dropout_bin_m = float(sensor.get("lidar_dropout_bin_m", 0.0))
-        params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
+        params.max_march_steps = max(1, int(sensor.get("max_march_steps", 128)))
+        attach_sensor_trig(params, self.num_envs, self.wp_device)
         return params
 
     def _build_obs_params(self):
@@ -1132,6 +1141,15 @@ class WarpF1tenthEnv:
         strategy = self.env_cfg.get("opponent_strategy")
         return strategy in ("policy", "mixed")
 
+    def _launch_heading_cache(self, vehicle_buffers):
+        wp.launch(
+            cache_lidar_heading_kernel,
+            dim=self.num_envs,
+            inputs=[vehicle_buffers, self._env.buffers, self._sensor_params],
+            device=self.wp_device,
+            stream=self._stream(),
+        )
+
     def _launch_ego_sensor_actor(self, output_wp):
         """Fused ego LiDAR + IMU + VESC + causal commands into ``output_wp``."""
         if self.has_opponent:
@@ -1200,9 +1218,13 @@ class WarpF1tenthEnv:
         Returns the number of Warp launches issued (one per rendered view).
         """
         launches = 0
+        self._launch_heading_cache(self._ego.buffers)
+        launches += 1
         self._launch_ego_sensor_actor(self._actor_obs_wp[slot])
         launches += 1
         if self._should_render_opponent_actor():
+            self._launch_heading_cache(self._opponent.buffers)
+            launches += 1
             self._launch_opponent_sensor_actor(self._opponent_actor_obs_wp[slot])
             launches += 1
         return launches
@@ -1386,23 +1408,7 @@ class WarpF1tenthEnv:
             return self._sensor_obs_dict(), self.extras
         return self.obs_buf, self.extras
 
-    def step(self, actions, n_steps=None, with_sensors=False):
-        if n_steps is None:
-            n_steps = self.control_interval
-        if int(n_steps) != self.control_interval:
-            raise ValueError(
-                f"Warp environment requires n_steps=control_interval="
-                f"{self.control_interval}"
-            )
-        incoming = actions.to(device=self.device, dtype=torch.float32).contiguous()
-        if incoming.shape != (self.num_envs, 2):
-            raise ValueError(
-                f"actions shape={tuple(incoming.shape)}; "
-                f"expected ({self.num_envs}, 2)"
-            )
-        self.actions.copy_(incoming)
-        self._policy_actions()
-        inactive = 1 - self._active_obs
+    def _launch_control_tick(self, inactive: int, with_sensors: bool) -> int:
         if self.has_opponent:
             physics_kernel = physics_stage_kernel
             physics_inputs = [
@@ -1451,7 +1457,7 @@ class WarpF1tenthEnv:
                 self._reset_params,
                 self._opponent_params,
                 self._obs_params,
-                self._raw_obs_wp[self._active_obs],
+                self._raw_obs_wp[1 - inactive],
             ],
             device=self.wp_device,
             stream=self._stream(),
@@ -1459,18 +1465,6 @@ class WarpF1tenthEnv:
         sensor_launches = 0
         if with_sensors:
             sensor_launches = self._render_actor_observations(inactive)
-        # overlap the privileged observation stage on a side CUDA stream.
-        if (
-            with_sensors
-            and self._policy_opponent is not None
-            and self._should_render_opponent_actor()
-        ):
-            # Auto-reset rows keep done=True this tick; zero their GRU before
-            # acting on the post-reset opponent sensor observation.
-            self._policy_opponent.reset(self.reset_buf)
-            if self._opponent_resample_cb is not None:
-                self._opponent_resample_cb(self, self.reset_buf)
-            self._schedule_policy_prefetch(self._opponent_actor_obs[inactive])
         wp.launch(
             observation_stage_kernel,
             dim=self.num_envs,
@@ -1483,7 +1477,7 @@ class WarpF1tenthEnv:
                 self._obs_params,
                 self._reset_params,
                 self._opponent_params,
-                self._raw_obs_wp[self._active_obs],
+                self._raw_obs_wp[1 - inactive],
                 self._raw_obs_wp[inactive],
                 self._obs_wp[inactive],
                 self._opponent_obs_wp,
@@ -1491,7 +1485,64 @@ class WarpF1tenthEnv:
             device=self.wp_device,
             stream=self._stream(),
         )
-        self.step_launch_count = 3 + sensor_launches
+        return 3 + sensor_launches
+
+    def _run_graphable_tick(self, inactive: int, with_sensors: bool) -> int:
+        key = (int(inactive), bool(with_sensors))
+        graph = self._cuda_graphs.get(key)
+        if graph is not None:
+            wp.capture_launch(graph)
+            self._cuda_graph_status = "replaying"
+            return 1
+        if (
+            self._cuda_graph_enabled
+            and self._cuda_graph_warmup_left <= 0
+            and graph is None
+        ):
+            try:
+                with wp.ScopedCapture() as capture:
+                    self._launch_control_tick(inactive, with_sensors)
+                self._cuda_graphs[key] = capture.graph
+                self._cuda_graph_status = "captured"
+                wp.capture_launch(self._cuda_graphs[key])
+                return 1
+            except Exception as exc:  # noqa: BLE001
+                self._cuda_graph_enabled = False
+                self._cuda_graph_status = f"unsupported:{type(exc).__name__}"
+                return self._launch_control_tick(inactive, with_sensors)
+        launches = self._launch_control_tick(inactive, with_sensors)
+        if self._cuda_graph_enabled:
+            self._cuda_graph_warmup_left = max(0, self._cuda_graph_warmup_left - 1)
+            self._cuda_graph_status = "warming"
+        return launches
+
+    def step(self, actions, n_steps=None, with_sensors=False):
+        if n_steps is None:
+            n_steps = self.control_interval
+        if int(n_steps) != self.control_interval:
+            raise ValueError(
+                f"Warp environment requires n_steps=control_interval="
+                f"{self.control_interval}"
+            )
+        incoming = actions.to(device=self.device, dtype=torch.float32).contiguous()
+        if incoming.shape != (self.num_envs, 2):
+            raise ValueError(
+                f"actions shape={tuple(incoming.shape)}; "
+                f"expected ({self.num_envs}, 2)"
+            )
+        self.actions.copy_(incoming)
+        self._policy_actions()
+        inactive = 1 - self._active_obs
+        self.step_launch_count = self._run_graphable_tick(inactive, with_sensors)
+        if (
+            with_sensors
+            and self._policy_opponent is not None
+            and self._should_render_opponent_actor()
+        ):
+            self._policy_opponent.reset(self.reset_buf)
+            if self._opponent_resample_cb is not None:
+                self._opponent_resample_cb(self, self.reset_buf)
+            self._schedule_policy_prefetch(self._opponent_actor_obs[inactive])
         self._active_obs = inactive
         self.obs_buf = self._obs[inactive]
         self.actor_obs_buf = self._actor_obs[inactive]

@@ -11,6 +11,8 @@ from .dynamics import (
 )
 from .params import STEER_RATE_UNBOUNDED, SimParams, VehicleParams
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 
 @wp.kernel(enable_backward=False)
 def vehicle_step_kernel(

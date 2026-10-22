@@ -30,7 +30,7 @@ def test_default_sensor_block_matches_ust10lx():
     assert sensor["range_max_m"] == 30.0
     assert sensor["reliable_range_m"] == 10.0
     assert sensor["beam_decimation"] == 1
-    assert sensor["max_march_steps"] == 512
+    assert sensor["max_march_steps"] == 128
     assert sensor["lidar_offset_x"] == 0.27
     assert sensor["lidar_offset_y"] == 0.0
     assert sensor["lidar_offset_yaw"] == 0.0
@@ -167,7 +167,7 @@ def test_default_env_cfg_keeps_ust10lx_sensor_geometry(warp_runtime):
     )
     try:
         assert env.num_lidar_beams == 1081
-        assert int(env._sensor_params.max_march_steps) == 512
+        assert int(env._sensor_params.max_march_steps) == 128
         assert float(env._sensor_params.lidar_offset_x) == pytest.approx(0.27)
     finally:
         env.close()
@@ -267,12 +267,12 @@ def test_sensor_params_struct_matches_config_geometry():
     params.lidar_offset_y = float(sensor["lidar_offset_y"])
     params.lidar_offset_yaw = float(sensor["lidar_offset_yaw"])
     params.lidar_dropout_bin_m = float(sensor.get("lidar_dropout_bin_m", 0.0))
-    params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
+    params.max_march_steps = max(1, int(sensor.get("max_march_steps", 128)))
 
     assert int(params.num_beams) == 1081
     assert abs(float(params.angle_min) - math.radians(-135.0)) < 1e-6
     assert abs(float(params.angle_increment) - math.radians(0.25)) < 1e-6
-    assert int(params.max_march_steps) == 512
+    assert int(params.max_march_steps) == 128
     span = float(params.angle_min) + float(params.angle_increment) * (
         num_beams - 1
     )
