@@ -334,6 +334,28 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_courtyard_multilap(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.courtyard_adapt import CKPT_BASE, run_campaign
+
+    result = run_campaign(
+        checkpoint=args.checkpoint or CKPT_BASE,
+        output_dir=args.output_dir,
+        device=args.device,
+        eval_seconds=float(args.eval_seconds),
+        skip_train=bool(args.skip_train),
+    )
+    keys = (
+        "winner",
+        "laps",
+        "progress_m",
+        "survival_s",
+        "video",
+        "winner_checkpoint",
+    )
+    print(json.dumps({k: result[k] for k in keys}, indent=2, default=str))
+    return 0
+
+
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     device = args.device or (
@@ -613,6 +635,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_wandb_args(p_ft)
     p_ft.set_defaults(func=_cmd_finetune_offline)
+
+    p_cy = sub.add_parser(
+        "courtyard-multilap",
+        help="Courtyard_2 from-rest adaptation (bags + DAgger + fresh-critic PPO)",
+    )
+    p_cy.add_argument("--checkpoint", type=Path, default=None)
+    p_cy.add_argument("--output-dir", type=Path, default=None)
+    p_cy.add_argument("--device", type=str, default=None)
+    p_cy.add_argument("--eval-seconds", type=float, default=90.0)
+    p_cy.add_argument(
+        "--skip-train",
+        action="store_true",
+        help="Diagnose + eval the checkpoint without fine-tuning",
+    )
+    p_cy.set_defaults(func=_cmd_courtyard_multilap)
 
     return parser
 
