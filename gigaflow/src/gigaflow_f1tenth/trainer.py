@@ -436,7 +436,11 @@ class SelfPlayTrainer:
                 live = self.sim.rebuild_sensors()
             else:
                 live = self.sim.action_observation()
-            sensor_obs = live.detach().to(device=self.device, dtype=torch.float32)
+            # Clone: action_observation() is a view of the live SoA buffer that
+            # sim.step() overwrites. Digest/store must snapshot the pre-step scan.
+            sensor_obs = live.detach().to(
+                device=self.device, dtype=torch.float32
+            ).clone()
             pending_reset = self.ppo.carry_reset
             if pending_reset is None:
                 pending_reset = torch.zeros(n, dtype=torch.bool, device=self.device)
