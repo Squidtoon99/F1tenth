@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 import math
 
 import torch
@@ -280,6 +281,15 @@ def value_prediction_loss(
     return per_row, active
 
 
+def gaussian_kl(mean_p, log_std_p, mean_q, log_std_q):
+    """Mean diagonal-Gaussian KL(p || q) over the last dim."""
+    var_p = torch.exp(log_std_p * 2.0)
+    var_q = torch.exp(log_std_q * 2.0).clamp(min=1e-6)
+    log_std_ratio = log_std_q - log_std_p
+    quad = (var_p + (mean_p - mean_q).square()) / var_q
+    return (log_std_ratio + 0.5 * (quad - 1.0)).sum(dim=-1).mean()
+
+
 class PPOTrainer:
     def __init__(
         self,
@@ -324,6 +334,11 @@ class PPOTrainer:
         reversal_coef_steer=0.0,
         reversal_deadband=0.0,
         reversal_lag2=False,
+        critic_warmup_updates=0,
+        kl_ref_actor=None,
+        kl_coef=0.0,
+        kl_hinge=0.0,
+        freeze_actor_normalizer=False,
     ):
         if not hasattr(actor, "step") or not hasattr(
             actor, "evaluate_actions_sequence"
@@ -402,6 +417,21 @@ class PPOTrainer:
                 raise ValueError(
                     f"{name} must be a finite number >= 0, got {value!r}"
                 )
+        self.critic_warmup_updates = int(critic_warmup_updates)
+        if self.critic_warmup_updates < 0:
+            raise ValueError(
+                f"critic_warmup_updates must be >= 0, got {critic_warmup_updates!r}"
+            )
+        self.kl_coef = float(kl_coef)
+        self.kl_hinge = float(kl_hinge)
+        for name, value in (("kl_coef", self.kl_coef), ("kl_hinge", self.kl_hinge)):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be a finite number >= 0, got {value!r}")
+        self.freeze_actor_normalizer = bool(freeze_actor_normalizer)
+        self.kl_ref_actor = None
+        if kl_ref_actor is not None:
+            self.attach_kl_ref_actor(kl_ref_actor)
+        self._updates_done = 0
         self._need_action_mean = (
             self.caps_coef > 0.0
             or self.caps_spatial_coef > 0.0
@@ -485,6 +515,15 @@ class PPOTrainer:
                 f"desired_kl must be a positive finite number, got {desired_kl!r}"
             )
         self._schedule_transitions = 0
+
+    def attach_kl_ref_actor(self, actor):
+        if not hasattr(actor, "gaussian_params"):
+            raise TypeError("kl_ref_actor must implement gaussian_params")
+        ref = copy.deepcopy(actor).to(self.device)
+        ref.eval()
+        for param in ref.parameters():
+            param.requires_grad_(False)
+        self.kl_ref_actor = ref
 
     def current_actor_lr(self):
         return _optimizer_lr(self.actor_optimizer)
@@ -759,6 +798,9 @@ class PPOTrainer:
         return metrics
 
     def update(self, rollout):
+        if self.kl_coef > 0.0 and self.kl_ref_actor is None:
+            raise ValueError("kl_coef > 0 requires kl_ref_actor")
+        freeze_actor = self._updates_done < self.critic_warmup_updates
         if self.lr_schedule in ("linear", "cosine"):
             self.apply_progress_schedule()
         if rollout.optimized:
@@ -779,6 +821,7 @@ class PPOTrainer:
         discard_rate = 1.0 - (retained / total)
         if self.advantage_filter_enabled and retained == 0:
             rollout.optimized = True
+            self._updates_done += 1
             return {
                 "policy_loss": 0.0,
                 "value_loss": 0.0,
@@ -813,6 +856,9 @@ class PPOTrainer:
                 "return_mean": 0.0,
                 "return_std": 0.0,
                 "value_mean": 0.0,
+                "base_kl": 0.0,
+                "kl_penalty": 0.0,
+                "critic_warmup_active": float(freeze_actor),
             }
         if self.advantage_filter_enabled:
             kept_adv = raw_advantages[keep_mask]
@@ -858,6 +904,8 @@ class PPOTrainer:
                 "reversal_loss",
                 "reversal_rate_throttle",
                 "reversal_rate_steer",
+                "base_kl",
+                "kl_penalty",
             )
         }
         clip_active_sum = 0.0
@@ -974,6 +1022,28 @@ class PPOTrainer:
                     )
                     policy_loss = policy_loss + reversal_loss
                 approx_kl = (((ratio - 1.0) - log_ratio) * mb_keep).sum() / keep_denom
+                base_kl = policy_loss.new_zeros(())
+                kl_penalty = policy_loss.new_zeros(())
+                if self.kl_ref_actor is not None:
+                    if freeze_actor:
+                        with torch.no_grad():
+                            mean_p, log_std_p = self.actor.gaussian_params(
+                                actor_seq, hidden, reset_seq
+                            )
+                    else:
+                        mean_p, log_std_p = self.actor.gaussian_params(
+                            actor_seq, hidden, reset_seq
+                        )
+                    with torch.no_grad():
+                        mean_q, log_std_q = self.kl_ref_actor.gaussian_params(
+                            actor_seq, hidden, reset_seq
+                        )
+                    base_kl = gaussian_kl(mean_p, log_std_p, mean_q, log_std_q)
+                    kl_penalty = self.kl_coef * torch.relu(
+                        base_kl - self.kl_hinge
+                    )
+                    if not freeze_actor:
+                        policy_loss = policy_loss + kl_penalty
 
                 critic_obs = self._normalize(self.critic_normalizer, critic_raw)
                 new_values = self._update_value_forward(critic_obs)
@@ -1026,18 +1096,23 @@ class PPOTrainer:
                     float(value_grad_norm) > self.value_max_grad_norm
                 )
 
-                self.actor_optimizer.zero_grad(set_to_none=True)
-                policy_loss.backward()
-                actor_grad_norm = nn.utils.clip_grad_norm_(
-                    self.actor.parameters(), self.max_grad_norm
-                )
-                self.actor_optimizer.step()
-                actor_updates += 1
+                if freeze_actor:
+                    actor_grad_norm = policy_loss.new_zeros(())
+                else:
+                    self.actor_optimizer.zero_grad(set_to_none=True)
+                    policy_loss.backward()
+                    actor_grad_norm = nn.utils.clip_grad_norm_(
+                        self.actor.parameters(), self.max_grad_norm
+                    )
+                    self.actor_optimizer.step()
+                    actor_updates += 1
                 actor_grad = actor_grad_norm.detach()
                 metric_sums["actor_grad_norm"] += actor_grad
                 metric_sums["actor_grad_clip_fraction"] += (
                     actor_grad > self.max_grad_norm
                 ).to(dtype=torch.float32)
+                metric_sums["base_kl"] += base_kl.detach()
+                metric_sums["kl_penalty"] += kl_penalty.detach()
 
                 metric_sums["policy_loss"] += policy_loss.detach()
                 metric_sums["value_loss"] += value_loss.detach()
@@ -1086,7 +1161,7 @@ class PPOTrainer:
             epochs_completed = epoch + 1
 
         rollout.optimized = True
-        if self.actor_normalizer is not None:
+        if self.actor_normalizer is not None and not self.freeze_actor_normalizer:
             self.actor_normalizer.update(
                 rollout.actor_obs.reshape(-1, self.actor_obs_dim)
             )
@@ -1117,6 +1192,8 @@ class PPOTrainer:
         metrics["return_mean"] = float(return_mean)
         metrics["return_std"] = float(return_std)
         metrics["value_mean"] = float(value_mean)
+        metrics["critic_warmup_active"] = float(freeze_actor)
+        self._updates_done += 1
         return metrics
 
 

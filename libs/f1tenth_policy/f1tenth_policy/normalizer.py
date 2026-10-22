@@ -66,6 +66,10 @@ class ObsNormalizer:
             state["var"], device=self.device, dtype=torch.float32
         )
         self.count = float(state.get("count", self.eps))
+        if "clip" in state:
+            self.clip = float(state["clip"])
+        if "eps" in state:
+            self.eps = float(state["eps"])
 
 
 def load_obs_normalizer(

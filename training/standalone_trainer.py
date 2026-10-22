@@ -823,6 +823,12 @@ def validate_model_architecture(cfg: dict) -> None:
             "model.lidar_projection_dim must be a positive int, got "
             f"{projection_dim!r}"
         )
+    pool_mode = model.get("lidar_pool_mode", "avg")
+    if pool_mode not in ("avg", "max"):
+        raise ValueError(
+            "model.lidar_pool_mode must be 'avg' or 'max', got "
+            f"{pool_mode!r}"
+        )
     for key in ("actor_hidden_layers", "critic_hidden_layers"):
         layers = model.get(key)
         if not isinstance(layers, (list, tuple)) or not layers:
@@ -1111,6 +1117,8 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         "reversal_coef_throttle",
         "reversal_coef_steer",
         "reversal_deadband",
+        "kl_coef",
+        "kl_hinge",
     ):
         value = ppo.get(key)
         if (
@@ -1131,6 +1139,21 @@ def validate_algorithm_config(cfg: dict, num_envs: int) -> None:
         raise ValueError(
             "ppo.residual_base_enabled must be a bool, got "
             f"{ppo.get('residual_base_enabled')!r}"
+        )
+    warmup = ppo.get("critic_warmup_updates")
+    if (
+        isinstance(warmup, bool)
+        or not isinstance(warmup, int)
+        or warmup < 0
+    ):
+        raise ValueError(
+            "ppo.critic_warmup_updates must be an int >= 0, got "
+            f"{warmup!r}"
+        )
+    if not isinstance(ppo.get("freeze_actor_normalizer"), bool):
+        raise ValueError(
+            "ppo.freeze_actor_normalizer must be a bool, got "
+            f"{ppo.get('freeze_actor_normalizer')!r}"
         )
 
 
@@ -1213,6 +1236,7 @@ def make_policy_network(cfg: dict):
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=pool_bins,
+        lidar_pool_mode=str(model.get("lidar_pool_mode", "avg")),
         lidar_projection_dim=model["lidar_projection_dim"],
         log_std_min=float(ppo.get("log_std_min", LOG_STD_MIN)),
         log_std_max=float(ppo.get("log_std_max", LOG_STD_MAX)),
@@ -1257,6 +1281,7 @@ def build_env_cfg(cfg: dict, **extra) -> dict:
         "actor_type": model["actor_type"],
         "actor_hidden_layers": list(model["actor_hidden_layers"]),
         "lidar_pool_bins": int(model["lidar_pool_bins"]),
+        "lidar_pool_mode": str(model.get("lidar_pool_mode", "avg")),
         "lidar_projection_dim": int(model["lidar_projection_dim"]),
     }
 
@@ -2052,6 +2077,10 @@ def build_ppo_models(
         reversal_coef_steer=float(ppo_cfg["reversal_coef_steer"]),
         reversal_deadband=float(ppo_cfg["reversal_deadband"]),
         reversal_lag2=bool(ppo_cfg["reversal_lag2"]),
+        critic_warmup_updates=int(ppo_cfg.get("critic_warmup_updates", 0)),
+        kl_coef=float(ppo_cfg.get("kl_coef", 0.0)),
+        kl_hinge=float(ppo_cfg.get("kl_hinge", 0.0)),
+        freeze_actor_normalizer=bool(ppo_cfg.get("freeze_actor_normalizer", False)),
     )
     return models, trainer
 
@@ -3073,6 +3102,12 @@ def main():
         init_transitions = 0
     else:
         init_transitions = 0
+    if (
+        algorithm == "ppo"
+        and float(cfg["ppo"].get("kl_coef", 0.0)) > 0.0
+        and getattr(trainer, "kl_ref_actor", None) is None
+    ):
+        trainer.attach_kl_ref_actor(models.actor)
 
     champion_mgr: FixedChampionManager | None = None
     fixed_entries = list(cfg.get("fixed_opponents", {}).get("entries") or [])
@@ -3755,7 +3790,8 @@ def main():
                             "advantage_filter_discard_rate=%.4f "
                             "advantage_filter_retained=%.1f "
                             "explained_var=%.4f explained_var_post=%.4f "
-                            "value_clip_active_frac=%.3f",
+                            "value_clip_active_frac=%.3f "
+                            "base_kl=%.5f kl_penalty=%.5f critic_warmup=%.0f",
                             ppo_metric_accum["value_loss"] / loss_count,
                             ppo_metric_accum["negative_log_prob"] / loss_count,
                             ppo_metric_accum["approx_kl"] / loss_count,
@@ -3774,6 +3810,10 @@ def main():
                             ppo_metric_accum["explained_variance"] / loss_count,
                             ppo_metric_accum["explained_variance_post"] / loss_count,
                             ppo_metric_accum["value_clip_active_fraction"] / loss_count,
+                            ppo_metric_accum.get("base_kl", 0.0) / loss_count,
+                            ppo_metric_accum.get("kl_penalty", 0.0) / loss_count,
+                            ppo_metric_accum.get("critic_warmup_active", 0.0)
+                            / loss_count,
                         )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
