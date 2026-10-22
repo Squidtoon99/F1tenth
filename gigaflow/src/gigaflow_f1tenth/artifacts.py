@@ -154,6 +154,36 @@ def export_actor_artifact(
     FileArtifactStore().write_actor_artifact(path, payload)
 
 
+def bake_actor_artifact(
+    payload: Mapping[str, Any],
+    *,
+    actor: torch.nn.Module | None = None,
+    base_name: str | None = None,
+) -> dict[str, Any]:
+    """Hardcode IRL embodied identity so deploy inference cannot sample it."""
+    from gigaflow_f1tenth.irl_identity import bake_deployment_condition
+
+    out = bake_deployment_condition(payload, base_name=base_name)
+    if actor is not None:
+        out["actor_state_dict"] = actor_state_dict_for_artifact(actor)
+        out["sensor_normalizer"] = _sensor_normalizer_payload(actor, None)
+    validate_actor_artifact(out)
+    return out
+
+
+def export_baked_actor(
+    cfg: ExperimentConfig,
+    actor: torch.nn.Module,
+    path: str | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    payload = build_actor_artifact_payload(cfg, actor, **kwargs)
+    baked = bake_actor_artifact(payload, actor=actor)
+    if path is not None:
+        FileArtifactStore().write_actor_artifact(path, baked)
+    return baked
+
+
 def validate_actor_artifact(payload: Mapping[str, Any]) -> None:
     if int(payload.get("format_version", -1)) != ARTIFACT_FORMAT_VERSION:
         raise ValueError("unsupported artifact format_version")
