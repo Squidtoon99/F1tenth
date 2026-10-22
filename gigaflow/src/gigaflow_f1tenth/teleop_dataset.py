@@ -275,9 +275,10 @@ def load_bag_trajectory(
     tele_t = np.asarray([x[0] for x in teleops])
 
     def _hold(src_t, src_rows, idx):
-        j = int(np.searchsorted(src_t, times, side="right") - 1)
-        j = np.clip(j, 0, len(src_rows) - 1)
-        return np.stack([src_rows[k][idx] for k in j], axis=0)
+        j = np.clip(
+            np.searchsorted(src_t, times, side="right") - 1, 0, len(src_rows) - 1
+        )
+        return np.stack([src_rows[int(k)][idx] for k in np.atleast_1d(j)], axis=0)
 
     lidar_idx = np.clip(np.searchsorted(scan_t, times, side="right") - 1, 0, len(scans) - 1)
     lidar = np.stack([scans[int(i)][1] for i in lidar_idx])
@@ -351,7 +352,8 @@ def load_manual_dataset(
     for bag in bags:
         try:
             traj = load_bag_trajectory(bag)
-        except Exception:
+        except Exception as exc:
+            print(f"skip {bag}: {type(exc).__name__}: {exc}")
             continue
         if traj is None:
             continue

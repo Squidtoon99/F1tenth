@@ -33,6 +33,8 @@ from gigaflow_f1tenth.model import (
 from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
 from gigaflow_f1tenth.sim.vehicle import F_BRAKE_MAX, F_DRIVE_MAX, VehicleParams
 from gigaflow_f1tenth.teleop_dataset import (
+    discover_manual_bags,
+    load_bag_trajectory,
     pack_step,
     split_holdout,
     synthetic_trajectories,
@@ -89,6 +91,17 @@ def test_export_baked_actor_roundtrip(tmp_path):
     assert loaded["irl_baked"] is True
     assert loaded["irl_identity"]["vmax_scale"] == 1.0
     validate_actor_artifact(baked)
+
+
+def test_load_one_manual_bag_if_present():
+    bags = discover_manual_bags()
+    if not bags:
+        pytest.skip("no teleop bags on this host")
+    traj = load_bag_trajectory(bags[0])
+    assert traj is not None
+    assert traj["obs"].shape[1] == 1097
+    assert traj["actions"].shape[1] == 2
+    assert int(traj["obs"].shape[0]) >= 10
 
 
 def test_teleop_pack_and_windows():
