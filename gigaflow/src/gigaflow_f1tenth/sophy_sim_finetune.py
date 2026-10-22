@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -39,7 +40,45 @@ def _ensure_sophy_path() -> Path:
     if path in sys.path:
         sys.path.remove(path)
     sys.path.insert(0, path)
+    for name in ("ppo", "config", "f1tenth_env", "f1tenth_sim"):
+        mod = sys.modules.get(name)
+        origin = getattr(mod, "__file__", None) if mod is not None else None
+        if origin and not str(Path(origin).resolve()).startswith(path):
+            stale = [
+                key
+                for key in sys.modules
+                if key == name or key.startswith(name + ".")
+            ]
+            for key in stale:
+                del sys.modules[key]
     return repo
+
+
+def _resolve_device(device: str) -> torch.device:
+    requested = str(device)
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "cuda was requested but torch.cuda.is_available() is False"
+        )
+    return torch.device(requested)
+
+
+def _maybe_wandb(smoke: bool, payload: dict[str, Any]):
+    if smoke:
+        return None
+    project = os.environ.get("WANDB_PROJECT")
+    if not project:
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("wandb not installed; continuing without it", flush=True)
+        return None
+    return wandb.init(
+        project=project,
+        name=os.environ.get("WANDB_NAME", "gigaflow-sophy-sim-ft"),
+        config=payload,
+    )
 
 
 def sophy_env_config(*, track: str, smoke: bool) -> dict[str, Any]:
@@ -298,10 +337,10 @@ def run_sophy_finetune(
     from f1tenth_env import F1tenthEnv
     from f1tenth_env import runtime as rt
     from f1tenth_policy import ObsNormalizer
+    from ppo import pure_timeout_mask
 
     torch.manual_seed(int(seed))
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        device = "cpu"
+    torch_device = _resolve_device(device)
     if smoke:
         num_envs = min(int(num_envs), 2)
         num_updates = min(int(num_updates), 1)
@@ -310,7 +349,6 @@ def run_sophy_finetune(
     else:
         rollout_steps = 128
         env_minibatch_size = min(32, int(num_envs))
-    torch_device = torch.device(device)
     rt.configure(dev=torch_device)
     cfg = sophy_env_config(track=track, smoke=smoke)
     env_cfg = cfg["env"]
@@ -353,6 +391,40 @@ def run_sophy_finetune(
     trainer.initialize(actor_obs, critic_obs)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    device_name = (
+        torch.cuda.get_device_name(torch_device)
+        if torch_device.type == "cuda"
+        else "cpu"
+    )
+    print(
+        json.dumps(
+            {
+                "event": "sophy_finetune_start",
+                "device": str(torch_device),
+                "device_name": device_name,
+                "track": track,
+                "num_envs": int(num_envs),
+                "num_updates": int(num_updates),
+                "kl_coef": float(kl_coef),
+                "kl_max": float(kl_max),
+                "smoke": bool(smoke),
+            }
+        ),
+        flush=True,
+    )
+    wandb_run = _maybe_wandb(
+        smoke,
+        {
+            "checkpoint": str(checkpoint),
+            "track": track,
+            "num_envs": int(num_envs),
+            "num_updates": int(num_updates),
+            "kl_coef": float(kl_coef),
+            "kl_max": float(kl_max),
+            "device": str(torch_device),
+            "baked_condition": baked_normalized_condition(),
+        },
+    )
     last_metrics: dict[str, Any] = {}
     t0 = time.perf_counter()
     updates_done = 0
@@ -362,8 +434,6 @@ def run_sophy_finetune(
             actions, n_steps=int(env.control_interval), with_sensors=True
         )
         next_actor, next_critic = unpack_obs(next_raw)
-        from ppo import pure_timeout_mask
-
         timed_out = pure_timeout_mask(extras["termination"])
         timeout_obs = extras["observations"]["terminal_critic"]
         metrics = trainer.observe(
@@ -391,6 +461,15 @@ def run_sophy_finetune(
                     ),
                     flush=True,
                 )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        key: float(value)
+                        for key, value in last_metrics.items()
+                        if isinstance(value, (int, float))
+                    },
+                    step=updates_done,
+                )
     elapsed = time.perf_counter() - t0
     baked = bake_actor_artifact(payload, actor=live.actor)
     baked["sophy_sim_finetune"] = {
@@ -399,6 +478,8 @@ def run_sophy_finetune(
         "num_envs": int(num_envs),
         "kl_coef": float(kl_coef),
         "kl_max": float(kl_max),
+        "device": str(torch_device),
+        "device_name": device_name,
         "baked_condition": baked_normalized_condition(),
         "elapsed_s": elapsed,
         "repo": str(repo),
@@ -423,4 +504,6 @@ def run_sophy_finetune(
     (output / "report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if wandb_run is not None:
+        wandb_run.finish()
     return report

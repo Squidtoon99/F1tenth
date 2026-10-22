@@ -29,7 +29,7 @@ from gigaflow_f1tenth.sophy_compat import (
     load_baked_actor,
     refuse_ppo_resume,
 )
-from gigaflow_f1tenth.sophy_sim_finetune import sophy_env_config
+from gigaflow_f1tenth.sophy_sim_finetune import _resolve_device, sophy_env_config
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "configs" / "smoke.yaml"
@@ -129,6 +129,10 @@ def test_load_baked_actor_roundtrip(tmp_path):
     assert payload["irl_baked"] is True
     assert payload["irl_identity"]["vmax_scale"] == 1.0
     assert restored.shapes().sensor_obs_dim == 1097
+
+
+def test_resolve_device_cpu():
+    assert _resolve_device("cpu").type == "cpu"
 
 
 def test_sophy_env_config_disables_condition_sampling():
