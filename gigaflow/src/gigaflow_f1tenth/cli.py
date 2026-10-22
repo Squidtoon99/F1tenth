@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -35,6 +36,12 @@ from gigaflow_f1tenth.tracks import (
 )
 from gigaflow_f1tenth.trainer import build_trainer, run_training
 from gigaflow_f1tenth.wandb_log import build_wandb_session
+
+_PKG_ROOT = Path(__file__).resolve().parents[2]
+COURTYARD_CONFIG = _PKG_ROOT / "configs" / "courtyard_ppo.yaml"
+COURTYARD_CENTERLINE = _PKG_ROOT / "assets" / "courtyard_2_centerline.csv"
+DEFAULT_COURTYARD_CHECKPOINT = Path("/opt/f1tenth/policies/actor_005700.pt")
+DEFAULT_COURTYARD_RUN_DIR = Path("/opt/f1tenth/outputs/courtyard_ppo")
 
 
 def _apply_wandb_cli_overrides(cfg, args: argparse.Namespace):
@@ -137,6 +144,82 @@ def _cmd_prepare_tracks(args: argparse.Namespace) -> int:
             f"{cfg.tracks.num_tracks}"
         )
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def prepare_courtyard_atlas(cfg, cache_dir: Path):
+    if not COURTYARD_CENTERLINE.is_file():
+        raise FileNotFoundError(
+            f"courtyard_2 centerline missing: {COURTYARD_CENTERLINE}"
+        )
+    local = cache_dir / "local"
+    local.mkdir(parents=True, exist_ok=True)
+    dest = local / "courtyard_2_centerline.csv"
+    if dest.resolve() != COURTYARD_CENTERLINE.resolve():
+        shutil.copy2(COURTYARD_CENTERLINE, dest)
+    return prepare_tracks(
+        cfg,
+        str(cache_dir),
+        skip_download=True,
+        lut_resolution=DEFAULT_LUT_RESOLUTION_M,
+        edt_resolution=DEFAULT_EDT_RESOLUTION_M,
+    )
+
+
+def _cmd_train_courtyard(args: argparse.Namespace) -> int:
+    cfg = _apply_wandb_cli_overrides(load_config(args.config), args)
+    if int(cfg.agents.sensor_obs_dim) != 1097:
+        print("courtyard trainer requires 1,097-D LiDAR + proprio actor", flush=True)
+        return 1
+    if cfg.ablations.reward_randomization or cfg.reward_conditioning.randomize_styles:
+        print("courtyard trainer requires a hardcoded IRL condition", flush=True)
+        return 1
+    checkpoint = Path(args.checkpoint)
+    if not checkpoint.is_file():
+        print(f"checkpoint not found: {checkpoint}", flush=True)
+        return 1
+    num_updates = int(args.num_updates or cfg.ppo.total_updates)
+    if args.smoke:
+        num_updates = min(num_updates, 2)
+    cache_dir = Path(args.cache_dir)
+    atlas = prepare_courtyard_atlas(cfg, cache_dir)
+    names = [e.name for e in atlas.manifest()]
+    if names != ["courtyard_2"]:
+        print(f"expected courtyard_2 atlas, got {names}", flush=True)
+        return 1
+    run_dir = Path(args.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    progress = run_training(
+        cfg,
+        num_updates,
+        atlas=atlas.view(),
+        device=args.device,
+        run_dir=run_dir,
+        checkpoint_interval=int(args.checkpoint_interval),
+        init_actor_from=checkpoint,
+    )
+    payload = {
+        "ok": True,
+        "track": "courtyard_2",
+        "update_index": int(progress.update_index),
+        "transitions": int(progress.transitions),
+        "metrics": {
+            key: float(value)
+            for key, value in (progress.metrics or {}).items()
+            if isinstance(value, (int, float))
+        },
+        "run_dir": str(run_dir),
+        "checkpoint": str(checkpoint),
+        "sensor_obs_dim": int(cfg.agents.sensor_obs_dim),
+        "deployment_style": cfg.evaluation.conservative_deployment_style,
+        "reward_randomization": bool(cfg.ablations.reward_randomization),
+        "init_actor_from": str(checkpoint),
+    }
+    (run_dir / "train_courtyard.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
     return 0
 
 
@@ -413,6 +496,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_wandb_args(p_train)
     p_train.set_defaults(func=_cmd_train)
+
+    p_yard = sub.add_parser(
+        "train-courtyard",
+        help="Online PPO fine-tune on courtyard_2 from an actor checkpoint",
+    )
+    p_yard.add_argument(
+        "--config",
+        type=Path,
+        default=COURTYARD_CONFIG,
+    )
+    p_yard.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=DEFAULT_COURTYARD_CHECKPOINT,
+        help="Actor-only weights (never a PPO resume); default actor_005700.pt",
+    )
+    p_yard.add_argument(
+        "--run-dir",
+        type=Path,
+        default=DEFAULT_COURTYARD_RUN_DIR,
+    )
+    p_yard.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("/tmp/gigaflow-courtyard-cache"),
+    )
+    p_yard.add_argument("--num-updates", type=int, default=None)
+    p_yard.add_argument("--device", type=str, default=None)
+    p_yard.add_argument("--checkpoint-interval", type=int, default=0)
+    p_yard.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Cap updates for a short integration smoke (not production)",
+    )
+    _add_wandb_args(p_yard)
+    p_yard.set_defaults(func=_cmd_train_courtyard)
 
     p_eval = sub.add_parser("evaluate", help="Run fixed-seed evaluation suites")
     p_eval.add_argument("--config", type=Path, required=True)

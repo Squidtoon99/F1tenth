@@ -3,7 +3,7 @@
 # (no registry yet). Optionally also produce an Apptainer .sif.
 #
 # Usage:   deploy/scripts/snapshot.sh
-# Env:     TARGET (racing|sensor_policy|gigaflow), IMAGE, GITSHA, OUT_DIR
+# Env:     TARGET (racing|sensor_policy|gigaflow|courtyard_trainer), IMAGE, GITSHA, OUT_DIR
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
@@ -12,7 +12,8 @@ case "${TARGET}" in
   racing) IMAGE="${IMAGE:-f1tenth-racing}" ;;
   sensor_policy) IMAGE="${IMAGE:-f1tenth-sensor-policy}" ;;
   gigaflow) IMAGE="${IMAGE:-f1tenth-gigaflow}" ;;
-  *) echo "TARGET must be racing, sensor_policy, or gigaflow (got: ${TARGET})" >&2; exit 1 ;;
+  courtyard_trainer) IMAGE="${IMAGE:-f1tenth-courtyard-trainer}" ;;
+  *) echo "TARGET must be racing, sensor_policy, gigaflow, or courtyard_trainer (got: ${TARGET})" >&2; exit 1 ;;
 esac
 
 GITSHA="${GITSHA:-$(git rev-parse --short HEAD)}"

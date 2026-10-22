@@ -8,10 +8,11 @@
 #   deploy/scripts/build_image.sh
 #   TARGET=sensor_policy deploy/scripts/build_image.sh
 #   TARGET=gigaflow deploy/scripts/build_image.sh
+#   TARGET=courtyard_trainer deploy/scripts/build_image.sh
 #
 # Env:
-#   TARGET       racing (default) | sensor_policy | gigaflow
-#   ARCH         default linux/arm64
+#   TARGET       racing (default) | sensor_policy | gigaflow | courtyard_trainer
+#   ARCH         default linux/arm64 (linux/amd64 for courtyard_trainer)
 #   ROS_DISTRO   default humble
 #   IMAGE        override image name
 #   BASE_IMAGE   sensor_policy/gigaflow only — pin NGC iGPU base (tag or @sha256:)
@@ -22,7 +23,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
 TARGET="${TARGET:-racing}"
-ARCH="${ARCH:-linux/arm64}"
+if [ "${TARGET}" = "courtyard_trainer" ]; then
+  ARCH="${ARCH:-linux/amd64}"
+else
+  ARCH="${ARCH:-linux/arm64}"
+fi
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 GITSHA="${GITSHA:-$(git rev-parse --short HEAD)}"
 
@@ -53,8 +58,13 @@ case "${TARGET}" in
     fi
     BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
     ;;
+  courtyard_trainer)
+    IMAGE="${IMAGE:-f1tenth-courtyard-trainer}"
+    DOCKERFILE="deploy/docker/Dockerfile.courtyard_trainer"
+    MOVING_TAG="courtyard-trainer"
+    ;;
   *)
-    echo "TARGET must be racing, sensor_policy, or gigaflow (got: ${TARGET})" >&2
+    echo "TARGET must be racing, sensor_policy, gigaflow, or courtyard_trainer (got: ${TARGET})" >&2
     exit 1
     ;;
 esac
@@ -67,7 +77,17 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 BUILD_ARGS=()
-if [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ]; then
+if [ "${TARGET}" = "courtyard_trainer" ]; then
+  echo "==> Building courtyard PPO trainer ${IMAGE}:${GITSHA}"
+  echo "    Dockerfile: ${DOCKERFILE}"
+  echo "    Platform:   ${ARCH} (CUDA training image; not the on-car gigaflow image)"
+  docker buildx build --platform "${ARCH}" --load \
+    -f "${DOCKERFILE}" \
+    --label "f1tenth.git_sha=${GITSHA}" \
+    --label "f1tenth.target=${TARGET}" \
+    -t "${IMAGE}:${GITSHA}" \
+    -t "${IMAGE}:${MOVING_TAG}" .
+elif [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ]; then
   BUILD_ARGS+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
   echo "==> Building ${TARGET} runtime ${IMAGE}:${GITSHA}"
   echo "    Dockerfile: ${DOCKERFILE}"

@@ -317,6 +317,22 @@ deploy/scripts/install_irl_images.sh user@gpu-box - \
   --training training.sif
 ```
 
+Online courtyard PPO trainer (separate CUDA image, not `Dockerfile.gigaflow`):
+
+```bash
+TARGET=courtyard_trainer deploy/scripts/build_image.sh
+TARGET=courtyard_trainer deploy/scripts/snapshot.sh
+# -> deploy/snapshots/f1tenth-courtyard-trainer-<gitsha>.tar.gz
+
+deploy/scripts/install_irl_images.sh user@gpu-box - \
+  --courtyard-trainer deploy/snapshots/f1tenth-courtyard-trainer-<gitsha>.tar.gz
+```
+
+Copy `actor_005700.pt` to `/opt/f1tenth/policies/actor_005700.pt` on the GPU host,
+then `ssh user@gpu-box /opt/f1tenth/rollback/courtyard_trainer/run_train.sh`.
+Outputs land in `/opt/f1tenth/outputs/courtyard_ppo/`. The actor stays 1,097-D
+LiDAR + proprio with a hardcoded IRL condition (`centered_high_collision`).
+
 On the car: `ssh user@car01 /opt/f1tenth/rollback/gigaflow/run.sh`.
 Rollback: `deploy/scripts/rollback_jetson.sh user@car01 gigaflow`.
 Trainer help: `ssh user@host /opt/f1tenth/images/run_training.sh --help`

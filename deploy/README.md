@@ -15,6 +15,9 @@ images.
     workspace (`f1tenth-sensor-policy`). See ADR 0008.
   - `Dockerfile.gigaflow` — same JetPack 6 iGPU base + `gigaflow_policy` graph
     (`f1tenth-gigaflow`); `gigaflow/src` on `PYTHONPATH` (not a new ROS package).
+  - `Dockerfile.courtyard_trainer` — CUDA PyTorch **training** image
+    (`f1tenth-courtyard-trainer`); online courtyard_2 PPO from a mounted
+    `actor_005700.pt`. Not the on-car image.
   - `smoke_sensor_policy.sh` — non-powered CUDA/ROS/artifact/launch smoke for the
     sensor-policy image.
   - `smoke_gigaflow_policy.sh` — same smoke for the IRL Gigaflow image.
@@ -26,7 +29,8 @@ images.
 - `releases/manifest.csv` — git SHA -> image sha256 -> car, for traceability.
 - `scripts/` — `build_image.sh`, `snapshot.sh`, `load_to_jetson.sh`,
   `rollback_jetson.sh` (`TARGET=racing|sensor_policy|gigaflow`),
-  `install_irl_images.sh` (SSH-install Gigaflow car image + Sophy GT trainer).
+  `install_irl_images.sh` (SSH-install Gigaflow car image, courtyard PPO
+  trainer via `--courtyard-trainer`, and Sophy GT trainer).
 - `snapshots/` — built image artifacts (gitignored).
 
 ## Release flow

@@ -14,6 +14,9 @@
 #   deploy/scripts/install_irl_images.sh user@gpu-box - \
 #     --training training.sif
 #
+#   deploy/scripts/install_irl_images.sh user@gpu-box - \
+#     --courtyard-trainer deploy/snapshots/f1tenth-courtyard-trainer-<sha>.tar.gz
+#
 # Flags:
 #   --gigaflow TAR            f1tenth-gigaflow docker save (.tar.gz)
 #   --gigaflow-ckpt PT        baked actor (actor_005700 until fine-tune lands)
@@ -23,6 +26,7 @@
 #   --training PATH           training.sif or a trainer docker .tar/.tar.gz
 #   --training-sif SIF        alias for Apptainer from deploy/apptainer/training.def
 #   --training-docker TAR     alias for a trainer docker save
+#   --courtyard-trainer TAR   f1tenth-courtyard-trainer docker save
 #   --sophy-car TAR           alias for --sensor-policy
 #   --sophy-ckpt PT           alias for --sensor-policy-ckpt
 #   --images-dir DIR          remote trainer dest (default /opt/f1tenth/images)
@@ -33,7 +37,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 HOST=""
@@ -45,6 +49,7 @@ SOPHY_CKPT=""
 RACING_TAR=""
 TRAINING_SIF=""
 TRAINING_DOCKER=""
+COURTYARD_TRAINER_TAR=""
 IMAGES_DIR="/opt/f1tenth/images"
 
 _assign_training() {
@@ -81,6 +86,7 @@ while [ $# -gt 0 ]; do
     --training) _assign_training "${2:?--training needs a path}"; shift 2 ;;
     --training-sif) TRAINING_SIF="${2:?--training-sif needs a .sif}"; shift 2 ;;
     --training-docker) TRAINING_DOCKER="${2:?--training-docker needs a tar}"; shift 2 ;;
+    --courtyard-trainer) COURTYARD_TRAINER_TAR="${2:?--courtyard-trainer needs a .tar.gz}"; shift 2 ;;
     --images-dir) IMAGES_DIR="${2:?--images-dir needs a path}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -92,8 +98,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "${GIGAFLOW_TAR}" ] && [ -z "${TRAINING_SIF}" ] && [ -z "${TRAINING_DOCKER}" ] \
-    && [ -z "${SOPHY_CAR_TAR}" ] && [ -z "${RACING_TAR}" ]; then
-  echo "need at least --gigaflow, --sensor-policy, --racing, or --training" >&2
+    && [ -z "${SOPHY_CAR_TAR}" ] && [ -z "${RACING_TAR}" ] \
+    && [ -z "${COURTYARD_TRAINER_TAR}" ]; then
+  echo "need at least --gigaflow, --sensor-policy, --racing, --training, or --courtyard-trainer" >&2
   exit 1
 fi
 if [ -n "${GIGAFLOW_TAR}" ] || [ -n "${SOPHY_CAR_TAR}" ] || [ -n "${RACING_TAR}" ]; then
@@ -210,6 +217,62 @@ docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}'
 EOF
 fi
 
+if [ -n "${COURTYARD_TRAINER_TAR}" ]; then
+  _need_file "${COURTYARD_TRAINER_TAR}" "--courtyard-trainer"
+  NOTES="${NOTES} courtyard_trainer=$(_sha "${COURTYARD_TRAINER_TAR}")"
+  REMOTE_TAR="/tmp/$(basename "${COURTYARD_TRAINER_TAR}")"
+  echo "==> Loading courtyard PPO trainer image on ${HOST}"
+  scp "${COURTYARD_TRAINER_TAR}" "${HOST}:${REMOTE_TAR}"
+  ssh "${HOST}" bash -s -- "${REMOTE_TAR}" <<'EOF'
+set -euo pipefail
+TAR="$1"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker not usable on remote; cannot load ${TAR}" >&2
+  exit 1
+fi
+if [[ "${TAR}" == *.gz ]]; then
+  gunzip -c "${TAR}" | docker load
+else
+  docker load -i "${TAR}"
+fi
+rm -f "${TAR}"
+IMAGE="f1tenth-courtyard-trainer"
+if docker image inspect "${IMAGE}:courtyard-trainer" >/dev/null 2>&1; then
+  :
+else
+  TAG="$(docker image ls --format '{{.Repository}}:{{.Tag}}' \
+    | awk -F: '$1=="f1tenth-courtyard-trainer" && $2!="<none>" {print; exit}')"
+  if [ -n "${TAG}" ]; then
+    docker tag "${TAG}" "${IMAGE}:courtyard-trainer"
+  fi
+fi
+ROLLBACK="/opt/f1tenth/rollback/courtyard_trainer"
+mkdir -p "${ROLLBACK}" /opt/f1tenth/policies /opt/f1tenth/outputs/courtyard_ppo
+cat > "${ROLLBACK}/run_train.sh" <<'RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="${IMAGE:-f1tenth-courtyard-trainer:courtyard-trainer}"
+CKPT="${CHECKPOINT:-/opt/f1tenth/policies/actor_005700.pt}"
+OUT="${RUN_DIR:-/opt/f1tenth/outputs/courtyard_ppo}"
+mkdir -p "$(dirname "${CKPT}")" "${OUT}"
+if [ ! -f "${CKPT}" ]; then
+  echo "mount or copy actor_005700.pt to ${CKPT}" >&2
+  exit 1
+fi
+exec docker run --rm --gpus all \
+  -e CHECKPOINT="${CKPT}" \
+  -e RUN_DIR="${OUT}" \
+  -v /opt/f1tenth/policies:/opt/f1tenth/policies:ro \
+  -v /opt/f1tenth/outputs/courtyard_ppo:/opt/f1tenth/outputs/courtyard_ppo \
+  "${IMAGE}" "$@"
+RUN
+chmod +x "${ROLLBACK}/run_train.sh"
+docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
+  | grep -E 'f1tenth-courtyard-trainer' || true
+ls -la "${ROLLBACK}/run_train.sh"
+EOF
+fi
+
 GITSHA="$(git rev-parse --short HEAD)"
 CAR_NOTE="${CAR:--}"
 ssh "${HOST}" bash -s -- "${INVENTORY_REMOTE}" "${GITSHA}" "${NOTES}" <<'EOF'
@@ -224,7 +287,7 @@ mkdir -p "$(dirname "${INV}")"
   echo "notes=${NOTES}"
   echo "-- docker images --"
   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' 2>/dev/null \
-    | grep -E 'f1tenth-(gigaflow|sensor-policy|racing|dev)|training' || true
+    | grep -E 'f1tenth-(gigaflow|sensor-policy|racing|dev|courtyard-trainer)|training' || true
   echo "-- trainer files --"
   ls -la /opt/f1tenth/images 2>/dev/null || true
 } > "${INV}"
@@ -251,4 +314,7 @@ Car Gigaflow (if loaded):
 
 Sophy GT / standalone trainer (if copied):
   ssh ${HOST} ${IMAGES_DIR}/run_training.sh --help
+
+Courtyard online PPO trainer (if loaded):
+  ssh ${HOST} /opt/f1tenth/rollback/courtyard_trainer/run_train.sh
 EOF
