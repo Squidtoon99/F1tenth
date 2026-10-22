@@ -209,14 +209,14 @@ def teacher_action(
     ey: float,
     vx: float,
     steer_now: float,
-    lookahead_gain: float = 0.55,
-    stanley_k: float = 2.2,
-    a_lat: float = 1.8,
-    v_max: float = 2.2,
+    lookahead_gain: float = 0.7,
+    stanley_k: float = 2.6,
+    a_lat: float = 1.4,
+    v_max: float = 1.55,
 ) -> np.ndarray:
     """Lookahead PP + Stanley. Centerline is teacher-only."""
     speed = max(float(vx), 0.0)
-    ld = float(np.clip(0.7 + lookahead_gain * speed, 0.7, 1.8))
+    ld = float(np.clip(1.0 + lookahead_gain * speed, 1.0, 2.2))
     target = path.xy_at(s + ld)
     dx = float(target[0] - x)
     dy = float(target[1] - y)
@@ -543,6 +543,7 @@ def collect_on_policy(
     spawn_i: int,
     deterministic: bool = False,
     teacher: bool = False,
+    expert_mix: float = 0.0,
 ) -> tuple[dict[str, np.ndarray], torch.Tensor, int]:
     t = sim.buffers.torch_arrays
     n = int(t.active.shape[0])
@@ -586,11 +587,16 @@ def collect_on_policy(
                     vx=float(t.vx[slot].item()),
                     steer_now=float(t.steer[slot].item()),
                 )
+            if float(expert_mix) > 0.0:
+                mix = torch.rand(n, device=device) < float(expert_mix)
+                teach_t = torch.as_tensor(teacher_np, device=device)
+                actions = torch.where(mix.unsqueeze(-1), teach_t, actions)
         prev_progress = t.progress_s.clone()
         info = sim.step(actions)
         ds = (t.progress_s - prev_progress).detach()
         wall = info["wall_contact"].to(dtype=torch.float32)
-        shaped = info["rewards"].detach() + 3.0 * ds - 8.0 * wall
+        near = (t.boundary_distance.detach() < 0.22).to(dtype=torch.float32)
+        shaped = (2.5 * ds - 4.0 * wall - 0.8 * near).clamp(-6.0, 6.0)
         obs_l.append(obs.detach().cpu().numpy())
         act_l.append(actions.cpu().numpy())
         teach_l.append(teacher_np)
@@ -718,32 +724,6 @@ def run_s2(
     for slot, (s, ey) in enumerate(cycle[: sim.layout.num_slots]):
         pin_slot(sim, path, s, ey=ey, vx=0.0 if slot == 0 else 0.4, flat=slot)
     sim.rebuild_sensors()
-    batch, hidden, spawn_i = collect_on_policy(
-        actor,
-        sim,
-        path,
-        device=device,
-        n_steps=400,
-        spawn_cycle=cycle,
-        hidden=hidden,
-        spawn_i=spawn_i,
-        deterministic=False,
-        teacher=True,
-    )
-    n, tlen, _ = batch["obs"].shape
-    trajs = []
-    for i in range(n):
-        trajs.append(
-            {
-                "obs": batch["obs"][i],
-                "actions": batch["teacher"][i],
-                "rewards": batch["rewards"][i].astype(np.float32),
-                "dones": batch["dones"][i].astype(np.float32),
-                "resets": batch["resets"][i].astype(np.float32),
-            }
-        )
-    windows = windows_from_trajectories(trajs, window=16, stride=4)
-    n_win = int(windows["obs"].shape[0])
     opt = torch.optim.Adam(actor.parameters(), lr=5.0e-5)
     actor.train()
     base.eval()
@@ -751,26 +731,52 @@ def run_s2(
         param.requires_grad_(False)
     last = {"bc": 0.0, "kl": 0.0}
     rng = np.random.default_rng(2)
-    for step in range(int(bc_steps)):
-        idx = rng.integers(0, n_win, size=min(16, n_win))
-        obs = torch.as_tensor(windows["obs"][idx], device=device)
-        teacher = torch.as_tensor(windows["actions"][idx], device=device)
-        resets = torch.as_tensor(windows["resets"][idx], device=device)
-        bsz = int(obs.shape[0])
-        cond = _condition(actor, bsz, device)
-        h0 = actor.initial_hidden(bsz, device)
-        out = actor.evaluate_actions_sequence(
-            obs,
-            cond,
-            h0,
-            teacher,
-            reset_mask=resets,
-            return_diagnostics=True,
-            return_mean=True,
+    trajs: list[dict[str, np.ndarray]] = []
+    n = int(sim.layout.num_slots)
+    tlen = 0
+    for dagger_round in range(3):
+        mix = 0.55 * (1.0 - dagger_round / 3.0)
+        batch, hidden, spawn_i = collect_on_policy(
+            actor,
+            sim,
+            path,
+            device=device,
+            n_steps=240,
+            spawn_cycle=cycle,
+            hidden=hidden,
+            spawn_i=spawn_i,
+            deterministic=False,
+            teacher=True,
+            expert_mix=mix,
         )
-        _logp, _ent, _h, log_std, mean = out
-        with torch.no_grad():
-            bout = base.evaluate_actions_sequence(
+        n, tlen, _ = batch["obs"].shape
+        for i in range(n):
+            trajs.append(
+                {
+                    "obs": batch["obs"][i],
+                    "actions": batch["teacher"][i],
+                    "rewards": batch["rewards"][i].astype(np.float32),
+                    "dones": batch["dones"][i].astype(np.float32),
+                    "resets": batch["resets"][i].astype(np.float32),
+                }
+            )
+        windows = windows_from_trajectories(trajs, window=16, stride=4)
+        n_win = int(windows["obs"].shape[0])
+        print(
+            json.dumps(
+                {"s2_dagger_round": dagger_round, "mix": mix, "n_win": n_win}
+            ),
+            flush=True,
+        )
+        for step in range(max(int(bc_steps) // 3, 40)):
+            idx = rng.integers(0, n_win, size=min(16, n_win))
+            obs = torch.as_tensor(windows["obs"][idx], device=device)
+            teacher = torch.as_tensor(windows["actions"][idx], device=device)
+            resets = torch.as_tensor(windows["resets"][idx], device=device)
+            bsz = int(obs.shape[0])
+            cond = _condition(actor, bsz, device)
+            h0 = actor.initial_hidden(bsz, device)
+            out = actor.evaluate_actions_sequence(
                 obs,
                 cond,
                 h0,
@@ -779,17 +785,33 @@ def run_s2(
                 return_diagnostics=True,
                 return_mean=True,
             )
-            _bl, _be, _bh, b_log_std, b_mean = bout
-        kl = gaussian_kl(mean, log_std, b_mean, b_log_std)
-        bc = (mean - teacher).square().mean()
-        loss = bc + 0.01 * kl
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
-        opt.step()
-        last = {"bc": float(bc.detach().item()), "kl": float(kl.detach().item())}
-        if step % 40 == 0:
-            print(json.dumps({"s2_bc": step, **last}), flush=True)
+            _logp, _ent, _h, log_std, mean = out
+            with torch.no_grad():
+                bout = base.evaluate_actions_sequence(
+                    obs,
+                    cond,
+                    h0,
+                    teacher,
+                    reset_mask=resets,
+                    return_diagnostics=True,
+                    return_mean=True,
+                )
+                _bl, _be, _bh, b_log_std, b_mean = bout
+            kl = gaussian_kl(mean, log_std, b_mean, b_log_std)
+            bc = (mean - teacher).square().mean()
+            loss = bc + 0.01 * kl
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+            opt.step()
+            last = {"bc": float(bc.detach().item()), "kl": float(kl.detach().item())}
+            if step % 40 == 0:
+                print(
+                    json.dumps(
+                        {"s2_bc": step, "round": dagger_round, **last}
+                    ),
+                    flush=True,
+                )
     ppo_log = ppo_fresh_critic(
         actor,
         base,
@@ -1117,7 +1139,7 @@ def run_campaign(
         evals["s1"] = {k: ev[k] for k in ev if k not in {"poses", "atlas", "path", "cfg"}}
         print(json.dumps({"eval_s1": evals["s1"]}), flush=True)
 
-        s2_actor = copy.deepcopy(s1_actor)
+        s2_actor = copy.deepcopy(actor0)
         s2_base = copy.deepcopy(actor0)
         s2 = run_s2(s2_actor, s2_base, payload, device=device, output=output)
         artifacts["s2"] = s2["artifact"]
@@ -1125,7 +1147,7 @@ def run_campaign(
         evals["s2"] = {k: ev[k] for k in ev if k not in {"poses", "atlas", "path", "cfg"}}
         print(json.dumps({"eval_s2": evals["s2"]}), flush=True)
 
-        s3_actor = copy.deepcopy(s2_actor)
+        s3_actor = copy.deepcopy(actor0)
         s3_base = copy.deepcopy(actor0)
         s3 = run_s3(s3_actor, s3_base, payload, device=device, output=output)
         artifacts["s3"] = s3["artifact"]
@@ -1165,14 +1187,18 @@ def run_campaign(
     }
     video = STORE_MEDIA / "side_by_side.mp4"
     cfg = win_eval["cfg"]
-    render_side_by_side(
-        win_eval["atlas"],
-        base_eval["poses"],
-        win_eval["poses"],
-        video,
-        car_length=cfg.agents.car_length_m,
-        car_width=cfg.agents.car_width_m,
-    )
+    try:
+        render_side_by_side(
+            win_eval["atlas"],
+            base_eval["poses"],
+            win_eval["poses"],
+            video,
+            car_length=cfg.agents.car_length_m,
+            car_width=cfg.agents.car_width_m,
+        )
+    except Exception as exc:
+        video = Path(str(video) + ".failed")
+        print(json.dumps({"render_error": str(exc)}), flush=True)
     win_path = output / "winner_actor.pt"
     _write_actor(win_path, payload, winner_actor)
     store_ckpt = STORE_MEDIA / "winner_actor.pt"
