@@ -335,6 +335,13 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_finetune_courtyard(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.courtyard_finetune import run_from_args
+
+    run_from_args(args)
+    return 0
+
+
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     device = args.device or (
@@ -614,6 +621,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_wandb_args(p_ft)
     p_ft.set_defaults(func=_cmd_finetune_offline)
+
+    p_cft = sub.add_parser(
+        "finetune-courtyard",
+        help="DAgger + annealed-KL courtyard_2 fine-tune of a baked actor",
+    )
+    p_cft.add_argument("--checkpoint", type=Path, required=True)
+    p_cft.add_argument("--config", type=Path, required=True)
+    p_cft.add_argument("--run-dir", type=Path, required=True)
+    p_cft.add_argument("--device", type=str, default="cuda")
+    p_cft.add_argument("--num-worlds", type=int, default=128)
+    p_cft.add_argument("--num-updates", type=int, default=800)
+    p_cft.add_argument("--rollout-len", type=int, default=64)
+    p_cft.add_argument("--lr", type=float, default=1.0e-4)
+    p_cft.add_argument("--eval-every", type=int, default=20)
+    p_cft.add_argument("--eval-seconds", type=float, default=60.0)
+    p_cft.add_argument("--anneal-updates", type=int, default=400)
+    p_cft.add_argument("--target-speed", type=float, default=2.2)
+    p_cft.add_argument("--seed", type=int, default=0)
+    p_cft.add_argument(
+        "--teacher-only",
+        action="store_true",
+        help="Eval the privileged centerline teacher from rest (no student update)",
+    )
+    p_cft.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Closed-loop eval of the student from rest (no update)",
+    )
+    p_cft.set_defaults(func=_cmd_finetune_courtyard)
 
     return parser
 
