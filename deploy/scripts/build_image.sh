@@ -22,7 +22,8 @@
 #   RANGE_LIBC_CUDA  racing range_libc pywrapper (default 0; 1 on native Jetson)
 #   SMOKE        sensor_policy/gigaflow — if 1, run the image smoke script after build
 #   REQUIRE_CUDA smoke only — pass through (default 1)
-#   GITSHA       default: current short HEAD
+#   GITSHA       default: current short HEAD; falls back to ./GITSHA or on-car
+#                when the build context is not a git checkout (Jetson rebuild)
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
@@ -33,7 +34,15 @@ else
   ARCH="${ARCH:-linux/arm64}"
 fi
 ROS_DISTRO="${ROS_DISTRO:-humble}"
-GITSHA="${GITSHA:-$(git rev-parse --short HEAD)}"
+if [ -z "${GITSHA:-}" ]; then
+  GITSHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+fi
+if [ -z "${GITSHA}" ] && [ -f GITSHA ]; then
+  GITSHA="$(tr -d '[:space:]' < GITSHA)"
+fi
+if [ -z "${GITSHA}" ]; then
+  GITSHA="on-car"
+fi
 
 NGC_IGPU_BASE="${NGC_IGPU_BASE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
 
