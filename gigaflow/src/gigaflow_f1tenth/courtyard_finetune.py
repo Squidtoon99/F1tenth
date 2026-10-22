@@ -388,6 +388,17 @@ def train_courtyard(
 ) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
     sim = build_courtyard_sim(cfg, device, no_respawn=False)
+    eval_cfg = replace(
+        cfg,
+        worlds=replace(
+            cfg.worlds,
+            num_worlds=1,
+            max_agents_per_world=1,
+            static_opponents_per_world=0,
+        ),
+        agents=replace(cfg.agents, async_respawn=False),
+    )
+    eval_sim = build_courtyard_sim(eval_cfg, device, no_respawn=True)
     actor = load_student(cfg, checkpoint, device)
     if hasattr(actor, "gru"):
         actor.gru.flatten_parameters()
@@ -405,65 +416,29 @@ def train_courtyard(
     hidden = actor.initial_hidden(n, device=device)
 
     for update in range(int(num_updates)):
-        frac = min(1.0, float(update) / max(int(anneal_updates), 1))
-        beta = max(0.0, 1.0 - frac)
-        kl_coef = 0.05 * (1.0 - frac)
-        bc_coef = 0.8 * max(0.15, 1.0 - 0.7 * frac)
-        pg_coef = 0.15 + 0.35 * frac
+        # Teacher-only BC until the 1-world student laps; mix/PG collapse the clone.
         actor.train()
         obs_buf = []
         teacher_buf = []
         reset_buf = []
-        hid0 = hidden.detach()
-        rew_acc = []
-        spawn_curriculum(sim, rest_frac=0.55 + 0.25 * (1.0 - frac), rng=rng)
+        spawn_curriculum(sim, rest_frac=0.8, rng=rng)
         hidden = actor.initial_hidden(n, device=device)
         hid0 = hidden.detach()
         obs = t.sensor_obs
         reset = torch.zeros(n, device=device, dtype=torch.float32)
         for _step in range(int(rollout_len)):
             teacher = centerline_teacher(sim, target_speed=target_speed)
-            mu, log_std, next_hidden = actor_gaussian(actor, obs, hidden, reset)
-            dist = torch.distributions.Normal(mu, torch.exp(log_std))
-            pre = dist.rsample()
-            student_act = torch.tanh(pre)
-            mix = torch.where(
-                (torch.rand(n, 1, device=device) < beta),
-                teacher,
-                student_act.detach(),
-            )
-            prev_s = t.frenet_s.clone()
-            prev_ey = t.frenet_ey.abs().clone()
-            tan_idx = sim._torch_offsets[t.track_id.long()] + t.frenet_segment.long()
-            tan_idx = tan_idx.clamp(0, sim._torch_tangents.shape[0] - 1)
-            tan = sim._torch_tangents.index_select(0, tan_idx)
-            heading_err = wrap_angle(
-                t.yaw - torch.atan2(tan[:, 1], tan[:, 0])
-            ).abs()
-            result = sim.step(mix)
-            length = sim._torch_track_length[t.track_id.long()].clamp(min=1.0)
-            ds = t.frenet_s - prev_s
-            ds = torch.where(ds < -0.5 * length, ds + length, ds)
-            ds = torch.where(ds > 0.5 * length, ds - length, ds)
+            _mu, _log_std, next_hidden = actor_gaussian(actor, obs, hidden, reset)
+            result = sim.step(teacher)
             done = result["done"].to(dtype=torch.float32)
-            crash = result["wall_contact"].to(dtype=torch.float32)
-            reward = (
-                ds * (1.0 + 0.6 * heading_err.clamp(max=1.2))
-                - 0.12 * t.frenet_ey.abs()
-                - 0.04 * (t.frenet_ey.abs() - prev_ey).clamp(min=0.0)
-                + 0.01
-                - 4.0 * crash
-                - 1.5 * done
-            )
             obs_buf.append(obs.detach())
             teacher_buf.append(teacher.detach())
             reset_buf.append(reset.detach())
-            rew_acc.append(reward.detach())
             hidden = next_hidden.detach()
             reset = done
             obs = result["sensor_obs"]
             if bool((t.active <= 0).all()):
-                spawn_curriculum(sim, rest_frac=0.5, rng=rng)
+                spawn_curriculum(sim, rest_frac=0.8, rng=rng)
                 hidden = actor.initial_hidden(n, device=device)
                 reset = torch.ones(n, device=device, dtype=torch.float32)
                 obs = t.sensor_obs
@@ -471,7 +446,6 @@ def train_courtyard(
         obs_seq = torch.stack(obs_buf, dim=1)
         teacher_seq = torch.stack(teacher_buf, dim=1)
         reset_seq = torch.stack(reset_buf, dim=1)
-        rew_seq = torch.stack(rew_acc, dim=1)
         logp, _ent, _h = actor.evaluate_actions_sequence(
             obs_seq,
             None,
@@ -493,9 +467,7 @@ def train_courtyard(
             mu_b.reshape(-1, 2),
             torch.log(std_b.clamp(min=1e-6)).reshape(-1, 2),
         )
-        adv = rew_seq - rew_seq.mean()
-        pg = -(logp * adv.detach()).mean()
-        loss = bc_coef * bc + float(kl_coef) * kl + pg_coef * pg
+        loss = bc + 0.02 * kl
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(actor.parameters(), 0.5)
@@ -506,13 +478,13 @@ def train_courtyard(
             "loss": float(loss.detach().item()),
             "bc": float(bc.detach().item()),
             "kl": float(kl.detach().item()),
-            "pg": float(pg.detach().item()),
-            "beta": beta,
-            "kl_coef": kl_coef,
-            "mean_reward": float(rew_seq.mean().item()),
+            "beta": 1.0,
+            "kl_coef": 0.02,
         }
         if update % int(eval_every) == 0 or update + 1 == int(num_updates):
-            ev = eval_from_rest(sim, actor, seconds=eval_seconds, teacher=False)
+            ev = eval_from_rest(
+                eval_sim, actor, seconds=eval_seconds, teacher=False
+            )
             row.update({f"eval_{k}": v for k, v in ev.items() if k != "spawn"})
             row["eval"] = ev
             ckpt_path = run_dir / f"actor_update_{update:05d}.pt"
