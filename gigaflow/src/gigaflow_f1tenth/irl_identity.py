@@ -94,13 +94,7 @@ def bake_deployment_condition(
         or "centered_high_collision"
     )
     schema = out.get("condition_schema")
-    raw = {}
-    if isinstance(schema, Mapping):
-        conservative = schema.get("conservative_raw")
-        if isinstance(conservative, Mapping):
-            raw = {str(k): float(v) for k, v in conservative.items()}
-    if not raw:
-        raw = deployment_style(style_name).as_dict()
+    raw = deployment_style(style_name).as_dict()
     raw.update(IRL_DYNAMICS)
     style = PrivateStyle(**{name: float(raw[name]) for name in CONDITION_FIELD_NAMES})
     out["format_version"] = 1

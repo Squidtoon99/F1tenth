@@ -59,6 +59,7 @@ def test_bake_actor_artifact_hardcodes_identity_and_strips_adaptation():
     payload = build_actor_artifact_payload(cfg, actor)
     payload["adaptation"] = {"vmax_scale": 1.7}
     payload["condition_schema"]["conservative_raw"]["vmax_scale"] = 1.7
+    payload["condition_schema"]["conservative_raw"]["alpha_l_center"] = 0.038
     baked = bake_actor_artifact(payload, actor=actor)
     validate_actor_artifact(baked)
     assert baked["irl_baked"] is True
@@ -67,6 +68,10 @@ def test_bake_actor_artifact_hardcodes_identity_and_strips_adaptation():
     assert raw["vmax_scale"] == 1.0
     assert raw["drive_scale"] == 1.0
     assert raw["mass_kg"] == pytest.approx(3.444)
+    assert raw["alpha_l_center"] == pytest.approx(3.8e-3)
+    assert baked["deployment_condition_normalized"][2] == pytest.approx(
+        -0.02068962, abs=1e-5
+    )
     assert baked["deployment_condition_normalized"][8] == pytest.approx(0.0)
 
 
