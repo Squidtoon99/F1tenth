@@ -1,5 +1,6 @@
 from .ppo import (
     PPOTrainer,
+    gaussian_kl,
     scheduled_learning_rate,
     Rollout,
     ValueCritic,
@@ -35,6 +36,7 @@ __all__ = [
     "grad_caps_temporal_loss",
     "compute_gae",
     "explained_variance",
+    "gaussian_kl",
     "mix_residual_actions",
     "pure_timeout_mask",
     "residual_alpha",

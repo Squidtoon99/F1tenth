@@ -141,6 +141,7 @@ class LidarCNNEncoder(nn.Module):
         lidar_dim=LIDAR_DIM,
         pool_bins=32,
         projection_dim=CNN_PROJECTION_DIM,
+        pool_mode="avg",
     ):
         super().__init__()
         pool_bins = int(pool_bins)
@@ -149,9 +150,13 @@ class LidarCNNEncoder(nn.Module):
                 f"lidar_pool_bins must be one of {sorted(ALLOWED_LIDAR_POOL_BINS)}, "
                 f"got {pool_bins}"
             )
+        pool_mode = str(pool_mode)
+        if pool_mode not in ("avg", "max"):
+            raise ValueError(f"pool_mode must be 'avg' or 'max', got {pool_mode!r}")
         self.lidar_dim = int(lidar_dim)
         self.pool_bins = pool_bins
         self.projection_dim = int(projection_dim)
+        self.pool_mode = pool_mode
         self.conv = nn.Sequential(
             nn.Conv1d(
                 1,
@@ -178,7 +183,10 @@ class LidarCNNEncoder(nn.Module):
             ),
             nn.ReLU(),
         )
-        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        if self.pool_mode == "max":
+            self.pool = nn.AdaptiveMaxPool1d(self.pool_bins)
+        else:
+            self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
         self.projection = nn.Linear(
             CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
         )
@@ -277,6 +285,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         log_std_min=LOG_STD_MIN,
         log_std_max=LOG_STD_MAX,
         encoder_name="lidar_cnn",
+        pool_mode="avg",
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -304,6 +313,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         self.proprio_dim = int(proprio_dim)
         self.pool_bins = int(pool_bins)
         self.projection_dim = int(projection_dim)
+        self.pool_mode = str(pool_mode)
         self.gru_hidden_dim = int(gru_hidden_dim)
         self.hidden_sizes = tuple(int(s) for s in hidden_sizes)
         if self.obs_dim != self.lidar_dim + self.proprio_dim:
@@ -326,6 +336,7 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                 lidar_dim=self.lidar_dim,
                 pool_bins=self.pool_bins,
                 projection_dim=self.projection_dim,
+                pool_mode=self.pool_mode,
             )
         else:
             raise ValueError(
@@ -375,7 +386,10 @@ class SquashedGaussianLidarGRUActor(nn.Module):
                 "kernels": list(CNN_KERNELS),
                 "strides": list(CNN_STRIDES),
                 "padding": list(CNN_PADDING),
-                "pool": "adaptive_avg_1d",
+                "pool": (
+                    "adaptive_max_1d" if self.pool_mode == "max" else "adaptive_avg_1d"
+                ),
+                "pool_mode": self.pool_mode,
                 "pool_bins": self.pool_bins,
                 "projection_dim": self.projection_dim,
                 "gru_hidden_dim": self.gru_hidden_dim,
@@ -748,6 +762,37 @@ class SquashedGaussianLidarGRUActor(nn.Module):
         mean_action = mean_action.view(steps, batch, self.act_dim).transpose(0, 1)
         return result + (mean_action,)
 
+    def gaussian_params(self, obs, hidden, reset_mask=None):
+        if obs.dim() != 3 or obs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"gaussian_params expects obs shape (B, T, {self.obs_dim}), "
+                f"got {tuple(obs.shape)}"
+            )
+        batch, steps, _ = obs.shape
+        if steps == 0:
+            empty = obs.new_zeros(batch, 0, self.act_dim)
+            return empty, empty
+        flat_obs = obs.reshape(batch * steps, self.obs_dim)
+        features, _ = self.encode(flat_obs)
+        features = features.view(batch, steps, -1)
+        gru_out, _next_hidden = self._gru_sequence(features, hidden, reset_mask)
+        flat_h = gru_out.transpose(0, 1).reshape(
+            steps * batch, self.gru_hidden_dim
+        )
+        distribution = _squashed_gaussian_distribution(
+            self.net,
+            self.mu_layer,
+            self.log_std_layer,
+            flat_h,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+        )
+        mean = distribution.mean.view(steps, batch, self.act_dim).transpose(0, 1)
+        log_std = torch.log(distribution.stddev).view(
+            steps, batch, self.act_dim
+        ).transpose(0, 1)
+        return mean, log_std
+
     def forward(self, obs, deterministic=False, with_logprob=True):
         if obs.dim() != 2:
             raise ValueError(
@@ -775,6 +820,7 @@ def make_actor(
     activation=nn.ReLU,
     act_limit=1.0,
     lidar_pool_bins=32,
+    lidar_pool_mode="avg",
     lidar_projection_dim=CNN_PROJECTION_DIM,
     lidar_dim=LIDAR_DIM,
     proprio_dim=PROPRIO_DIM,
@@ -839,6 +885,7 @@ def make_actor(
         gru_hidden_dim=gru_hidden_dim,
         log_std_min=log_std_min,
         log_std_max=log_std_max,
+        pool_mode=lidar_pool_mode,
     )
 
 
@@ -888,6 +935,7 @@ def actor_from_architecture(architecture: Mapping[str, Any]):
         activation=nn.ReLU,
         act_limit=1.0,
         lidar_pool_bins=int(arch.get("pool_bins", 32)),
+        lidar_pool_mode=str(arch.get("pool_mode", "avg")),
         lidar_projection_dim=int(
             arch.get("projection_dim", CNN_PROJECTION_DIM)
         ),

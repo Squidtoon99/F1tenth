@@ -194,6 +194,7 @@ DEFAULT_CONFIG = {
         "actor_hidden_layers": [1024, 1024, 1024],
         "critic_hidden_layers": [1024, 1024, 1024],
         "lidar_pool_bins": 32,
+        "lidar_pool_mode": "avg",
         "lidar_projection_dim": 256,
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
@@ -249,6 +250,10 @@ DEFAULT_CONFIG = {
         "lr_schedule": "constant",
         "lr_final": 0.0,
         "desired_kl": 0.01,
+        "critic_warmup_updates": 0,
+        "kl_coef": 0.0,
+        "kl_hinge": 0.0,
+        "freeze_actor_normalizer": False,
     },
     "dreamer": {
         "deter_dim": 256,
