@@ -34,7 +34,11 @@ from gigaflow_f1tenth.model import (
     actor_shapes,
     build_actor,
 )
-from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
+from gigaflow_f1tenth.offline_finetune import (
+    _load_actor_weights,
+    refuse_ppo,
+    run_bakeoff,
+)
 from gigaflow_f1tenth.sim.vehicle import F_BRAKE_MAX, F_DRIVE_MAX, VehicleParams
 from gigaflow_f1tenth.teleop_dataset import (
     discover_manual_bags,
@@ -229,6 +233,15 @@ def test_refuse_ppo_resume():
     refuse_ppo("awac")
     refuse_ppo("iql")
     refuse_ppo("bc")
+
+
+def test_load_actor_weights_allows_missing_baked_condition():
+    cfg = load_config(SMOKE)
+    src = build_actor(cfg)
+    dst = build_actor(cfg)
+    state = {k: v for k, v in src.state_dict().items() if k != "baked_condition"}
+    _load_actor_weights(dst, state)
+    assert "baked_condition" in dst.state_dict()
 
 
 def test_load_maxpool64_artifact_from_smoke_cfg(tmp_path):

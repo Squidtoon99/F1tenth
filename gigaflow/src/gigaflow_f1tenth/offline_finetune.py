@@ -69,12 +69,24 @@ class IQLHeads(nn.Module):
         return self.v(hidden).squeeze(-1)
 
 
+def _load_actor_weights(actor: nn.Module, state: Mapping[str, Any]) -> None:
+    """Allow pre-bake checkpoints that omit the IRL ``baked_condition`` buffer."""
+    missing, unexpected = actor.load_state_dict(dict(state), strict=False)
+    missing = [key for key in missing if key != "baked_condition"]
+    if missing or unexpected:
+        raise RuntimeError(
+            f"actor state_dict mismatch missing={missing} unexpected={unexpected}"
+        )
+
+
 def actor_from_payload(payload: Mapping[str, Any], device: str | torch.device):
+    from gigaflow_f1tenth.irl_identity import attach_baked_condition
+
     arch = payload.get("actor_architecture")
     if not isinstance(arch, Mapping):
         raise KeyError("artifact missing actor_architecture")
     actor = actor_from_architecture(arch)
-    actor.load_state_dict(payload["actor_state_dict"], strict=False)
+    _load_actor_weights(actor, payload["actor_state_dict"])
     vec = payload.get("deployment_condition_normalized")
     if not isinstance(vec, (list, tuple)):
         vec = baked_normalized_condition()
@@ -95,7 +107,7 @@ def load_offline_actor(checkpoint: str | Path, device: str = "cpu"):
 
         cfg = config_from_dict(payload["config"], check_training_budget=False)
         actor = build_actor(cfg)
-        actor.load_state_dict(payload["ppo"]["actor"], strict=False)
+        _load_actor_weights(actor, payload["ppo"]["actor"])
         baked = export_baked_actor(cfg, actor)
         return actor.to(device), baked
     raise KeyError("checkpoint missing actor weights")

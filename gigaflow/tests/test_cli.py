@@ -65,6 +65,7 @@ def test_cli_lists_bake_irl_and_finetune_offline():
     assert choices is not None
     assert "bake-irl" in choices
     assert "finetune-offline" in choices
+    assert "courtyard-multilap" in choices
 
 
 def test_prepare_tracks_cli_local_fixture(tmp_path, capsys):
