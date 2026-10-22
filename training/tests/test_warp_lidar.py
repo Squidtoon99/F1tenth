@@ -246,6 +246,20 @@ def _variant_wall_range(episode_id: int) -> float:
     ego.tensor["y"][0] = 1.0
     env.tensor["episode_id"][0] = episode_id
     ranges = torch.zeros(1, 1, dtype=torch.float32)
+    sensor = _sensor_params(
+        num_beams=1,
+        angle_min=0.0,
+        angle_increment=0.0,
+        range_min=0.02,
+        range_max=10.0,
+        lidar_offset_x=0.0,
+    )
+    wp.launch(
+        cache_lidar_heading_kernel,
+        dim=1,
+        inputs=[ego.buffers, env.buffers, sensor],
+        device="cpu",
+    )
     wp.launch(
         lidar_solo_kernel,
         dim=(1, 1),
@@ -253,14 +267,7 @@ def _variant_wall_range(episode_id: int) -> float:
             ego.buffers,
             env.buffers,
             corridor.data,
-            _sensor_params(
-                num_beams=1,
-                angle_min=0.0,
-                angle_increment=0.0,
-                range_min=0.02,
-                range_max=10.0,
-                lidar_offset_x=0.0,
-            ),
+            sensor,
             _opponent_params(),
             _reset_params(seed=0),
             wp.from_torch(ranges),
@@ -302,6 +309,20 @@ def test_lidar_unknown_distance_returns_max_range(warp_runtime):
     ego.tensor["x"][0] = 0.5
     ego.tensor["y"][0] = 1.25
     ranges = torch.zeros(1, 1, dtype=torch.float32)
+    sensor = _sensor_params(
+        num_beams=1,
+        angle_min=0.0,
+        angle_increment=0.0,
+        range_min=0.02,
+        range_max=10.0,
+        lidar_offset_x=0.0,
+    )
+    wp.launch(
+        cache_lidar_heading_kernel,
+        dim=1,
+        inputs=[ego.buffers, env.buffers, sensor],
+        device="cpu",
+    )
     wp.launch(
         lidar_solo_kernel,
         dim=(1, 1),
@@ -309,14 +330,7 @@ def test_lidar_unknown_distance_returns_max_range(warp_runtime):
             ego.buffers,
             env.buffers,
             corridor.data,
-            _sensor_params(
-                num_beams=1,
-                angle_min=0.0,
-                angle_increment=0.0,
-                range_min=0.02,
-                range_max=10.0,
-                lidar_offset_x=0.0,
-            ),
+            sensor,
             _opponent_params(),
             _reset_params(seed=0),
             wp.from_torch(ranges),

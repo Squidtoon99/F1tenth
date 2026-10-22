@@ -567,6 +567,7 @@ class WarpF1tenthEnv:
         self._cuda_graphs = {}
         self._cuda_graph_enabled = self.device.type == "cuda"
         self._cuda_graph_warmup_left = 2
+        self._capturing = False
         self._cuda_graph_status = (
             "disabled_cpu" if not self._cuda_graph_enabled else "pending"
         )
@@ -1062,9 +1063,9 @@ class WarpF1tenthEnv:
         }
 
     def _stream(self):
-        if self.device.type == "cuda":
-            return wp.stream_from_torch(torch.cuda.current_stream(self.device))
-        return None
+        if self.device.type != "cuda" or self._capturing:
+            return None
+        return wp.stream_from_torch(torch.cuda.current_stream(self.device))
 
     def _wait_policy_prefetch(self) -> None:
         if not self._policy_prefetch_pending:
@@ -1500,6 +1501,7 @@ class WarpF1tenthEnv:
             and graph is None
         ):
             try:
+                self._capturing = True
                 with wp.ScopedCapture() as capture:
                     self._launch_control_tick(inactive, with_sensors)
                 self._cuda_graphs[key] = capture.graph
@@ -1510,6 +1512,8 @@ class WarpF1tenthEnv:
                 self._cuda_graph_enabled = False
                 self._cuda_graph_status = f"unsupported:{type(exc).__name__}"
                 return self._launch_control_tick(inactive, with_sensors)
+            finally:
+                self._capturing = False
         launches = self._launch_control_tick(inactive, with_sensors)
         if self._cuda_graph_enabled:
             self._cuda_graph_warmup_left = max(0, self._cuda_graph_warmup_left - 1)
