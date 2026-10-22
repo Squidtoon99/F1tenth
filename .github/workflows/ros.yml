@@ -33,7 +33,8 @@ jobs:
             python3-pip \
             python3-transforms3d \
             build-essential \
-            cmake
+            cmake \
+            ros-humble-asio-cmake-module
           rosdep update
           rosdep install --from-paths src libs --ignore-src -y -r \
             --skip-keys "ament_python python-transforms3d-pip range_libc"
