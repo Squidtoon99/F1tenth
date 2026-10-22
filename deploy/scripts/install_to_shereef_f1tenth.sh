@@ -7,6 +7,10 @@
 #
 # Defaults: user@host=shereef@f1tenth  car_id=car01
 #
+# Env:
+#   SKIP_TRAINER=1  do not rsync/load the amd64 courtyard-trainer tarball
+#   SKIP_AMD64=1    do not rsync linux/amd64 CPU car tarballs (Jetson path)
+#
 # Transfers image tarballs, checkpoints, params.yaml, and car-build-context in
 # one rsync, then docker-loads images (or builds them natively) and writes
 # /opt/f1tenth/run/*.sh wrappers on the car.
@@ -20,7 +24,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,7 +76,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "${BUNDLE_DIR}" ]; then
-  if [ -d "${SCRIPT_DIR}/images" ] && [ -d "${SCRIPT_DIR}/policies" ]; then
+  if [ -d "${SCRIPT_DIR}/policies" ] && [ -d "${SCRIPT_DIR}/car-build-context" ]; then
+    BUNDLE_DIR="${SCRIPT_DIR}"
+  elif [ -d "${SCRIPT_DIR}/images" ] && [ -d "${SCRIPT_DIR}/policies" ]; then
     BUNDLE_DIR="${SCRIPT_DIR}"
   elif [ -d /home/ubuntu/f1tenth-irl-deploy-bundle/images ]; then
     BUNDLE_DIR=/home/ubuntu/f1tenth-irl-deploy-bundle
@@ -83,6 +89,8 @@ fi
 BUNDLE_DIR="$(cd "${BUNDLE_DIR}" && pwd)"
 HOST="${HOST:-shereef@f1tenth}"
 CAR="${CAR:-car01}"
+SKIP_TRAINER="${SKIP_TRAINER:-0}"
+SKIP_AMD64="${SKIP_AMD64:-0}"
 
 REMOTE_ROOT="/opt/f1tenth"
 REMOTE_BUNDLE="${REMOTE_ROOT}/deploy-bundle"
@@ -94,6 +102,12 @@ REMOTE_IMAGES="${REMOTE_ROOT}/images"
 IMAGES_DIR="${BUNDLE_DIR}/images"
 POLICIES_DIR="${BUNDLE_DIR}/policies"
 CONFIG_DIR="${BUNDLE_DIR}/config"
+if [ ! -d "${POLICIES_DIR}" ] && [ -f "${BUNDLE_DIR}/courtyard_sleepy_s2_dagger_7lap.pt" ]; then
+  POLICIES_DIR="${BUNDLE_DIR}"
+fi
+if [ ! -d "${CONFIG_DIR}" ] && [ -f "${BUNDLE_DIR}/params.yaml" ]; then
+  CONFIG_DIR="${BUNDLE_DIR}"
+fi
 
 need_file() {
   local path="$1"
@@ -108,6 +122,7 @@ echo "    bundle:  ${BUNDLE_DIR}"
 echo "    target:  ${HOST}  car=${CAR}"
 echo "    dry-run: ${DRY_RUN}"
 echo "    build:   ${BUILD_ON_CAR}  (auto=load CUDA arm64 tarballs, native-build fallback)"
+echo "    skip:    trainer=${SKIP_TRAINER} amd64=${SKIP_AMD64}"
 echo
 
 MISSING=0
@@ -116,7 +131,7 @@ if [ ! -d "${POLICIES_DIR}" ]; then
   echo "missing policies dir: ${POLICIES_DIR}" >&2
   MISSING=1
 fi
-if [ ! -d "${IMAGES_DIR}" ]; then
+if [ ! -d "${IMAGES_DIR}" ] && [ "${BUILD_ON_CAR}" != "1" ]; then
   echo "missing images dir: ${IMAGES_DIR}" >&2
   MISSING=1
 fi
@@ -131,32 +146,36 @@ TRAINER_TAR="${IMAGES_DIR}/f1tenth-courtyard-trainer.tar.gz"
 RACING_TAR="${IMAGES_DIR}/f1tenth-racing.tar.gz"
 RACING_ARM64="${IMAGES_DIR}/f1tenth-racing-arm64.tar.gz"
 
-# Jetson Orin (`shereef@f1tenth`) is aarch64 — require native arm64 car images.
-need_file "${GIGAFLOW_ARM64}" || MISSING=1
-need_file "${SENSOR_ARM64}" || MISSING=1
-if [ ! -f "${GIGAFLOW_ALL}" ] && [ ! -f "${GIGAFLOW_ONE}" ]; then
-  echo "missing amd64 gigaflow tarball (want f1tenth-gigaflow-all-models.tar.gz or f1tenth-gigaflow.tar.gz)" >&2
-  MISSING=1
-fi
-if [ ! -f "${SENSOR_ALL}" ] && [ ! -f "${SENSOR_TAR}" ]; then
-  echo "missing amd64 sensor-policy tarball" >&2
-  MISSING=1
-fi
-if [ ! -f "${TRAINER_TAR}" ]; then
-  echo "missing courtyard trainer tarball" >&2
-  MISSING=1
-fi
-if [ ! -f "${RACING_TAR}" ]; then
-  echo "missing racing tarball" >&2
-  MISSING=1
-fi
+# Jetson Orin (`shereef@f1tenth`) is aarch64 — never load amd64 CPU images on the car.
 CAR_CTX="${BUNDLE_DIR}/car-build-context"
 if [ ! -x "${CAR_CTX}/build_on_car.sh" ]; then
   echo "missing native on-car build context: ${CAR_CTX}/build_on_car.sh" >&2
   MISSING=1
 fi
+if [ "${BUILD_ON_CAR}" != "1" ]; then
+  need_file "${GIGAFLOW_ARM64}" || MISSING=1
+  need_file "${SENSOR_ARM64}" || MISSING=1
+fi
 if [ ! -f "${RACING_ARM64}" ] && [ "${BUILD_ON_CAR}" = "0" ]; then
   echo "missing f1tenth-racing-arm64.tar.gz and --load-only was set" >&2
+  MISSING=1
+fi
+if [ "${SKIP_AMD64}" != "1" ] && [ "${BUILD_ON_CAR}" != "1" ]; then
+  if [ ! -f "${GIGAFLOW_ALL}" ] && [ ! -f "${GIGAFLOW_ONE}" ]; then
+    echo "missing amd64 gigaflow tarball (want f1tenth-gigaflow-all-models.tar.gz or f1tenth-gigaflow.tar.gz)" >&2
+    MISSING=1
+  fi
+  if [ ! -f "${SENSOR_ALL}" ] && [ ! -f "${SENSOR_TAR}" ]; then
+    echo "missing amd64 sensor-policy tarball" >&2
+    MISSING=1
+  fi
+  if [ ! -f "${RACING_TAR}" ]; then
+    echo "missing racing tarball" >&2
+    MISSING=1
+  fi
+fi
+if [ "${SKIP_TRAINER}" != "1" ] && [ ! -f "${TRAINER_TAR}" ]; then
+  echo "missing courtyard trainer tarball" >&2
   MISSING=1
 fi
 
@@ -210,8 +229,27 @@ EOF
 
 echo "==> 1. mkdir remote layout + rsync bundle"
 run ssh "${HOST}" "mkdir -p '${REMOTE_BUNDLE}' '${REMOTE_POLICIES}' '${REMOTE_CONFIG}' '${REMOTE_RUN}' '${REMOTE_IMAGES}'"
-run rsync -aP --info=progress2 \
-  "${BUNDLE_DIR}/images/" "${HOST}:${REMOTE_BUNDLE}/images/"
+RSYNC_IMAGE_EXCLUDES=()
+if [ "${SKIP_TRAINER}" = "1" ]; then
+  RSYNC_IMAGE_EXCLUDES+=(--exclude 'f1tenth-courtyard-trainer.tar.gz')
+fi
+if [ "${SKIP_AMD64}" = "1" ]; then
+  RSYNC_IMAGE_EXCLUDES+=(
+    --exclude 'f1tenth-gigaflow.tar.gz'
+    --exclude 'f1tenth-gigaflow-all-models.tar.gz'
+    --exclude 'f1tenth-sensor-policy.tar.gz'
+    --exclude 'f1tenth-sensor-policy-all-models.tar.gz'
+    --exclude 'f1tenth-racing.tar.gz'
+    --exclude 'f1tenth-courtyard-trainer.tar.gz'
+  )
+fi
+if [ -d "${IMAGES_DIR}" ]; then
+  run rsync -aP --info=progress2 \
+    "${RSYNC_IMAGE_EXCLUDES[@]}" \
+    "${BUNDLE_DIR}/images/" "${HOST}:${REMOTE_BUNDLE}/images/"
+else
+  echo "    (no images/ dir; --build-on-car will native-build on the Jetson)"
+fi
 run rsync -aP --info=progress2 \
   "${BUNDLE_DIR}/policies/" "${HOST}:${REMOTE_BUNDLE}/policies/"
 run rsync -aP --info=progress2 \
@@ -253,6 +291,7 @@ echo "==> 3. docker load CUDA arm64 tarballs (or native --build-on-car fallback)
 remote "$(cat <<EOS
 set -euo pipefail
 BUILD_ON_CAR='${BUILD_ON_CAR}'
+SKIP_TRAINER='${SKIP_TRAINER}'
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not usable on remote" >&2
   exit 1
@@ -338,7 +377,9 @@ case "\${ARCH}" in
     else
       load_tar "\${IMAGES}/f1tenth-sensor-policy.tar.gz"
     fi
-    load_tar "\${IMAGES}/f1tenth-courtyard-trainer.tar.gz"
+    if [ "\${SKIP_TRAINER}" != "1" ]; then
+      load_tar "\${IMAGES}/f1tenth-courtyard-trainer.tar.gz"
+    fi
     load_tar "\${IMAGES}/f1tenth-racing.tar.gz"
     ;;
 esac
@@ -422,6 +463,9 @@ write_gigaflow run_gigaflow_base_5700.sh \
 write_sophy run_sophy_folded_gigaflow.sh \
   f1tenth-sensor-policy:gigaflow-folded-sophy \
   /policies/gigaflow_folded_sophy_8m.pt
+write_sophy run_sophy_courtyard_65a.sh \
+  f1tenth-sensor-policy:sophy-courtyard-65a \
+  /policies/policy_875520000.pt
 
 cat > "${RUN}/run_courtyard_online_trainer.sh" <<'RUN'
 #!/usr/bin/env bash
@@ -489,6 +533,7 @@ Then on the car, pick a model:
   ssh ${HOST} ${REMOTE_RUN}/run_irl_awac_kl.sh
   ssh ${HOST} ${REMOTE_RUN}/run_gigaflow_base_5700.sh
   ssh ${HOST} ${REMOTE_RUN}/run_sophy_folded_gigaflow.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_sophy_courtyard_65a.sh
   ssh ${HOST} ${REMOTE_RUN}/run_courtyard_online_trainer.sh
   ssh ${HOST} ${REMOTE_RUN}/run_racing_392d.sh
 EOF
