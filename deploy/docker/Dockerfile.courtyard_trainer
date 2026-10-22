@@ -34,10 +34,6 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip \
          --extra-index-url https://download.pytorch.org/whl/cu130
 
 COPY gigaflow /opt/gigaflow
-COPY training/assets/courtyard_2_centerline.csv \
-     training/assets/courtyard_2.yaml \
-     training/assets/courtyard_2.png \
-     /opt/f1tenth/training/assets/
 COPY deploy/docker/run_courtyard_ppo.sh /usr/local/bin/run_courtyard_ppo.sh
 RUN chmod +x /usr/local/bin/run_courtyard_ppo.sh \
     && mkdir -p /opt/f1tenth/policies /opt/f1tenth/outputs/courtyard_ppo \
