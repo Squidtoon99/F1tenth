@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# One-command install of the DarkToaster IRL deploy bundle onto the F1TENTH car.
+#
+# Usage:
+#   ./install_to_shereef_f1tenth.sh [--dry-run] [--bundle-dir DIR] [user@host] [car_id]
+#
+# Defaults: user@host=shereef@f1tenth  car_id=car01
+#
+# Transfers image tarballs, checkpoints, and params.yaml in one rsync, then
+# docker-loads images and writes /opt/f1tenth/run/*.sh wrappers on the car.
+#
+# Does NOT SSH when --dry-run is set. Does not delete remote files.
+set -euo pipefail
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRY_RUN=0
+BUNDLE_DIR=""
+HOST=""
+CAR=""
+
+while [ $# -gt 0 ]; do
+  case "${1}" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --bundle-dir)
+      BUNDLE_DIR="${2:?--bundle-dir needs a path}"
+      shift 2
+      ;;
+    --*)
+      echo "unknown flag: ${1}" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      if [ -z "${HOST}" ]; then
+        HOST="${1}"
+      elif [ -z "${CAR}" ]; then
+        CAR="${1}"
+      else
+        echo "unexpected extra argument: ${1}" >&2
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "${BUNDLE_DIR}" ]; then
+  if [ -d "${SCRIPT_DIR}/images" ] && [ -d "${SCRIPT_DIR}/policies" ]; then
+    BUNDLE_DIR="${SCRIPT_DIR}"
+  elif [ -d /home/ubuntu/f1tenth-irl-deploy-bundle/images ]; then
+    BUNDLE_DIR=/home/ubuntu/f1tenth-irl-deploy-bundle
+  else
+    BUNDLE_DIR="${SCRIPT_DIR}"
+  fi
+fi
+BUNDLE_DIR="$(cd "${BUNDLE_DIR}" && pwd)"
+HOST="${HOST:-shereef@f1tenth}"
+CAR="${CAR:-car01}"
+
+REMOTE_ROOT="/opt/f1tenth"
+REMOTE_BUNDLE="${REMOTE_ROOT}/deploy-bundle"
+REMOTE_POLICIES="${REMOTE_ROOT}/policies"
+REMOTE_CONFIG="${REMOTE_ROOT}/config"
+REMOTE_RUN="${REMOTE_ROOT}/run"
+REMOTE_IMAGES="${REMOTE_ROOT}/images"
+
+IMAGES_DIR="${BUNDLE_DIR}/images"
+POLICIES_DIR="${BUNDLE_DIR}/policies"
+CONFIG_DIR="${BUNDLE_DIR}/config"
+
+need_file() {
+  local path="$1"
+  if [ ! -f "${path}" ]; then
+    echo "missing required file: ${path}" >&2
+    return 1
+  fi
+}
+
+echo "==> IRL deploy bundle"
+echo "    bundle:  ${BUNDLE_DIR}"
+echo "    target:  ${HOST}  car=${CAR}"
+echo "    dry-run: ${DRY_RUN}"
+echo
+
+MISSING=0
+need_file "${CONFIG_DIR}/params.yaml" || MISSING=1
+if [ ! -d "${POLICIES_DIR}" ]; then
+  echo "missing policies dir: ${POLICIES_DIR}" >&2
+  MISSING=1
+fi
+if [ ! -d "${IMAGES_DIR}" ]; then
+  echo "missing images dir: ${IMAGES_DIR}" >&2
+  MISSING=1
+fi
+
+GIGAFLOW_ALL="${IMAGES_DIR}/f1tenth-gigaflow-all-models.tar.gz"
+GIGAFLOW_ONE="${IMAGES_DIR}/f1tenth-gigaflow.tar.gz"
+SENSOR_TAR="${IMAGES_DIR}/f1tenth-sensor-policy.tar.gz"
+SENSOR_ALL="${IMAGES_DIR}/f1tenth-sensor-policy-all-models.tar.gz"
+TRAINER_TAR="${IMAGES_DIR}/f1tenth-courtyard-trainer.tar.gz"
+RACING_TAR="${IMAGES_DIR}/f1tenth-racing.tar.gz"
+
+LOAD_TARS=()
+if [ -f "${GIGAFLOW_ALL}" ]; then
+  LOAD_TARS+=("${GIGAFLOW_ALL}")
+elif [ -f "${GIGAFLOW_ONE}" ]; then
+  LOAD_TARS+=("${GIGAFLOW_ONE}")
+else
+  echo "missing gigaflow tarball (want f1tenth-gigaflow-all-models.tar.gz or f1tenth-gigaflow.tar.gz)" >&2
+  MISSING=1
+fi
+if [ -f "${SENSOR_ALL}" ]; then
+  LOAD_TARS+=("${SENSOR_ALL}")
+elif [ -f "${SENSOR_TAR}" ]; then
+  LOAD_TARS+=("${SENSOR_TAR}")
+else
+  echo "missing sensor-policy tarball" >&2
+  MISSING=1
+fi
+if [ -f "${TRAINER_TAR}" ]; then
+  LOAD_TARS+=("${TRAINER_TAR}")
+else
+  echo "missing courtyard trainer tarball" >&2
+  MISSING=1
+fi
+if [ -f "${RACING_TAR}" ]; then
+  LOAD_TARS+=("${RACING_TAR}")
+else
+  echo "missing racing tarball" >&2
+  MISSING=1
+fi
+
+POLICIES=(
+  courtyard_sleepy_s2_dagger_7lap.pt
+  courtyard_pr104_hybrid_bc_6lap.pt
+  irl_awac_kl_kl2x_winner.pt
+  actor_005700_irl_baked.pt
+  gigaflow_folded_005700.pt
+  gigaflow_folded_sophy_8m.pt
+  policy_875520000.pt
+  policy_768188416.pt
+)
+for pt in "${POLICIES[@]}"; do
+  need_file "${POLICIES_DIR}/${pt}" || MISSING=1
+done
+
+if [ "${MISSING}" -ne 0 ] && [ "${DRY_RUN}" -eq 0 ]; then
+  echo "bundle incomplete; refusing to SSH" >&2
+  exit 1
+fi
+if [ "${MISSING}" -ne 0 ]; then
+  echo "WARNING: bundle incomplete; dry-run continues so the plan can be reviewed" >&2
+fi
+
+echo "==> Local artifacts"
+ls -lh "${IMAGES_DIR}"/*.tar.gz 2>/dev/null || echo "    (no image tarballs yet)"
+ls -lh "${POLICIES_DIR}"/*.pt
+echo
+
+run() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    printf 'DRY-RUN:'
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
+remote() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    printf 'DRY-RUN: ssh %q bash -s\n' "${HOST}"
+    printf '%s\n' "$1" | sed 's/^/        /'
+    return 0
+  fi
+  ssh "${HOST}" bash -s <<EOF
+$1
+EOF
+}
+
+echo "==> 1. mkdir remote layout + rsync bundle"
+run ssh "${HOST}" "mkdir -p '${REMOTE_BUNDLE}' '${REMOTE_POLICIES}' '${REMOTE_CONFIG}' '${REMOTE_RUN}' '${REMOTE_IMAGES}'"
+run rsync -aP --info=progress2 \
+  "${BUNDLE_DIR}/images/" "${HOST}:${REMOTE_BUNDLE}/images/"
+run rsync -aP --info=progress2 \
+  "${BUNDLE_DIR}/policies/" "${HOST}:${REMOTE_BUNDLE}/policies/"
+run rsync -aP --info=progress2 \
+  "${BUNDLE_DIR}/config/" "${HOST}:${REMOTE_BUNDLE}/config/"
+if [ -f "${BUNDLE_DIR}/SHA256SUMS" ]; then
+  run rsync -aP "${BUNDLE_DIR}/SHA256SUMS" "${HOST}:${REMOTE_BUNDLE}/SHA256SUMS"
+fi
+
+echo "==> 2. stage policies + params.yaml (does not delete existing files)"
+remote "$(cat <<'EOS'
+set -euo pipefail
+REMOTE_ROOT=/opt/f1tenth
+BUNDLE=${REMOTE_ROOT}/deploy-bundle
+mkdir -p ${REMOTE_ROOT}/policies ${REMOTE_ROOT}/config ${REMOTE_ROOT}/run ${REMOTE_ROOT}/images
+cp -an ${BUNDLE}/policies/. ${REMOTE_ROOT}/policies/
+cp -n ${BUNDLE}/config/params.yaml ${REMOTE_ROOT}/config/params.yaml 2>/dev/null \
+  || cp ${BUNDLE}/config/params.yaml ${REMOTE_ROOT}/config/params.yaml
+if [ -d ${BUNDLE}/config/maps ]; then
+  mkdir -p ${REMOTE_ROOT}/config/maps
+  cp -an ${BUNDLE}/config/maps/. ${REMOTE_ROOT}/config/maps/ || true
+fi
+if [ -f ${BUNDLE}/config/car.yaml ] && [ ! -f ${REMOTE_ROOT}/config/car.yaml ]; then
+  cp ${BUNDLE}/config/car.yaml ${REMOTE_ROOT}/config/car.yaml
+fi
+ln -sfn courtyard_sleepy_s2_dagger_7lap.pt ${REMOTE_ROOT}/policies/gigaflow_policy.pt
+ln -sfn gigaflow_folded_sophy_8m.pt ${REMOTE_ROOT}/policies/e2e_policy.pt
+if [ -f ${BUNDLE}/SHA256SUMS ]; then
+  (cd ${REMOTE_ROOT}/policies && sha256sum -c ${BUNDLE}/SHA256SUMS --ignore-missing) || true
+fi
+ls -lh ${REMOTE_ROOT}/policies ${REMOTE_ROOT}/config/params.yaml
+EOS
+)"
+
+echo "==> 3. docker load image tarballs"
+LOAD_LIST=""
+for tar in "${LOAD_TARS[@]}"; do
+  LOAD_LIST="${LOAD_LIST} ${REMOTE_BUNDLE}/images/$(basename "${tar}")"
+done
+remote "$(cat <<EOS
+set -euo pipefail
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker not usable on remote" >&2
+  exit 1
+fi
+for tar in ${LOAD_LIST}; do
+  echo "==> docker load \${tar}"
+  if [ ! -f "\${tar}" ]; then
+    echo "tarball missing on car: \${tar}" >&2
+    exit 1
+  fi
+  gunzip -c "\${tar}" | docker load
+done
+docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
+  | grep -E 'f1tenth-(gigaflow|sensor-policy|courtyard-trainer|racing)' || true
+EOS
+)"
+
+echo "==> 4. write /opt/f1tenth/run wrappers"
+remote "$(cat <<'EOS'
+set -euo pipefail
+RUN=/opt/f1tenth/run
+mkdir -p "${RUN}"
+
+write_gigaflow() {
+  local name="$1"
+  local image="$2"
+  local ckpt="$3"
+  cat > "${RUN}/${name}" <<RUN
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="${image}"
+CKPT="${ckpt}"
+DEVICE="\${DEVICE:-cuda}"
+if fuser /dev/sensors/vesc >/dev/null 2>&1; then
+  echo "VESC serial device already has an owner; refusing to start." >&2
+  fuser -v /dev/sensors/vesc >&2 || true
+  exit 1
+fi
+exec docker run --rm -it --runtime nvidia --privileged --net=host \\
+  -e CHECKPOINT="\${CKPT}" \\
+  -v /dev:/dev \\
+  -v /opt/f1tenth/config:/config:ro \\
+  -v /opt/f1tenth/policies:/policies:ro \\
+  "\${IMAGE}" \\
+  ros2 launch f1tenth_bringup gigaflow_policy.launch.py \\
+    checkpoint_path:=\${CKPT} device:=\${DEVICE}
+RUN
+  chmod +x "${RUN}/${name}"
+}
+
+write_sophy() {
+  local name="$1"
+  local image="$2"
+  local ckpt="$3"
+  cat > "${RUN}/${name}" <<RUN
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="${image}"
+CKPT="${ckpt}"
+DEVICE="\${DEVICE:-cuda}"
+if fuser /dev/sensors/vesc >/dev/null 2>&1; then
+  echo "VESC serial device already has an owner; refusing to start." >&2
+  fuser -v /dev/sensors/vesc >&2 || true
+  exit 1
+fi
+exec docker run --rm -it --runtime nvidia --privileged --net=host \\
+  -e CHECKPOINT="\${CKPT}" \\
+  -v /dev:/dev \\
+  -v /opt/f1tenth/config:/config:ro \\
+  -v /opt/f1tenth/policies:/policies:ro \\
+  "\${IMAGE}" \\
+  ros2 launch f1tenth_bringup sensor_policy.launch.py \\
+    checkpoint_path:=\${CKPT} device:=\${DEVICE}
+RUN
+  chmod +x "${RUN}/${name}"
+}
+
+write_gigaflow run_courtyard_sleepy_7lap.sh \
+  f1tenth-gigaflow:courtyard-sleepy-7lap \
+  /policies/courtyard_sleepy_s2_dagger_7lap.pt
+write_gigaflow run_courtyard_pr104_6lap.sh \
+  f1tenth-gigaflow:courtyard-pr104-6lap \
+  /policies/courtyard_pr104_hybrid_bc_6lap.pt
+write_gigaflow run_irl_awac_kl.sh \
+  f1tenth-gigaflow:irl-awac-kl \
+  /policies/irl_awac_kl_kl2x_winner.pt
+write_gigaflow run_gigaflow_base_5700.sh \
+  f1tenth-gigaflow:base-5700 \
+  /policies/actor_005700_irl_baked.pt
+write_sophy run_sophy_folded_gigaflow.sh \
+  f1tenth-sensor-policy:gigaflow-folded-sophy \
+  /policies/gigaflow_folded_sophy_8m.pt
+
+cat > "${RUN}/run_courtyard_online_trainer.sh" <<'RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="${IMAGE:-f1tenth-courtyard-trainer:courtyard-trainer}"
+CKPT="${CHECKPOINT:-/opt/f1tenth/policies/actor_005700_irl_baked.pt}"
+OUT="${RUN_DIR:-/opt/f1tenth/outputs/courtyard_ppo}"
+MODE="${COURTYARD_MODE:-finetune}"
+mkdir -p "$(dirname "${CKPT}")" "${OUT}"
+if [ ! -f "${CKPT}" ]; then
+  echo "copy actor checkpoint to ${CKPT}" >&2
+  exit 1
+fi
+if [ "${MODE}" = "ppo" ] || [ "${MODE}" = "train" ]; then
+  EXTRA=( )
+else
+  EXTRA=( )
+fi
+exec docker run --rm --gpus all \
+  -e CHECKPOINT="${CKPT}" \
+  -e RUN_DIR="${OUT}" \
+  -e COURTYARD_MODE="${MODE}" \
+  -v /opt/f1tenth/policies:/opt/f1tenth/policies:ro \
+  -v /opt/f1tenth/outputs/courtyard_ppo:/opt/f1tenth/outputs/courtyard_ppo \
+  "${IMAGE}" "$@"
+RUN
+chmod +x "${RUN}/run_courtyard_online_trainer.sh"
+
+cat > "${RUN}/run_racing_392d.sh" <<'RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="${IMAGE:-f1tenth-racing:develop}"
+if fuser /dev/sensors/vesc >/dev/null 2>&1; then
+  echo "VESC serial device already has an owner; refusing to start." >&2
+  fuser -v /dev/sensors/vesc >&2 || true
+  exit 1
+fi
+exec docker run --rm -it --privileged --net=host \
+  -v /dev:/dev \
+  -v /opt/f1tenth/config:/config:ro \
+  -v /opt/f1tenth/policies:/policies:ro \
+  "${IMAGE}" \
+  ros2 launch f1tenth_bringup race.launch.py
+RUN
+chmod +x "${RUN}/run_racing_392d.sh"
+
+ls -la "${RUN}"
+EOS
+)"
+
+cat <<EOF
+
+==> ${DRY_RUN:+DRY-RUN }install plan for ${HOST} complete
+    remote bundle: ${REMOTE_BUNDLE}
+    policies:      ${REMOTE_POLICIES}
+    params:        ${REMOTE_CONFIG}/params.yaml
+    wrappers:      ${REMOTE_RUN}
+
+Once Arjun gives the go (NOT before — do not SSH until then):
+  ${BUNDLE_DIR}/install_to_shereef_f1tenth.sh ${HOST} ${CAR}
+
+Then on the car, pick a model:
+  ssh ${HOST} ${REMOTE_RUN}/run_courtyard_sleepy_7lap.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_courtyard_pr104_6lap.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_irl_awac_kl.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_gigaflow_base_5700.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_sophy_folded_gigaflow.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_courtyard_online_trainer.sh
+  ssh ${HOST} ${REMOTE_RUN}/run_racing_392d.sh
+EOF
