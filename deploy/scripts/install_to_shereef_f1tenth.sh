@@ -2,20 +2,25 @@
 # One-command install of the DarkToaster IRL deploy bundle onto the F1TENTH car.
 #
 # Usage:
-#   ./install_to_shereef_f1tenth.sh [--dry-run] [--bundle-dir DIR] [user@host] [car_id]
+#   ./install_to_shereef_f1tenth.sh [--dry-run] [--bundle-dir DIR]
+#       [--build-on-car|--load-only] [user@host] [car_id]
 #
 # Defaults: user@host=shereef@f1tenth  car_id=car01
 #
-# Transfers image tarballs, checkpoints, and params.yaml in one rsync, then
-# docker-loads images and writes /opt/f1tenth/run/*.sh wrappers on the car.
+# Transfers image tarballs, checkpoints, params.yaml, and car-build-context in
+# one rsync, then docker-loads images (or builds them natively) and writes
+# /opt/f1tenth/run/*.sh wrappers on the car.
 # On the target, `uname -m` selects linux/arm64 (`*-arm64.tar.gz`) vs
-# linux/amd64 tarballs so a Jetson Orin loads native aarch64 images.
+# linux/amd64 tarballs. Default is auto-fallback: docker load the CUDA arm64
+# tarballs, and if a tarball is missing or load fails, run
+# car-build-context/build_on_car.sh on the Jetson.
+# --build-on-car forces the native NGC iGPU rebuild. --load-only never builds.
 #
 # Does NOT SSH when --dry-run is set. Does not delete remote files.
 set -euo pipefail
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +28,7 @@ DRY_RUN=0
 BUNDLE_DIR=""
 HOST=""
 CAR=""
+BUILD_ON_CAR="auto"
 
 while [ $# -gt 0 ]; do
   case "${1}" in
@@ -37,6 +43,14 @@ while [ $# -gt 0 ]; do
     --bundle-dir)
       BUNDLE_DIR="${2:?--bundle-dir needs a path}"
       shift 2
+      ;;
+    --build-on-car)
+      BUILD_ON_CAR="1"
+      shift
+      ;;
+    --load-only)
+      BUILD_ON_CAR="0"
+      shift
       ;;
     --*)
       echo "unknown flag: ${1}" >&2
@@ -93,6 +107,7 @@ echo "==> IRL deploy bundle"
 echo "    bundle:  ${BUNDLE_DIR}"
 echo "    target:  ${HOST}  car=${CAR}"
 echo "    dry-run: ${DRY_RUN}"
+echo "    build:   ${BUILD_ON_CAR}  (auto=load CUDA arm64 tarballs, native-build fallback)"
 echo
 
 MISSING=0
@@ -133,6 +148,15 @@ if [ ! -f "${TRAINER_TAR}" ]; then
 fi
 if [ ! -f "${RACING_TAR}" ]; then
   echo "missing racing tarball" >&2
+  MISSING=1
+fi
+CAR_CTX="${BUNDLE_DIR}/car-build-context"
+if [ ! -x "${CAR_CTX}/build_on_car.sh" ]; then
+  echo "missing native on-car build context: ${CAR_CTX}/build_on_car.sh" >&2
+  MISSING=1
+fi
+if [ ! -f "${RACING_ARM64}" ] && [ "${BUILD_ON_CAR}" = "0" ]; then
+  echo "missing f1tenth-racing-arm64.tar.gz and --load-only was set" >&2
   MISSING=1
 fi
 
@@ -195,6 +219,10 @@ run rsync -aP --info=progress2 \
 if [ -f "${BUNDLE_DIR}/SHA256SUMS" ]; then
   run rsync -aP "${BUNDLE_DIR}/SHA256SUMS" "${HOST}:${REMOTE_BUNDLE}/SHA256SUMS"
 fi
+if [ -d "${BUNDLE_DIR}/car-build-context" ]; then
+  run rsync -aP --info=progress2 \
+    "${BUNDLE_DIR}/car-build-context/" "${HOST}:${REMOTE_BUNDLE}/car-build-context/"
+fi
 
 echo "==> 2. stage policies + params.yaml (does not delete existing files)"
 remote "$(cat <<'EOS'
@@ -221,41 +249,65 @@ ls -lh ${REMOTE_ROOT}/policies ${REMOTE_ROOT}/config/params.yaml
 EOS
 )"
 
-echo "==> 3. docker load image tarballs (uname -m selects arm64 vs amd64)"
-remote "$(cat <<'EOS'
+echo "==> 3. docker load CUDA arm64 tarballs (or native --build-on-car fallback)"
+remote "$(cat <<EOS
 set -euo pipefail
+BUILD_ON_CAR='${BUILD_ON_CAR}'
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not usable on remote" >&2
   exit 1
 fi
 IMAGES=/opt/f1tenth/deploy-bundle/images
-ARCH=$(uname -m)
-echo "==> target uname -m: ${ARCH}"
+CTX=/opt/f1tenth/deploy-bundle/car-build-context
+ARCH=\$(uname -m)
+echo "==> target uname -m: \${ARCH}  BUILD_ON_CAR=\${BUILD_ON_CAR}"
 load_tar() {
-  local tar="$1"
-  echo "==> docker load ${tar}"
-  if [ ! -f "${tar}" ]; then
-    echo "tarball missing on car: ${tar}" >&2
-    exit 1
+  local tar="\$1"
+  echo "==> docker load \${tar}"
+  if [ ! -f "\${tar}" ]; then
+    echo "tarball missing on car: \${tar}" >&2
+    return 1
   fi
-  gunzip -c "${tar}" | docker load
+  gunzip -c "\${tar}" | docker load
 }
 retag() {
-  local src="$1" dest="$2"
-  if docker image inspect "${src}" >/dev/null 2>&1; then
-    docker tag "${src}" "${dest}"
-    echo "tagged ${src} -> ${dest}"
+  local src="\$1" dest="\$2"
+  if docker image inspect "\${src}" >/dev/null 2>&1; then
+    docker tag "\${src}" "\${dest}"
+    echo "tagged \${src} -> \${dest}"
   fi
 }
-case "${ARCH}" in
+native_build() {
+  local target="\$1"
+  if [ ! -x "\${CTX}/build_on_car.sh" ]; then
+    echo "car-build-context missing; cannot native-build \${target}" >&2
+    return 1
+  fi
+  echo "==> native on-car build TARGET=\${target}"
+  "\${CTX}/build_on_car.sh" "\${target}"
+}
+load_or_build() {
+  local tar="\$1"
+  local target="\$2"
+  if [ "\${BUILD_ON_CAR}" = "1" ]; then
+    native_build "\${target}"
+    return
+  fi
+  if load_tar "\${tar}"; then
+    return 0
+  fi
+  if [ "\${BUILD_ON_CAR}" = "0" ]; then
+    echo "load failed and --load-only is set: \${tar}" >&2
+    return 1
+  fi
+  echo "auto-fallback: native build \${target} (tarball missing or docker load failed)"
+  native_build "\${target}"
+}
+case "\${ARCH}" in
   aarch64|arm64)
-    load_tar "${IMAGES}/f1tenth-gigaflow-arm64.tar.gz"
-    load_tar "${IMAGES}/f1tenth-sensor-policy-arm64.tar.gz"
-    if [ -f "${IMAGES}/f1tenth-racing-arm64.tar.gz" ]; then
-      load_tar "${IMAGES}/f1tenth-racing-arm64.tar.gz"
-    else
-      echo "note: no arm64 racing tarball; skipping 392-D racing image on Jetson"
-    fi
+    load_or_build "\${IMAGES}/f1tenth-gigaflow-arm64.tar.gz" gigaflow
+    load_or_build "\${IMAGES}/f1tenth-sensor-policy-arm64.tar.gz" sensor_policy
+    load_or_build "\${IMAGES}/f1tenth-racing-arm64.tar.gz" racing
     echo "note: courtyard trainer is linux/amd64 CUDA-host; not loaded on Jetson"
     retag f1tenth-gigaflow:gigaflow-arm64 f1tenth-gigaflow:gigaflow
     retag f1tenth-gigaflow:courtyard-sleepy-7lap-arm64 f1tenth-gigaflow:courtyard-sleepy-7lap
@@ -266,20 +318,28 @@ case "${ARCH}" in
     retag f1tenth-sensor-policy:gigaflow-folded-sophy-arm64 f1tenth-sensor-policy:gigaflow-folded-sophy
     retag f1tenth-sensor-policy:sophy-courtyard-65a-arm64 f1tenth-sensor-policy:sophy-courtyard-65a
     retag f1tenth-racing:develop-arm64 f1tenth-racing:develop
+    echo "==> torch pins (no Jetson GPU on this print if runtime nvidia is absent)"
+    for img in f1tenth-gigaflow:gigaflow f1tenth-sensor-policy:sensor-policy f1tenth-racing:develop; do
+      if docker image inspect "\${img}" >/dev/null 2>&1; then
+        echo "--- \${img} ---"
+        docker run --rm --entrypoint python3 "\${img}" -c \
+          'import torch; print("torch", torch.__version__, "cuda", torch.version.cuda, "is_available", torch.cuda.is_available())' || true
+      fi
+    done
     ;;
   *)
-    if [ -f "${IMAGES}/f1tenth-gigaflow-all-models.tar.gz" ]; then
-      load_tar "${IMAGES}/f1tenth-gigaflow-all-models.tar.gz"
+    if [ -f "\${IMAGES}/f1tenth-gigaflow-all-models.tar.gz" ]; then
+      load_tar "\${IMAGES}/f1tenth-gigaflow-all-models.tar.gz"
     else
-      load_tar "${IMAGES}/f1tenth-gigaflow.tar.gz"
+      load_tar "\${IMAGES}/f1tenth-gigaflow.tar.gz"
     fi
-    if [ -f "${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz" ]; then
-      load_tar "${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz"
+    if [ -f "\${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz" ]; then
+      load_tar "\${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz"
     else
-      load_tar "${IMAGES}/f1tenth-sensor-policy.tar.gz"
+      load_tar "\${IMAGES}/f1tenth-sensor-policy.tar.gz"
     fi
-    load_tar "${IMAGES}/f1tenth-courtyard-trainer.tar.gz"
-    load_tar "${IMAGES}/f1tenth-racing.tar.gz"
+    load_tar "\${IMAGES}/f1tenth-courtyard-trainer.tar.gz"
+    load_tar "\${IMAGES}/f1tenth-racing.tar.gz"
     ;;
 esac
 docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
@@ -399,7 +459,7 @@ if fuser /dev/sensors/vesc >/dev/null 2>&1; then
   fuser -v /dev/sensors/vesc >&2 || true
   exit 1
 fi
-exec docker run --rm -it --privileged --net=host \
+exec docker run --rm -it --runtime nvidia --privileged --net=host \
   -v /dev:/dev \
   -v /opt/f1tenth/config:/config:ro \
   -v /opt/f1tenth/policies:/policies:ro \

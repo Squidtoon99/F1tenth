@@ -1,51 +1,127 @@
 # syntax=docker/dockerfile:1
-# Runtime (car) image: base + a baked colcon install of the racing packages.
-# GENERIC — contains no per-car config and no policy weights. Those are supplied at
-# runtime by mounting a per-car overlay at /config and a policy at /policies.
+# Runtime (car) image: JetPack 6 iGPU PyTorch + ROS 2 Humble + race.launch.py.
 #
-# Build from the repo root, e.g. via deploy/scripts/build_image.sh.
+# GENERIC — no per-car config and no policy weights. Mount /config and /policies
+# at runtime.
+#
+# CUDA=1 (default) uses the same NGC iGPU PyTorch base as Dockerfile.gigaflow /
+# Dockerfile.sensor_policy. That base already ships CUDA-enabled torch — do not
+# pip-install torch==2.4.1+cpu on linux/arm64.
+#
+#   TARGET=racing ARCH=linux/arm64 CUDA=1 deploy/scripts/build_image.sh
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
+ARG CUDA=1
 ARG ROS_DISTRO=humble
+ARG RANGE_LIBC_CUDA=0
 
-# ---- build stage: compile the colcon workspace ----
-FROM f1tenth-base:latest AS build
+FROM ${BASE_IMAGE} AS ros_runtime
+ARG BASE_IMAGE
+ARG CUDA
 ARG ROS_DISTRO
+ENV ROS_DISTRO=${ROS_DISTRO}
+ENV F1TENTH_RACING_BASE=${BASE_IMAGE}
+ENV F1TENTH_RACING_CUDA=${CUDA}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 SHELL ["/bin/bash", "-lc"]
+
+RUN . /etc/os-release \
+    && if [ ! -d "/opt/ros/${ROS_DISTRO}" ]; then \
+         if [ "${ID}" != "ubuntu" ] || [ "${VERSION_CODENAME}" != "jammy" ]; then \
+           echo "racing CUDA image requires Ubuntu Jammy for ROS 2 Humble (got ${PRETTY_NAME})" >&2; \
+           exit 1; \
+         fi; \
+         apt-get update && apt-get install -y --no-install-recommends \
+           curl gnupg2 ca-certificates python3-yaml python3-pip \
+         && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+           | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+         && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+           http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+           > /etc/apt/sources.list.d/ros2.list; \
+       fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+      python3-rosdep \
+      python3-pip \
+      python3-scipy \
+      python3-transforms3d \
+      ros-${ROS_DISTRO}-ros-base \
+      ros-${ROS_DISTRO}-ackermann-msgs \
+      ros-${ROS_DISTRO}-joy \
+      ros-${ROS_DISTRO}-teleop-tools \
+      ros-${ROS_DISTRO}-urg-node \
+      ros-${ROS_DISTRO}-slam-toolbox \
+      ros-${ROS_DISTRO}-rosbridge-server \
+      ros-${ROS_DISTRO}-serial-driver \
+      ros-${ROS_DISTRO}-asio-cmake-module \
+      ros-${ROS_DISTRO}-diagnostic-updater \
+      ros-${ROS_DISTRO}-nav2-map-server \
+      ros-${ROS_DISTRO}-nav2-lifecycle-manager \
+      ros-${ROS_DISTRO}-tf-transformations \
+    && (apt-get install -y --no-install-recommends ros-${ROS_DISTRO}-sick-scan-xd || true) \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir numpy cython \
+    && if [ "${CUDA}" != "1" ]; then \
+         pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.4.1"; \
+       fi
+
+RUN mkdir -p /etc/f1tenth \
+    && python3 - <<'PY'
+import json
+import os
+
+import torch
+
+pins = {
+    "base_image": os.environ.get("F1TENTH_RACING_BASE", ""),
+    "ros_distro": os.environ.get("ROS_DISTRO", ""),
+    "torch": torch.__version__,
+    "cuda": torch.version.cuda,
+    "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+    "cuda_build": os.environ.get("F1TENTH_RACING_CUDA", ""),
+    "stack": "racing",
+}
+with open("/etc/f1tenth/racing_pins.json", "w", encoding="utf-8") as fh:
+    json.dump(pins, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+print(json.dumps(pins, sort_keys=True))
+PY
+
+FROM ros_runtime AS build
+ARG ROS_DISTRO
+ARG RANGE_LIBC_CUDA
 WORKDIR /ws
 COPY src ./src
 COPY libs ./libs
-# range_libc is a pip extension (not a colcon package). Ignore the upstream CMake
-# project so colcon does not try to build it with CUDA, then install the CPU
-# pywrapper. On a Jetson with CUDA available, rebuild with WITH_CUDA=ON instead.
-RUN touch src/localization/range_libc/COLCON_IGNORE \
-    && WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
+RUN mkdir -p src/localization/range_libc \
+    && touch src/localization/range_libc/COLCON_IGNORE \
+    && if [ -d src/localization/range_libc/pywrapper ]; then \
+         if [ "${RANGE_LIBC_CUDA}" = "1" ]; then WC=ON; else WC=OFF; fi \
+         && WITH_CUDA="${WC}" pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper; \
+       else \
+         echo "range_libc pywrapper not in build context; particle filter CPU/CUDA raycaster skipped"; \
+       fi
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && rosdep update \
-    && rosdep install --from-paths src libs --ignore-src -y -r || true \
-    && colcon build --merge-install --packages-ignore range_lib
+    && rosdep init || true \
+    && (rosdep update || true) \
+    && (rosdep install --from-paths src libs --ignore-src -y -r || true) \
+    && colcon build --merge-install --base-paths src libs --packages-ignore range_lib \
+      --cmake-args -DBUILD_TESTING=OFF
 
-# ---- runtime stage: only the built install + entrypoint ----
-FROM f1tenth-base:latest AS runtime
+FROM ros_runtime AS runtime
 ARG ROS_DISTRO
-ENV ROS_DISTRO=${ROS_DISTRO}
+ARG RANGE_LIBC_CUDA
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 WORKDIR /ws
 COPY --from=build /ws/install /ws/install
-
-# range_libc is a pip extension consumed by the particle filter at runtime. The
-# build stage installs it into that stage's site-packages, which is not carried
-# over here, so install it into the runtime image too. WITH_CUDA=OFF builds the
-# CPU raycaster; on a Jetson with CUDA available, rebuild with WITH_CUDA=ON.
 COPY src/localization/range_libc ./src/localization/range_libc
-RUN WITH_CUDA=OFF pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper
-
-# CPU-only PyTorch for the on-car RL inference node (policy_inference / the obs
-# builder import torch). The trainer runs on a separate GPU box; the car only runs
-# inference. On a Jetson, replace this with a wheel matching the JetPack/CUDA
-# version instead of the default CPU index.
-RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
-      "torch==2.4.1"
-
+RUN mkdir -p src/localization/range_libc \
+    && if [ -d src/localization/range_libc/pywrapper ]; then \
+         if [ "${RANGE_LIBC_CUDA}" = "1" ]; then WC=ON; else WC=OFF; fi \
+         && WITH_CUDA="${WC}" pip3 install --no-cache-dir ./src/localization/range_libc/pywrapper; \
+       fi
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
-# Default: bring up racing using the mounted per-car overlay.
 CMD ["ros2", "launch", "f1tenth_bringup", "race.launch.py"]
