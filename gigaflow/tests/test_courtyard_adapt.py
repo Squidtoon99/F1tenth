@@ -86,3 +86,24 @@ def test_student_observation_has_no_track_geometry_slots():
     assert SENSOR_OBS_DIM == 1097
     path = _circle()
     assert wrap_s(path.length + 0.3, path.length) < 0.31
+
+
+def test_centerline_interp_wraps_at_full_length():
+    path = _circle(radius=2.0, n=64)
+    a = path.xy_at(0.0)
+    b = path.xy_at(path.length)
+    c = path.xy_at(path.length - 1e-6)
+    d = path.yaw_at(path.length + 0.4)
+    assert np.allclose(a, b, atol=1e-5)
+    assert np.linalg.norm(c - a) < 0.05
+    assert np.isfinite(d)
+    teacher_action(
+        path,
+        x=float(a[0]),
+        y=float(a[1]),
+        yaw=path.yaw_at(0.0),
+        s=path.length - 1e-9,
+        ey=0.0,
+        vx=1.0,
+        steer_now=0.0,
+    )

@@ -109,12 +109,12 @@ class CenterlinePath:
             raise ValueError("widths must match centerline length")
         closed = np.vstack([self.xy, self.xy[:1]])
         seg = np.linalg.norm(np.diff(closed, axis=0), axis=1)
-        self.segment_length = seg[:-1].astype(np.float64)
-        self.cum = np.concatenate([[0.0], np.cumsum(self.segment_length)])
-        self.length = float(self.cum[-1] + seg[-1])
+        self.segment_length = seg.astype(np.float64)
+        self.cum = np.concatenate([[0.0], np.cumsum(seg[:-1])])
+        self.length = float(np.sum(seg))
         tang = np.diff(closed, axis=0)
         tang = tang / np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-9)
-        self.tangents = tang[:-1]
+        self.tangents = tang
         self.normals = np.stack([-self.tangents[:, 1], self.tangents[:, 0]], axis=1)
         s_pts = self.cum.copy()
         # Closed-loop gradients for signed curvature (1/m, left positive).
@@ -143,17 +143,21 @@ class CenterlinePath:
 
     def _index(self, s: float) -> tuple[int, float]:
         wrapped = float(wrap_s(s, self.length))
+        if not math.isfinite(wrapped):
+            wrapped = 0.0
         i = int(np.searchsorted(self.cum, wrapped, side="right") - 1)
-        i = max(0, min(i, self.xy.shape[0] - 1))
+        i = int(np.clip(i, 0, self.xy.shape[0] - 1))
         alpha = 0.0
-        denom = float(self.segment_length[i]) if i < self.segment_length.size else 0.0
+        denom = float(self.segment_length[i])
         if denom > 1e-9:
             alpha = float(np.clip((wrapped - float(self.cum[i])) / denom, 0.0, 1.0))
         return i, alpha
 
     def interp(self, values: np.ndarray, s: float) -> np.ndarray:
         i, alpha = self._index(s)
-        j = (i + 1) % values.shape[0]
+        n = int(values.shape[0])
+        i = min(i, n - 1)
+        j = (i + 1) % n
         return (1.0 - alpha) * values[i] + alpha * values[j]
 
     def xy_at(self, s: float) -> np.ndarray:
@@ -661,7 +665,7 @@ def run_s1(
             seed=stage,
             device=device,
             kl_coef=float(kl),
-            kl_max=5.0,
+            kl_max=1.0e6,
             beta=1.0,
         )
         batch, hidden, spawn_i = collect_on_policy(
