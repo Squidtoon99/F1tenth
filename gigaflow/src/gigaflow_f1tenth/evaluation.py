@@ -19,7 +19,7 @@ from gigaflow_f1tenth.config import (
     config_to_dict,
 )
 from gigaflow_f1tenth.kernels import build_simulator, world_slot_layout
-from gigaflow_f1tenth.model import build_actor
+from gigaflow_f1tenth.model import actor_from_architecture, build_actor
 from gigaflow_f1tenth.rewards import (
     deployment_style,
     styles_to_condition_batch,
@@ -914,6 +914,11 @@ def load_actor_from_checkpoint(
 ):
     """Load actor weights from a trainer checkpoint or deployable artifact."""
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    arch = payload.get("actor_architecture") if isinstance(payload, dict) else None
+    if isinstance(arch, Mapping) and "actor_state_dict" in payload:
+        actor = actor_from_architecture(arch)
+        actor.load_state_dict(payload["actor_state_dict"], strict=False)
+        return actor.to(device)
     actor = build_actor(
         cfg,
         variant=cfg.ablations.actor_variant,
@@ -922,9 +927,9 @@ def load_actor_from_checkpoint(
         else 1,
     )
     if "actor_state_dict" in payload:
-        actor.load_state_dict(payload["actor_state_dict"])
+        actor.load_state_dict(payload["actor_state_dict"], strict=False)
     elif "ppo" in payload and "actor" in payload["ppo"]:
-        actor.load_state_dict(payload["ppo"]["actor"])
+        actor.load_state_dict(payload["ppo"]["actor"], strict=False)
     else:
         raise KeyError("checkpoint missing actor weights")
     return actor.to(device)

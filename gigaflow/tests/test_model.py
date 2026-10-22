@@ -214,3 +214,95 @@ def test_validate_actor_artifact_rejects_mismatched_normalizer_dim():
     payload = build_actor_artifact_payload(cfg, actor, sensor_normalizer=bad)
     with pytest.raises(ValueError, match="sensor_normalizer"):
         validate_actor_artifact(payload)
+
+
+@pytest.mark.parametrize(
+    "pool_mode,pool_bins,proj_dim,expected_bins,expected_in_features,pool_cls",
+    [
+        ("avg", 32, 256, 32, 64 * 32, torch.nn.AdaptiveAvgPool1d),
+        ("max", 64, 512, 64, 64 * 64, torch.nn.AdaptiveMaxPool1d),
+        ("none", 32, 512, 91, 64 * 91, torch.nn.Identity),
+        ("adaptive_max_1d", 64, 512, 64, 64 * 64, torch.nn.AdaptiveMaxPool1d),
+    ],
+)
+def test_cnn_pool_modes_and_512d_projection_forward_backward_and_roundtrip(
+    tmp_path,
+    pool_mode,
+    pool_bins,
+    proj_dim,
+    expected_bins,
+    expected_in_features,
+    pool_cls,
+):
+    from dataclasses import replace
+
+    from gigaflow_f1tenth.config import (
+        actor_parameter_count,
+        estimate_memory_bytes,
+    )
+    from gigaflow_f1tenth.evaluation import load_actor_from_checkpoint
+
+    base_cfg = load_config(SMOKE)
+    cfg = replace(
+        base_cfg,
+        agents=replace(
+            base_cfg.agents,
+            cnn_pool_mode=pool_mode,
+            cnn_pool_bins=pool_bins,
+            cnn_projection_dim=proj_dim,
+        ),
+    )
+    actor = build_actor(cfg)
+    assert isinstance(actor.encoder.pool, pool_cls)
+    assert actor.encoder.pool_bins == expected_bins
+    assert actor.encoder.projection.in_features == expected_in_features
+    assert actor.encoder.projection.out_features == proj_dim
+    assert actor_parameter_count(cfg) == sum(p.numel() for p in actor.parameters())
+    assert estimate_memory_bytes(cfg) > 0
+
+    obs, cond = _batch(cfg, 4, seed=17)
+    obs.requires_grad_(True)
+    h0 = actor.initial_hidden(4, "cpu")
+    out = actor.forward(obs, cond, h0, deterministic=False)
+    assert out.actions.shape == (4, 2)
+    loss = out.actions.pow(2).mean() + out.log_prob.mean()
+    loss.backward()
+    assert obs.grad is not None
+    assert torch.isfinite(obs.grad).all()
+    assert actor.encoder.projection.weight.grad is not None
+    assert torch.isfinite(actor.encoder.projection.weight.grad).all()
+
+    payload = build_actor_artifact_payload(cfg, actor)
+    validate_actor_artifact(payload)
+    assert payload["actor_architecture"]["pool_bins"] == expected_bins
+    assert payload["actor_architecture"]["cnn_projection_dim"] == proj_dim
+    assert payload["actor_architecture"]["pool_mode"] in ("avg", "max", "none")
+
+    ckpt_path = tmp_path / f"actor_{pool_mode}_{pool_bins}_{proj_dim}.pt"
+    torch.save(payload, ckpt_path)
+    restored = load_actor_from_checkpoint(cfg, ckpt_path, device="cpu")
+    obs_eval, cond_eval = _batch(cfg, 3, seed=23)
+    with torch.no_grad():
+        a1 = actor.forward(
+            obs_eval, cond_eval, actor.initial_hidden(3, "cpu"), deterministic=True
+        )
+        a2 = restored.forward(
+            obs_eval, cond_eval, restored.initial_hidden(3, "cpu"), deterministic=True
+        )
+    assert torch.allclose(a1.actions, a2.actions, atol=1e-6)
+
+
+def test_config_rejects_invalid_cnn_pool_mode_and_bins():
+    from gigaflow_f1tenth.config import ConfigError, config_from_dict, config_to_dict
+
+    cfg = load_config(SMOKE)
+    raw = config_to_dict(cfg)
+    raw["agents"]["cnn_pool_mode"] = "median"
+    with pytest.raises(ConfigError, match="cnn_pool_mode"):
+        config_from_dict(raw)
+
+    raw2 = config_to_dict(cfg)
+    raw2["agents"]["cnn_pool_mode"] = "max"
+    raw2["agents"]["cnn_pool_bins"] = 48
+    with pytest.raises(ConfigError, match="cnn_pool_bins"):
+        config_from_dict(raw2)

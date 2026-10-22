@@ -77,6 +77,7 @@ def test_prepared_inputs_bytes_matches_reconstruction():
             prepared.other_agents,
             prepared.other_mask,
             prepared.bootstrap_values,
+            prepared.reconstruct_logp,
         ]
     )
     assert measured == prepared_inputs_bytes(cfg)

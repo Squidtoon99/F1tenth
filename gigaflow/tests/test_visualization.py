@@ -9,6 +9,7 @@ from gigaflow_f1tenth.visualization import (
     frame_xy_limits,
     render_episode,
     render_frame,
+    render_side_by_side,
     track_lines,
     vehicle_faces,
 )
@@ -157,3 +158,23 @@ def test_render_episode_writes_png_gif_mp4(tmp_path):
     assert png.is_file() and png.stat().st_size > 0
     assert mp4.is_file() and mp4.stat().st_size > 0
     assert gif.is_file() and gif.stat().st_size > 0
+
+
+def test_courtyard_side_by_side_is_sleepy_1400x728(tmp_path):
+    import imageio.v2 as imageio
+
+    atlas = make_synthetic_oval_atlas()
+    left = [np.asarray([[8.0, 0.0, 1.57, 1.0]], dtype=np.float32)]
+    right = [np.asarray([[8.2, 0.1, 1.40, 1.0]], dtype=np.float32)]
+    out = tmp_path / "side_by_side.mp4"
+    path = render_side_by_side(
+        atlas,
+        left,
+        right,
+        out,
+        car_length=0.568,
+        car_width=0.296,
+    )
+    assert path.is_file()
+    frame = imageio.get_reader(path).get_data(0)
+    assert frame.shape == (728, 1400, 3)

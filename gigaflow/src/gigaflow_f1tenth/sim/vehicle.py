@@ -156,7 +156,7 @@ class VehicleParams:
 
     gravity: float = GRAVITY
     # Apple Eq. 6 nominal speed; per-agent ceiling is v_nom * vmax_scale.
-    v_nom: float = 6.0
+    v_nom: float = 9.0
     # HUD / viewer speed-axis only; the bicycle plant has no aero or power cap.
     power_max: float = 320.0
     dragcoeff: float = 0.075

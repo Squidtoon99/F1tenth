@@ -251,6 +251,9 @@ def test_signal_writes_final_checkpoint_and_finishes_wandb(
     env = dict(os.environ)
     env["WANDB_MODE"] = "offline"
     env["WANDB_SILENT"] = "true"
+    src = str(ROOT / "src")
+    current = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    env["PYTHONPATH"] = os.pathsep.join([src, *current]) if current else src
     proc = subprocess.Popen(
         [
             sys.executable,
