@@ -1,8 +1,7 @@
-# RTX PRO 6000 (96 GiB) long-horizon production: clean-grace PPO behavior at
-# H100/A100 world scale. Same 448x8 / rollout 128 / minibatch 32768 shape as
-# production_h100.yaml, with the validated higher-retention filter
-# (eta_scale=0.005), entropy anneal, and quality/KL stops disabled.
-# KL and behavioral metrics remain telemetry only.
+# RTX PRO 6000 (96 GiB) long-horizon production: clean-grace PPO, MaxPool64
+# -> 512-D CNN. 256 worlds x 8 / rollout 256 / minibatch 32768 (~10-15% VRAM
+# headroom after inplace-ReLU scoring). Quality/KL stops disabled; KL remains
+# telemetry only.
 config_version: 1
 seed: 0
 
@@ -13,7 +12,7 @@ tracks:
   include_optional_local: false
 
 worlds:
-  num_worlds: 448
+  num_worlds: 256
   max_agents_per_world: 8
   solo_world_fraction: 0.25
   density_bins: [sparse, dense]
@@ -32,7 +31,9 @@ agents:
   sensor_obs_dim: 1097
   action_dim: 2
   gru_hidden_dim: 512
-  cnn_projection_dim: 256
+  cnn_projection_dim: 512
+  cnn_pool_mode: max
+  cnn_pool_bins: 64
   actor_mlp_sizes: [1024, 1024, 1024]
   condition_dim: 10
   target_laps: 3.0

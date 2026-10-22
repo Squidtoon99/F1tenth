@@ -26,7 +26,9 @@ agents:
   sensor_obs_dim: 1097
   action_dim: 2
   gru_hidden_dim: 512
-  cnn_projection_dim: 256
+  cnn_projection_dim: 512
+  cnn_pool_mode: max
+  cnn_pool_bins: 64
   actor_mlp_sizes: [1024, 1024, 1024]
   condition_dim: 10
   target_laps: 3.0
@@ -93,9 +95,9 @@ ablations:
 
 profiling:
   enabled: true
-  # 64 worlds x 8 agents with a 32768-transition minibatch estimates at ~13.7 GiB
-  # allocated, so this template needs a 24 GiB-class card, not a 12 GiB one.
-  estimate_bytes_budget: 18000000000
+  # 64 worlds x 8 agents, MaxPool64->512-D, estimates at ~17.6 GiB allocated
+  # after inplace CNN ReLU, so this template needs a 24 GiB-class card.
+  estimate_bytes_budget: 24000000000
   report_interval_updates: 10
 
 # Optional W&B (disabled by default). Never put API keys in config.

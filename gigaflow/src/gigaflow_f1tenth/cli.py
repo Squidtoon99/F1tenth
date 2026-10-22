@@ -12,6 +12,7 @@ import torch
 from gigaflow_f1tenth.config import (
     PINNED_UPSTREAM_TRACK_COUNT,
     config_to_dict,
+    configure_cuda_allocator,
     estimate_memory_bytes,
     load_config,
     replace_wandb_config,
@@ -618,6 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_cuda_allocator()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -190,10 +190,10 @@ def test_gru_layer0_fold_production_split_is_cnn_plus_proprio():
             action_dim=2,
             gru_hidden_dim=512,
             cnn_projection_dim=512,
+            cnn_pool_bins=64,
+            cnn_pool_mode="max",
             mlp_sizes=(1024, 1024, 1024),
-        ),
-        pool_bins=64,
-        pool_mode="max",
+        )
     )
     attach_baked_condition(actor)
     actor.eval()
@@ -227,12 +227,16 @@ def test_refuse_ppo_resume():
     with pytest.raises(ValueError, match="never PPO-resume"):
         refuse_ppo("ppo-resume")
     refuse_ppo("awac")
+    refuse_ppo("iql")
+    refuse_ppo("bc")
 
 
 def test_load_maxpool64_artifact_from_smoke_cfg(tmp_path):
+    from dataclasses import replace
+
     cfg = load_config(SMOKE)
     actor = ConditionedLidarGRUActor(
-        actor_shapes(cfg), pool_bins=64, pool_mode="max"
+        replace(actor_shapes(cfg), cnn_pool_bins=64, cnn_pool_mode="max")
     )
     path = tmp_path / "max64.pt"
     export_baked_actor(cfg, actor, str(path))

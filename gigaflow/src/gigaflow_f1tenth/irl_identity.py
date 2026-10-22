@@ -115,6 +115,19 @@ def folded_gru_module(actor, condition=None):
     return gru, e_c
 
 
+def folded_gru_step(actor, sensor_obs, hidden, condition=None):
+    """One GRU step using folded Layer-0 weights; bitwise match at ``c_irl``."""
+    import torch
+
+    gru, e_c = folded_gru_module(actor, condition)
+    lidar, proprio = actor._split_obs(sensor_obs)
+    features = actor.encoder(lidar)
+    trunk = torch.cat([features, proprio], dim=-1)
+    out, h_n = gru(trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+    return h_n.squeeze(0), e_c, gru
+
+
+
 def bake_deployment_condition(
     payload: Mapping[str, Any],
     *,

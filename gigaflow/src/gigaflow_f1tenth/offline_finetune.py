@@ -21,7 +21,7 @@ from gigaflow_f1tenth.artifacts import (
     bake_actor_artifact,
     export_baked_actor,
 )
-from gigaflow_f1tenth.irl_identity import baked_normalized_condition
+from gigaflow_f1tenth.irl_identity import attach_baked_condition, baked_normalized_condition
 from gigaflow_f1tenth.model import (
     ConditionedLidarGRUActor,
     actor_from_architecture,
@@ -74,7 +74,11 @@ def actor_from_payload(payload: Mapping[str, Any], device: str | torch.device):
     if not isinstance(arch, Mapping):
         raise KeyError("artifact missing actor_architecture")
     actor = actor_from_architecture(arch)
-    actor.load_state_dict(payload["actor_state_dict"], strict=True)
+    actor.load_state_dict(payload["actor_state_dict"], strict=False)
+    vec = payload.get("deployment_condition_normalized")
+    if not isinstance(vec, (list, tuple)):
+        vec = baked_normalized_condition()
+    attach_baked_condition(actor, vec)
     return actor.to(device)
 
 
@@ -91,7 +95,7 @@ def load_offline_actor(checkpoint: str | Path, device: str = "cpu"):
 
         cfg = config_from_dict(payload["config"], check_training_budget=False)
         actor = build_actor(cfg)
-        actor.load_state_dict(payload["ppo"]["actor"], strict=True)
+        actor.load_state_dict(payload["ppo"]["actor"], strict=False)
         baked = export_baked_actor(cfg, actor)
         return actor.to(device), baked
     raise KeyError("checkpoint missing actor weights")

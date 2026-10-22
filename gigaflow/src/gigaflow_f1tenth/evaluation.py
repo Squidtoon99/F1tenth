@@ -917,7 +917,7 @@ def load_actor_from_checkpoint(
     arch = payload.get("actor_architecture") if isinstance(payload, dict) else None
     if isinstance(arch, Mapping) and "actor_state_dict" in payload:
         actor = actor_from_architecture(arch)
-        actor.load_state_dict(payload["actor_state_dict"])
+        actor.load_state_dict(payload["actor_state_dict"], strict=False)
         return actor.to(device)
     actor = build_actor(
         cfg,
@@ -927,9 +927,9 @@ def load_actor_from_checkpoint(
         else 1,
     )
     if "actor_state_dict" in payload:
-        actor.load_state_dict(payload["actor_state_dict"])
+        actor.load_state_dict(payload["actor_state_dict"], strict=False)
     elif "ppo" in payload and "actor" in payload["ppo"]:
-        actor.load_state_dict(payload["ppo"]["actor"])
+        actor.load_state_dict(payload["ppo"]["actor"], strict=False)
     else:
         raise KeyError("checkpoint missing actor weights")
     return actor.to(device)

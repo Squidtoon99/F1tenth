@@ -238,7 +238,10 @@ def test_recalibrated_config_declares_recalibrated_gates():
 def test_clean_grace_production_disables_stops_and_keeps_filter():
     cfg = load_config(ROOT / "configs" / "production_rtxpro6000_clean_grace.yaml")
     h100 = load_config(ROOT / "configs" / "production_h100.yaml")
-    assert cfg.worlds.num_worlds == h100.worlds.num_worlds
+    assert cfg.worlds.num_worlds == 256
+    assert cfg.agents.cnn_pool_mode == "max"
+    assert cfg.agents.cnn_pool_bins == 64
+    assert cfg.agents.cnn_projection_dim == 512
     assert cfg.ppo.minibatch_size == h100.ppo.minibatch_size
     assert cfg.ppo.target_kl == 0.0
     assert cfg.ppo.learning_rate == pytest.approx(1.0e-4)

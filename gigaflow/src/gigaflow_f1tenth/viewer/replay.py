@@ -11,7 +11,13 @@ import numpy as np
 import torch
 
 from gigaflow_f1tenth import model as model_mod
-from gigaflow_f1tenth.config import ExperimentConfig, config_from_dict, config_to_dict
+from gigaflow_f1tenth.config import (
+    LEGACY_CNN_POOL_BINS,
+    LEGACY_CNN_POOL_MODE,
+    ExperimentConfig,
+    config_from_dict,
+    config_to_dict,
+)
 from gigaflow_f1tenth.evaluation import (
     _suite_world_overrides,
     load_actor_from_checkpoint,
@@ -41,6 +47,8 @@ TRUNK_COMPAT_KEYS = (
     "action_dim",
     "gru_hidden_dim",
     "cnn_projection_dim",
+    "pool_bins",
+    "pool_mode",
     "mlp_sizes",
 )
 SENSOR_NORMALIZER_BUFFERS = frozenset(
@@ -362,6 +370,8 @@ def _load_native_condition_actor(
         action_dim=int(arch["action_dim"]),
         gru_hidden_dim=int(arch["gru_hidden_dim"]),
         cnn_projection_dim=int(arch["cnn_projection_dim"]),
+        cnn_pool_bins=int(arch.get("pool_bins", LEGACY_CNN_POOL_BINS)),
+        cnn_pool_mode=str(arch.get("pool_mode", LEGACY_CNN_POOL_MODE)),
         mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
     )
     # The actor class asserts the live schema width; this one carries its own.
@@ -371,8 +381,6 @@ def _load_native_condition_actor(
         actor = ConditionedLidarGRUActor(
             shapes,
             condition_embed_dim=int(arch.get("condition_embed_dim", 64)),
-            pool_bins=int(arch.get("pool_bins", 32)),
-            pool_mode=str(arch.get("pool_mode", "avg")),
         )
     finally:
         model_mod.CONDITION_DIM = live_schema

@@ -13,6 +13,7 @@ import warp as wp
 from gigaflow_f1tenth import rewards as rewards_mod
 from gigaflow_f1tenth.config import load_config
 from gigaflow_f1tenth.rewards import (
+    ALPHA_L_CENTER_RANGE,
     ALPHA_PASSING_RANGE,
     CONDITION_DIM,
     CONDITION_FIELD_NAMES,
@@ -145,11 +146,24 @@ def test_alpha_passing_sampled_over_full_range():
     styles = sample_private_styles(cfg, 20_000, np.random.default_rng(0))
     vals = np.asarray([s.alpha_passing for s in styles])
     lo, hi = ALPHA_PASSING_RANGE
+    assert (lo, hi) == (0.0, 0.8)
     assert vals.min() >= lo
     assert vals.max() <= hi
-    # U(0, 6): mean at the previous global constant, both tails reached.
-    assert float(vals.mean()) == pytest.approx(3.0, abs=0.05)
-    assert vals.min() < 0.05 and vals.max() > 5.95
+    # U(0, 0.8): mean at the eval style, both tails reached.
+    assert float(vals.mean()) == pytest.approx(0.4, abs=0.05)
+    assert vals.min() < 0.05 and vals.max() > 0.75
+
+
+def test_alpha_l_center_sampled_over_full_range():
+    cfg = load_config(SMOKE)
+    styles = sample_private_styles(cfg, 20_000, np.random.default_rng(0))
+    vals = np.asarray([s.alpha_l_center for s in styles])
+    lo, hi = ALPHA_L_CENTER_RANGE
+    assert (lo, hi) == (2.5e-3, 7.5e-2)
+    assert vals.min() >= lo
+    assert vals.max() <= hi
+    assert float(vals.mean()) == pytest.approx(0.5 * (lo + hi), abs=0.005)
+    assert vals.min() < lo + 0.005 and vals.max() > hi - 0.005
 
 
 def test_deployment_style_centered_high_collision():
@@ -157,8 +171,9 @@ def test_deployment_style_centered_high_collision():
     assert style.alpha_collision == 3.0
     assert style.alpha_center_bias == 0.0
     assert style.drive_scale == 1.0
-    # Conservative deployment keeps the previous global passing aggression.
-    assert style.alpha_passing == 3.0
+    assert style.alpha_passing == 0.4
+    assert style.alpha_l_center == pytest.approx(3.8e-2)
+    assert style.vmax_scale == 1.0
     norm = normalize_condition_vector(style.raw_vector())
     assert norm.shape == (CONDITION_DIM,)
 
