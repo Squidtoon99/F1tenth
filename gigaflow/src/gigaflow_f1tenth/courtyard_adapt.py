@@ -420,6 +420,7 @@ def diagnose_actor(
     sim, cfg, _atlas, path = build_courtyard_sim(device, num_worlds=1)
     actor.eval()
     attach_baked_condition(actor)
+    actor.gru.flatten_parameters()
     sim.reset_all(0)
     sim.apply_styles([deployment_style("centered_high_collision")])
     pose = pin_slot(sim, path, SPAWN_S, ey=SPAWN_EY, vx=0.0, flat=0)
@@ -550,6 +551,7 @@ def collect_on_policy(
     logp_l: list[np.ndarray] = []
     actor.train(not deterministic)
     attach_baked_condition(actor)
+    actor.gru.flatten_parameters()
     for _ in range(int(n_steps)):
         reset = torch.zeros(n, device=device, dtype=torch.float32)
         for slot in range(n):
@@ -655,11 +657,11 @@ def run_s1(
             method="awac",
             steps=int(steps),
             batch_size=16,
-            lr=3.0e-5,
+            lr=8.0e-5,
             seed=stage,
             device=device,
             kl_coef=float(kl),
-            kl_max=0.08 if kl > 0 else 10.0,
+            kl_max=5.0,
             beta=1.0,
         )
         batch, hidden, spawn_i = collect_on_policy(
@@ -725,22 +727,34 @@ def run_s2(
         teacher=True,
     )
     n, tlen, _ = batch["obs"].shape
-    obs = torch.as_tensor(batch["obs"], device=device)
-    teacher = torch.as_tensor(batch["teacher"], device=device)
-    student = torch.as_tensor(batch["actions"], device=device)
-    resets = torch.as_tensor(batch["resets"], device=device)
-    clearance_proxy = np.abs(student[..., 1] - teacher[..., 1])
-    under = torch.as_tensor(clearance_proxy > 0.25, device=device, dtype=torch.float32)
-    weight = 1.0 + 4.0 * under
-    opt = torch.optim.Adam(actor.parameters(), lr=3.0e-5)
+    trajs = []
+    for i in range(n):
+        trajs.append(
+            {
+                "obs": batch["obs"][i],
+                "actions": batch["teacher"][i],
+                "rewards": batch["rewards"][i].astype(np.float32),
+                "dones": batch["dones"][i].astype(np.float32),
+                "resets": batch["resets"][i].astype(np.float32),
+            }
+        )
+    windows = windows_from_trajectories(trajs, window=16, stride=4)
+    n_win = int(windows["obs"].shape[0])
+    opt = torch.optim.Adam(actor.parameters(), lr=5.0e-5)
     actor.train()
     base.eval()
     for param in base.parameters():
         param.requires_grad_(False)
     last = {"bc": 0.0, "kl": 0.0}
-    cond = _condition(actor, n, device)
-    h0 = actor.initial_hidden(n, device)
+    rng = np.random.default_rng(2)
     for step in range(int(bc_steps)):
+        idx = rng.integers(0, n_win, size=min(16, n_win))
+        obs = torch.as_tensor(windows["obs"][idx], device=device)
+        teacher = torch.as_tensor(windows["actions"][idx], device=device)
+        resets = torch.as_tensor(windows["resets"][idx], device=device)
+        bsz = int(obs.shape[0])
+        cond = _condition(actor, bsz, device)
+        h0 = actor.initial_hidden(bsz, device)
         out = actor.evaluate_actions_sequence(
             obs,
             cond,
@@ -750,7 +764,7 @@ def run_s2(
             return_diagnostics=True,
             return_mean=True,
         )
-        logp, _ent, _h, log_std, mean = out
+        _logp, _ent, _h, log_std, mean = out
         with torch.no_grad():
             bout = base.evaluate_actions_sequence(
                 obs,
@@ -763,8 +777,8 @@ def run_s2(
             )
             _bl, _be, _bh, b_log_std, b_mean = bout
         kl = gaussian_kl(mean, log_std, b_mean, b_log_std)
-        bc = (weight.unsqueeze(-1) * (mean - teacher).square()).mean()
-        loss = bc + 0.02 * kl
+        bc = (mean - teacher).square().mean()
+        loss = bc + 0.01 * kl
         opt.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
@@ -949,6 +963,7 @@ def evaluate_from_rest(
     sim, cfg, atlas, path = build_courtyard_sim(device, num_worlds=1)
     actor.eval()
     attach_baked_condition(actor)
+    actor.gru.flatten_parameters()
     sim.reset_all(0)
     sim.apply_styles([deployment_style("centered_high_collision")])
     pose = pin_slot(sim, path, SPAWN_S, ey=SPAWN_EY, vx=0.0)
@@ -1079,6 +1094,7 @@ def run_campaign(
     STORE_MEDIA.mkdir(parents=True, exist_ok=True)
     actor0, payload = load_offline_actor(checkpoint, device=device)
     attach_baked_condition(actor0)
+    actor0.gru.flatten_parameters()
     print(json.dumps({"device": device, "phase": "diagnose"}), flush=True)
     diag = diagnose_actor(copy.deepcopy(actor0), device=device, seconds=8.0)
     diag_rows = diag.pop("rows")
