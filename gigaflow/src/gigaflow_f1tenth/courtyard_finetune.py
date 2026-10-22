@@ -188,39 +188,62 @@ def spawn_from_rest(sim) -> dict[str, float]:
     return meta or dict(NORTH_SPAWN)
 
 
+def _teacher_tables(sim):
+    cached = getattr(sim, "_courtyard_teacher_tables", None)
+    if cached is not None:
+        return cached
+    device = sim.buffers.torch_arrays.x.device
+    g = sim.geom
+    tables = {
+        "cum": torch.as_tensor(g.cum_length, device=device, dtype=torch.float32),
+        "xy": torch.as_tensor(g.centerline_xy, device=device, dtype=torch.float32),
+    }
+    sim._courtyard_teacher_tables = tables
+    return tables
+
+
+def _centerline_index_at(sim, s_query: torch.Tensor) -> torch.Tensor:
+    t = sim.buffers.torch_arrays
+    tables = _teacher_tables(sim)
+    length = sim._torch_track_length[t.track_id.long()].clamp(min=1e-3)
+    s_mod = torch.remainder(s_query, length)
+    start = sim._torch_offsets[t.track_id.long()]
+    stop = sim._torch_offsets[t.track_id.long() + 1]
+    idx = torch.searchsorted(tables["cum"], s_mod.contiguous(), right=True) - 1
+    idx = torch.maximum(idx, start)
+    idx = torch.minimum(idx, stop - 2)
+    return idx.long()
+
+
 def centerline_teacher(
     sim,
     *,
-    target_speed: float = 2.2,
-    kp_lateral: float = 2.2,
-    kp_heading: float = 1.4,
-    kp_speed: float = 1.1,
+    target_speed: float = 1.7,
+    kp_speed: float = 2.2,
+    kp_ey: float = 0.6,
+    wheelbase: float = 0.325,
     max_steer: float = MAX_STEER_RAD,
     delta_max: float = STEERING_DELTA_MAX_RAD,
 ) -> torch.Tensor:
-    """Privileged Stanley tracker. Actor never sees these Frenet features."""
+    """Privileged pure-pursuit. Actor never sees these Frenet / centerline features."""
     t = sim.buffers.torch_arrays
-    offsets = sim._torch_offsets
-    tangents = sim._torch_tangents
-    idx = offsets[t.track_id.long()] + t.frenet_segment.long()
-    idx = idx.clamp(0, tangents.shape[0] - 1)
-    tan = tangents.index_select(0, idx)
-    heading = torch.atan2(tan[:, 1], tan[:, 0])
-    heading_error = wrap_angle(t.yaw - heading)
-    track_speed = t.vx * tan[:, 0] + t.vy * tan[:, 1]
+    tables = _teacher_tables(sim)
     speed = torch.sqrt(t.vx * t.vx + t.vy * t.vy)
-    cross = torch.atan(
-        kp_lateral * t.frenet_ey / torch.clamp(speed.abs() + 0.5, min=0.5)
-    )
-    steer_target = torch.clamp(
-        -(kp_heading * heading_error + cross), -max_steer, max_steer
-    )
+    lookahead = torch.clamp(0.60 + 0.28 * speed, min=0.60, max=1.15)
+    tgt = tables["xy"].index_select(0, _centerline_index_at(sim, t.frenet_s + lookahead))
+    dx = tgt[:, 0] - t.x
+    dy = tgt[:, 1] - t.y
+    cosine = torch.cos(t.yaw)
+    sine = torch.sin(t.yaw)
+    x_body = cosine * dx + sine * dy
+    y_body = -sine * dx + cosine * dy
+    alpha = torch.atan2(y_body, torch.clamp(x_body, min=0.05))
+    steer_pp = torch.atan(2.0 * float(wheelbase) * torch.sin(alpha) / lookahead)
+    steer_target = torch.clamp(steer_pp - float(kp_ey) * t.frenet_ey, -max_steer, max_steer)
     steering = (steer_target - t.steer_logical) / max(float(delta_max), 1e-6)
-    speed_scale = torch.clamp(
-        1.0 - 0.75 * (steer_target.abs() / max(float(max_steer), 1e-6)),
-        min=0.25,
-    )
-    throttle = kp_speed * (speed_scale * float(target_speed) - track_speed)
+    v_cap = float(target_speed) / (1.0 + 1.6 * alpha.abs() + 1.2 * t.frenet_ey.abs())
+    v_cap = torch.clamp(v_cap, min=0.55, max=float(target_speed))
+    throttle = float(kp_speed) * (v_cap - speed)
     return torch.stack(
         [throttle.clamp(-0.999, 0.999), steering.clamp(-0.999, 0.999)],
         dim=-1,

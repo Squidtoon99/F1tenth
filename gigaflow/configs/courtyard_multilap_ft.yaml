@@ -35,7 +35,7 @@ agents:
   actor_mlp_sizes: [1024, 1024, 1024]
   condition_dim: 10
   target_laps: 3.0
-  reference_speed_mps: 2.2
+  reference_speed_mps: 1.7
   episode_seconds_min: 90.0
   episode_seconds_max: 180.0
   async_respawn: true

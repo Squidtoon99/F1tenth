@@ -83,7 +83,7 @@ def test_teacher_makes_forward_progress():
     t = sim.buffers.torch_arrays
     s0 = float(t.frenet_s[0].item())
     for _ in range(40):
-        sim.step(centerline_teacher(sim, target_speed=2.0))
+        sim.step(centerline_teacher(sim, target_speed=1.7))
         if int(t.done[0].item()) > 0:
             break
     s1 = float(t.frenet_s[0].item())

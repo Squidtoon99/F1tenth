@@ -637,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cft.add_argument("--eval-every", type=int, default=20)
     p_cft.add_argument("--eval-seconds", type=float, default=60.0)
     p_cft.add_argument("--anneal-updates", type=int, default=400)
-    p_cft.add_argument("--target-speed", type=float, default=2.2)
+    p_cft.add_argument("--target-speed", type=float, default=1.7)
     p_cft.add_argument("--seed", type=int, default=0)
     p_cft.add_argument(
         "--teacher-only",
