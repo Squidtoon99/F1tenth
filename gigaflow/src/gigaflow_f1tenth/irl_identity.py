@@ -127,7 +127,6 @@ def folded_gru_step(actor, sensor_obs, hidden, condition=None):
     return h_n.squeeze(0), e_c, gru
 
 
-
 def bake_deployment_condition(
     payload: Mapping[str, Any],
     *,
