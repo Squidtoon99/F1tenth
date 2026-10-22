@@ -630,7 +630,16 @@ class FixedSeedEvaluator:
                 t = sim.buffers.torch_arrays
                 render_frames.append(
                     torch.stack(
-                        (t.x, t.y, t.yaw, t.active.to(dtype=torch.float32)), dim=1
+                        (
+                            t.x,
+                            t.y,
+                            t.yaw,
+                            t.active.to(dtype=torch.float32),
+                            t.applied_effort,
+                            t.steer,
+                            t.trainable.to(dtype=torch.float32),
+                        ),
+                        dim=1,
                     )[world_slots]
                     .detach()
                     .cpu()
@@ -731,10 +740,11 @@ class FixedSeedEvaluator:
             and cfg.evaluation.viz_enabled
             and render_frames
         ):
-            from gigaflow_f1tenth.visualization import FOLLOW_RADIUS_M, render_episode
+            from gigaflow_f1tenth.visualization import (
+                EVAL_FOLLOW_RADIUS_M,
+                render_episode,
+            )
 
-            # Solo close-follow; multi-car suites keep whole-track framing.
-            follow_radius = FOLLOW_RADIUS_M if suite == "solo" else None
             render_episode(
                 self.atlas,
                 viz_track_id,
@@ -743,7 +753,8 @@ class FixedSeedEvaluator:
                 car_length=cfg.agents.car_length_m,
                 car_width=cfg.agents.car_width_m,
                 fps=cfg.evaluation.viz_fps,
-                follow_radius=follow_radius,
+                follow_radius=EVAL_FOLLOW_RADIUS_M,
+                banner=f"{suite} seed{seed}",
             )
             if incident_states:
                 save_incident_window(

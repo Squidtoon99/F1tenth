@@ -5,10 +5,17 @@ import numpy as np
 from gigaflow_f1tenth.sim.geometry import make_synthetic_oval_atlas
 from gigaflow_f1tenth.visualization import (
     CUBOID_HEIGHT_FRAC,
+    EVAL_FOLLOW_RADIUS_M,
+    EVAL_SBS_HEIGHT_PX,
+    EVAL_SBS_WIDTH_PX,
     FOLLOW_RADIUS_M,
+    HUD_BRAKE_RGB,
+    HUD_THROTTLE_RGB,
     frame_xy_limits,
+    hud_bar_xy,
     render_episode,
     render_frame,
+    render_side_by_side,
     track_lines,
     vehicle_faces,
 )
@@ -157,3 +164,77 @@ def test_render_episode_writes_png_gif_mp4(tmp_path):
     assert png.is_file() and png.stat().st_size > 0
     assert mp4.is_file() and mp4.stat().st_size > 0
     assert gif.is_file() and gif.stat().st_size > 0
+
+
+def _mean_rgb(image, which):
+    x0, y0, x1, y1 = hud_bar_xy(image.shape, which)
+    mid_x = (x0 + x1) // 2
+    fill_y = y1 - max(2, (y1 - y0) // 8)
+    return image[fill_y, mid_x].astype(np.float32)
+
+
+def test_hud_throttle_is_green_and_brake_is_red():
+    atlas = make_synthetic_oval_atlas()
+    throttle = render_frame(
+        atlas,
+        0,
+        np.asarray([[8.0, 0.0, 1.57, 1.0, 1.0, 0.0, 1.0]], dtype=np.float32),
+        car_length=0.568,
+        car_width=0.296,
+        dpi=100,
+        follow_radius=EVAL_FOLLOW_RADIUS_M,
+    )
+    brake = render_frame(
+        atlas,
+        0,
+        np.asarray([[8.0, 0.0, 1.57, 1.0, -1.0, 0.0, 1.0]], dtype=np.float32),
+        car_length=0.568,
+        car_width=0.296,
+        dpi=100,
+        follow_radius=EVAL_FOLLOW_RADIUS_M,
+    )
+    assert throttle.shape == (700, 700, 3)
+    t_rgb = _mean_rgb(throttle, "throttle")
+    b_rgb = _mean_rgb(brake, "brake")
+    assert t_rgb[1] > t_rgb[0] and t_rgb[1] > t_rgb[2]
+    assert abs(t_rgb[0] - HUD_THROTTLE_RGB[0]) < 5
+    assert abs(t_rgb[1] - HUD_THROTTLE_RGB[1]) < 5
+    assert b_rgb[0] > b_rgb[1] and b_rgb[0] > b_rgb[2]
+    assert b_rgb[0] > 180
+    assert abs(b_rgb[0] - HUD_BRAKE_RGB[0]) < 8
+    assert b_rgb[1] < 80 and b_rgb[2] < 80
+
+
+def test_render_side_by_side_is_1400x728(tmp_path):
+    import imageio.v2 as imageio
+
+    atlas = make_synthetic_oval_atlas()
+    left = [np.asarray([[8.0, 0.0, 1.57, 1.0, 0.8, 0.1, 1.0]], dtype=np.float32)]
+    right = [
+        np.asarray(
+            [
+                [8.0, 0.0, 1.57, 1.0, 0.4, -0.1, 1.0],
+                [7.2, 0.4, 0.2, 1.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+    ]
+    out = tmp_path / "side_by_side.mp4"
+    path = render_side_by_side(
+        atlas,
+        left,
+        right,
+        out,
+        car_length=0.568,
+        car_width=0.296,
+        left_label="Left: Base actor_005700",
+        right_label="Right: Courtyard Fine-Tuned",
+    )
+    assert path.is_file() and path.stat().st_size > 0
+    reader = imageio.get_reader(path)
+    try:
+        frame = reader.get_data(0)
+    finally:
+        reader.close()
+    assert frame.shape[:2] == (EVAL_SBS_HEIGHT_PX, EVAL_SBS_WIDTH_PX)
+    assert frame.shape[-1] >= 3

@@ -10,6 +10,8 @@ from pathlib import Path
 import torch
 
 from gigaflow_f1tenth.config import (
+    CAR_LENGTH_M,
+    CAR_WIDTH_M,
     PINNED_UPSTREAM_TRACK_COUNT,
     config_to_dict,
     estimate_memory_bytes,
@@ -334,6 +336,57 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_pose_sequence(path: Path) -> list:
+    import numpy as np
+
+    raw = np.load(path, allow_pickle=False)
+    if hasattr(raw, "files"):
+        key = "poses" if "poses" in raw.files else raw.files[0]
+        arr = np.asarray(raw[key], dtype=np.float32)
+    else:
+        arr = np.asarray(raw, dtype=np.float32)
+    if arr.ndim == 2:
+        arr = arr[:, None, :]
+    if arr.ndim != 3:
+        raise SystemExit(f"{path}: expected poses with shape (T, N, C) or (T, C)")
+    return [arr[i] for i in range(arr.shape[0])]
+
+
+def _cmd_render_sbs(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.visualization import EVAL_FPS, render_side_by_side
+
+    if args.cache_dir is not None:
+        from gigaflow_f1tenth.tracks import load_atlas
+
+        atlas = load_atlas(str(args.cache_dir)).view()
+        if args.track:
+            names = list(atlas.track_ids)
+            if args.track not in names:
+                raise SystemExit(f"unknown track {args.track}; have {names}")
+            track_id = names.index(args.track)
+        else:
+            track_id = int(args.track_id or 0)
+    else:
+        from gigaflow_f1tenth.courtyard_adapt import courtyard_atlas
+
+        atlas, _path = courtyard_atlas()
+        track_id = 0
+    video = render_side_by_side(
+        atlas,
+        _load_pose_sequence(args.left),
+        _load_pose_sequence(args.right),
+        args.output,
+        car_length=float(args.car_length),
+        car_width=float(args.car_width),
+        fps=int(args.fps or EVAL_FPS),
+        track_id=track_id,
+        left_label=str(args.left_label),
+        right_label=str(args.right_label),
+    )
+    print(json.dumps({"ok": True, "video": str(video), "width": 1400, "height": 728}))
+    return 0
+
+
 def _cmd_courtyard_multilap(args: argparse.Namespace) -> int:
     from gigaflow_f1tenth.courtyard_adapt import CKPT_BASE, run_campaign
 
@@ -650,6 +703,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Diagnose + eval the checkpoint without fine-tuning",
     )
     p_cy.set_defaults(func=_cmd_courtyard_multilap)
+
+    p_sbs = sub.add_parser(
+        "render-sbs",
+        help="Canonical 1400x728 SleepyToaster side-by-side eval video",
+    )
+    p_sbs.add_argument("--left", type=Path, required=True, help="Left poses .npy/.npz")
+    p_sbs.add_argument(
+        "--right", type=Path, required=True, help="Right poses .npy/.npz"
+    )
+    p_sbs.add_argument("--output", type=Path, required=True)
+    p_sbs.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Prepared atlas dir; default is local courtyard_2",
+    )
+    p_sbs.add_argument("--track", type=str, default=None)
+    p_sbs.add_argument("--track-id", type=int, default=None)
+    p_sbs.add_argument("--left-label", type=str, default="Left")
+    p_sbs.add_argument("--right-label", type=str, default="Right")
+    p_sbs.add_argument("--car-length", type=float, default=CAR_LENGTH_M)
+    p_sbs.add_argument("--car-width", type=float, default=CAR_WIDTH_M)
+    p_sbs.add_argument("--fps", type=int, default=None)
+    p_sbs.set_defaults(func=_cmd_render_sbs)
 
     return parser
 
