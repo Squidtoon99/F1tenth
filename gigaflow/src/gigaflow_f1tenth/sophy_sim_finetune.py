@@ -35,8 +35,10 @@ DEFAULT_TRACK = "IV_2026_SIM"
 def _ensure_sophy_path() -> Path:
     repo = Path(__file__).resolve().parents[3]
     training = repo / "training"
-    if str(training) not in sys.path:
-        sys.path.insert(0, str(training))
+    path = str(training)
+    if path in sys.path:
+        sys.path.remove(path)
+    sys.path.insert(0, path)
     return repo
 
 
