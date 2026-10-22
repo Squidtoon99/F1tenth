@@ -17,8 +17,16 @@ from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.gigaflow_inference_runtime import (
+    FOLDED_CONDITION_DIM,
     STEERING_DELTA_MAX_RAD,
+    FoldedLidarGruAdapter,
     GigaflowInferenceRuntime,
+)
+from f1tenth_rl_agent.policy_model import (
+    GIGAFLOW_ARCHITECTURE_NAME,
+    load_folded_sensor_actor,
+    load_checkpoint_payload,
+    peek_actor_architecture_name,
 )
 from f1tenth_rl_agent.sensor_preprocessing import ImuCalibration, RawImuSample
 
@@ -242,17 +250,42 @@ class GigaflowRacerNode(Node):
             )
             return None, None
         try:
-            from gigaflow_f1tenth.artifacts import load_irl_actor
+            payload = load_checkpoint_payload(checkpoint_path, self.device)
+            name = peek_actor_architecture_name(payload)
+            if name == GIGAFLOW_ARCHITECTURE_NAME or (
+                name != "lidar_cnn_gru"
+                and payload.get("actor_state_dict") is not None
+                and payload.get("sensor_normalizer") is not None
+            ):
+                from gigaflow_f1tenth.artifacts import load_irl_actor
 
-            actor, condition, payload = load_irl_actor(
-                checkpoint_path, device=self.device
+                actor, condition, loaded = load_irl_actor(
+                    checkpoint_path, device=self.device
+                )
+                style = loaded.get("deployment_style", "unknown")
+                self.get_logger().info(
+                    f"Loaded IRL Gigaflow checkpoint: {checkpoint_path} "
+                    f"style={style} condition_dim={int(condition.numel())}"
+                )
+                return actor, condition
+            if name in ("", "lidar_cnn_gru"):
+                actor, obs_norm, _ = load_folded_sensor_actor(
+                    checkpoint_path,
+                    self.device,
+                    eps=self.norm_eps,
+                    clip=self.norm_clip,
+                )
+                dummy = torch.zeros(
+                    1, FOLDED_CONDITION_DIM, device=self.device, dtype=torch.float32
+                )
+                self.get_logger().info(
+                    f"Loaded folded lidar_cnn_gru checkpoint: {checkpoint_path}"
+                )
+                return FoldedLidarGruAdapter(actor, obs_norm), dummy
+            raise ValueError(
+                f"unsupported actor_architecture.name={name!r}; "
+                "expected lidar_cnn_gru_conditioned or lidar_cnn_gru"
             )
-            style = payload.get("deployment_style", "unknown")
-            self.get_logger().info(
-                f"Loaded IRL Gigaflow checkpoint: {checkpoint_path} "
-                f"style={style} condition_dim={int(condition.numel())}"
-            )
-            return actor, condition
         except Exception as exc:  # noqa: BLE001
             if self.require_checkpoint:
                 raise RuntimeError(

@@ -43,6 +43,7 @@ def test_bake_irl_pins_centered_high_collision(tmp_path):
     np.testing.assert_allclose(got, expected, rtol=0, atol=1e-6)
     assert payload["irl_condition_raw"]["vmax_scale"] == 1.0
     assert payload["deployment_style"] == IRL_DEFAULT_STYLE
+    assert payload["baked_condition"] == payload["deployment_condition_normalized"]
 
 
 def test_bake_irl_field_override_vmax_scale():

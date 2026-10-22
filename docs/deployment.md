@@ -305,15 +305,16 @@ images (Apptainer `training.sif` from `deploy/apptainer/training.def`) in one go
 deploy/scripts/install_irl_images.sh user@car01 car01 \
   --gigaflow deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz \
   --gigaflow-ckpt gigaflow_policy.pt \
-  --training-sif training.sif
+  --sensor-policy deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz \
+  --racing deploy/snapshots/f1tenth-racing-<gitsha>.tar.gz \
+  --training training.sif
 ```
 
 Trainer-only (GPU box; pass `-` for the car id):
 
 ```bash
 deploy/scripts/install_irl_images.sh user@gpu-box - \
-  --training-sif training.sif \
-  --training-docker deploy/snapshots/training-images.tar.gz
+  --training training.sif
 ```
 
 On the car: `ssh user@car01 /opt/f1tenth/rollback/gigaflow/run.sh`.

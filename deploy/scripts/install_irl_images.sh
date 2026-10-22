@@ -1,35 +1,39 @@
 #!/usr/bin/env bash
-# SSH-install the IRL Gigaflow car image and Sophy GT / standalone trainer
-# images. Wraps load_to_jetson.sh for car docker tarballs; copies trainer
-# Apptainer (.sif) and optional trainer docker save to the remote host.
+# SSH-install the IRL Gigaflow car image, Sophy GT car images, and the
+# standalone trainer. Wraps load_to_jetson.sh for docker tarballs; copies
+# trainer Apptainer (.sif) or a trainer docker save to the remote host.
 #
 # Usage:
-#   deploy/scripts/install_irl_images.sh user@host car01 \
+#   deploy/scripts/install_irl_images.sh user@car01 car01 \
 #     --gigaflow deploy/snapshots/f1tenth-gigaflow-<sha>.tar.gz \
-#     --gigaflow-ckpt actor_005700.pt \
-#     --training-sif training.sif
+#     --gigaflow-ckpt gigaflow_policy.pt \
+#     --sensor-policy deploy/snapshots/f1tenth-sensor-policy-<sha>.tar.gz \
+#     --racing deploy/snapshots/f1tenth-racing-<sha>.tar.gz \
+#     --training training.sif
 #
 #   deploy/scripts/install_irl_images.sh user@gpu-box - \
-#     --training-sif training.sif \
-#     --training-docker deploy/snapshots/training-images.tar.gz
+#     --training training.sif
 #
 # Flags:
-#   --gigaflow TAR         f1tenth-gigaflow docker save (.tar.gz)
-#   --gigaflow-ckpt PT     baked actor (default name actor_005700.pt until fine-tune)
-#   --sophy-car TAR        optional f1tenth-sensor-policy docker save
-#   --sophy-ckpt PT        optional sensor-policy checkpoint (e2e_policy.pt)
-#   --training-sif SIF     Apptainer image from deploy/apptainer/training.def
-#                          (Sophy GT standalone_trainer.py)
-#   --training-docker TAR  optional docker save of a trainer image
-#   --images-dir DIR       remote trainer dest (default /opt/f1tenth/images)
+#   --gigaflow TAR            f1tenth-gigaflow docker save (.tar.gz)
+#   --gigaflow-ckpt PT        baked actor (actor_005700 until fine-tune lands)
+#   --sensor-policy TAR       f1tenth-sensor-policy docker save
+#   --sensor-policy-ckpt PT   optional e2e_policy.pt
+#   --racing TAR              f1tenth-racing docker save
+#   --training PATH           training.sif or a trainer docker .tar/.tar.gz
+#   --training-sif SIF        alias for Apptainer from deploy/apptainer/training.def
+#   --training-docker TAR     alias for a trainer docker save
+#   --sophy-car TAR           alias for --sensor-policy
+#   --sophy-ckpt PT           alias for --sensor-policy-ckpt
+#   --images-dir DIR          remote trainer dest (default /opt/f1tenth/images)
 #
 # Does not bake weights into images, does not start training, does not overwrite
-# /opt/f1tenth/policies/policy.pt or the other stack's moving tag.
+# /opt/f1tenth/policies/policy.pt or another stack's moving tag.
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 HOST=""
@@ -38,9 +42,22 @@ GIGAFLOW_TAR=""
 GIGAFLOW_CKPT=""
 SOPHY_CAR_TAR=""
 SOPHY_CKPT=""
+RACING_TAR=""
 TRAINING_SIF=""
 TRAINING_DOCKER=""
 IMAGES_DIR="/opt/f1tenth/images"
+
+_assign_training() {
+  local path="$1"
+  case "${path}" in
+    *.sif) TRAINING_SIF="${path}" ;;
+    *.tar|*.tar.gz|*.tgz) TRAINING_DOCKER="${path}" ;;
+    *)
+      echo "--training expects a .sif or docker .tar/.tar.gz (got ${path})" >&2
+      exit 1
+      ;;
+  esac
+}
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
@@ -58,8 +75,10 @@ while [ $# -gt 0 ]; do
   case "${1}" in
     --gigaflow) GIGAFLOW_TAR="${2:?--gigaflow needs a .tar.gz}"; shift 2 ;;
     --gigaflow-ckpt) GIGAFLOW_CKPT="${2:?--gigaflow-ckpt needs a .pt}"; shift 2 ;;
-    --sophy-car) SOPHY_CAR_TAR="${2:?--sophy-car needs a .tar.gz}"; shift 2 ;;
-    --sophy-ckpt) SOPHY_CKPT="${2:?--sophy-ckpt needs a .pt}"; shift 2 ;;
+    --sensor-policy|--sophy-car) SOPHY_CAR_TAR="${2:?--sensor-policy needs a .tar.gz}"; shift 2 ;;
+    --sensor-policy-ckpt|--sophy-ckpt) SOPHY_CKPT="${2:?--sensor-policy-ckpt needs a .pt}"; shift 2 ;;
+    --racing) RACING_TAR="${2:?--racing needs a .tar.gz}"; shift 2 ;;
+    --training) _assign_training "${2:?--training needs a path}"; shift 2 ;;
     --training-sif) TRAINING_SIF="${2:?--training-sif needs a .sif}"; shift 2 ;;
     --training-docker) TRAINING_DOCKER="${2:?--training-docker needs a tar}"; shift 2 ;;
     --images-dir) IMAGES_DIR="${2:?--images-dir needs a path}"; shift 2 ;;
@@ -73,11 +92,11 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "${GIGAFLOW_TAR}" ] && [ -z "${TRAINING_SIF}" ] && [ -z "${TRAINING_DOCKER}" ] \
-    && [ -z "${SOPHY_CAR_TAR}" ]; then
-  echo "need at least --gigaflow, --sophy-car, --training-sif, or --training-docker" >&2
+    && [ -z "${SOPHY_CAR_TAR}" ] && [ -z "${RACING_TAR}" ]; then
+  echo "need at least --gigaflow, --sensor-policy, --racing, or --training" >&2
   exit 1
 fi
-if [ -n "${GIGAFLOW_TAR}" ] || [ -n "${SOPHY_CAR_TAR}" ]; then
+if [ -n "${GIGAFLOW_TAR}" ] || [ -n "${SOPHY_CAR_TAR}" ] || [ -n "${RACING_TAR}" ]; then
   if [ -z "${CAR}" ] || [ "${CAR}" = "-" ]; then
     echo "car id required when installing a car image (got '${CAR:-}')" >&2
     exit 1
@@ -120,17 +139,24 @@ if [ -n "${GIGAFLOW_TAR}" ]; then
 fi
 
 if [ -n "${SOPHY_CAR_TAR}" ]; then
-  _need_file "${SOPHY_CAR_TAR}" "--sophy-car"
-  NOTES="${NOTES} sophy_car=$(_sha "${SOPHY_CAR_TAR}")"
+  _need_file "${SOPHY_CAR_TAR}" "--sensor-policy"
+  NOTES="${NOTES} sensor_policy=$(_sha "${SOPHY_CAR_TAR}")"
   echo "==> Sensor-policy (Sophy car) image -> ${HOST} (${CAR})"
   if [ -n "${SOPHY_CKPT}" ]; then
-    _need_file "${SOPHY_CKPT}" "--sophy-ckpt"
-    NOTES="${NOTES} sophy_ckpt=$(_sha "${SOPHY_CKPT}")"
+    _need_file "${SOPHY_CKPT}" "--sensor-policy-ckpt"
+    NOTES="${NOTES} sensor_policy_ckpt=$(_sha "${SOPHY_CKPT}")"
     TARGET=sensor_policy CHECKPOINT="${SOPHY_CKPT}" \
       "${LOAD_TO_JETSON}" "${HOST}" "${SOPHY_CAR_TAR}" "${CAR}"
   else
     TARGET=sensor_policy "${LOAD_TO_JETSON}" "${HOST}" "${SOPHY_CAR_TAR}" "${CAR}"
   fi
+fi
+
+if [ -n "${RACING_TAR}" ]; then
+  _need_file "${RACING_TAR}" "--racing"
+  NOTES="${NOTES} racing=$(_sha "${RACING_TAR}")"
+  echo "==> Racing image -> ${HOST} (${CAR})"
+  TARGET=racing "${LOAD_TO_JETSON}" "${HOST}" "${RACING_TAR}" "${CAR}"
 fi
 
 if [ -n "${TRAINING_SIF}" ] || [ -n "${TRAINING_DOCKER}" ]; then
@@ -206,7 +232,13 @@ cat "${INV}"
 EOF
 
 MANIFEST="deploy/releases/manifest.csv"
-echo "${GITSHA},irl-install,${CAR_NOTE},$(date -u +%Y-%m-%dT%H:%M:%SZ),${NOTES}" >> "${MANIFEST}"
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "${GITSHA},irl-install,${CAR_NOTE},${STAMP},${NOTES}" >> "${MANIFEST}"
+ssh "${HOST}" bash -s -- "${GITSHA}" "${CAR_NOTE}" "${STAMP}" "${NOTES}" <<'EOF'
+set -euo pipefail
+mkdir -p /opt/f1tenth
+printf '%s\n' "$1,irl-install,$2,$3,$4" >> /opt/f1tenth/manifest.csv
+EOF
 
 cat <<EOF
 

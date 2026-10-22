@@ -189,3 +189,77 @@ def architectures_match(left, right) -> bool:
     if not isinstance(left, Mapping) or not isinstance(right, Mapping):
         return False
     return normalize_actor_architecture(left) == normalize_actor_architecture(right)
+
+
+GIGAFLOW_ARCHITECTURE_NAME = "lidar_cnn_gru_conditioned"
+
+
+def peek_actor_architecture_name(payload: Mapping) -> str:
+    arch = payload.get("actor_architecture")
+    if isinstance(arch, Mapping):
+        return str(arch.get("name", ""))
+    return ""
+
+
+def load_checkpoint_payload(checkpoint_path: str, device: torch.device) -> Mapping:
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if not isinstance(payload, Mapping):
+        raise TypeError("checkpoint payload must be a mapping")
+    return payload
+
+
+def _obs_norm_from_welford(
+    stats: Mapping,
+    device: torch.device,
+    eps: float,
+    clip: float,
+) -> ObsNormalizer:
+    mean = torch.as_tensor(stats["mean"], dtype=torch.float32)
+    if "var" in stats:
+        var = torch.as_tensor(stats["var"], dtype=torch.float32)
+    else:
+        m2 = torch.as_tensor(stats["m2"], dtype=torch.float32)
+        count = float(torch.as_tensor(stats["count"]).reshape(-1)[0])
+        var = m2 / max(count, 1.0)
+    return ObsNormalizer(mean=mean, var=var, eps=eps, clip=clip, device=device)
+
+
+def load_folded_sensor_actor(
+    checkpoint_path: str,
+    device: torch.device,
+    *,
+    eps: float = 1e-8,
+    clip: float = 10.0,
+) -> tuple[SquashedGaussianLidarGRUActor, ObsNormalizer | None, Mapping]:
+    """Load a 272-D GRU-in ``lidar_cnn_gru`` artifact (folded Gigaflow or Sophy).
+
+    Skips this branch's 10 Hz format-4 control_hz pin so a 20 Hz folded
+    checkpoint still loads on the car. ``sensor_racer`` keeps the strict loader.
+    """
+    payload = load_checkpoint_payload(checkpoint_path, device)
+    name = peek_actor_architecture_name(payload)
+    if name and name != "lidar_cnn_gru":
+        raise ValueError(
+            f"folded sensor loader expected lidar_cnn_gru, got {name!r}"
+        )
+    architecture = payload.get("actor_architecture")
+    if not isinstance(architecture, Mapping):
+        raise ValueError("folded sensor artifact missing actor_architecture")
+    state = payload.get("actor")
+    if not isinstance(state, Mapping):
+        state = payload.get("actor_state_dict")
+    if not isinstance(state, Mapping):
+        raise ValueError("folded sensor artifact missing actor weights")
+    actor = make_sensor_actor(architecture)
+    actor.load_state_dict(state)
+    actor.to(device)
+    actor.eval()
+    obs_norm = None
+    stats = payload.get("obs_norm")
+    if isinstance(stats, Mapping) and "mean" in stats:
+        obs_norm = _obs_norm_from_welford(stats, device, eps, clip)
+    else:
+        welford = payload.get("sensor_normalizer")
+        if isinstance(welford, Mapping) and "mean" in welford:
+            obs_norm = _obs_norm_from_welford(welford, device, eps, clip)
+    return actor, obs_norm, payload

@@ -225,7 +225,9 @@ def bake_irl_condition(
         vec = vec.detach().cpu().numpy()
     out = dict(payload)
     out["deployment_style"] = style_name
-    out["deployment_condition_normalized"] = np.asarray(vec, dtype=np.float32).tolist()
+    baked_vec = np.asarray(vec, dtype=np.float32).tolist()
+    out["deployment_condition_normalized"] = baked_vec
+    out["baked_condition"] = baked_vec
     out["irl_condition_raw"] = baked.as_dict()
     return out
 
@@ -258,6 +260,8 @@ def load_irl_actor(
     """
     payload = FileArtifactStore().read_actor_artifact(path)
     condition = payload.get("deployment_condition_normalized")
+    if condition is None:
+        condition = payload.get("baked_condition")
     if condition is None:
         payload = bake_irl_condition(payload)
         condition = payload["deployment_condition_normalized"]

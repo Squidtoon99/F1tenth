@@ -17,10 +17,13 @@ from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
+    GIGAFLOW_ARCHITECTURE_NAME,
     ObsNormalizer,
     SquashedGaussianLidarGRUActor,
+    load_checkpoint_payload,
     load_sensor_actor,
     load_sensor_obs_norm,
+    peek_actor_architecture_name,
 )
 from f1tenth_rl_agent.sensor_inference_runtime import SensorInferenceRuntime
 from f1tenth_rl_agent.sensor_preprocessing import ImuCalibration, RawImuSample
@@ -248,6 +251,13 @@ class SensorRacerNode(Node):
             )
             return None, None
         try:
+            payload = load_checkpoint_payload(checkpoint_path, self.device)
+            name = peek_actor_architecture_name(payload)
+            if name == GIGAFLOW_ARCHITECTURE_NAME:
+                raise ValueError(
+                    "lidar_cnn_gru_conditioned checkpoints load in gigaflow_racer "
+                    "(gigaflow_policy.launch.py), not sensor_racer"
+                )
             actor = load_sensor_actor(
                 checkpoint_path=checkpoint_path,
                 state_dict_key=state_dict_key,

@@ -29,6 +29,37 @@ HISTORY_STRIDE = 2
 STEER_RING = 1 + 3 * HISTORY_STRIDE  # 7 samples @ 20 Hz → 10 Hz-equivalent slots
 LONG_RING = 1 + HISTORY_STRIDE
 STEERING_DELTA_MAX_RAD = float(np.pi / 120.0)
+FOLDED_CONDITION_DIM = 10
+
+
+class FoldedLidarGruAdapter:
+    """Call a 272-D GRU-in ``lidar_cnn_gru`` actor from GigaflowInferenceRuntime."""
+
+    def __init__(self, actor, obs_normalizer=None) -> None:
+        self.actor = actor
+        self.obs_normalizer = obs_normalizer
+
+    def initial_hidden(self, batch_size: int, device: str = "cpu"):
+        return self.actor.initial_hidden(
+            int(batch_size), device=device, dtype=torch.float32
+        )
+
+    def forward(self, sensor_obs, private_condition, hidden, deterministic=True):
+        del private_condition
+        obs = sensor_obs
+        if self.obs_normalizer is not None:
+            obs = self.obs_normalizer.normalize(obs)
+        action, _, next_hidden = self.actor.step(
+            obs, hidden, deterministic=deterministic, with_logprob=False
+        )
+        return type(self)._Out(actions=action, hidden=next_hidden)
+
+    class _Out:
+        __slots__ = ("actions", "hidden")
+
+        def __init__(self, actions, hidden) -> None:
+            self.actions = actions
+            self.hidden = hidden
 
 
 class GigaflowInferenceRuntime:
@@ -176,7 +207,7 @@ class GigaflowInferenceRuntime:
                     self._hidden,
                     deterministic=self.deterministic,
                 )
-                self._hidden = out.hidden
+                self._hidden.copy_(out.hidden)
                 if self._use_cuda:
                     torch.cuda.synchronize(self.device)
         self.reset_hidden()
@@ -195,7 +226,7 @@ class GigaflowInferenceRuntime:
                 self._hidden,
                 deterministic=self.deterministic,
             )
-            self._hidden = out.hidden
+            self._hidden.copy_(out.hidden)
             if self._use_cuda:
                 torch.cuda.synchronize(self.device)
             infer_ms = (time.perf_counter() - infer_t0) * 1000.0
