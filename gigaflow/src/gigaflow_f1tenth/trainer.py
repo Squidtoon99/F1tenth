@@ -309,6 +309,9 @@ class SelfPlayTrainer:
         # Ablation toggles for throughput A/B (default: optimized path).
         self.force_rebuild_sensors = False
         self.disable_compact_actor = False
+        # Opt-in low-VRAM path: replay LiDAR from compact state instead of
+        # storing the 1097-D observation in the rollout buffer.
+        self.reconstruct_obs = False
 
     def setup(self) -> None:
         cfg = self.cfg
@@ -387,31 +390,25 @@ class SelfPlayTrainer:
         pending_reset: torch.Tensor,
         active_mask: torch.Tensor,
     ):
-        """Run CNN-GRU only on active slots; scatter back into fixed buffers."""
+        """Run CNN-GRU on every slot; mask inactive rows without host syncs."""
         assert self.actor is not None
-        n = int(sensor_obs.shape[0])
-        device = self.device
-        actions = torch.zeros(n, 2, device=device, dtype=torch.float32)
-        logp = torch.zeros(n, device=device, dtype=torch.float32)
-        pre_tanh = torch.zeros(n, 2, device=device, dtype=torch.float32)
-        next_hidden = hidden.to(device=device, dtype=torch.float32).clone()
-        idx = active_mask.nonzero(as_tuple=False).squeeze(-1)
-        if idx.numel() == 0:
-            return actions, logp, next_hidden, pre_tanh
-        # Actor collect stays FP32: BF16 step-vs-sequence drift breaks logp parity.
+        next_hidden = hidden.to(device=self.device, dtype=torch.float32)
         out = self.actor.forward(
-            sensor_obs.index_select(0, idx),
-            cond.index_select(0, idx),
-            next_hidden.index_select(0, idx),
-            reset_mask=pending_reset.index_select(0, idx),
+            sensor_obs,
+            cond,
+            next_hidden,
+            reset_mask=pending_reset,
             deterministic=False,
         )
         if out.pre_tanh is None:
             raise RuntimeError("actor must return pre_tanh for PPO rescoring")
-        actions.index_copy_(0, idx, out.actions.detach())
-        logp.index_copy_(0, idx, out.log_prob.detach())
-        pre_tanh.index_copy_(0, idx, out.pre_tanh.detach())
-        next_hidden.index_copy_(0, idx, out.hidden.detach())
+        learner = active_mask.to(dtype=torch.float32).unsqueeze(-1)
+        actions = out.actions.detach() * learner
+        logp = out.log_prob.detach() * active_mask.to(dtype=out.log_prob.dtype)
+        pre_tanh = out.pre_tanh.detach() * learner
+        next_hidden = torch.where(
+            active_mask.unsqueeze(-1), out.hidden.detach(), next_hidden
+        )
         return actions, logp, next_hidden, pre_tanh
 
     def collect_rollout(self):
@@ -439,9 +436,7 @@ class SelfPlayTrainer:
                 live = self.sim.rebuild_sensors()
             else:
                 live = self.sim.action_observation()
-            sensor_obs = live.detach().to(
-                device=self.device, dtype=torch.float32
-            ).clone()
+            sensor_obs = live.detach().to(device=self.device, dtype=torch.float32)
             pending_reset = self.ppo.carry_reset
             if pending_reset is None:
                 pending_reset = torch.zeros(n, dtype=torch.bool, device=self.device)
@@ -452,7 +447,6 @@ class SelfPlayTrainer:
             # act: exclude them from the policy forward and force full brake
             # below, mirroring the viewer's stationary-obstacle handling.
             learner_mask = (arrays.active > 0) & (arrays.trainable > 0)
-            static_mask = (arrays.active > 0) & (arrays.trainable == 0)
             with torch.no_grad():
                 if self.disable_compact_actor:
                     out = self.actor.forward(
@@ -466,10 +460,10 @@ class SelfPlayTrainer:
                         raise RuntimeError(
                             "actor must return pre_tanh for PPO rescoring"
                         )
-                    actions = out.actions.detach().clone()
-                    logp = out.log_prob.detach().clone()
-                    next_hidden = out.hidden.detach().clone()
-                    pre_tanh = out.pre_tanh.detach().clone()
+                    actions = out.actions.detach()
+                    logp = out.log_prob.detach()
+                    next_hidden = out.hidden.detach()
+                    pre_tanh = out.pre_tanh.detach()
                 else:
                     actions, logp, next_hidden, pre_tanh = self._actor_step_compact(
                         sensor_obs,
@@ -478,17 +472,17 @@ class SelfPlayTrainer:
                         pending_reset,
                         learner_mask,
                     )
-                if bool(static_mask.any()):
+                if getattr(self.sim, "_has_static_opponents", False):
+                    static_mask = (arrays.active > 0) & (arrays.trainable == 0)
                     brake = torch.tensor(
                         [-1.0, 0.0], device=self.device, dtype=torch.float32
                     )
-                    actions[static_mask] = brake
-                    # pre_tanh must reproduce the forced action under the same
-                    # squash the collect/evaluate parity gate rechecks, or an
-                    # untrained action with no matching sample fails that gate.
+                    actions = torch.where(static_mask.unsqueeze(-1), brake, actions)
                     clamped = (brake / ACT_LIMIT).clamp(-0.999999, 0.999999)
-                    pre_tanh[static_mask] = torch.atanh(clamped)
-            cond_store = cond.detach().clone()
+                    pre_tanh = torch.where(
+                        static_mask.unsqueeze(-1), torch.atanh(clamped), pre_tanh
+                    )
+            cond_store = cond.detach()
 
             # Valid = agents that were active/trainable when the action was taken.
             valid = self._valid_mask().to(device=self.device)
@@ -536,7 +530,7 @@ class SelfPlayTrainer:
                 valid=valid,
                 done=done,
                 timeout=timeout,
-                reset_mask=pending_reset.clone(),
+                reset_mask=pending_reset,
                 track_id=arrays.track_id,
                 condition=cond_store,
                 sensor_noise_seed=noise_seed,
@@ -545,6 +539,7 @@ class SelfPlayTrainer:
                 old_logp=logp,
                 obs_digest=observation_digest(sensor_obs),
                 pre_tanh=pre_tanh,
+                sensor_obs=sensor_obs,
             )
             self.ppo.advance_carry(
                 next_hidden, done=done, reset_mask=reset_mask
@@ -675,7 +670,10 @@ class SelfPlayTrainer:
         t_steps, num_slots, _ = batch.state.shape
         device = self.device
 
-        sensor = self._replay_observations(batch)
+        if self.reconstruct_obs or batch.sensor_obs is None:
+            sensor = self._replay_observations(batch)
+        else:
+            sensor = batch.sensor_obs.to(device=device, dtype=torch.float32)
         active = (batch.state[..., STATE_INDEX["active"]] > 0.5).to(device=device)
         self._assert_observation_digests(batch, sensor, active)
 
@@ -1000,6 +998,7 @@ def run_training(
     checkpoint_interval: int = 0,
     resume_from: str | Path | None = None,
     wandb_session: WandbSession | None = None,
+    reconstruct_obs: bool = False,
 ) -> TrainProgress:
     """Run PPO updates with transactional shutdown and cadenced evaluation."""
     checkpoint_wandb_run_id = None
@@ -1027,6 +1026,7 @@ def run_training(
         run_dir=run_dir,
         wandb_session=session,
     )
+    trainer.reconstruct_obs = bool(reconstruct_obs)
     progress = TrainProgress(update_index=0, transitions=0, metrics={})
     async_eval = AsyncCpuEvalManager(cfg, run_dir=run_dir)
     gate_state = BehaviorGateState()

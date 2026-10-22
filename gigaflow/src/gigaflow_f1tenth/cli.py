@@ -149,6 +149,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         run_dir=run_dir,
         checkpoint_interval=int(args.checkpoint_interval),
         resume_from=args.resume_from,
+        reconstruct_obs=bool(args.reconstruct_obs),
     )
     payload = {
         "ok": True,
@@ -375,6 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke",
         action="store_true",
         help="Cap updates for a short integration smoke (not production)",
+    )
+    p_train.add_argument(
+        "--reconstruct-obs",
+        action="store_true",
+        help="Replay LiDAR from compact state (low-VRAM fallback; default stores obs)",
     )
     _add_wandb_args(p_train)
     p_train.set_defaults(func=_cmd_train)

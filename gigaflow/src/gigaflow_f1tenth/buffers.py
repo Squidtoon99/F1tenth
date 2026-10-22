@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 
 from gigaflow_f1tenth.config import AGENT_STATE_DIM, ExperimentConfig
+from gigaflow_f1tenth.sim.layout_local import SENSOR_OBS_DIM
 
 # Privileged agent-state width shared with critic packing / simulator restore.
 DEFAULT_AGENT_STATE_DIM = AGENT_STATE_DIM
@@ -115,7 +116,7 @@ def buffer_shapes(
 
 @dataclass
 class CompactRolloutBatch:
-    """Collection-time fields. Actor obs are reconstructed, never stored."""
+    """Collection-time fields. Actor obs are stored unless reconstruct-obs is set."""
 
     state: Tensor  # [T, S, state_dim]
     next_state: Tensor  # [T, S, state_dim] pre-respawn next state (GAE bootstrap)
@@ -134,6 +135,7 @@ class CompactRolloutBatch:
     old_logp: Tensor  # [T, S] behavior log-prob (collection-time)
     obs_digest: Tensor  # [T, S] int64 digest of the action-time observation
     pre_tanh: Tensor  # [T, S, A] Gaussian sample before tanh squash
+    sensor_obs: Tensor | None = None  # [T, S, 1097] when stored during collect
 
 
 def observation_digest(sensor_obs: Tensor) -> Tensor:
@@ -344,6 +346,9 @@ class TensorRolloutBuffer:
         self.old_logp = torch.zeros(t, s, device=self.device, dtype=dtype)
         self.obs_digest = torch.zeros(t, s, device=self.device, dtype=torch.int64)
         self.pre_tanh = torch.zeros(t, s, a, device=self.device, dtype=dtype)
+        self.sensor_obs = torch.zeros(
+            t, s, SENSOR_OBS_DIM, device=self.device, dtype=dtype
+        )
         self._filled = torch.zeros(t, device=self.device, dtype=torch.bool)
 
     def shapes(self) -> BufferShapes:
@@ -367,6 +372,7 @@ class TensorRolloutBuffer:
         self.old_logp.zero_()
         self.obs_digest.zero_()
         self.pre_tanh.zero_()
+        self.sensor_obs.zero_()
         self._filled.zero_()
 
     def store_step(self, t: int, **fields: Any) -> None:
@@ -412,6 +418,7 @@ class TensorRolloutBuffer:
             old_logp=self.old_logp,
             obs_digest=self.obs_digest,
             pre_tanh=self.pre_tanh,
+            sensor_obs=self.sensor_obs,
         )
 
 

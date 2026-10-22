@@ -13,6 +13,8 @@ from gigaflow_f1tenth.sim.vehicle import (
     store_vehicle,
 )
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 
 @wp.struct
 class ContactParams:

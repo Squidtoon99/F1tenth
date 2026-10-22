@@ -38,10 +38,11 @@ from gigaflow_f1tenth.sim.geometry import (
 from gigaflow_f1tenth.sim.reward_kernels import (
     pack_opponent_progress_kernel,
     racing_reward_kernel,
-    slot_reward_geom_kernel,
 )
 from gigaflow_f1tenth.sim.layout_local import LIDAR_DIM
 from gigaflow_f1tenth.sim.sensors import (
+    beam_trig_lut,
+    cache_lidar_heading_kernel,
     default_sensor_params,
     lidar_and_proprio_kernel,
     lidar_beam_parallel_kernel,
@@ -58,15 +59,17 @@ from gigaflow_f1tenth.sim.spawn import (
 )
 from gigaflow_f1tenth.sim.spawn_kernels import (
     async_respawn_kernel,
+    clear_gate_on_reset_kernel,
     style_scatter_kernel,
 )
 from gigaflow_f1tenth.sim.stages import (
     MAX_PHYSICS_SUBSTEPS,
     deactivate_terminal_rows_kernel,
+    pack_compact_state_kernel,
     physics_control_kernel,
-    progress_wall_kernel,
-    push_command_history_kernel,
-    terminal_mask_kernel,
+    pin_static_slots_kernel,
+    post_contact_and_geom_kernel,
+    snapshot_transition_kernel,
 )
 from gigaflow_f1tenth.sim.state import SimulatorBuffers
 from gigaflow_f1tenth.sim.vehicle import VehicleParams
@@ -202,6 +205,38 @@ class WarpNAgentSimulator:
         self._sensor_cuda_graph_status = "disabled"
         # Production path: beam-parallel LiDAR. Serial kernel remains for parity tests.
         self._use_beam_parallel_lidar = True
+        beam_cos, beam_sin = beam_trig_lut(
+            float(self.sensor_params.angle_min),
+            float(self.sensor_params.angle_increment),
+            int(LIDAR_DIM),
+        )
+        self.wp_beam_cos = wp.array(beam_cos, dtype=wp.float32, device=d)
+        self.wp_beam_sin = wp.array(beam_sin, dtype=wp.float32, device=d)
+        self._wp_heading_cos = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_heading_sin = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_static_mask = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_pin_x = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_pin_y = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_pin_yaw = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_pin_segment = wp.zeros(n, dtype=wp.int32, device=d)
+        self._wp_pin_s = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_pin_ey = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_pin_boundary = wp.zeros(n, dtype=wp.float32, device=d)
+        self._wp_snap_done = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_snap_timeout = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_snap_reset = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_snap_contact = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_snap_wall = wp.zeros(n, dtype=wp.uint8, device=d)
+        self._wp_next_compact = wp.zeros(
+            (n, DEFAULT_AGENT_STATE_DIM), dtype=wp.float32, device=d
+        )
+        self._torch_snap_done = wp.to_torch(self._wp_snap_done)
+        self._torch_snap_timeout = wp.to_torch(self._wp_snap_timeout)
+        self._torch_snap_reset = wp.to_torch(self._wp_snap_reset)
+        self._torch_snap_contact = wp.to_torch(self._wp_snap_contact)
+        self._torch_snap_wall = wp.to_torch(self._wp_snap_wall)
+        self._torch_next_compact = wp.to_torch(self._wp_next_compact)
+        self._has_static_opponents = False
 
         # Static-opponent pin state (populated by reset_all when configured;
         # None keeps step() a no-op for simulators without static opponents).
@@ -350,6 +385,11 @@ class WarpNAgentSimulator:
                 self.buffers.vmax_scale,
                 self.buffers.c_f,
                 self.buffers.c_r,
+                self._wp_alpha["alpha_collision"],
+                self._wp_alpha["alpha_boundary"],
+                self._wp_alpha["alpha_l_center"],
+                self._wp_alpha["alpha_center_bias"],
+                self._wp_alpha["alpha_passing"],
                 float(self.vehicle_params.lat_stiffness_scale),
                 float(self.vehicle_params.gravity),
                 float(self.vehicle_params.wheelbase),
@@ -359,14 +399,48 @@ class WarpNAgentSimulator:
             device=self.buffers.wp_device,
         )
         t.reset_mask.copy_(saved)
-        mat = self._torch_styles
-        for j, name in enumerate(CONDITION_FIELD_NAMES):
-            if name in self._torch_alpha:
-                self._torch_alpha[name].copy_(mat[:, j])
         self._style_tensors = {
             name: self._torch_alpha[name] for name in self._style_alpha_names
         }
         return self.styles
+
+    def _launch_style_scatter(self, seed: int) -> None:
+        n = self.layout.num_slots
+        wp.launch(
+            style_scatter_kernel,
+            dim=n,
+            inputs=[
+                self.buffers.reset_mask,
+                self._wp_style_pool,
+                _STYLE_POOL_SIZE,
+                int(seed),
+                self.buffers.world_id,
+                self.buffers.slot_id,
+                self.buffers.episode_id,
+                self._wp_styles,
+                self.buffers.drive_scale,
+                self.buffers.mass,
+                self.buffers.steer_scale,
+                self.buffers.accel_scale,
+                self.buffers.vmax_scale,
+                self.buffers.c_f,
+                self.buffers.c_r,
+                self._wp_alpha["alpha_collision"],
+                self._wp_alpha["alpha_boundary"],
+                self._wp_alpha["alpha_l_center"],
+                self._wp_alpha["alpha_center_bias"],
+                self._wp_alpha["alpha_passing"],
+                float(self.vehicle_params.lat_stiffness_scale),
+                float(self.vehicle_params.gravity),
+                float(self.vehicle_params.wheelbase),
+                float(self.vehicle_params.lf),
+                float(self.vehicle_params.lr),
+            ],
+            device=self.buffers.wp_device,
+        )
+        self._style_tensors = {
+            name: self._torch_alpha[name] for name in self._style_alpha_names
+        }
 
     def _launch_reward_kernels(self) -> RewardTerms:
         cfg = self.cfg
@@ -374,25 +448,6 @@ class WarpNAgentSimulator:
         n_others = self._n_others
         vehicles = self.buffers.vehicle_buffers()
         control_dt = 1.0 / float(cfg.agents.control_hz)
-        wp.launch(
-            slot_reward_geom_kernel,
-            dim=n,
-            inputs=[
-                self.buffers.active,
-                self.buffers.track_id,
-                self.buffers.frenet_segment,
-                self.wp_offsets,
-                self.wp_track_length,
-                self.wp_tangent,
-                self.wp_width_right,
-                self.wp_width_left,
-                self._wp_track_length_slot,
-                self._wp_half_width,
-                self._wp_tangent_yaw,
-                self.buffers.width_scale,
-            ],
-            device=self.buffers.wp_device,
-        )
         if n_others > 0:
             wp.launch(
                 pack_opponent_progress_kernel,
@@ -538,11 +593,13 @@ class WarpNAgentSimulator:
             ],
             device=self.buffers.wp_device,
         )
-        reset_rows = self.buffers.torch_arrays.reset_mask > 0
-        self.resample_styles_for_mask(reset_rows, seed + 7)
-        # Only respawned rows lose their latched passing gate; clearing every row
-        # would make the reward depend on world count and reset rate.
-        self._torch_prev_gate[reset_rows] = 0
+        self._launch_style_scatter(int(seed) + 7)
+        wp.launch(
+            clear_gate_on_reset_kernel,
+            dim=n,
+            inputs=[self.buffers.reset_mask, self._wp_prev_gate, int(self._n_others)],
+            device=self.buffers.wp_device,
+        )
 
     def rebuild_sensors(self) -> torch.Tensor:
         """Re-run LiDAR/proprio from current SoA state (reconstruction path)."""
@@ -601,12 +658,30 @@ class WarpNAgentSimulator:
             self.wp_edt_height,
             self.wp_edt_origin,
             self.wp_edt_resolution,
+            self.wp_beam_cos,
+            self.wp_beam_sin,
+            self._wp_heading_cos,
+            self._wp_heading_sin,
             self.sensor_params,
             self.buffers.sensor_obs,
         ]
 
     def _launch_sensors_eager(self) -> None:
         n = self.layout.num_slots
+        wp.launch(
+            cache_lidar_heading_kernel,
+            dim=n,
+            inputs=[
+                self.buffers.vehicle_buffers(),
+                self.buffers.active,
+                self.buffers.lidar_extrinsic_yaw,
+                self.buffers.lidar_angle_bias,
+                self.sensor_params,
+                self._wp_heading_cos,
+                self._wp_heading_sin,
+            ],
+            device=self.buffers.wp_device,
+        )
         inputs = self._sensor_kernel_inputs()
         if self._use_beam_parallel_lidar:
             wp.launch(
@@ -750,9 +825,22 @@ class WarpNAgentSimulator:
                     pin_s[flat] = float(pose["s"])
                     pin_ey[flat] = float(pose["ey"])
                     pin_boundary[flat] = float(pose["boundary_distance"])
+        self._wp_static_mask.zero_()
         if static_mask is not None:
             assert pins is not None
             apply_static_pins(t, static_mask, *pins, reset_contact=True)
+            pin_x, pin_y, pin_yaw, pin_segment, pin_s, pin_ey, pin_boundary = pins
+            wp.copy(self._wp_static_mask, wp.from_torch(static_mask.to(dtype=torch.uint8)))
+            wp.copy(self._wp_pin_x, wp.from_torch(pin_x))
+            wp.copy(self._wp_pin_y, wp.from_torch(pin_y))
+            wp.copy(self._wp_pin_yaw, wp.from_torch(pin_yaw))
+            wp.copy(self._wp_pin_segment, wp.from_torch(pin_segment))
+            wp.copy(self._wp_pin_s, wp.from_torch(pin_s))
+            wp.copy(self._wp_pin_ey, wp.from_torch(pin_ey))
+            wp.copy(self._wp_pin_boundary, wp.from_torch(pin_boundary))
+            self._has_static_opponents = True
+        else:
+            self._has_static_opponents = False
         self._static_mask = static_mask
         self._static_pin = pins
         self.resample_styles_for_mask(torch.ones(self.layout.num_slots), seed + 91)
@@ -764,15 +852,44 @@ class WarpNAgentSimulator:
     def _pin_static_slots(self) -> None:
         """Re-clamp static-opponent slots to their placement pose every step.
 
-        Runs after physics/contact/terminal but before the reward kernels, so
-        a contact impulse this step cannot leak into the passing reward's
-        opponent-progress computation or into next step's LiDAR trace.
+        Runs after physics/contact but before progress/reward, so a contact
+        impulse this step cannot leak into passing reward or LiDAR.
         """
-        if self._static_mask is None:
-            return
-        assert self._static_pin is not None
-        t = self.buffers.torch_arrays
-        apply_static_pins(t, self._static_mask, *self._static_pin, reset_contact=False)
+        n = self.layout.num_slots
+        wp.launch(
+            pin_static_slots_kernel,
+            dim=n,
+            inputs=[
+                self._wp_static_mask,
+                self._wp_pin_x,
+                self._wp_pin_y,
+                self._wp_pin_yaw,
+                self._wp_pin_segment,
+                self._wp_pin_s,
+                self._wp_pin_ey,
+                self._wp_pin_boundary,
+                self.buffers.vehicle_buffers(),
+                self.buffers.prev_x,
+                self.buffers.prev_y,
+                self.buffers.prev_yaw,
+                self.buffers.prev_s,
+                self.buffers.frenet_segment,
+                self.buffers.frenet_s,
+                self.buffers.frenet_ey,
+                self.buffers.boundary_distance,
+                self.buffers.progress_s,
+                self.buffers.rewards,
+                self.buffers.episode_step,
+                self.buffers.stalled_steps,
+                self.buffers.done,
+                self.buffers.timeout,
+                self.buffers.reset_mask,
+                self.buffers.active,
+                self.buffers.trainable,
+                float(self.vehicle_params.i_brake_max_a),
+            ],
+            device=self.buffers.wp_device,
+        )
 
     def _spawn_slot(
         self,
@@ -1007,12 +1124,15 @@ class WarpNAgentSimulator:
             ],
             device=self.buffers.wp_device,
         )
+        async_respawn = 1 if cfg.agents.async_respawn else 0
+        sync_flag = 1 if self.sync_no_respawn else 0
         wp.launch(
-            progress_wall_kernel,
+            post_contact_and_geom_kernel,
             dim=n,
             inputs=[
                 vehicles,
                 self.buffers.active,
+                self.buffers.trainable,
                 self.buffers.track_id,
                 self.buffers.frenet_segment,
                 self.buffers.frenet_s,
@@ -1033,14 +1153,6 @@ class WarpNAgentSimulator:
                 self.wp_track_length,
                 half_w,
                 self.buffers.width_scale,
-            ],
-            device=self.buffers.wp_device,
-        )
-        wp.launch(
-            push_command_history_kernel,
-            dim=n,
-            inputs=[
-                self.buffers.active,
                 self.buffers.applied_effort,
                 self.buffers.steer,
                 self.buffers.executed_long_0,
@@ -1053,103 +1165,90 @@ class WarpNAgentSimulator:
                 self.buffers.executed_steer_4,
                 self.buffers.executed_steer_5,
                 self.buffers.executed_steer_6,
-            ],
-            device=self.buffers.wp_device,
-        )
-        async_respawn = 1 if cfg.agents.async_respawn else 0
-        sync_flag = 1 if self.sync_no_respawn else 0
-        wp.launch(
-            terminal_mask_kernel,
-            dim=n,
-            inputs=[
-                vehicles,
-                self.buffers.active,
-                self.buffers.trainable,
                 self.buffers.done,
                 self.buffers.timeout,
                 self.buffers.reset_mask,
                 self.buffers.episode_step,
                 self.buffers.episode_horizon,
-                self.buffers.boundary_distance,
-                self.buffers.wall_contact,
                 self.buffers.contact,
                 self.buffers.contact_closing_speed,
                 self.buffers.stalled_steps,
                 async_respawn,
                 sync_flag,
-                half_w,
                 4.0,
                 0.15,
                 50,
+                self._wp_track_length_slot,
+                self._wp_half_width,
+                self._wp_tangent_yaw,
             ],
             device=self.buffers.wp_device,
         )
 
-    def _run_graphable_launches(self) -> None:
-        """Replay captured graph or launch; capture once after warmup if supported."""
-        if self._cuda_graph is not None:
-            wp.capture_launch(self._cuda_graph)
-            self._cuda_graph_status = "replaying"
-            return
-        if (
-            self._cuda_graph_enabled
-            and self._cuda_graph_warmup_left <= 0
-            and self._cuda_graph is None
-        ):
-            try:
-                with wp.ScopedCapture() as capture:
-                    self._launch_physics_contact_terminal()
-                self._cuda_graph = capture.graph
-                self._cuda_graph_status = "captured"
-                # ScopedCapture only records the launches; this step's physics
-                # has not run yet, so replay the graph once before returning.
-                wp.capture_launch(self._cuda_graph)
-                return
-            except Exception as exc:  # noqa: BLE001 — probe unsupported capture paths
-                self._cuda_graph = None
-                self._cuda_graph_enabled = False
-                self._cuda_graph_status = f"unsupported:{type(exc).__name__}"
-                # Capture may not have executed; fall through to eager launch.
-        self._launch_physics_contact_terminal()
-        if self._cuda_graph_enabled and self._cuda_graph is None:
-            self._cuda_graph_warmup_left = max(0, self._cuda_graph_warmup_left - 1)
-            self._cuda_graph_status = "warming"
+    def _launch_pre_respawn_snapshot(self) -> None:
+        n = self.layout.num_slots
+        vehicles = self.buffers.vehicle_buffers()
+        wp.launch(
+            pack_compact_state_kernel,
+            dim=n,
+            inputs=[
+                vehicles,
+                self.buffers.frenet_s,
+                self.buffers.frenet_ey,
+                self.buffers.progress_s,
+                self.buffers.boundary_distance,
+                self.buffers.contact,
+                self.buffers.wall_contact,
+                self.buffers.contact_closing_speed,
+                self.buffers.lidar_range_noise_std,
+                self.buffers.lidar_dropout_prob,
+                self.buffers.lidar_far_dropout_prob,
+                self.buffers.lidar_angle_bias,
+                self.buffers.lidar_extrinsic_x,
+                self.buffers.lidar_extrinsic_y,
+                self.buffers.lidar_extrinsic_yaw,
+                self.buffers.lidar_sector_start,
+                self.buffers.lidar_sector_width,
+                self.buffers.active,
+                self.buffers.stalled_steps,
+                self.buffers.executed_long_0,
+                self.buffers.executed_long_1,
+                self.buffers.executed_long_2,
+                self.buffers.executed_steer_0,
+                self.buffers.executed_steer_1,
+                self.buffers.executed_steer_2,
+                self.buffers.executed_steer_3,
+                self.buffers.executed_steer_4,
+                self.buffers.executed_steer_5,
+                self.buffers.executed_steer_6,
+                self.buffers.frenet_segment,
+                self._wp_next_compact,
+            ],
+            device=self.buffers.wp_device,
+        )
+        wp.launch(
+            snapshot_transition_kernel,
+            dim=n,
+            inputs=[
+                self.buffers.done,
+                self.buffers.timeout,
+                self.buffers.reset_mask,
+                self.buffers.contact,
+                self.buffers.wall_contact,
+                self._wp_snap_done,
+                self._wp_snap_timeout,
+                self._wp_snap_reset,
+                self._wp_snap_contact,
+                self._wp_snap_wall,
+            ],
+            device=self.buffers.wp_device,
+        )
 
-    def step(self, actions: Any) -> dict[str, Any]:
+    def _launch_reward_and_respawn(self) -> None:
         cfg = self.cfg
         n = self.layout.num_slots
-        act = torch.as_tensor(
-            actions, dtype=torch.float32, device=self.buffers.torch_device
-        ).reshape(n, 2)
-        act = torch.clamp(act, -1.0, 1.0)
-        self._action_buf.copy_(act)
-
-        if self._style_tensors is None:
-            self.apply_styles(self.styles)
-
-        # Physics/contact/terminal: static-shape Warp graph when supported.
-        self._run_graphable_launches()
-        # Undo any contact-impulse motion on static opponents before rewards
-        # or sensors read this step's position/frenet state.
-        self._pin_static_slots()
-
-        # Rewards / async respawn / sensors stay eager (Torch interop + style scatter).
-        terms = self._launch_reward_kernels()
-        # Clone term views: callers retain them across later steps / respawns.
-        term_dict = {k: v.detach().clone() for k, v in terms.as_dict().items()}
-        self.last_reward_terms = term_dict
-        t = self.buffers.torch_arrays
-        # Snapshot transition-time flags before async respawn clears slot state.
-        # PPO GAE needs done/timeout from the dying transition; GRU/style use
-        # reset_mask (kept 1 through respawn). Contact/wall feed rollout metrics.
-        done_t = (t.done > 0).clone()
-        timeout_t = (t.timeout > 0).clone()
-        reset_t = (t.reset_mask > 0).clone()
-        contact_t = (t.contact > 0).clone()
-        wall_t = (t.wall_contact > 0).clone()
-        # Next state of this transition, before respawn overwrites the slot.
-        # PPO bootstraps truncated episodes from V(next_state).
-        next_compact = self.pack_state()
+        self._launch_reward_kernels()
+        self._launch_pre_respawn_snapshot()
         async_respawn = bool(cfg.agents.async_respawn) and not self.sync_no_respawn
         if async_respawn:
             self._launch_async_respawn(cfg.seed)
@@ -1164,7 +1263,73 @@ class WarpNAgentSimulator:
                 ],
                 device=self.buffers.wp_device,
             )
-        self._launch_sensors()
+
+    def _launch_full_step(self) -> None:
+        """All Warp launches for one control tick (CUDA-graph candidate)."""
+        self._launch_physics_contact_terminal()
+        self._pin_static_slots()
+        self._launch_reward_and_respawn()
+        self._launch_sensors_eager()
+
+    def _run_graphable_launches(self) -> None:
+        """Replay captured graph or launch; capture once after warmup if supported."""
+        if self._cuda_graph is not None:
+            wp.capture_launch(self._cuda_graph)
+            self._cuda_graph_status = "replaying"
+            self._sensor_cuda_graph_status = "replaying"
+            return
+        if (
+            self._cuda_graph_enabled
+            and self._cuda_graph_warmup_left <= 0
+            and self._cuda_graph is None
+        ):
+            try:
+                with wp.ScopedCapture() as capture:
+                    self._launch_full_step()
+                self._cuda_graph = capture.graph
+                self._cuda_graph_status = "captured"
+                self._sensor_cuda_graph_status = "captured"
+                wp.capture_launch(self._cuda_graph)
+                return
+            except Exception as exc:  # noqa: BLE001 — probe unsupported capture paths
+                self._cuda_graph = None
+                self._cuda_graph_enabled = False
+                self._cuda_graph_status = f"unsupported:{type(exc).__name__}"
+                self._sensor_cuda_graph_status = self._cuda_graph_status
+        self._launch_full_step()
+        if self._cuda_graph_enabled and self._cuda_graph is None:
+            self._cuda_graph_warmup_left = max(0, self._cuda_graph_warmup_left - 1)
+            self._cuda_graph_status = "warming"
+
+    def step(self, actions: Any) -> dict[str, Any]:
+        n = self.layout.num_slots
+        act = torch.as_tensor(
+            actions, dtype=torch.float32, device=self.buffers.torch_device
+        ).reshape(n, 2)
+        act = torch.clamp(act, -1.0, 1.0)
+        self._action_buf.copy_(act)
+
+        if self._style_tensors is None:
+            self.apply_styles(self.styles)
+
+        # Physics, contact, reward, respawn, and LiDAR: one CUDA graph after warmup.
+        self._run_graphable_launches()
+        t = self.buffers.torch_arrays
+        term_dict = RewardTerms(
+            total=t.rewards,
+            progress=wp.to_torch(self._wp_r_progress),
+            collision=wp.to_torch(self._wp_r_collision),
+            boundary=wp.to_torch(self._wp_r_boundary),
+            lane_center=wp.to_torch(self._wp_r_center),
+            passing=wp.to_torch(self._wp_r_passing),
+        ).as_dict()
+        self.last_reward_terms = term_dict
+        done_t = self._torch_snap_done > 0
+        timeout_t = self._torch_snap_timeout > 0
+        reset_t = self._torch_snap_reset > 0
+        contact_t = self._torch_snap_contact > 0
+        wall_t = self._torch_snap_wall > 0
+        next_compact = self._torch_next_compact
 
         # Return zero-copy views for hot fields. Callers that retain tensors across
         # subsequent step()/sensor rebuilds must copy (rollout buffer store_step does).

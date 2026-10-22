@@ -6,6 +6,8 @@ import warp as wp
 
 from gigaflow_f1tenth.sim.vehicle import VehicleBuffers
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 _COLLISION_SPEED_COEF = 0.1
 _LANE_CENTER_MAX_ERR = 2.0
 _REWARD_TOTAL_CLAMP = 100.0
