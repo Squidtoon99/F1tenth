@@ -338,22 +338,24 @@ def eval_from_rest(
         if int(alive.sum().item()) == 0:
             break
     sim.sync_no_respawn = prev_flag
-    best = int(torch.argmax(dist).item())
-    crashed = not bool(alive[best].item())
-    mean_speed = float((spd_sum[best] / max(float(survival[best]) * hz, 1.0)).item())
+    # Slot 0 is the from-rest reference. Max-over-worlds is GPU noise, not a lap.
+    ref = 0
+    crashed = not bool(alive[ref].item())
+    mean_speed = float((spd_sum[ref] / max(float(survival[ref]) * hz, 1.0)).item())
+    dist_m = float(dist[ref].item())
     payload = {
-        "survival_s": float(survival[best].item()),
-        "dist_m": float(dist[best].item()),
+        "survival_s": float(survival[ref].item()),
+        "dist_m": dist_m,
         "crashed": crashed,
         "mean_speed_mps": mean_speed,
-        "max_speed_mps": float(spd_max[best].item()),
+        "max_speed_mps": float(spd_max[ref].item()),
         "n_slots": n,
         "median_dist_m": float(dist.median().item()),
+        "max_dist_m": float(dist.max().item()),
         "spawn": spawn,
         "teacher": bool(teacher),
-        "full_lap": float(dist[best].item()) >= COURTYARD_LENGTH_M and not crashed,
-        "multi_lap": float(dist[best].item()) >= 2.0 * COURTYARD_LENGTH_M
-        and not crashed,
+        "full_lap": dist_m >= COURTYARD_LENGTH_M and not crashed,
+        "multi_lap": dist_m >= 2.0 * COURTYARD_LENGTH_M and not crashed,
     }
     actor.train()
     return payload
@@ -387,7 +389,11 @@ def train_courtyard(
     run_dir.mkdir(parents=True, exist_ok=True)
     sim = build_courtyard_sim(cfg, device, no_respawn=False)
     actor = load_student(cfg, checkpoint, device)
+    if hasattr(actor, "gru"):
+        actor.gru.flatten_parameters()
     frozen = copy.deepcopy(actor).eval()
+    if hasattr(frozen, "gru"):
+        frozen.gru.flatten_parameters()
     for param in frozen.parameters():
         param.requires_grad_(False)
     opt = torch.optim.Adam(actor.parameters(), lr=float(lr))
@@ -410,7 +416,7 @@ def train_courtyard(
         reset_buf = []
         hid0 = hidden.detach()
         rew_acc = []
-        spawn_curriculum(sim, rest_frac=0.4 + 0.2 * (1.0 - frac), rng=rng)
+        spawn_curriculum(sim, rest_frac=0.55 + 0.25 * (1.0 - frac), rng=rng)
         hidden = actor.initial_hidden(n, device=device)
         hid0 = hidden.detach()
         obs = t.sensor_obs
