@@ -8,6 +8,8 @@
 #
 # Transfers image tarballs, checkpoints, and params.yaml in one rsync, then
 # docker-loads images and writes /opt/f1tenth/run/*.sh wrappers on the car.
+# On the target, `uname -m` selects linux/arm64 (`*-arm64.tar.gz`) vs
+# linux/amd64 tarballs so a Jetson Orin loads native aarch64 images.
 #
 # Does NOT SSH when --dry-run is set. Does not delete remote files.
 set -euo pipefail
@@ -106,37 +108,30 @@ fi
 
 GIGAFLOW_ALL="${IMAGES_DIR}/f1tenth-gigaflow-all-models.tar.gz"
 GIGAFLOW_ONE="${IMAGES_DIR}/f1tenth-gigaflow.tar.gz"
+GIGAFLOW_ARM64="${IMAGES_DIR}/f1tenth-gigaflow-arm64.tar.gz"
 SENSOR_TAR="${IMAGES_DIR}/f1tenth-sensor-policy.tar.gz"
 SENSOR_ALL="${IMAGES_DIR}/f1tenth-sensor-policy-all-models.tar.gz"
+SENSOR_ARM64="${IMAGES_DIR}/f1tenth-sensor-policy-arm64.tar.gz"
 TRAINER_TAR="${IMAGES_DIR}/f1tenth-courtyard-trainer.tar.gz"
 RACING_TAR="${IMAGES_DIR}/f1tenth-racing.tar.gz"
+RACING_ARM64="${IMAGES_DIR}/f1tenth-racing-arm64.tar.gz"
 
-LOAD_TARS=()
-if [ -f "${GIGAFLOW_ALL}" ]; then
-  LOAD_TARS+=("${GIGAFLOW_ALL}")
-elif [ -f "${GIGAFLOW_ONE}" ]; then
-  LOAD_TARS+=("${GIGAFLOW_ONE}")
-else
-  echo "missing gigaflow tarball (want f1tenth-gigaflow-all-models.tar.gz or f1tenth-gigaflow.tar.gz)" >&2
+# Jetson Orin (`shereef@f1tenth`) is aarch64 — require native arm64 car images.
+need_file "${GIGAFLOW_ARM64}" || MISSING=1
+need_file "${SENSOR_ARM64}" || MISSING=1
+if [ ! -f "${GIGAFLOW_ALL}" ] && [ ! -f "${GIGAFLOW_ONE}" ]; then
+  echo "missing amd64 gigaflow tarball (want f1tenth-gigaflow-all-models.tar.gz or f1tenth-gigaflow.tar.gz)" >&2
   MISSING=1
 fi
-if [ -f "${SENSOR_ALL}" ]; then
-  LOAD_TARS+=("${SENSOR_ALL}")
-elif [ -f "${SENSOR_TAR}" ]; then
-  LOAD_TARS+=("${SENSOR_TAR}")
-else
-  echo "missing sensor-policy tarball" >&2
+if [ ! -f "${SENSOR_ALL}" ] && [ ! -f "${SENSOR_TAR}" ]; then
+  echo "missing amd64 sensor-policy tarball" >&2
   MISSING=1
 fi
-if [ -f "${TRAINER_TAR}" ]; then
-  LOAD_TARS+=("${TRAINER_TAR}")
-else
+if [ ! -f "${TRAINER_TAR}" ]; then
   echo "missing courtyard trainer tarball" >&2
   MISSING=1
 fi
-if [ -f "${RACING_TAR}" ]; then
-  LOAD_TARS+=("${RACING_TAR}")
-else
+if [ ! -f "${RACING_TAR}" ]; then
   echo "missing racing tarball" >&2
   MISSING=1
 fi
@@ -226,25 +221,67 @@ ls -lh ${REMOTE_ROOT}/policies ${REMOTE_ROOT}/config/params.yaml
 EOS
 )"
 
-echo "==> 3. docker load image tarballs"
-LOAD_LIST=""
-for tar in "${LOAD_TARS[@]}"; do
-  LOAD_LIST="${LOAD_LIST} ${REMOTE_BUNDLE}/images/$(basename "${tar}")"
-done
-remote "$(cat <<EOS
+echo "==> 3. docker load image tarballs (uname -m selects arm64 vs amd64)"
+remote "$(cat <<'EOS'
 set -euo pipefail
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not usable on remote" >&2
   exit 1
 fi
-for tar in ${LOAD_LIST}; do
-  echo "==> docker load \${tar}"
-  if [ ! -f "\${tar}" ]; then
-    echo "tarball missing on car: \${tar}" >&2
+IMAGES=/opt/f1tenth/deploy-bundle/images
+ARCH=$(uname -m)
+echo "==> target uname -m: ${ARCH}"
+load_tar() {
+  local tar="$1"
+  echo "==> docker load ${tar}"
+  if [ ! -f "${tar}" ]; then
+    echo "tarball missing on car: ${tar}" >&2
     exit 1
   fi
-  gunzip -c "\${tar}" | docker load
-done
+  gunzip -c "${tar}" | docker load
+}
+retag() {
+  local src="$1" dest="$2"
+  if docker image inspect "${src}" >/dev/null 2>&1; then
+    docker tag "${src}" "${dest}"
+    echo "tagged ${src} -> ${dest}"
+  fi
+}
+case "${ARCH}" in
+  aarch64|arm64)
+    load_tar "${IMAGES}/f1tenth-gigaflow-arm64.tar.gz"
+    load_tar "${IMAGES}/f1tenth-sensor-policy-arm64.tar.gz"
+    if [ -f "${IMAGES}/f1tenth-racing-arm64.tar.gz" ]; then
+      load_tar "${IMAGES}/f1tenth-racing-arm64.tar.gz"
+    else
+      echo "note: no arm64 racing tarball; skipping 392-D racing image on Jetson"
+    fi
+    echo "note: courtyard trainer is linux/amd64 CUDA-host; not loaded on Jetson"
+    retag f1tenth-gigaflow:gigaflow-arm64 f1tenth-gigaflow:gigaflow
+    retag f1tenth-gigaflow:courtyard-sleepy-7lap-arm64 f1tenth-gigaflow:courtyard-sleepy-7lap
+    retag f1tenth-gigaflow:courtyard-pr104-6lap-arm64 f1tenth-gigaflow:courtyard-pr104-6lap
+    retag f1tenth-gigaflow:irl-awac-kl-arm64 f1tenth-gigaflow:irl-awac-kl
+    retag f1tenth-gigaflow:base-5700-arm64 f1tenth-gigaflow:base-5700
+    retag f1tenth-sensor-policy:sensor-policy-arm64 f1tenth-sensor-policy:sensor-policy
+    retag f1tenth-sensor-policy:gigaflow-folded-sophy-arm64 f1tenth-sensor-policy:gigaflow-folded-sophy
+    retag f1tenth-sensor-policy:sophy-courtyard-65a-arm64 f1tenth-sensor-policy:sophy-courtyard-65a
+    retag f1tenth-racing:develop-arm64 f1tenth-racing:develop
+    ;;
+  *)
+    if [ -f "${IMAGES}/f1tenth-gigaflow-all-models.tar.gz" ]; then
+      load_tar "${IMAGES}/f1tenth-gigaflow-all-models.tar.gz"
+    else
+      load_tar "${IMAGES}/f1tenth-gigaflow.tar.gz"
+    fi
+    if [ -f "${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz" ]; then
+      load_tar "${IMAGES}/f1tenth-sensor-policy-all-models.tar.gz"
+    else
+      load_tar "${IMAGES}/f1tenth-sensor-policy.tar.gz"
+    fi
+    load_tar "${IMAGES}/f1tenth-courtyard-trainer.tar.gz"
+    load_tar "${IMAGES}/f1tenth-racing.tar.gz"
+    ;;
+esac
 docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' \
   | grep -E 'f1tenth-(gigaflow|sensor-policy|courtyard-trainer|racing)' || true
 EOS
