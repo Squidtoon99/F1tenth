@@ -315,7 +315,7 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
             raise SystemExit(f"unknown arm(s): {missing}")
         arm_specs = [by_name[name] for name in args.arm]
     else:
-        arm_specs = [dict(by_name["bc-kl"])]
+        arm_specs = [dict(next(iter(by_name.values())))]
     result = run_bakeoff(
         checkpoint=args.checkpoint,
         output_dir=args.output_dir,
@@ -565,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ft = sub.add_parser(
         "finetune-offline",
-        help="Off-policy BC/IQL bake-off on teleop windows (never PPO-resume)",
+        help="AWAC+KL teleop fine-tune of a baked actor (never PPO-resume)",
     )
     p_ft.add_argument("--checkpoint", type=Path, required=True)
     p_ft.add_argument("--output-dir", type=Path, required=True)
@@ -593,12 +593,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--method",
         type=str,
         default="bakeoff",
-        help="bakeoff (default). ppo is rejected.",
+        help="awac (default). ppo is rejected.",
     )
     p_ft.add_argument(
         "--campaign",
         action="store_true",
-        help="Run the 7 unique KL-clipped arms plus winner variations",
+        help="Run the kept AWAC+KL winner arm",
     )
     p_ft.add_argument(
         "--arm",

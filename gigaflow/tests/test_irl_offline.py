@@ -126,8 +126,7 @@ def test_refuse_ppo_resume():
         refuse_ppo("ppo")
     with pytest.raises(ValueError, match="never PPO-resume"):
         refuse_ppo("ppo-resume")
-    refuse_ppo("iql")
-    refuse_ppo("bc")
+    refuse_ppo("awac")
 
 
 def test_load_maxpool64_artifact_from_smoke_cfg(tmp_path):
@@ -161,17 +160,22 @@ def test_bakeoff_synthetic_keep_or_revert(tmp_path):
         device="cpu",
         window=8,
         arms=(
-            {"name": "bc-kl", "method": "bc", "kl_coef": 0.1, "kl_max": 0.05},
-            {"name": "iql-kl", "method": "iql", "kl_coef": 0.1, "kl_max": 0.05},
+            {
+                "name": "awac-kl-kl2x",
+                "method": "awac",
+                "kl_coef": 0.2,
+                "kl_max": 0.05,
+                "beta": 1.0,
+            },
         ),
         include_variations=False,
     )
     assert result["scalar"] == "holdout_action_mse"
-    assert set(result["arms"]) == {"baseline", "bc-kl", "iql-kl"}
+    assert set(result["arms"]) == {"baseline", "awac-kl-kl2x"}
     assert result["winner"] in result["arms"]
     assert result["decision"] in {"keep", "revert"}
     assert result["keep"] is (result["winner"] != "baseline")
-    assert "kl" in result["arms"]["bc-kl"]["train"]
+    assert "kl" in result["arms"]["awac-kl-kl2x"]["train"]
     for name, row in result["arms"].items():
         assert np.isfinite(row["score"]), name
         assert Path(row["artifact"]).is_file()
@@ -211,7 +215,7 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
             "--window",
             "8",
             "--arm",
-            "bc-kl",
+            "awac-kl-kl2x",
             "--no-variations",
             "--no-wandb",
         ]
@@ -219,7 +223,7 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
     assert rc == 0
     ft = json.loads(capsys.readouterr().out)
     assert ft["scalar"] == "holdout_action_mse"
-    assert ft["winner"] in {"baseline", "bc-kl"}
+    assert ft["winner"] in {"baseline", "awac-kl-kl2x"}
 
 
 def test_cli_finetune_rejects_ppo(tmp_path):

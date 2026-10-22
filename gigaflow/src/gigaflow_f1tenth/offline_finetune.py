@@ -1,8 +1,7 @@
-"""Off-policy fine-tune of a baked Gigaflow actor on teleop windows.
+"""AWAC+KL fine-tune of a baked Gigaflow actor on teleop windows.
 
-One trainer, arm hyperparameters as data. PPO resume is rejected: actor-only
-weights have no critic / optimizer state. Every fine-tune arm applies a KL
-clip to a frozen copy of the base policy.
+PPO resume is rejected: actor-only weights have no critic / optimizer state.
+The kept arm clips Gaussian KL to a frozen copy of the base policy.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from gigaflow_f1tenth.model import (
     actor_from_architecture,
     build_actor,
 )
-from gigaflow_f1tenth.sim.layout_local import VESC_SPEED
 from gigaflow_f1tenth.teleop_dataset import (
     split_holdout,
     synthetic_trajectories,
@@ -37,58 +35,16 @@ from gigaflow_f1tenth.teleop_dataset import (
 
 SCALAR_NAME = "holdout_action_mse"
 PPO_METHODS = {"ppo", "ppo-resume", "ppo_resume"}
-DEFAULT_KL_COEF = 0.1
+DEFAULT_KL_COEF = 0.2
 DEFAULT_KL_MAX = 0.05
-
-# Seven unique distillations. Variations of the winner are built at runtime.
-UNIQUE_ARMS: tuple[dict[str, Any], ...] = (
-    {
-        "name": "bc-kl",
-        "method": "bc",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-    },
-    {
-        "name": "iql-kl",
-        "method": "iql",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-    },
-    {
-        "name": "awac-kl",
-        "method": "awac",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-        "beta": 1.0,
-    },
-    {
-        "name": "crr-kl",
-        "method": "crr",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-    },
-    {
-        "name": "bc-steer-kl",
-        "method": "bc",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-        "action_weights": (0.4, 1.6),
-    },
-    {
-        "name": "bc-force-kl",
-        "method": "bc",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-        "action_weights": (1.6, 0.4),
-    },
-    {
-        "name": "bc-fast-kl",
-        "method": "bc",
-        "kl_coef": DEFAULT_KL_COEF,
-        "kl_max": DEFAULT_KL_MAX,
-        "speed_quantile": 0.5,
-    },
-)
+WINNER_ARM: dict[str, Any] = {
+    "name": "awac-kl-kl2x",
+    "method": "awac",
+    "kl_coef": DEFAULT_KL_COEF,
+    "kl_max": DEFAULT_KL_MAX,
+    "beta": 1.0,
+}
+UNIQUE_ARMS: tuple[dict[str, Any], ...] = (dict(WINNER_ARM),)
 
 
 def _mlp(sizes: list[int]) -> nn.Sequential:
@@ -231,22 +187,6 @@ def holdout_kl(
     return float(gaussian_kl(mean_p, log_std_p, mean_q, log_std_q).item())
 
 
-def _expectile(diff: torch.Tensor, tau: float) -> torch.Tensor:
-    weight = torch.where(diff > 0.0, tau, 1.0 - tau)
-    return (weight * diff.square()).mean()
-
-
-def _filter_speed(
-    windows: Mapping[str, np.ndarray], quantile: float
-) -> Mapping[str, np.ndarray]:
-    vx = np.abs(windows["obs"][..., VESC_SPEED]).mean(axis=1)
-    thresh = float(np.quantile(vx, float(quantile)))
-    keep = vx >= thresh
-    if int(keep.sum()) == 0:
-        return windows
-    return {key: value[keep] for key, value in windows.items()}
-
-
 def finetune(
     actor: ConditionedLidarGRUActor,
     base: ConditionedLidarGRUActor,
@@ -261,32 +201,23 @@ def finetune(
     device: str,
     kl_coef: float = DEFAULT_KL_COEF,
     kl_max: float = DEFAULT_KL_MAX,
-    action_weights: Sequence[float] = (1.0, 1.0),
-    tau: float = 0.7,
     gamma: float = 0.99,
     beta: float = 1.0,
-    speed_quantile: float | None = None,
 ) -> dict[str, float]:
     refuse_ppo(method)
-    train_w = windows
-    if speed_quantile is not None:
-        train_w = _filter_speed(windows, float(speed_quantile))
+    if str(method) != "awac":
+        raise ValueError("only the winning AWAC+KL arm is kept")
     rng = np.random.default_rng(int(seed))
     opt = torch.optim.Adam(actor.parameters(), lr=float(lr))
-    heads = None
-    q_opt = v_opt = None
-    needs_q = str(method) in {"iql", "awac", "crr"}
-    if needs_q:
-        heads = IQLHeads(int(actor.shapes().gru_hidden_dim)).to(device)
-        q_opt = torch.optim.Adam(heads.q.parameters(), lr=float(lr))
-        v_opt = torch.optim.Adam(heads.v.parameters(), lr=float(lr))
-        heads.train()
+    heads = IQLHeads(int(actor.shapes().gru_hidden_dim)).to(device)
+    q_opt = torch.optim.Adam(heads.q.parameters(), lr=float(lr))
+    v_opt = torch.optim.Adam(heads.v.parameters(), lr=float(lr))
+    heads.train()
     actor.train()
     base.eval()
     for param in base.parameters():
         param.requires_grad_(False)
-    n = int(train_w["obs"].shape[0])
-    weights = torch.as_tensor(list(action_weights), dtype=torch.float32, device=device)
+    n = int(windows["obs"].shape[0])
     last = {
         "nll": 0.0,
         "kl": 0.0,
@@ -298,7 +229,7 @@ def finetune(
     skipped = 0
     for _ in range(int(steps)):
         idx = rng.integers(0, n, size=min(int(batch_size), n))
-        obs, actions, rewards, dones, resets = _batch_to_torch(train_w, device, idx)
+        obs, actions, rewards, dones, resets = _batch_to_torch(windows, device, idx)
         cond = _condition_tensor(payload, obs.shape[0], device)
         hidden0 = actor.initial_hidden(obs.shape[0], device)
         logp, mean, log_std = _dist_stats(actor, obs, cond, hidden0, actions, resets)
@@ -313,54 +244,37 @@ def finetune(
             last["skipped"] = float(skipped)
             continue
         nll = -logp.mean()
-        weighted = bool(
-            abs(float(weights[0]) - 1.0) > 1e-6 or abs(float(weights[1]) - 1.0) > 1e-6
+        batch, length, _ = obs.shape
+        hidden_dim = int(actor.shapes().gru_hidden_dim)
+        flat_obs = obs.reshape(batch * length, obs.shape[-1])
+        flat_cond = (
+            cond.unsqueeze(1)
+            .expand(batch, length, -1)
+            .reshape(batch * length, cond.shape[-1])
         )
-        extra = (
-            (weights * (mean - actions).square()).mean()
-            if weighted
-            else mean.new_zeros(())
+        trunk = actor.encode_trunk(flat_obs, flat_cond).view(batch, length, -1)
+        gru_out, _ = actor._gru_sequence(trunk, hidden0, resets)
+        h = gru_out.detach()
+        q_sa = heads.q_value(h.reshape(-1, hidden_dim), actions.reshape(-1, 2))
+        q_sa = q_sa.view(batch, length)
+        v_s = heads.v_value(h.reshape(-1, hidden_dim)).view(batch, length)
+        q_loss = F.mse_loss(
+            q_sa[:, :-1],
+            (
+                rewards[:, :-1]
+                + float(gamma) * (1.0 - dones[:, :-1]) * v_s[:, 1:].detach()
+            ),
         )
-        pi_term = nll + extra
-        q_loss = v_loss = mean.new_zeros(())
-        if needs_q and heads is not None and q_opt is not None and v_opt is not None:
-            batch, length, _ = obs.shape
-            hidden_dim = int(actor.shapes().gru_hidden_dim)
-            flat_obs = obs.reshape(batch * length, obs.shape[-1])
-            flat_cond = (
-                cond.unsqueeze(1)
-                .expand(batch, length, -1)
-                .reshape(batch * length, cond.shape[-1])
-            )
-            trunk = actor.encode_trunk(flat_obs, flat_cond).view(batch, length, -1)
-            gru_out, _ = actor._gru_sequence(trunk, hidden0, resets)
-            h = gru_out.detach()
-            q_sa = heads.q_value(h.reshape(-1, hidden_dim), actions.reshape(-1, 2))
-            q_sa = q_sa.view(batch, length)
-            v_s = heads.v_value(h.reshape(-1, hidden_dim)).view(batch, length)
-            q_loss = F.mse_loss(
-                q_sa[:, :-1],
-                (
-                    rewards[:, :-1]
-                    + float(gamma) * (1.0 - dones[:, :-1]) * v_s[:, 1:].detach()
-                ),
-            )
-            if str(method) == "iql":
-                v_loss = _expectile(q_sa.detach() - v_s, float(tau))
-            else:
-                v_loss = F.mse_loss(v_s, q_sa.detach())
-            q_opt.zero_grad(set_to_none=True)
-            q_loss.backward()
-            q_opt.step()
-            v_opt.zero_grad(set_to_none=True)
-            v_loss.backward()
-            v_opt.step()
-            adv = q_sa[:, :-1].detach() - v_s[:, :-1].detach()
-            if str(method) == "crr":
-                weight = (adv > 0.0).to(dtype=logp.dtype)
-            else:
-                weight = torch.exp((adv / max(float(beta), 1e-6)).clamp(max=10.0))
-            pi_term = -(weight * logp[:, :-1]).mean() + extra
+        v_loss = F.mse_loss(v_s, q_sa.detach())
+        q_opt.zero_grad(set_to_none=True)
+        q_loss.backward()
+        q_opt.step()
+        v_opt.zero_grad(set_to_none=True)
+        v_loss.backward()
+        v_opt.step()
+        adv = q_sa[:, :-1].detach() - v_s[:, :-1].detach()
+        weight = torch.exp((adv / max(float(beta), 1e-6)).clamp(max=10.0))
+        pi_term = -(weight * logp[:, :-1]).mean()
         loss = pi_term + float(kl_coef) * kl
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -380,28 +294,7 @@ def finetune(
 
 def refuse_ppo(method: str) -> None:
     if str(method).strip().lower() in PPO_METHODS:
-        raise ValueError("never PPO-resume from actor-only weights; use bc or iql")
-
-
-def winner_variations(winner_spec: Mapping[str, Any]) -> list[dict[str, Any]]:
-    base = dict(winner_spec)
-    name = str(base.get("name", "winner"))
-    kl = float(base.get("kl_coef", DEFAULT_KL_COEF))
-    lr_scale = float(base.get("lr_scale", 1.0))
-    return [
-        {
-            **base,
-            "name": f"{name}-kl2x",
-            "kl_coef": kl * 2.0,
-            "variation_of": name,
-        },
-        {
-            **base,
-            "name": f"{name}-lr-half",
-            "lr_scale": lr_scale * 0.5,
-            "variation_of": name,
-        },
-    ]
+        raise ValueError("never PPO-resume from actor-only weights; use awac")
 
 
 def _write_actor(path: Path, payload: Mapping[str, Any], actor) -> str:
@@ -458,7 +351,7 @@ def run_bakeoff(
 
     def _run_spec(spec: Mapping[str, Any]) -> None:
         name = str(spec["name"])
-        refuse_ppo(str(spec.get("method", "bc")))
+        refuse_ppo(str(spec.get("method", "awac")))
         student = copy.deepcopy(actor0)
         teacher = copy.deepcopy(actor0)
         teacher.eval()
@@ -476,10 +369,7 @@ def run_bakeoff(
             device=device,
             kl_coef=float(spec.get("kl_coef", DEFAULT_KL_COEF)),
             kl_max=float(spec.get("kl_max", DEFAULT_KL_MAX)),
-            action_weights=tuple(spec.get("action_weights", (1.0, 1.0))),
-            tau=float(spec.get("tau", 0.7)),
             beta=float(spec.get("beta", 1.0)),
-            speed_quantile=spec.get("speed_quantile"),
         )
         results[name] = {
             "score": action_mse(student, hold_w, payload, device),
@@ -506,12 +396,6 @@ def run_bakeoff(
 
     unique_names = ["baseline", *[str(s["name"]) for s in specs]]
     unique_winner = min(unique_names, key=lambda n: float(results[n]["score"]))
-    variation_specs: list[dict[str, Any]] = []
-    if include_variations and unique_winner != "baseline":
-        variation_specs = winner_variations(results[unique_winner]["spec"])
-        for spec in variation_specs:
-            _run_spec(spec)
-
     winner = min(results, key=lambda n: float(results[n]["score"]))
     keep = winner != "baseline"
     winner_path = output / "winner_actor.pt"
@@ -542,7 +426,7 @@ def run_bakeoff(
         "steps": int(steps),
         "checkpoint": str(checkpoint),
         "unique_arms": [str(s["name"]) for s in specs],
-        "variation_arms": [str(s["name"]) for s in variation_specs],
+        "variation_arms": [],
     }
     (output / "bakeoff.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
