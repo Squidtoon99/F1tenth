@@ -47,8 +47,9 @@ def gaussian_kl(
 ) -> torch.Tensor:
     var_p = torch.exp(log_std_p * 2.0)
     var_q = torch.exp(log_std_q * 2.0).clamp(min=1e-6)
-    term = (var_p + (mean_p - mean_q).square()) / var_q
-    return 0.5 * (log_std_q - log_std_p + term - 1.0).sum(dim=-1).mean()
+    log_std_ratio = log_std_q - log_std_p
+    quad = (var_p + (mean_p - mean_q).square()) / var_q
+    return (log_std_ratio + 0.5 * (quad - 1.0)).sum(dim=-1).mean()
 
 
 def _actor_state_dict(payload: Mapping[str, Any]) -> dict[str, Any]:

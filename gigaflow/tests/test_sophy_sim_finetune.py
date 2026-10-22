@@ -26,6 +26,7 @@ from gigaflow_f1tenth.model import ConditionedLidarGRUActor, actor_shapes, build
 from gigaflow_f1tenth.sim.vehicle import F_BRAKE_MAX, F_DRIVE_MAX, VehicleParams
 from gigaflow_f1tenth.sophy_compat import (
     BakedConditionActor,
+    gaussian_kl,
     load_baked_actor,
     refuse_ppo_resume,
 )
@@ -89,6 +90,26 @@ def test_load_maxpool64_artifact_from_smoke_cfg(tmp_path):
     assert restored.pool_bins == 64
     assert restored.pool_mode == "max"
     assert restored.encoder.projection.weight.shape[-1] == 64 * 64
+
+
+def test_gaussian_kl_identical_is_zero_and_shift_matches_closed_form():
+    mean = torch.zeros(4, 8, 2)
+    log_std = torch.zeros_like(mean)
+    assert gaussian_kl(mean, log_std, mean, log_std).item() == pytest.approx(0.0, abs=1e-6)
+    mean_p = torch.tensor([[0.0, 0.0]])
+    mean_q = torch.tensor([[1.0, 0.0]])
+    log_std_p = torch.zeros(1, 2)
+    log_std_q = torch.zeros(1, 2)
+    assert gaussian_kl(mean_p, log_std_p, mean_q, log_std_q).item() == pytest.approx(
+        0.5, abs=1e-5
+    )
+    torch.manual_seed(0)
+    mean_p = torch.randn(3, 5, 2)
+    log_std_p = torch.randn(3, 5, 2) * 0.1
+    mean_q = torch.randn(3, 5, 2)
+    log_std_q = torch.randn(3, 5, 2) * 0.1
+    kl = float(gaussian_kl(mean_p, log_std_p, mean_q, log_std_q))
+    assert kl >= -1e-6
 
 
 def test_refuse_ppo_resume():
