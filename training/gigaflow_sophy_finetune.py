@@ -32,7 +32,7 @@ def _smoke_patch(base: dict) -> dict:
     cfg["ppo"]["epochs"] = 1
     cfg["ppo"]["env_minibatches"] = 8
     cfg["ppo"]["critic_warmup_updates"] = 1
-    cfg["schedule"]["total_transitions"] = 64
+    cfg["schedule"]["total_transitions"] = 128
     cfg["schedule"]["log_interval_transitions"] = 64
     cfg["schedule"]["export_interval_transitions"] = 0
     cfg["schedule"]["eval_interval_transitions"] = 0
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "--no-wandb" if args.smoke else "--wandb",
     ]
     if args.smoke:
-        cmd.extend(["--num-envs", "8", "--total-transitions", "64"])
+        cmd.extend(["--num-envs", "8", "--total-transitions", "128"])
     else:
         if args.num_envs is not None:
             cmd.extend(["--num-envs", str(args.num_envs)])
