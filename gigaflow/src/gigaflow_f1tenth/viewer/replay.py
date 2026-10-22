@@ -58,6 +58,7 @@ SENSOR_NORMALIZER_BUFFERS = frozenset(
         "sensor_normalizer.count",
     }
 )
+OPTIONAL_ACTOR_BUFFERS = SENSOR_NORMALIZER_BUFFERS | frozenset({"baked_condition"})
 _ARCHITECTURE_CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any] | None]] = {}
 
 
@@ -385,7 +386,7 @@ def _load_native_condition_actor(
     # Actors from before the sensor normalizer existed keep the identity
     # transform a freshly built normalizer applies, which is the input pipeline
     # they were trained under.
-    missing = sorted(set(loaded.missing_keys) - SENSOR_NORMALIZER_BUFFERS)
+    missing = sorted(set(loaded.missing_keys) - OPTIONAL_ACTOR_BUFFERS)
     if unexpected or missing:
         raise ViewerError(
             f"checkpoint weights do not fit a condition_dim={width} actor: "

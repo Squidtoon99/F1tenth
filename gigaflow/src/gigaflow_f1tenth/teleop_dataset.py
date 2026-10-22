@@ -1,4 +1,4 @@
-"""Build 10 Hz Gigaflow (obs, action) windows from manual / teleop rosbags."""
+"""Build 20 Hz Gigaflow (obs, action) windows from manual / teleop rosbags."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from gigaflow_f1tenth.sim.layout_local import (
     LIDAR_RANGE_MAX,
     LIDAR_RANGE_MIN,
     SENSOR_OBS_DIM,
+    HISTORY_STRIDE,
+    LONG_HISTORY,
     STEER_DELTA0,
     STEER_DELTA1,
     STEER_DELTA2,
@@ -32,14 +34,25 @@ from gigaflow_f1tenth.sim.layout_local import (
     VESC_SPEED,
 )
 
-CONTROL_HZ = 10.0
-CONTROL_DT = 1.0 / CONTROL_HZ
+CONTROL_HZ = 20.0
+CONTROL_DT = 0.05
+assert abs(CONTROL_DT - 1.0 / CONTROL_HZ) < 1e-12
+assert HISTORY_STRIDE == 2
+assert STEER_HISTORY == 7
+assert LONG_HISTORY == 3
 ODOM_VX_SIGN = -1.0
 STATIONARY_VX = 0.2
 MIN_WINDOW_S = 1.0
 DEFAULT_BAG_ROOTS = (
+    Path("/home/squid/f1tenth-bags/courtyard_arjun_day"),
+    Path("/home/squid/f1tenth-bags/skidpad_2026-09-21"),
     Path("/home/ubuntu/f1tenth-bags/courtyard_arjun_day"),
     Path("/home/ubuntu/f1tenth-bags/skidpad_2026-09-21"),
+)
+CACHE_CANDIDATES = (
+    Path.home() / "projects" / "F1tenth-gigaflow-ckpts" / "teleop_20hz.npz",
+    Path("/home/squid/projects/F1tenth-gigaflow-ckpts/teleop_20hz.npz"),
+    Path("/home/ubuntu/gigaflow-20h-ckpts/teleop_20hz.npz"),
 )
 SKIP_BAG_NAMES = {
     "rl_auton_20260622_191834",
@@ -102,8 +115,7 @@ def pack_step(
     yaw_rate: float,
     vx_prev: float | None,
     vy_prev: float | None,
-    long_current: float,
-    long_pred: float,
+    long_hist: np.ndarray,
     steer_hist: np.ndarray,
     dt: float = CONTROL_DT,
     out: np.ndarray | None = None,
@@ -126,17 +138,23 @@ def pack_step(
     )
     hist = np.asarray(steer_hist, dtype=np.float32).reshape(-1)
     if hist.size < STEER_HISTORY:
-        raise ValueError("steer history must have 4 entries")
+        raise ValueError(f"steer history must have {STEER_HISTORY} entries")
+    longh = np.asarray(long_hist, dtype=np.float32).reshape(-1)
+    if longh.size < LONG_HISTORY:
+        raise ValueError(f"long history must have {LONG_HISTORY} entries")
+    stride = HISTORY_STRIDE
+    long_current = float(longh[0])
+    long_pred = float(longh[stride])
     obs[VESC_SPEED] = float(vx)
-    obs[VESC_CURRENT] = VESC_CURRENT_SCALE_A * float(long_current)
-    obs[THROTTLE_CURRENT] = float(long_current)
-    obs[THROTTLE_PRED] = float(long_pred)
+    obs[VESC_CURRENT] = VESC_CURRENT_SCALE_A * long_current
+    obs[THROTTLE_CURRENT] = long_current
+    obs[THROTTLE_PRED] = long_pred
     obs[STEER_T] = hist[0]
-    obs[STEER_T1] = hist[1]
-    obs[STEER_T2] = hist[2]
-    obs[STEER_DELTA0] = hist[0] - hist[1]
-    obs[STEER_DELTA1] = hist[1] - hist[2]
-    obs[STEER_DELTA2] = hist[2] - hist[3]
+    obs[STEER_T1] = hist[stride]
+    obs[STEER_T2] = hist[2 * stride]
+    obs[STEER_DELTA0] = hist[0] - hist[stride]
+    obs[STEER_DELTA1] = hist[stride] - hist[2 * stride]
+    obs[STEER_DELTA2] = hist[2 * stride] - hist[3 * stride]
     return obs
 
 
@@ -226,7 +244,7 @@ def load_bag_trajectory(
     bag_dir: Path,
     *,
     odom_vx_sign: float = ODOM_VX_SIGN,
-) -> dict[str, np.ndarray] | None:
+) -> list[dict[str, np.ndarray]] | None:
     from rosbags.highlevel import AnyReader
 
     bag_dir = Path(bag_dir)
@@ -298,8 +316,7 @@ def load_bag_trajectory(
     obs = np.zeros((n, SENSOR_OBS_DIM), dtype=np.float32)
     actions = np.zeros((n, 2), dtype=np.float32)
     steer_hist = np.zeros(STEER_HISTORY, dtype=np.float32)
-    long_current = 0.0
-    long_pred = 0.0
+    long_hist = np.zeros(LONG_HISTORY, dtype=np.float32)
     prev_steer = float(steer[0])
     vx_prev = vy_prev = None
     for i in range(n):
@@ -310,35 +327,61 @@ def load_bag_trajectory(
             float(yaw_rate[i]),
             vx_prev,
             vy_prev,
-            long_current,
-            long_pred,
+            long_hist,
             steer_hist,
             out=obs[i],
         )
         action, realized = teleop_to_action(float(accel[i]), float(steer[i]), prev_steer)
         actions[i] = action
-        long_pred = long_current
-        long_current = float(action[0])
-        steer_hist[3] = steer_hist[2]
-        steer_hist[2] = steer_hist[1]
-        steer_hist[1] = steer_hist[0]
+        long_hist[1:] = long_hist[:-1]
+        long_hist[0] = float(action[0])
+        steer_hist[1:] = steer_hist[:-1]
         steer_hist[0] = realized
         prev_steer = realized
         vx_prev = float(vx[i])
         vy_prev = float(vy[i])
-    rewards = (vx * CONTROL_DT).astype(np.float32)
-    dones = np.zeros(n, dtype=np.float32)
-    dones[-1] = 1.0
-    resets = np.zeros(n, dtype=np.float32)
-    resets[0] = 1.0
-    return {
-        "obs": obs,
-        "actions": actions,
-        "rewards": rewards,
-        "dones": dones,
-        "resets": resets,
-        "vx": vx,
-    }
+    min_lidar = obs[:, :LIDAR_DIM].min(axis=1)
+    boundary = np.clip(0.3 - min_lidar, 0.0, None)
+    rewards = (
+        vx * CONTROL_DT + 0.02 * vx - 0.02 * np.abs(actions[:, 1]) - 0.4 * boundary
+    ).astype(np.float32)
+    return _split_moving_segments(obs, actions, rewards, vx, moving)
+
+
+def _split_moving_segments(
+    obs: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    vx: np.ndarray,
+    moving: np.ndarray,
+) -> list[dict[str, np.ndarray]] | None:
+    min_steps = int(MIN_WINDOW_S * CONTROL_HZ)
+    idx = np.flatnonzero(moving)
+    if idx.size < min_steps:
+        return None
+    cuts = np.flatnonzero(np.diff(idx) != 1) + 1
+    groups = np.split(idx, cuts)
+    trajs: list[dict[str, np.ndarray]] = []
+    for g in groups:
+        if g.size < min_steps:
+            continue
+        sl = slice(int(g[0]), int(g[-1]) + 1)
+        n = int(g[-1] - g[0] + 1)
+        dones = np.zeros(n, dtype=np.float32)
+        dones[-1] = 1.0
+        resets = np.zeros(n, dtype=np.float32)
+        resets[0] = 1.0
+        trajs.append(
+            {
+                "obs": obs[sl],
+                "actions": actions[sl],
+                "rewards": rewards[sl],
+                "dones": dones,
+                "resets": resets,
+                "vx": vx[sl],
+            }
+        )
+    return trajs or None
 
 
 def load_manual_dataset(
@@ -352,18 +395,22 @@ def load_manual_dataset(
         bags = bags[: int(max_bags)]
     for bag in bags:
         try:
-            traj = load_bag_trajectory(bag)
+            loaded = load_bag_trajectory(bag)
         except Exception:
             continue
-        if traj is None:
+        if not loaded:
             continue
-        traj["bag"] = np.asarray([str(bag)])
-        trajs.append(traj)
+        for traj in loaded:
+            traj["bag"] = np.asarray([str(bag)])
+            trajs.append(traj)
     return trajs
 
 
 def split_holdout(
-    trajs: Sequence[dict[str, np.ndarray]], *, holdout_frac: float = 0.25, seed: int = 0
+    trajs: Sequence[dict[str, np.ndarray]],
+    *,
+    holdout_frac: float = 0.15,
+    seed: int = 0,
 ) -> tuple[list[dict[str, np.ndarray]], list[dict[str, np.ndarray]]]:
     if not trajs:
         raise ValueError("no trajectories")

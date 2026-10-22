@@ -21,8 +21,11 @@ from gigaflow_f1tenth.irl_identity import (
     IRL_DYNAMICS,
     IRL_MASS_KG,
     IRL_TIRE_MU,
+    attach_baked_condition,
     baked_normalized_condition,
     baked_raw_style,
+    fold_gru_layer0,
+    folded_gru_module,
 )
 from gigaflow_f1tenth.model import build_actor
 from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
@@ -87,10 +90,25 @@ def test_export_baked_actor_roundtrip(tmp_path):
 
 
 def test_teleop_pack_and_windows():
+    from gigaflow_f1tenth.teleop_dataset import CONTROL_HZ, LONG_HISTORY, STEER_HISTORY
+
     lidar = np.full(1081, 4.0, dtype=np.float32)
-    hist = np.zeros(4, dtype=np.float32)
-    obs = pack_step(lidar, 1.2, 0.0, 0.1, 1.0, 0.0, 0.3, 0.2, hist)
+    hist = np.zeros(STEER_HISTORY, dtype=np.float32)
+    hist[0] = 0.10
+    hist[2] = 0.06
+    hist[4] = 0.02
+    hist[6] = 0.00
+    long_hist = np.zeros(LONG_HISTORY, dtype=np.float32)
+    long_hist[0] = 0.3
+    long_hist[2] = 0.2
+    obs = pack_step(lidar, 1.2, 0.0, 0.1, 1.0, 0.0, long_hist, hist)
+    assert CONTROL_HZ == 20.0
     assert obs.shape == (1097,)
+    from gigaflow_f1tenth.sim.layout_local import STEER_DELTA0, STEER_T, THROTTLE_PRED
+
+    assert obs[STEER_T] == pytest.approx(0.10)
+    assert obs[STEER_DELTA0] == pytest.approx(0.04)
+    assert obs[THROTTLE_PRED] == pytest.approx(0.2)
     action, steer = teleop_to_action(0.5, 0.1, 0.0)
     assert action.shape == (2,)
     assert action[0] == pytest.approx(0.5)
@@ -101,6 +119,46 @@ def test_teleop_pack_and_windows():
     windows = windows_from_trajectories(train, window=8, stride=4)
     assert windows["obs"].ndim == 3
     assert windows["actions"].shape[-1] == 2
+
+
+def test_baked_condition_forward_without_external_c():
+    cfg = load_config(SMOKE)
+    actor = build_actor(cfg)
+    attach_baked_condition(actor)
+    actor.eval()
+    obs = torch.zeros(2, 1097)
+    obs[:, :1081] = 4.0
+    hidden = actor.initial_hidden(2, "cpu")
+    out = actor.forward(obs, None, hidden, deterministic=True)
+    assert out.actions.shape == (2, 2)
+
+
+def test_gru_layer0_fold_parity():
+    cfg = load_config(SMOKE)
+    actor = build_actor(cfg)
+    attach_baked_condition(actor)
+    actor.eval()
+    e_c, w_folded, b_folded = fold_gru_layer0(actor)
+    split = actor.gru_condition_slice()
+    w_ih = actor.gru.weight_ih_l0
+    b_ih = actor.gru.bias_ih_l0
+    assert w_folded.shape[1] == split
+    torch.testing.assert_close(w_folded, w_ih[:, :split], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(b_folded, b_ih + w_ih[:, split:] @ e_c, rtol=0.0, atol=0.0)
+    rng = np.random.default_rng(0)
+    obs = torch.as_tensor(rng.normal(0.0, 0.05, size=(4, 1097)), dtype=torch.float32)
+    obs[:, :1081] = torch.clamp(3.0 + obs[:, :1081], 0.06, 30.0)
+    hidden = actor.initial_hidden(4, "cpu")
+    cond = actor.resolve_condition(None, 4, "cpu")
+    with torch.no_grad():
+        trunk = actor.encode_trunk(obs, cond)
+        out_c, h_c = actor.gru(trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+        gru_f, _ = folded_gru_module(actor)
+        lidar, proprio = actor._split_obs(obs)
+        trunk_f = torch.cat([actor.encoder(lidar), proprio], dim=-1)
+        out_f, h_f = gru_f(trunk_f.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+    torch.testing.assert_close(out_c, out_f, rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(h_c, h_f, rtol=0.0, atol=1e-6)
 
 
 def test_refuse_ppo_resume():
@@ -127,8 +185,9 @@ def test_bakeoff_synthetic_keep_or_revert(tmp_path):
         device="cpu",
         window=8,
     )
-    assert result["scalar"] == "holdout_action_mse"
-    assert set(result["arms"]) == {"baseline", "bc", "iql"}
+    assert result["scalar"] == "composite_keep_score"
+    assert "baseline" in result["arms"]
+    assert "kl_clipped_bc" in result["arms"]
     assert result["winner"] in result["arms"]
     assert result["decision"] in {"keep", "revert"}
     assert result["keep"] is (result["winner"] != "baseline")
@@ -164,6 +223,8 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
             "--config",
             str(SMOKE),
             "--synthetic",
+            "--method",
+            "kl_clipped_bc",
             "--steps",
             "2",
             "--batch-size",
@@ -175,8 +236,8 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
     )
     assert rc == 0
     ft = json.loads(capsys.readouterr().out)
-    assert ft["scalar"] == "holdout_action_mse"
-    assert ft["winner"] in {"baseline", "bc", "iql"}
+    assert ft["scalar"] == "composite_keep_score"
+    assert ft["winner"] in ft["arms"]
 
 
 def test_cli_finetune_rejects_ppo(tmp_path):

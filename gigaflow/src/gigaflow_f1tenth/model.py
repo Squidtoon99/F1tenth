@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 import torch
@@ -26,7 +26,11 @@ from gigaflow_f1tenth.config import (
     normalize_cnn_pool_mode,
 )
 from gigaflow_f1tenth.normalization import SensorNormalizer
-from gigaflow_f1tenth.rewards import CONDITION_DIM
+from gigaflow_f1tenth.rewards import (
+    CONDITION_DIM,
+    deployment_style,
+    normalize_condition_vector,
+)
 
 CNN_CONV_CHANNELS = (32, 64, 64)
 CNN_KERNELS = (7, 5, 3)
@@ -370,6 +374,13 @@ class ConditionedLidarGRUActor(nn.Module):
         nn.init.zeros_(self.mu_layer.bias)
         nn.init.orthogonal_(self.log_std_layer.weight, gain=0.01)
         nn.init.zeros_(self.log_std_layer.bias)
+        irl = normalize_condition_vector(
+            deployment_style("centered_high_collision").raw_vector()
+        )
+        self.register_buffer(
+            "baked_condition",
+            torch.as_tensor(np.asarray(irl, dtype=np.float32)),
+        )
 
     def shapes(self) -> ActorShapes:
         return self._shapes
@@ -397,19 +408,60 @@ class ConditionedLidarGRUActor(nn.Module):
         mask = reset_mask.to(device=hidden.device, dtype=hidden.dtype).unsqueeze(-1)
         return hidden * (1.0 - mask)
 
+    def set_baked_condition(self, condition: torch.Tensor | np.ndarray | Sequence) -> None:
+        vec = torch.as_tensor(condition, dtype=torch.float32).reshape(-1)
+        if int(vec.numel()) != self._shapes.condition_dim:
+            raise ValueError(
+                f"baked_condition dim {int(vec.numel())} != {self._shapes.condition_dim}"
+            )
+        if self.baked_condition is None:
+            self.register_buffer("baked_condition", vec.detach().contiguous())
+        else:
+            self.baked_condition.copy_(vec.to(device=self.baked_condition.device))
+
+    def resolve_condition(
+        self,
+        private_condition: torch.Tensor | None,
+        batch: int,
+        device: torch.device | str,
+    ) -> torch.Tensor:
+        if private_condition is not None:
+            if private_condition.shape[-1] != self._shapes.condition_dim:
+                raise ValueError(
+                    f"private_condition dim {private_condition.shape[-1]} != "
+                    f"{self._shapes.condition_dim}"
+                )
+            return private_condition
+        if self.baked_condition is None:
+            raise ValueError("actor has no baked_condition; pass private_condition")
+        return (
+            self.baked_condition.to(device=device, dtype=torch.float32)
+            .reshape(1, -1)
+            .expand(int(batch), -1)
+            .contiguous()
+        )
+
+    def gru_condition_slice(self) -> int:
+        return int(self._shapes.cnn_projection_dim + self._shapes.proprio_dim)
+
     def encode_trunk(
-        self, sensor_obs: torch.Tensor, private_condition: torch.Tensor
+        self,
+        sensor_obs: torch.Tensor,
+        private_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         lidar, proprio = self._split_obs(sensor_obs)
         features = self.encoder(lidar)
-        cond = self.condition_encoder(private_condition)
+        cond_in = self.resolve_condition(
+            private_condition, features.shape[0], features.device
+        )
+        cond = self.condition_encoder(cond_in)
         return torch.cat([features, proprio, cond], dim=-1)
 
     def forward(
         self,
         sensor_obs: torch.Tensor,
-        private_condition: torch.Tensor,
-        hidden: torch.Tensor,
+        private_condition: torch.Tensor | None = None,
+        hidden: torch.Tensor | None = None,
         reset_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> ActorOutput:
@@ -418,11 +470,8 @@ class ConditionedLidarGRUActor(nn.Module):
                 f"sensor_obs shape {tuple(sensor_obs.shape)}; "
                 f"expected (B, {self._shapes.sensor_obs_dim})"
             )
-        if private_condition.shape[-1] != self._shapes.condition_dim:
-            raise ValueError(
-                f"private_condition dim {private_condition.shape[-1]} != "
-                f"{self._shapes.condition_dim}"
-            )
+        if hidden is None:
+            hidden = self.initial_hidden(sensor_obs.shape[0], device=str(sensor_obs.device))
         hidden = self._apply_reset_mask(hidden, reset_mask)
         trunk = self.encode_trunk(sensor_obs, private_condition)
         out, h_n = self.gru(trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous())
@@ -478,7 +527,7 @@ class ConditionedLidarGRUActor(nn.Module):
     def evaluate_actions_sequence(
         self,
         sensor_obs: torch.Tensor,
-        private_condition: torch.Tensor,
+        private_condition: torch.Tensor | None,
         hidden: torch.Tensor,
         actions: torch.Tensor,
         reset_mask: torch.Tensor | None = None,
@@ -493,7 +542,13 @@ class ConditionedLidarGRUActor(nn.Module):
                 f"got {tuple(sensor_obs.shape)}"
             )
         batch, steps, _ = sensor_obs.shape
-        if private_condition.dim() == 2:
+        if private_condition is None:
+            cond = (
+                self.resolve_condition(None, batch, sensor_obs.device)
+                .unsqueeze(1)
+                .expand(batch, steps, -1)
+            )
+        elif private_condition.dim() == 2:
             if private_condition.shape != (batch, self._shapes.condition_dim):
                 raise ValueError(
                     f"private_condition shape {tuple(private_condition.shape)}; "
@@ -569,6 +624,53 @@ class ConditionedLidarGRUActor(nn.Module):
         if extras:
             return (*result, *extras)
         return result
+
+    def distribution_params_sequence(
+        self,
+        sensor_obs: torch.Tensor,
+        private_condition: torch.Tensor | None,
+        hidden: torch.Tensor,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (mu, std, gru_out, hidden) for a [B,T] observation window."""
+        batch, steps, _ = sensor_obs.shape
+        if private_condition is None:
+            cond = self.resolve_condition(None, batch, sensor_obs.device)
+        else:
+            cond = private_condition
+        if cond.dim() == 2:
+            cond = cond.unsqueeze(1).expand(batch, steps, -1)
+        flat_obs = sensor_obs.reshape(batch * steps, self._shapes.sensor_obs_dim)
+        flat_cond = cond.reshape(batch * steps, self._shapes.condition_dim)
+        trunk = self.encode_trunk(flat_obs, flat_cond).view(batch, steps, -1)
+        gru_out, h = self._gru_sequence(trunk, hidden, reset_mask)
+        flat_h = gru_out.reshape(batch * steps, self._shapes.gru_hidden_dim)
+        with torch.amp.autocast(device_type=flat_h.device.type, enabled=False):
+            net_out = self.net(flat_h.to(dtype=torch.float32))
+            mu = self.mu_layer(net_out).view(batch, steps, self._shapes.action_dim)
+            log_std = torch.clamp(
+                self.log_std_layer(net_out), LOG_STD_MIN, LOG_STD_MAX
+            ).view(batch, steps, self._shapes.action_dim)
+            std = torch.exp(log_std)
+        return mu, std, gru_out, h
+
+    def fold_gru_layer0(
+        self, condition: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Exact GRU Layer-0 bias fold of a constant condition embedding.
+
+        Returns ``(e_c, W_ih_folded, b_ih_folded)`` where
+        ``W_ih_folded = W_ih[:, :cnn+proprio]`` and
+        ``b_ih_folded = b_ih + W_ih[:, cnn+proprio:] @ e_c``.
+        """
+        cond = self.resolve_condition(condition, 1, self.baked_condition.device)
+        e_c = self.condition_encoder(cond).reshape(-1)
+        split = self.gru_condition_slice()
+        w_ih = self.gru.weight_ih_l0
+        b_ih = self.gru.bias_ih_l0
+        w_folded = w_ih[:, :split].contiguous()
+        b_folded = b_ih + w_ih[:, split:] @ e_c
+        return e_c.detach(), w_folded.detach(), b_folded.detach()
 
 
 class ConditionedLidarFeedForwardActor(nn.Module):
