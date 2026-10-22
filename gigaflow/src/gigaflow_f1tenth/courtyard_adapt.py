@@ -43,7 +43,7 @@ from gigaflow_f1tenth.tracks import (
     centerline_table_from_arrays,
     pack_built_tracks,
 )
-from gigaflow_f1tenth.visualization import FOLLOW_RADIUS_M, render_frame
+from gigaflow_f1tenth.visualization import render_side_by_side
 
 _GIGA = Path(__file__).resolve().parents[2]
 DEFAULT_CFG = _GIGA / "configs" / "production_rtx4080.yaml"
@@ -883,63 +883,6 @@ def evaluate_from_rest(
         "path": path,
         "cfg": cfg,
     }
-
-
-def _banner(frame: np.ndarray, text: str) -> np.ndarray:
-    bar = np.full((28, frame.shape[1], 3), 20, dtype=np.uint8)
-    out = np.concatenate([bar, frame], axis=0)
-    try:
-        from PIL import Image, ImageDraw
-
-        img = Image.fromarray(out)
-        ImageDraw.Draw(img).text((8, 6), text, fill=(255, 255, 255))
-        return np.asarray(img)
-    except Exception:
-        return out
-
-
-def render_side_by_side(
-    atlas,
-    left_poses: Sequence[np.ndarray],
-    right_poses: Sequence[np.ndarray],
-    output: Path,
-    *,
-    car_length: float,
-    car_width: float,
-    fps: int = 10,
-) -> Path:
-    import imageio.v2 as imageio
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    n = max(len(left_poses), len(right_poses))
-    last_l = left_poses[-1] if left_poses else np.zeros((1, 4), dtype=np.float32)
-    last_r = right_poses[-1] if right_poses else np.zeros((1, 4), dtype=np.float32)
-    with imageio.get_writer(output, fps=fps, codec="libx264", macro_block_size=1) as mp4:
-        for i in range(n):
-            lp = left_poses[i] if i < len(left_poses) else last_l
-            rp = right_poses[i] if i < len(right_poses) else last_r
-            left = render_frame(
-                atlas,
-                0,
-                lp,
-                car_length=car_length,
-                car_width=car_width,
-                follow_radius=max(FOLLOW_RADIUS_M, 6.0),
-            )
-            right = render_frame(
-                atlas,
-                0,
-                rp,
-                car_length=car_length,
-                car_width=car_width,
-                follow_radius=max(FOLLOW_RADIUS_M, 6.0),
-            )
-            left = _banner(left, "Left: Base actor_005700")
-            right = _banner(right, "Right: Courtyard Fine-Tuned")
-            h = min(left.shape[0], right.shape[0])
-            w = min(left.shape[1], right.shape[1])
-            mp4.append_data(np.concatenate([left[:h, :w], right[:h, :w]], axis=1))
-    return output
 
 
 def run_campaign(

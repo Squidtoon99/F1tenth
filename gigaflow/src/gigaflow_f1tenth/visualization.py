@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 
@@ -17,6 +18,11 @@ CENTER_GRAY = "#e6e6e6"
 
 # Fixed half-extent (meters) for solo close-follow framing.
 FOLLOW_RADIUS_M = 5.0
+# Courtyard SBS uses a slightly wider follow box (SleepyToaster 1400x728).
+COURTYARD_SBS_FOLLOW_RADIUS_M = 6.0
+COURTYARD_SBS_FPS = 10
+COURTYARD_SBS_LEFT_BANNER = "Left: Base actor_005700"
+COURTYARD_SBS_RIGHT_BANNER = "Right: Courtyard Fine-Tuned"
 # Visual-only cuboid height as a fraction of car length (2x prior 0.22 scale).
 CUBOID_HEIGHT_FRAC = 0.44
 
@@ -219,3 +225,72 @@ def render_episode(
             gif.append_data(last)
     imageio.imwrite(png_path, last)
     return png_path, mp4_path, gif_path
+
+
+def banner_frame(frame: np.ndarray, text: str) -> np.ndarray:
+    bar = np.full((28, frame.shape[1], 3), 20, dtype=np.uint8)
+    out = np.concatenate([bar, frame], axis=0)
+    try:
+        from PIL import Image, ImageDraw
+
+        img = Image.fromarray(out)
+        ImageDraw.Draw(img).text((8, 6), text, fill=(255, 255, 255))
+        return np.asarray(img)
+    except Exception:
+        return out
+
+
+def render_side_by_side(
+    atlas: PackedTrackAtlasView,
+    left_poses: Sequence[np.ndarray],
+    right_poses: Sequence[np.ndarray],
+    output: Path,
+    *,
+    car_length: float,
+    car_width: float,
+    fps: int = COURTYARD_SBS_FPS,
+    follow_radius: float | None = None,
+    left_banner: str = COURTYARD_SBS_LEFT_BANNER,
+    right_banner: str = COURTYARD_SBS_RIGHT_BANNER,
+) -> Path:
+    """SleepyToaster courtyard SBS: two follow panels, 1400x728 at dpi 100."""
+    import imageio.v2 as imageio
+
+    radius = (
+        COURTYARD_SBS_FOLLOW_RADIUS_M
+        if follow_radius is None
+        else float(follow_radius)
+    )
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    n = max(len(left_poses), len(right_poses))
+    last_l = left_poses[-1] if left_poses else np.zeros((1, 4), dtype=np.float32)
+    last_r = right_poses[-1] if right_poses else np.zeros((1, 4), dtype=np.float32)
+    with imageio.get_writer(
+        output, fps=fps, codec="libx264", macro_block_size=1
+    ) as mp4:
+        for i in range(n):
+            lp = left_poses[i] if i < len(left_poses) else last_l
+            rp = right_poses[i] if i < len(right_poses) else last_r
+            left = render_frame(
+                atlas,
+                0,
+                lp,
+                car_length=car_length,
+                car_width=car_width,
+                follow_radius=radius,
+            )
+            right = render_frame(
+                atlas,
+                0,
+                rp,
+                car_length=car_length,
+                car_width=car_width,
+                follow_radius=radius,
+            )
+            left = banner_frame(left, left_banner)
+            right = banner_frame(right, right_banner)
+            h = min(left.shape[0], right.shape[0])
+            w = min(left.shape[1], right.shape[1])
+            mp4.append_data(np.concatenate([left[:h, :w], right[:h, :w]], axis=1))
+    return output
