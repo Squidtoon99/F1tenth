@@ -17,6 +17,7 @@ from gigaflow_f1tenth.artifacts import (
 )
 from gigaflow_f1tenth.cli import main
 from gigaflow_f1tenth.config import load_config
+from gigaflow_f1tenth.evaluation import load_actor_from_checkpoint
 from gigaflow_f1tenth.irl_identity import (
     IRL_DYNAMICS,
     IRL_MASS_KG,
@@ -24,7 +25,11 @@ from gigaflow_f1tenth.irl_identity import (
     baked_normalized_condition,
     baked_raw_style,
 )
-from gigaflow_f1tenth.model import build_actor
+from gigaflow_f1tenth.model import (
+    ConditionedLidarGRUActor,
+    actor_shapes,
+    build_actor,
+)
 from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
 from gigaflow_f1tenth.sim.vehicle import F_BRAKE_MAX, F_DRIVE_MAX, VehicleParams
 from gigaflow_f1tenth.teleop_dataset import (
@@ -110,6 +115,22 @@ def test_refuse_ppo_resume():
         refuse_ppo("ppo-resume")
     refuse_ppo("iql")
     refuse_ppo("bc")
+
+
+def test_load_maxpool64_artifact_from_smoke_cfg(tmp_path):
+    cfg = load_config(SMOKE)
+    actor = ConditionedLidarGRUActor(
+        actor_shapes(cfg), pool_bins=64, pool_mode="max"
+    )
+    path = tmp_path / "max64.pt"
+    export_baked_actor(cfg, actor, str(path))
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert payload["actor_architecture"]["pool_bins"] == 64
+    assert payload["actor_architecture"]["pool_mode"] == "max"
+    restored = load_actor_from_checkpoint(cfg, path, device="cpu")
+    assert restored.pool_bins == 64
+    assert restored.pool_mode == "max"
+    assert restored.encoder.projection.weight.shape[-1] == 64 * 64
 
 
 def test_bakeoff_synthetic_keep_or_revert(tmp_path):

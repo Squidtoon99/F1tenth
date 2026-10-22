@@ -367,7 +367,12 @@ def _load_native_condition_actor(
     live_schema = model_mod.CONDITION_DIM
     model_mod.CONDITION_DIM = width
     try:
-        actor = ConditionedLidarGRUActor(shapes)
+        actor = ConditionedLidarGRUActor(
+            shapes,
+            condition_embed_dim=int(arch.get("condition_embed_dim", 64)),
+            pool_bins=int(arch.get("pool_bins", 32)),
+            pool_mode=str(arch.get("pool_mode", "avg")),
+        )
     finally:
         model_mod.CONDITION_DIM = live_schema
     loaded = actor.load_state_dict(state, strict=False)

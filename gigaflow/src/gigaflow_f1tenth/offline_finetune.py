@@ -24,8 +24,8 @@ from gigaflow_f1tenth.artifacts import (
 )
 from gigaflow_f1tenth.irl_identity import baked_normalized_condition
 from gigaflow_f1tenth.model import (
-    ActorShapes,
     ConditionedLidarGRUActor,
+    actor_from_architecture,
     build_actor,
 )
 from gigaflow_f1tenth.sim.layout_local import VESC_SPEED
@@ -117,19 +117,7 @@ def actor_from_payload(payload: Mapping[str, Any], device: str | torch.device):
     arch = payload.get("actor_architecture")
     if not isinstance(arch, Mapping):
         raise KeyError("artifact missing actor_architecture")
-    actor = ConditionedLidarGRUActor(
-        ActorShapes(
-            sensor_obs_dim=int(arch["sensor_obs_dim"]),
-            lidar_dim=int(arch["lidar_dim"]),
-            proprio_dim=int(arch["proprio_dim"]),
-            condition_dim=int(arch["condition_dim"]),
-            action_dim=int(arch["action_dim"]),
-            gru_hidden_dim=int(arch["gru_hidden_dim"]),
-            cnn_projection_dim=int(arch["cnn_projection_dim"]),
-            mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
-        ),
-        condition_embed_dim=int(arch.get("condition_embed_dim", 64)),
-    )
+    actor = actor_from_architecture(arch)
     actor.load_state_dict(payload["actor_state_dict"], strict=True)
     return actor.to(device)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, runtime_checkable
 
 import numpy as np
 import torch
@@ -230,12 +230,14 @@ class LidarCNNEncoder(nn.Module):
         pool_bins: int = LIDAR_POOL_BINS,
         projection_dim: int = CNN_PROJECTION_DIM,
         in_channels: int = 1,
+        pool_mode: str = "avg",
     ):
         super().__init__()
         self.lidar_dim = int(lidar_dim)
         self.pool_bins = int(pool_bins)
         self.projection_dim = int(projection_dim)
         self.in_channels = int(in_channels)
+        self.pool_mode = str(pool_mode)
         self.conv = nn.Sequential(
             nn.Conv1d(
                 self.in_channels,
@@ -262,7 +264,10 @@ class LidarCNNEncoder(nn.Module):
             ),
             nn.ReLU(),
         )
-        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        if self.pool_mode == "max":
+            self.pool = nn.AdaptiveMaxPool1d(self.pool_bins)
+        else:
+            self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
         self.projection = nn.Linear(
             CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
         )
@@ -296,7 +301,13 @@ class ConditionEncoder(nn.Module):
 class ConditionedLidarGRUActor(nn.Module):
     """Primary racing actor: ordered-LiDAR CNN + condition MLP + 512 GRU + MLP head."""
 
-    def __init__(self, shapes: ActorShapes, condition_embed_dim: int = CONDITION_EMBED_DIM):
+    def __init__(
+        self,
+        shapes: ActorShapes,
+        condition_embed_dim: int = CONDITION_EMBED_DIM,
+        pool_bins: int | None = None,
+        pool_mode: str = "avg",
+    ):
         super().__init__()
         if shapes.sensor_obs_dim != shapes.lidar_dim + shapes.proprio_dim:
             raise ValueError("sensor_obs_dim must equal lidar_dim + proprio_dim")
@@ -306,11 +317,15 @@ class ConditionedLidarGRUActor(nn.Module):
             )
         self._shapes = shapes
         self.condition_embed_dim = int(condition_embed_dim)
+        self.pool_bins = int(pool_bins if pool_bins is not None else LIDAR_POOL_BINS)
+        self.pool_mode = str(pool_mode)
         self.sensor_normalizer = SensorNormalizer(shapes.sensor_obs_dim)
         self.encoder = LidarCNNEncoder(
             lidar_dim=shapes.lidar_dim,
             projection_dim=shapes.cnn_projection_dim,
             in_channels=1,
+            pool_bins=self.pool_bins,
+            pool_mode=self.pool_mode,
         )
         self.condition_encoder = ConditionEncoder(
             shapes.condition_dim, self.condition_embed_dim
@@ -746,6 +761,24 @@ def build_actor(
     raise ValueError(f"unknown actor variant {variant!r}")
 
 
+def actor_from_architecture(arch: Mapping[str, Any]) -> ConditionedLidarGRUActor:
+    return ConditionedLidarGRUActor(
+        ActorShapes(
+            sensor_obs_dim=int(arch["sensor_obs_dim"]),
+            lidar_dim=int(arch["lidar_dim"]),
+            proprio_dim=int(arch["proprio_dim"]),
+            condition_dim=int(arch["condition_dim"]),
+            action_dim=int(arch["action_dim"]),
+            gru_hidden_dim=int(arch["gru_hidden_dim"]),
+            cnn_projection_dim=int(arch["cnn_projection_dim"]),
+            mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
+        ),
+        condition_embed_dim=int(arch.get("condition_embed_dim", CONDITION_EMBED_DIM)),
+        pool_bins=int(arch.get("pool_bins", LIDAR_POOL_BINS)),
+        pool_mode=str(arch.get("pool_mode", "avg")),
+    )
+
+
 def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:
     shapes = actor_shapes(cfg)
     return {
@@ -763,6 +796,7 @@ def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
         "pool_bins": LIDAR_POOL_BINS,
+        "pool_mode": "avg",
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",
@@ -789,7 +823,20 @@ def actor_architecture_from_module(actor: nn.Module) -> dict[str, Any]:
         "cnn_kernels": list(CNN_KERNELS),
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": int(
+            getattr(
+                actor,
+                "pool_bins",
+                getattr(getattr(actor, "encoder", None), "pool_bins", LIDAR_POOL_BINS),
+            )
+        ),
+        "pool_mode": str(
+            getattr(
+                actor,
+                "pool_mode",
+                getattr(getattr(actor, "encoder", None), "pool_mode", "avg"),
+            )
+        ),
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",
