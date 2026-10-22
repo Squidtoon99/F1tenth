@@ -20,6 +20,9 @@ from gigaflow_f1tenth.tracks import sample_track_ids as atlas_sample_track_ids
 STATIC_BOUNDARY_MARGIN_M = 0.15
 STATIC_LONGITUDINAL_GAP_CAR_LENGTHS = 4.0
 STATIC_PASSING_MARGIN_M = 0.15
+HEAD_TO_HEAD_BEHIND_GAP_M = 8.0
+HEAD_TO_HEAD_LATERAL_M = 0.14
+HEAD_TO_HEAD_SPEED_DELTA_MPS = 2.5
 
 
 def mix_seed(global_seed: int, world_id: int, slot: int, episode_id: int) -> int:
@@ -188,6 +191,99 @@ def spawn_agent_pose(
         ),
         "rejected": 1,
     }
+
+
+def pose_on_track(
+    geom: SimTrackGeometry,
+    track_id: int,
+    s: float,
+    ey: float,
+) -> dict[str, float | int]:
+    a = int(geom.offsets[track_id])
+    b = int(geom.offsets[track_id + 1])
+    length = float(geom.track_length[track_id])
+    s = float(s) % length
+    if s < 0.0:
+        s += length
+    center = geom.centerline_xy[a:b]
+    tangents = geom.tangents_xy[a:b]
+    normals = geom.normals_xy[a:b]
+    widths = geom.widths_rl[a:b]
+    cum = geom.cum_length[a:b]
+    seglen = geom.segment_length[a:b]
+    segment = int(np.searchsorted(cum, s, side="right") - 1)
+    segment = min(max(segment, 0), b - a - 1)
+    sl = max(float(seglen[segment]), 1e-6)
+    alpha = min(max((s - float(cum[segment])) / sl, 0.0), 1.0)
+    following = (segment + 1) % (b - a)
+    mid = center[segment] + alpha * (center[following] - center[segment])
+    xy = mid + float(ey) * normals[segment]
+    yaw = float(math.atan2(tangents[segment, 1], tangents[segment, 0]))
+    fr = project_frenet_numpy(
+        np.asarray(xy, dtype=np.float32),
+        segment,
+        center,
+        tangents,
+        normals,
+        widths,
+        cum,
+        seglen,
+    )
+    return {
+        "x": float(xy[0]),
+        "y": float(xy[1]),
+        "yaw": yaw,
+        "tx": float(tangents[segment, 0]),
+        "ty": float(tangents[segment, 1]),
+        "segment": int(fr["segment"]),
+        "s": float(fr["s"]),
+        "ey": float(fr["ey"]),
+        "boundary_distance": float(fr["boundary_distance"]),
+    }
+
+
+def head_to_head_chaser_pose(
+    geom: SimTrackGeometry,
+    track_id: int,
+    *,
+    leader_s: float,
+    leader_speed: float,
+    gap_m: float = HEAD_TO_HEAD_BEHIND_GAP_M,
+    lateral_m: float = HEAD_TO_HEAD_LATERAL_M,
+    speed_delta_mps: float = HEAD_TO_HEAD_SPEED_DELTA_MPS,
+) -> dict[str, float | int]:
+    length = float(geom.track_length[track_id])
+    s = (float(leader_s) - float(gap_m)) % length
+    if s < 0.0:
+        s += length
+    pose = pose_on_track(geom, track_id, s, float(lateral_m))
+    pose["speed"] = float(leader_speed) + float(speed_delta_mps)
+    return pose
+
+
+def apply_racer_pose(arrays: Any, slot: int, pose: dict[str, float | int]) -> None:
+    slot = int(slot)
+    speed = float(pose.get("speed", pose.get("vx", 0.0)))
+    arrays.x[slot] = float(pose["x"])
+    arrays.y[slot] = float(pose["y"])
+    arrays.yaw[slot] = float(pose["yaw"])
+    arrays.prev_x[slot] = float(pose["x"])
+    arrays.prev_y[slot] = float(pose["y"])
+    arrays.prev_yaw[slot] = float(pose["yaw"])
+    arrays.vx[slot] = speed
+    arrays.vy[slot] = 0.0
+    arrays.yaw_rate[slot] = 0.0
+    arrays.steer[slot] = 0.0
+    arrays.frenet_segment[slot] = int(pose["segment"])
+    arrays.frenet_s[slot] = float(pose["s"])
+    arrays.prev_s[slot] = float(pose["s"])
+    arrays.frenet_ey[slot] = float(pose["ey"])
+    arrays.boundary_distance[slot] = float(pose["boundary_distance"])
+    arrays.done[slot] = 0
+    arrays.active[slot] = 1
+    arrays.trainable[slot] = 1
+    arrays.contact[slot] = 0
+    arrays.wall_contact[slot] = 0
 
 
 def sample_lidar_corruption(rng: np.random.Generator) -> dict[str, float | int]:
