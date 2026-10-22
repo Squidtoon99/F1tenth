@@ -125,8 +125,8 @@ def pack_step(
         float(yaw_rate),
     )
     hist = np.asarray(steer_hist, dtype=np.float32).reshape(-1)
-    if hist.size < STEER_HISTORY:
-        raise ValueError("steer history must have 4 entries")
+    if hist.size < 4:
+        raise ValueError("steer history must have at least 4 entries")
     obs[VESC_SPEED] = float(vx)
     obs[VESC_CURRENT] = VESC_CURRENT_SCALE_A * float(long_current)
     obs[THROTTLE_CURRENT] = float(long_current)
@@ -319,9 +319,7 @@ def load_bag_trajectory(
         actions[i] = action
         long_pred = long_current
         long_current = float(action[0])
-        steer_hist[3] = steer_hist[2]
-        steer_hist[2] = steer_hist[1]
-        steer_hist[1] = steer_hist[0]
+        steer_hist[1:] = steer_hist[:-1]
         steer_hist[0] = realized
         prev_steer = realized
         vx_prev = float(vx[i])

@@ -286,7 +286,11 @@ def _cmd_bake_irl(args: argparse.Namespace) -> int:
 
 
 def _cmd_finetune_offline(args: argparse.Namespace) -> int:
-    from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
+    from gigaflow_f1tenth.offline_finetune import (
+        UNIQUE_ARMS,
+        refuse_ppo,
+        run_bakeoff,
+    )
     from gigaflow_f1tenth.teleop_dataset import load_manual_dataset
     from gigaflow_f1tenth.wandb_log import build_wandb_session
 
@@ -302,6 +306,16 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
         cfg_path = Path(__file__).resolve().parents[2] / "configs" / "smoke.yaml"
     cfg = _apply_wandb_cli_overrides(load_config(cfg_path), args)
     session = build_wandb_session(cfg, run_dir=args.output_dir)
+    by_name = {str(row["name"]): dict(row) for row in UNIQUE_ARMS}
+    if args.campaign:
+        arm_specs = [dict(row) for row in UNIQUE_ARMS]
+    elif args.arm:
+        missing = [name for name in args.arm if name not in by_name]
+        if missing:
+            raise SystemExit(f"unknown arm(s): {missing}")
+        arm_specs = [by_name[name] for name in args.arm]
+    else:
+        arm_specs = [dict(by_name["bc-kl"])]
     result = run_bakeoff(
         checkpoint=args.checkpoint,
         output_dir=args.output_dir,
@@ -313,6 +327,8 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
         device=str(args.device),
         window=int(args.window),
         wandb_session=session,
+        arms=arm_specs,
+        include_variations=bool(args.campaign) and not bool(args.no_variations),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -578,6 +594,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="bakeoff",
         help="bakeoff (default). ppo is rejected.",
+    )
+    p_ft.add_argument(
+        "--campaign",
+        action="store_true",
+        help="Run the 7 unique KL-clipped arms plus winner variations",
+    )
+    p_ft.add_argument(
+        "--arm",
+        action="append",
+        default=None,
+        help="Arm name from UNIQUE_ARMS (repeatable). Ignored with --campaign.",
+    )
+    p_ft.add_argument(
+        "--no-variations",
+        action="store_true",
+        help="Skip winner variations",
     )
     _add_wandb_args(p_ft)
     p_ft.set_defaults(func=_cmd_finetune_offline)

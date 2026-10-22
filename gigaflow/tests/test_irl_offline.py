@@ -88,7 +88,7 @@ def test_export_baked_actor_roundtrip(tmp_path):
 
 def test_teleop_pack_and_windows():
     lidar = np.full(1081, 4.0, dtype=np.float32)
-    hist = np.zeros(4, dtype=np.float32)
+    hist = np.zeros(7, dtype=np.float32)
     obs = pack_step(lidar, 1.2, 0.0, 0.1, 1.0, 0.0, 0.3, 0.2, hist)
     assert obs.shape == (1097,)
     action, steer = teleop_to_action(0.5, 0.1, 0.0)
@@ -126,12 +126,18 @@ def test_bakeoff_synthetic_keep_or_revert(tmp_path):
         seed=1,
         device="cpu",
         window=8,
+        arms=(
+            {"name": "bc-kl", "method": "bc", "kl_coef": 0.1, "kl_max": 0.05},
+            {"name": "iql-kl", "method": "iql", "kl_coef": 0.1, "kl_max": 0.05},
+        ),
+        include_variations=False,
     )
     assert result["scalar"] == "holdout_action_mse"
-    assert set(result["arms"]) == {"baseline", "bc", "iql"}
+    assert set(result["arms"]) == {"baseline", "bc-kl", "iql-kl"}
     assert result["winner"] in result["arms"]
     assert result["decision"] in {"keep", "revert"}
     assert result["keep"] is (result["winner"] != "baseline")
+    assert "kl" in result["arms"]["bc-kl"]["train"]
     for name, row in result["arms"].items():
         assert np.isfinite(row["score"]), name
         assert Path(row["artifact"]).is_file()
@@ -170,13 +176,16 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
             "4",
             "--window",
             "8",
+            "--arm",
+            "bc-kl",
+            "--no-variations",
             "--no-wandb",
         ]
     )
     assert rc == 0
     ft = json.loads(capsys.readouterr().out)
     assert ft["scalar"] == "holdout_action_mse"
-    assert ft["winner"] in {"baseline", "bc", "iql"}
+    assert ft["winner"] in {"baseline", "bc-kl"}
 
 
 def test_cli_finetune_rejects_ppo(tmp_path):
