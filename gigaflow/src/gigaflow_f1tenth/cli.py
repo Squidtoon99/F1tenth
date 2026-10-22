@@ -9,6 +9,10 @@ from pathlib import Path
 
 import torch
 
+from gigaflow_f1tenth.artifacts import (
+    IRL_DEFAULT_STYLE,
+    bake_irl_artifact,
+)
 from gigaflow_f1tenth.config import (
     PINNED_UPSTREAM_TRACK_COUNT,
     config_to_dict,
@@ -258,6 +262,37 @@ def _cmd_view(args: argparse.Namespace) -> int:
         return 2
 
 
+def _cmd_bake_irl(args: argparse.Namespace) -> int:
+    overrides: dict[str, float] = {}
+    for item in args.set or ():
+        if "=" not in item:
+            raise SystemExit(f"--set expects field=value, got {item!r}")
+        key, raw = item.split("=", 1)
+        overrides[key.strip()] = float(raw)
+    payload = bake_irl_artifact(
+        str(args.checkpoint),
+        str(args.output),
+        style_name=args.style,
+        field_overrides=overrides or None,
+    )
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(args.output),
+                "deployment_style": payload["deployment_style"],
+                "deployment_condition_normalized": payload[
+                    "deployment_condition_normalized"
+                ],
+                "irl_condition_raw": payload["irl_condition_raw"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     device = args.device or (
@@ -416,6 +451,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--steps", type=int, default=20)
     p_bench.add_argument("--device", type=str, default=None)
     p_bench.set_defaults(func=_cmd_benchmark)
+
+    p_bake = sub.add_parser(
+        "bake-irl",
+        help="Pin an actor artifact to hardcoded IRL embodied defaults",
+    )
+    p_bake.add_argument("--checkpoint", type=Path, required=True)
+    p_bake.add_argument("--output", type=Path, required=True)
+    p_bake.add_argument(
+        "--style",
+        type=str,
+        default=IRL_DEFAULT_STYLE,
+        help=f"Deployment style to freeze (default {IRL_DEFAULT_STYLE})",
+    )
+    p_bake.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        help="Override a condition field (repeatable, e.g. --set vmax_scale=1.0)",
+    )
+    p_bake.set_defaults(func=_cmd_bake_irl)
 
     p_view = sub.add_parser(
         "view",

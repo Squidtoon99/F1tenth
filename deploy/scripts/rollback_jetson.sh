@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Restore the previous sensor-policy (or racing) image tag recorded by
+# Restore the previous sensor-policy, gigaflow, or racing image tag recorded by
 # load_to_jetson.sh under /opt/f1tenth/rollback on the car.
 #
 # Usage:
-#   deploy/scripts/rollback_jetson.sh <user@jetson-host> [sensor_policy|racing]
+#   deploy/scripts/rollback_jetson.sh <user@jetson-host> [sensor_policy|gigaflow|racing]
 #
 # Does not delete the newer image; it only re-points the moving tag and prints
 # the docker run command for the restored artifact.
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
-JETSON="${1:?usage: rollback_jetson.sh <user@host> [sensor_policy|racing]}"
+JETSON="${1:?usage: rollback_jetson.sh <user@host> [sensor_policy|gigaflow|racing]}"
 TARGET="${2:-sensor_policy}"
 
 case "${TARGET}" in
@@ -18,12 +18,16 @@ case "${TARGET}" in
     IMAGE="${IMAGE:-f1tenth-sensor-policy}"
     MOVING_TAG="sensor-policy"
     ;;
+  gigaflow)
+    IMAGE="${IMAGE:-f1tenth-gigaflow}"
+    MOVING_TAG="gigaflow"
+    ;;
   racing)
     IMAGE="${IMAGE:-f1tenth-racing}"
     MOVING_TAG="develop"
     ;;
   *)
-    echo "TARGET must be sensor_policy or racing (got: ${TARGET})" >&2
+    echo "TARGET must be sensor_policy, gigaflow, or racing (got: ${TARGET})" >&2
     exit 1
     ;;
 esac

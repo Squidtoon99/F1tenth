@@ -40,8 +40,19 @@ if [ -f /policies/e2e_policy.pt ] || ls /policies/e2e_policy*.pt >/dev/null 2>&1
 else
   echo "[entrypoint] NOTE: no e2e_policy*.pt under /policies (ok for race.launch)."
 fi
+if [ -d /opt/gigaflow/src ]; then
+  export PYTHONPATH="/opt/gigaflow/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
+if [ -f /policies/gigaflow_policy.pt ]; then
+  echo "[entrypoint] gigaflow policy present: /policies/gigaflow_policy.pt"
+else
+  echo "[entrypoint] NOTE: no /policies/gigaflow_policy.pt (ok for race/sensor_policy)."
+fi
 if [ -f /etc/f1tenth/sensor_policy_pins.json ]; then
   echo "[entrypoint] sensor-policy pins: $(tr -d '\n' < /etc/f1tenth/sensor_policy_pins.json)"
+fi
+if [ -f /etc/f1tenth/gigaflow_pins.json ]; then
+  echo "[entrypoint] gigaflow pins: $(tr -d '\n' < /etc/f1tenth/gigaflow_pins.json)"
 fi
 
 exec "$@"

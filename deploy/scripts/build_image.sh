@@ -7,14 +7,15 @@
 # Usage:
 #   deploy/scripts/build_image.sh
 #   TARGET=sensor_policy deploy/scripts/build_image.sh
+#   TARGET=gigaflow deploy/scripts/build_image.sh
 #
 # Env:
-#   TARGET       racing (default) | sensor_policy
+#   TARGET       racing (default) | sensor_policy | gigaflow
 #   ARCH         default linux/arm64
 #   ROS_DISTRO   default humble
 #   IMAGE        override image name
-#   BASE_IMAGE   sensor_policy only — pin NGC iGPU base (tag or @sha256:)
-#   SMOKE        sensor_policy only — if 1, run smoke_sensor_policy.sh after build
+#   BASE_IMAGE   sensor_policy/gigaflow only — pin NGC iGPU base (tag or @sha256:)
+#   SMOKE        sensor_policy/gigaflow — if 1, run the image smoke script after build
 #   REQUIRE_CUDA smoke only — pass through (default 1)
 #   GITSHA       default: current short HEAD
 set -euo pipefail
@@ -42,8 +43,18 @@ case "${TARGET}" in
     # Ubuntu 22.04 + CUDA 12.6 iGPU base for ROS 2 Humble on JetPack 6.
     BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
     ;;
+  gigaflow)
+    IMAGE="${IMAGE:-f1tenth-gigaflow}"
+    DOCKERFILE="deploy/docker/Dockerfile.gigaflow"
+    MOVING_TAG="gigaflow"
+    if [ "${ROS_DISTRO}" != "humble" ]; then
+      echo "gigaflow is locked to ROS_DISTRO=humble" >&2
+      exit 1
+    fi
+    BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
+    ;;
   *)
-    echo "TARGET must be racing or sensor_policy (got: ${TARGET})" >&2
+    echo "TARGET must be racing, sensor_policy, or gigaflow (got: ${TARGET})" >&2
     exit 1
     ;;
 esac
@@ -56,9 +67,9 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 BUILD_ARGS=()
-if [ "${TARGET}" = "sensor_policy" ]; then
+if [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ]; then
   BUILD_ARGS+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
-  echo "==> Building sensor-policy runtime ${IMAGE}:${GITSHA}"
+  echo "==> Building ${TARGET} runtime ${IMAGE}:${GITSHA}"
   echo "    Dockerfile: ${DOCKERFILE}"
   echo "    Base:       ${BASE_IMAGE}"
   echo "    Platform:   ${ARCH} (igpu base is arm64-only; prefer native arm64)"
@@ -69,7 +80,7 @@ if [ "${TARGET}" = "sensor_policy" ]; then
     -f "${DOCKERFILE}" \
     "${BUILD_ARGS[@]}" \
     --label "f1tenth.git_sha=${GITSHA}" \
-    --label "f1tenth.target=sensor_policy" \
+    --label "f1tenth.target=${TARGET}" \
     --label "f1tenth.base_image=${BASE_IMAGE}" \
     -t "${IMAGE}:${GITSHA}" \
     -t "${IMAGE}:${MOVING_TAG}" .
@@ -98,10 +109,16 @@ fi
 echo "==> Built ${IMAGE}:${GITSHA} (and :${MOVING_TAG}) for ${ARCH}"
 echo "    image id: ${IMAGE_SHA}"
 
-if [ "${TARGET}" = "sensor_policy" ]; then
+if [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ]; then
+  PINS_FILE="/etc/f1tenth/sensor_policy_pins.json"
+  SMOKE_ENTRY="smoke_sensor_policy.sh"
+  if [ "${TARGET}" = "gigaflow" ]; then
+    PINS_FILE="/etc/f1tenth/gigaflow_pins.json"
+    SMOKE_ENTRY="smoke_gigaflow_policy.sh"
+  fi
   echo "==> Version pins (from image)"
   docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" \
-    /etc/f1tenth/sensor_policy_pins.json 2>/dev/null || \
+    "${PINS_FILE}" 2>/dev/null || \
     echo "    (pins file unavailable — image may not have finished runtime stage)"
   IMAGE_SIZE="$(docker image inspect --format '{{.Size}}' "${IMAGE}:${GITSHA}")"
   echo "    size bytes: ${IMAGE_SIZE}"
@@ -118,9 +135,9 @@ if [ "${TARGET}" = "sensor_policy" ]; then
       SMOKE_MOUNT=()
     fi
     docker run --rm --runtime nvidia "${SMOKE_ENV[@]}" "${SMOKE_MOUNT[@]}" \
-      --entrypoint smoke_sensor_policy.sh "${IMAGE}:${GITSHA}"
+      --entrypoint "${SMOKE_ENTRY}" "${IMAGE}:${GITSHA}"
   else
-    echo "    Smoke: SMOKE=1 TARGET=sensor_policy $0 (after native arm64 build on Jetson)"
+    echo "    Smoke: SMOKE=1 TARGET=${TARGET} $0 (after native arm64 build on Jetson)"
   fi
 fi
 

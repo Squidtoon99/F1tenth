@@ -272,6 +272,56 @@ Logs: container stdout plus on-car `tegrastats` / rosbag as required by the 10 H
 gate. Keep racing rollback available via
 `deploy/scripts/rollback_jetson.sh shereef@f1tenth racing`.
 
+## IRL Gigaflow (1097-D conditioned CNN-GRU + current gate)
+
+Isolated from the 392-D racing path and from unconditioned `sensor_racer`.
+On-car graph: scan / IMU / odom → `gigaflow_racer` → `rl_current_gate` (drive).
+The racer injects a **frozen** embodied condition (`centered_high_collision`,
+`vmax_scale=1.0`); it never samples `vmax_scale`. Bake an actor artifact before
+staging (until a fine-tuned checkpoint lands, `actor_005700` is the default):
+
+```bash
+PYTHONPATH=gigaflow/src python3 -m gigaflow_f1tenth.cli bake-irl \
+  --checkpoint actor_005700.pt --output gigaflow_policy.pt
+```
+
+Image name `f1tenth-gigaflow`, moving tag `:gigaflow`, checkpoint symlink
+`/policies/gigaflow_policy.pt` (does not clobber `policy.pt` or `e2e_policy.pt`).
+
+```bash
+TARGET=gigaflow deploy/scripts/build_image.sh
+TARGET=gigaflow deploy/scripts/snapshot.sh
+# -> deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz
+
+TARGET=gigaflow CHECKPOINT=gigaflow_policy.pt \
+  deploy/scripts/load_to_jetson.sh user@car01 \
+  deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz car01
+```
+
+SSH-install the Gigaflow car image **and** the Sophy GT / standalone trainer
+images (Apptainer `training.sif` from `deploy/apptainer/training.def`) in one go:
+
+```bash
+deploy/scripts/install_irl_images.sh user@car01 car01 \
+  --gigaflow deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz \
+  --gigaflow-ckpt gigaflow_policy.pt \
+  --training-sif training.sif
+```
+
+Trainer-only (GPU box; pass `-` for the car id):
+
+```bash
+deploy/scripts/install_irl_images.sh user@gpu-box - \
+  --training-sif training.sif \
+  --training-docker deploy/snapshots/training-images.tar.gz
+```
+
+On the car: `ssh user@car01 /opt/f1tenth/rollback/gigaflow/run.sh`.
+Rollback: `deploy/scripts/rollback_jetson.sh user@car01 gigaflow`.
+Trainer help: `ssh user@host /opt/f1tenth/images/run_training.sh --help`
+(runs `standalone_trainer.py` inside `training.sif`; this script does not start
+training).
+
 ## Releases
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`). Build + snapshot that
