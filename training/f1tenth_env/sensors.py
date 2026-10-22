@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import warp as wp
 
 from f1tenth_policy.layout import (  # noqa: F401
@@ -34,7 +35,10 @@ from .kernel import (
     sample_corridor_distance,
 )
 
-MAX_LIDAR_MARCH_STEPS = 512
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
+MAX_LIDAR_MARCH_STEPS = 128
+LEGACY_LIDAR_MARCH_STEPS = 512
 ACTOR_IMU_DIM = IMU_DIM
 _EDT_HIT_FRAC = 0.55
 VIEW_EGO = 0
@@ -43,6 +47,61 @@ _VIEW_SEED_PRIME = 668265263
 _VESC_SPEED_NOISE_FEATURE = 10_000
 _VESC_SPEED_DROPOUT_FEATURE = 10_002
 _VESC_CURRENT_NOISE_FEATURE = 10_001
+
+
+def beam_trig_lut(
+    angle_min: float,
+    angle_increment: float,
+    num_beams: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    n = int(num_beams)
+    angles = np.float32(angle_min) + np.arange(n, dtype=np.float32) * np.float32(
+        angle_increment
+    )
+    return np.cos(angles).astype(np.float32), np.sin(angles).astype(np.float32)
+
+
+def attach_sensor_trig(params: SensorParams, num_envs: int, device: str) -> SensorParams:
+    beam_cos, beam_sin = beam_trig_lut(
+        float(params.angle_min),
+        float(params.angle_increment),
+        int(params.num_beams),
+    )
+    params.beam_cos = wp.array(beam_cos, dtype=wp.float32, device=device)
+    params.beam_sin = wp.array(beam_sin, dtype=wp.float32, device=device)
+    params.heading_cos = wp.zeros(int(num_envs), dtype=wp.float32, device=device)
+    params.heading_sin = wp.zeros(int(num_envs), dtype=wp.float32, device=device)
+    return params
+
+
+@wp.func
+def beam_direction_from_lut(
+    heading_cos: wp.float32,
+    heading_sin: wp.float32,
+    beam_cos: wp.float32,
+    beam_sin: wp.float32,
+) -> wp.vec2f:
+    return wp.vec2f(
+        heading_cos * beam_cos - heading_sin * beam_sin,
+        heading_sin * beam_cos + heading_cos * beam_sin,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def cache_lidar_heading_kernel(
+    vehicles: VehicleBuffers,
+    env: EnvBuffers,
+    sensor: SensorParams,
+):
+    env_id = wp.tid()
+    heading = (
+        vehicles.yaw[env_id]
+        + sensor.lidar_offset_yaw
+        + env.lidar_extrinsic_yaw[env_id]
+        + env.lidar_angle_bias[env_id]
+    )
+    sensor.heading_cos[env_id] = wp.cos(heading)
+    sensor.heading_sin[env_id] = wp.sin(heading)
 
 
 @wp.func
@@ -148,11 +207,6 @@ def lidar_beam_range(
     beam_time = wp.float32(0.0)
     mount_x = sensor.lidar_offset_x + env.lidar_extrinsic_x[env_id]
     mount_y = sensor.lidar_offset_y + env.lidar_extrinsic_y[env_id]
-    mount_yaw = (
-        sensor.lidar_offset_yaw
-        + env.lidar_extrinsic_yaw[env_id]
-        + env.lidar_angle_bias[env_id]
-    )
     cosine = wp.cos(ego.yaw)
     sine = wp.sin(ego.yaw)
     origin = wp.vec2f(
@@ -160,13 +214,12 @@ def lidar_beam_range(
         ego.y + sine * mount_x + cosine * mount_y,
     )
     origin = origin + beam_time * wp.vec2f(0.0, 0.0)
-    beam_angle = (
-        ego.yaw
-        + mount_yaw
-        + sensor.angle_min
-        + wp.float32(beam_id) * sensor.angle_increment
+    direction = beam_direction_from_lut(
+        sensor.heading_cos[env_id],
+        sensor.heading_sin[env_id],
+        sensor.beam_cos[beam_id],
+        sensor.beam_sin[beam_id],
     )
-    direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
 
     variant_id = map_variant_id(
         reset.seed, env_id, env.episode_id[env_id], field.variant_count
@@ -183,17 +236,27 @@ def lidar_beam_range(
     if has_opponent != 0:
         half_length = 0.5 * opponent_params.car_length
         half_width = 0.5 * opponent_params.car_width
-        opp_hit = ray_obb_distance(
-            origin,
-            direction,
-            opponent.x,
-            opponent.y,
-            opponent.yaw,
-            half_length,
-            half_width,
+        car_bound_radius = wp.sqrt(
+            half_length * half_length + half_width * half_width
         )
-        if opp_hit < hit:
-            hit = opp_hit
+        dx = opponent.x - origin[0]
+        dy = opponent.y - origin[1]
+        dir_x = direction[0]
+        dir_y = direction[1]
+        reach = hit + car_bound_radius
+        if dx * dx + dy * dy <= reach * reach:
+            if dx * dir_x + dy * dir_y >= -car_bound_radius:
+                opp_hit = ray_obb_distance(
+                    origin,
+                    direction,
+                    opponent.x,
+                    opponent.y,
+                    opponent.yaw,
+                    half_length,
+                    half_width,
+                )
+                if opp_hit < hit:
+                    hit = opp_hit
 
     if hit < sensor.range_min:
         hit = sensor.range_max

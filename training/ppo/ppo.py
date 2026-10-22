@@ -436,12 +436,15 @@ class PPOTrainer:
         )
         self._evaluate_actions_sequence = self.actor.evaluate_actions_sequence
         self._update_value_forward = self.value_critic
-        if self.compile and hasattr(self.actor, "use_segment_gru"):
-            self.actor.use_segment_gru = False
         if self.compile:
-            self._evaluate_actions_sequence = torch.compile(
-                self._evaluate_actions_sequence, mode=self.compile_mode
-            )
+            encode = getattr(self.actor, "encode", None)
+            if callable(encode):
+                self.actor.encode = torch.compile(
+                    encode, mode=self.compile_mode
+                )
+            net = getattr(self.actor, "net", None)
+            if isinstance(net, torch.nn.Module):
+                net.forward = torch.compile(net.forward, mode=self.compile_mode)
             self._update_value_forward = torch.compile(
                 self._update_value_forward, mode=self.compile_mode
             )

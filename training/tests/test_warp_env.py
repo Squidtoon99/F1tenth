@@ -203,7 +203,7 @@ def test_with_sensors_true_returns_dict_shapes():
             with_sensors=True,
         )
         assert set(out) == {"frenet", "actor", "lidar", "imu"}
-        assert env.step_launch_count == 4
+        assert env.step_launch_count == 5
         assert torch.isfinite(out["lidar"]).all()
         assert torch.isfinite(out["imu"]).all()
         assert torch.isfinite(out["actor"]).all()
@@ -229,7 +229,7 @@ def test_with_sensors_false_unchanged_flat_obs_and_launch_count():
             actions, n_steps=env_on.control_interval, with_sensors=True
         )
         assert env_off.step_launch_count == 3
-        assert env_on.step_launch_count == 4
+        assert env_on.step_launch_count == 5
         assert torch.equal(flat_step, bundled_step["frenet"])
         assert torch.equal(reward_off, reward_on)
         assert torch.equal(done_off, done_on)

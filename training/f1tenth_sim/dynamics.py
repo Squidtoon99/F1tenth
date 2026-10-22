@@ -2,6 +2,8 @@ import warp as wp
 
 from .params import SimParams
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 # Teleop→VESC p50 is ~10 ms (one 50 Hz gate tick). At sim_dt=0.005 that is
 # two substeps, shared by Warp replay and the training env.
 COMMAND_DELAY_SUBSTEPS = 2

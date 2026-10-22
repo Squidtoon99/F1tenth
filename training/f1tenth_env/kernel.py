@@ -14,6 +14,8 @@ from f1tenth_sim.dynamics import (
 )
 from f1tenth_sim.params import SimParams
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 FRENET_WINDOW = 40
 FUTURE_SAMPLES = 60
 OBS_DIM = 392
@@ -305,6 +307,10 @@ class SensorParams:
     lidar_offset_yaw: wp.float32
     lidar_dropout_bin_m: wp.float32
     max_march_steps: wp.int32
+    beam_cos: wp.array(dtype=wp.float32)
+    beam_sin: wp.array(dtype=wp.float32)
+    heading_cos: wp.array(dtype=wp.float32)
+    heading_sin: wp.array(dtype=wp.float32)
 
 
 @wp.struct

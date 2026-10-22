@@ -15,7 +15,13 @@ from conftest import make_circle_track, make_straight_track
 from f1tenth_env import F1tenthEnv
 from f1tenth_env import runtime as rt
 from f1tenth_env.kernel import OpponentParams, ResetParams, SensorParams
-from f1tenth_env.sensors import imu_stage_kernel, lidar_solo_kernel, lidar_stage_kernel
+from f1tenth_env.sensors import (
+    attach_sensor_trig,
+    cache_lidar_heading_kernel,
+    imu_stage_kernel,
+    lidar_solo_kernel,
+    lidar_stage_kernel,
+)
 from f1tenth_env.utils import CorridorDistanceData, build_corridor_distance_field
 from f1tenth_env.warp_env import (
     _CorridorDistanceStorage,
@@ -58,9 +64,10 @@ def _sensor_params(**overrides) -> SensorParams:
     params.lidar_offset_y = float(sensor["lidar_offset_y"])
     params.lidar_offset_yaw = float(sensor["lidar_offset_yaw"])
     params.lidar_dropout_bin_m = float(sensor.get("lidar_dropout_bin_m", 0.0))
-    params.max_march_steps = max(1, int(sensor.get("max_march_steps", 512)))
+    params.max_march_steps = max(1, int(sensor.get("max_march_steps", 128)))
     for key, value in overrides.items():
         setattr(params, key, value)
+    attach_sensor_trig(params, num_envs=1, device="cpu")
     return params
 
 
@@ -138,6 +145,12 @@ def _launch_lidar(
     ranges = torch.zeros(1, int(sensor.num_beams), dtype=torch.float32)
     reset = _reset_params(seed)
     opponent = _opponent_params()
+    wp.launch(
+        cache_lidar_heading_kernel,
+        dim=1,
+        inputs=[ego.buffers, env.buffers, sensor],
+        device="cpu",
+    )
     if opponent_pose is None:
         wp.launch(
             lidar_solo_kernel,
@@ -233,6 +246,20 @@ def _variant_wall_range(episode_id: int) -> float:
     ego.tensor["y"][0] = 1.0
     env.tensor["episode_id"][0] = episode_id
     ranges = torch.zeros(1, 1, dtype=torch.float32)
+    sensor = _sensor_params(
+        num_beams=1,
+        angle_min=0.0,
+        angle_increment=0.0,
+        range_min=0.02,
+        range_max=10.0,
+        lidar_offset_x=0.0,
+    )
+    wp.launch(
+        cache_lidar_heading_kernel,
+        dim=1,
+        inputs=[ego.buffers, env.buffers, sensor],
+        device="cpu",
+    )
     wp.launch(
         lidar_solo_kernel,
         dim=(1, 1),
@@ -240,14 +267,7 @@ def _variant_wall_range(episode_id: int) -> float:
             ego.buffers,
             env.buffers,
             corridor.data,
-            _sensor_params(
-                num_beams=1,
-                angle_min=0.0,
-                angle_increment=0.0,
-                range_min=0.02,
-                range_max=10.0,
-                lidar_offset_x=0.0,
-            ),
+            sensor,
             _opponent_params(),
             _reset_params(seed=0),
             wp.from_torch(ranges),
@@ -289,6 +309,20 @@ def test_lidar_unknown_distance_returns_max_range(warp_runtime):
     ego.tensor["x"][0] = 0.5
     ego.tensor["y"][0] = 1.25
     ranges = torch.zeros(1, 1, dtype=torch.float32)
+    sensor = _sensor_params(
+        num_beams=1,
+        angle_min=0.0,
+        angle_increment=0.0,
+        range_min=0.02,
+        range_max=10.0,
+        lidar_offset_x=0.0,
+    )
+    wp.launch(
+        cache_lidar_heading_kernel,
+        dim=1,
+        inputs=[ego.buffers, env.buffers, sensor],
+        device="cpu",
+    )
     wp.launch(
         lidar_solo_kernel,
         dim=(1, 1),
@@ -296,14 +330,7 @@ def test_lidar_unknown_distance_returns_max_range(warp_runtime):
             ego.buffers,
             env.buffers,
             corridor.data,
-            _sensor_params(
-                num_beams=1,
-                angle_min=0.0,
-                angle_increment=0.0,
-                range_min=0.02,
-                range_max=10.0,
-                lidar_offset_x=0.0,
-            ),
+            sensor,
             _opponent_params(),
             _reset_params(seed=0),
             wp.from_torch(ranges),
@@ -699,7 +726,7 @@ def test_with_sensors_dict_shapes_and_launch_count(warp_runtime):
         assert out["actor"].shape == (4, 1097)
         assert out["lidar"].shape == (4, _NUM_BEAMS)
         assert out["imu"].shape == (4, 6)
-        assert env.step_launch_count == 4
+        assert env.step_launch_count == 5
         assert torch.isfinite(reward).all()
         assert done.shape == (4,)
         assert "dr/lidar_range_noise_std" in extras["metrics"]
@@ -728,7 +755,7 @@ def test_with_sensors_false_matches_flat_obs_and_skips_kernels(warp_runtime):
             actions, n_steps=on.control_interval, with_sensors=True
         )
         assert off.step_launch_count == 3
-        assert on.step_launch_count == 4
+        assert on.step_launch_count == 5
         assert torch.equal(flat_step, bundled_step["frenet"])
         assert torch.equal(reward_off, reward_on)
         assert torch.equal(done_off, done_on)
