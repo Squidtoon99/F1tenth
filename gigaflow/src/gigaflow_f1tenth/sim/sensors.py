@@ -29,7 +29,10 @@ from gigaflow_f1tenth.sim.layout_local import (
 )
 from gigaflow_f1tenth.sim.vehicle import VehicleBuffers, VehicleLocal, load_vehicle
 
-MAX_LIDAR_MARCH_STEPS = 512
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
+MAX_LIDAR_MARCH_STEPS = 128
+LEGACY_LIDAR_MARCH_STEPS = 512
 _EDT_HIT_FRAC = 0.55
 _VIEW_SEED_PRIME = 668265263
 
@@ -79,6 +82,19 @@ def default_sensor_params(car_length: float, car_width: float, max_agents: int) 
     params.max_agents_per_world = int(max_agents)
     params.vesc_current_scale = float(VESC_CURRENT_SCALE_A)
     return params
+
+
+def beam_trig_lut(
+    angle_min: float,
+    angle_increment: float,
+    num_beams: int = LIDAR_DIM,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Static per-beam cos/sin of (angle_min + b * increment)."""
+    n = int(num_beams)
+    angles = np.float32(angle_min) + np.arange(n, dtype=np.float32) * np.float32(
+        angle_increment
+    )
+    return np.cos(angles).astype(np.float32), np.sin(angles).astype(np.float32)
 
 
 @wp.func
@@ -270,6 +286,44 @@ def _write_proprio(
 
 
 @wp.func
+def beam_direction_from_lut(
+    heading_cos: wp.float32,
+    heading_sin: wp.float32,
+    beam_cos: wp.float32,
+    beam_sin: wp.float32,
+) -> wp.vec2f:
+    return wp.vec2f(
+        heading_cos * beam_cos - heading_sin * beam_sin,
+        heading_sin * beam_cos + heading_cos * beam_sin,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def cache_lidar_heading_kernel(
+    vehicles: VehicleBuffers,
+    active: wp.array(dtype=wp.uint8),
+    lidar_extrinsic_yaw: wp.array(dtype=wp.float32),
+    lidar_angle_bias: wp.array(dtype=wp.float32),
+    sensor: SensorParams,
+    heading_cos: wp.array(dtype=wp.float32),
+    heading_sin: wp.array(dtype=wp.float32),
+):
+    slot = wp.tid()
+    if active[slot] == 0:
+        heading_cos[slot] = 1.0
+        heading_sin[slot] = 0.0
+        return
+    heading = (
+        vehicles.yaw[slot]
+        + sensor.lidar_offset_yaw
+        + lidar_extrinsic_yaw[slot]
+        + lidar_angle_bias[slot]
+    )
+    heading_cos[slot] = wp.cos(heading)
+    heading_sin[slot] = wp.sin(heading)
+
+
+@wp.func
 def _lidar_beam_hit(
     vehicles: VehicleBuffers,
     active: wp.array(dtype=wp.uint8),
@@ -293,6 +347,11 @@ def _lidar_beam_hit(
     )
     half_l = 0.5 * sensor.car_length
     half_w = 0.5 * sensor.car_width
+    car_bound_radius = wp.sqrt(half_l * half_l + half_w * half_w)
+    dir_x = direction[0]
+    dir_y = direction[1]
+    ox = origin[0]
+    oy = origin[1]
     # Contiguous (world, slot) layout: only scan agents in this world.
     max_a = sensor.max_agents_per_world
     base = (slot // max_a) * max_a
@@ -301,6 +360,13 @@ def _lidar_beam_hit(
         if other == slot:
             continue
         if active[other] == 0:
+            continue
+        dx = vehicles.x[other] - ox
+        dy = vehicles.y[other] - oy
+        reach = hit + car_bound_radius
+        if dx * dx + dy * dy > reach * reach:
+            continue
+        if dx * dir_x + dy * dir_y < -car_bound_radius:
             continue
         other_hit = ray_obb_distance(
             origin,
@@ -378,6 +444,10 @@ def lidar_and_proprio_kernel(
     edt_height: wp.array(dtype=wp.int32),
     edt_origin: wp.array(dtype=wp.vec2f),
     edt_resolution: wp.array(dtype=wp.float32),
+    beam_cos: wp.array(dtype=wp.float32),
+    beam_sin: wp.array(dtype=wp.float32),
+    heading_cos: wp.array(dtype=wp.float32),
+    heading_sin: wp.array(dtype=wp.float32),
     sensor: SensorParams,
     output: wp.array2d(dtype=wp.float32),
 ):
@@ -406,18 +476,19 @@ def lidar_and_proprio_kernel(
         vehicle.x + cosine * mount_x - sine * mount_y,
         vehicle.y + sine * mount_x + cosine * mount_y,
     )
+    heading = vehicle.yaw + mount_yaw
+    cos_h = wp.cos(heading)
+    sin_h = wp.sin(heading)
+    heading_cos[slot] = cos_h
+    heading_sin[slot] = sin_h
     seed = sensor_noise_seed[slot]
     num_beams = sensor.num_beams
     for beam_id in range(1081):
         if beam_id >= num_beams:
             break
-        beam_angle = (
-            vehicle.yaw
-            + mount_yaw
-            + sensor.angle_min
-            + wp.float32(beam_id) * sensor.angle_increment
+        direction = beam_direction_from_lut(
+            cos_h, sin_h, beam_cos[beam_id], beam_sin[beam_id]
         )
-        direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
         hit = _lidar_beam_hit(
             vehicles,
             active,
@@ -491,6 +562,10 @@ def lidar_and_proprio_kernel_global_scan(
     edt_height: wp.array(dtype=wp.int32),
     edt_origin: wp.array(dtype=wp.vec2f),
     edt_resolution: wp.array(dtype=wp.float32),
+    beam_cos: wp.array(dtype=wp.float32),
+    beam_sin: wp.array(dtype=wp.float32),
+    heading_cos: wp.array(dtype=wp.float32),
+    heading_sin: wp.array(dtype=wp.float32),
     sensor: SensorParams,
     output: wp.array2d(dtype=wp.float32),
 ):
@@ -518,8 +593,14 @@ def lidar_and_proprio_kernel_global_scan(
         vehicle.x + cosine * mount_x - sine * mount_y,
         vehicle.y + sine * mount_x + cosine * mount_y,
     )
+    heading = vehicle.yaw + mount_yaw
+    cos_h = wp.cos(heading)
+    sin_h = wp.sin(heading)
+    heading_cos[slot] = cos_h
+    heading_sin[slot] = sin_h
     half_l = 0.5 * sensor.car_length
     half_w = 0.5 * sensor.car_width
+    car_bound_radius = wp.sqrt(half_l * half_l + half_w * half_w)
     n = active.shape[0]
     wid = world_id[slot]
     seed = sensor_noise_seed[slot]
@@ -527,22 +608,27 @@ def lidar_and_proprio_kernel_global_scan(
     for beam_id in range(1081):
         if beam_id >= num_beams:
             break
-        beam_angle = (
-            vehicle.yaw
-            + mount_yaw
-            + sensor.angle_min
-            + wp.float32(beam_id) * sensor.angle_increment
+        direction = beam_direction_from_lut(
+            cos_h, sin_h, beam_cos[beam_id], beam_sin[beam_id]
         )
-        direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
         hit = sphere_trace_walls(
             origin, direction, field, sensor.range_max, sensor.max_march_steps
         )
+        dir_x = direction[0]
+        dir_y = direction[1]
         for other in range(n):
             if other == slot:
                 continue
             if active[other] == 0:
                 continue
             if world_id[other] != wid:
+                continue
+            dx = vehicles.x[other] - origin[0]
+            dy = vehicles.y[other] - origin[1]
+            reach = hit + car_bound_radius
+            if dx * dx + dy * dy > reach * reach:
+                continue
+            if dx * dir_x + dy * dir_y < -car_bound_radius:
                 continue
             other_hit = ray_obb_distance(
                 origin,
@@ -640,6 +726,10 @@ def lidar_beam_parallel_kernel(
     edt_height: wp.array(dtype=wp.int32),
     edt_origin: wp.array(dtype=wp.vec2f),
     edt_resolution: wp.array(dtype=wp.float32),
+    beam_cos: wp.array(dtype=wp.float32),
+    beam_sin: wp.array(dtype=wp.float32),
+    heading_cos: wp.array(dtype=wp.float32),
+    heading_sin: wp.array(dtype=wp.float32),
     sensor: SensorParams,
     output: wp.array2d(dtype=wp.float32),
 ):
@@ -661,22 +751,18 @@ def lidar_beam_parallel_kernel(
 
     mount_x = sensor.lidar_offset_x + lidar_extrinsic_x[slot]
     mount_y = sensor.lidar_offset_y + lidar_extrinsic_y[slot]
-    mount_yaw = (
-        sensor.lidar_offset_yaw + lidar_extrinsic_yaw[slot] + lidar_angle_bias[slot]
-    )
     cosine = wp.cos(vehicle.yaw)
     sine = wp.sin(vehicle.yaw)
     origin = wp.vec2f(
         vehicle.x + cosine * mount_x - sine * mount_y,
         vehicle.y + sine * mount_x + cosine * mount_y,
     )
-    beam_angle = (
-        vehicle.yaw
-        + mount_yaw
-        + sensor.angle_min
-        + wp.float32(beam_id) * sensor.angle_increment
+    direction = beam_direction_from_lut(
+        heading_cos[slot],
+        heading_sin[slot],
+        beam_cos[beam_id],
+        beam_sin[beam_id],
     )
-    direction = wp.vec2f(wp.cos(beam_angle), wp.sin(beam_angle))
     hit = _lidar_beam_hit(
         vehicles,
         active,

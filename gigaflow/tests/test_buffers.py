@@ -64,8 +64,7 @@ def test_allocate_store_finalize_roundtrip():
     assert batch.gru_start.shape == (s, shapes.gru_hidden_dim)
     assert torch.equal(batch.gru_start, hidden)
     assert batch.state.shape[-1] == 8
-    # Observations are replayed from compact state, never stored per rollout.
-    assert not hasattr(batch, "sensor_obs")
+    assert batch.sensor_obs is None or batch.sensor_obs.shape[0] == t
 
 
 def test_finalize_requires_full_rollout():

@@ -13,6 +13,8 @@ from gigaflow_f1tenth.sim.vehicle import (
     store_vehicle,
 )
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 _STYLE_WIDTH = CONDITION_DIM
 _IDX_DRIVE_SCALE = CONDITION_FIELD_NAMES.index("drive_scale")
 _IDX_STEER_SCALE = CONDITION_FIELD_NAMES.index("steer_scale")
@@ -292,6 +294,19 @@ def async_respawn_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def clear_gate_on_reset_kernel(
+    reset_mask: wp.array(dtype=wp.uint8),
+    prev_gate: wp.array2d(dtype=wp.uint8),
+    n_others: int,
+):
+    i = wp.tid()
+    if reset_mask[i] == 0:
+        return
+    for k in range(n_others):
+        prev_gate[i, k] = wp.uint8(0)
+
+
+@wp.kernel(enable_backward=False)
 def style_scatter_kernel(
     reset_mask: wp.array(dtype=wp.uint8),
     style_table: wp.array2d(dtype=wp.float32),  # [pool, CONDITION_DIM]
@@ -308,6 +323,11 @@ def style_scatter_kernel(
     vmax_scale: wp.array(dtype=wp.float32),
     c_f: wp.array(dtype=wp.float32),
     c_r: wp.array(dtype=wp.float32),
+    alpha_collision: wp.array(dtype=wp.float32),
+    alpha_boundary: wp.array(dtype=wp.float32),
+    alpha_l_center: wp.array(dtype=wp.float32),
+    alpha_center_bias: wp.array(dtype=wp.float32),
+    alpha_passing: wp.array(dtype=wp.float32),
     lat_stiffness_scale: float,
     gravity: float,
     wheelbase: float,
@@ -332,6 +352,11 @@ def style_scatter_kernel(
     steer_scale[i] = out_styles[i, _IDX_STEER_SCALE]
     accel_scale[i] = out_styles[i, _IDX_ACCEL_SCALE]
     vmax_scale[i] = out_styles[i, _IDX_VMAX_SCALE]
+    alpha_collision[i] = out_styles[i, 0]
+    alpha_boundary[i] = out_styles[i, 1]
+    alpha_l_center[i] = out_styles[i, 2]
+    alpha_center_bias[i] = out_styles[i, 3]
+    alpha_passing[i] = out_styles[i, 4]
     weight = mass[i] * gravity
     scale = lat_stiffness_scale * weight / wp.max(wheelbase, 1.0e-9)
     c_f[i] = scale * lr

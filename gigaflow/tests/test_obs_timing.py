@@ -62,14 +62,14 @@ def test_collect_does_not_double_build_lidar():
         return real()
 
     trainer.sim.rebuild_sensors = counted  # type: ignore[method-assign]
-    # Also count internal launch path used by step().
-    real_launch = trainer.sim._launch_sensors
+    # step() captures heading+LiDAR inside _launch_sensors_eager (full-step graph).
+    real_launch = trainer.sim._launch_sensors_eager
 
     def counted_launch():
         builds["n"] += 1
         return real_launch()
 
-    trainer.sim._launch_sensors = counted_launch  # type: ignore[method-assign]
+    trainer.sim._launch_sensors_eager = counted_launch  # type: ignore[method-assign]
 
     batch = trainer.collect_rollout()
     # One sensor build per control step inside sim.step (not a collect-time rebuild).
@@ -107,6 +107,7 @@ def test_replayed_observations_are_bitwise_identical_to_collection():
 def test_replay_gate_rejects_a_perturbed_proprio_channel(channel):
     """Each added channel is load-bearing, and a mismatch is fatal not advisory."""
     trainer = _short_rollout_trainer(steps=4)
+    trainer.reconstruct_obs = True
     batch = trainer.collect_rollout()
     trainer.reconstruct_prepared(batch, verify_parity=True)
     assert trainer.profile["reconstruction_digest_mismatches"] == 0.0

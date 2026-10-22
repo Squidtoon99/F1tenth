@@ -14,6 +14,8 @@ from gigaflow_f1tenth.sim.layout_local import (
     STEERING_DELTA_MAX_RAD,
 )
 
+wp.set_module_options({"fast_math": True, "enable_backward": False})
+
 YAW_INERTIA_PRIOR = 0.13
 STEER_LAG_S = 0.09
 LOW_SPEED_BLEND_MPS = 1.0

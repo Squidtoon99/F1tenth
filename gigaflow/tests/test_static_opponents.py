@@ -255,8 +255,8 @@ def test_static_opponents_contribute_no_training_transitions():
     assert math.isfinite(stats.value_loss)
 
 
-def test_static_opponents_excluded_from_actor_forward_pass():
-    """Static slots must not receive a policy forward pass at all."""
+def test_static_opponents_use_full_slot_forward_with_brake_mask():
+    """Avoid host-sync nonzero compaction: forward every slot, brake static rows."""
     cfg = _cfg(num_worlds=1, max_agents_per_world=3, static=2)
     atlas = make_synthetic_oval_atlas(max_agents=cfg.worlds.max_agents_per_world)
     trainer = build_trainer(cfg, atlas=atlas, device="cpu")
@@ -272,11 +272,16 @@ def test_static_opponents_excluded_from_actor_forward_pass():
         )
 
     trainer.actor.forward = _spy_forward
-    trainer.collect_rollout()
+    batch = trainer.collect_rollout()
     assert calls, "actor.forward was never invoked"
+    n = world_slot_layout(cfg).num_slots
+    for obs in calls:
+        assert obs.shape[0] == n
     total_rows = sum(int(c.shape[0]) for c in calls)
-    max_possible = cfg.ppo.rollout_length * world_slot_layout(cfg).num_slots
-    assert total_rows < max_possible
+    assert total_rows == cfg.ppo.rollout_length * n
+    static_mask = _static_mask(trainer.sim.buffers.torch_arrays)
+    assert torch.all(batch.actions[:, static_mask, 0] == -1.0)
+    assert torch.all(batch.actions[:, static_mask, 1] == 0.0)
 
 
 def test_static_opponent_style_is_never_resampled_after_placement():

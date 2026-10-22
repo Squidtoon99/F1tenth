@@ -211,24 +211,20 @@ def test_rollout_buffer_copies_survive_next_step():
     assert not torch.allclose(batch.state[0, :, 0], live.x)
 
 
-@pytest.mark.skipif(not CUDA, reason="CUDA graph sensor path")
+@pytest.mark.skipif(not CUDA, reason="CUDA graph full-step path")
 def test_optional_sensor_cuda_graph_replay_parity_when_enabled():
     cfg = _dense_cfg(4, 2)
     atlas = make_synthetic_oval_atlas(max_agents=2)
     sim = build_simulator(cfg, atlas, "cuda")
-    # Disabled by default after negative local benchmark; exercise opt-in path.
-    assert sim._sensor_cuda_graph_enabled is False
-    sim._sensor_cuda_graph_enabled = True
-    sim._sensor_cuda_graph_warmup_left = 2
-    sim._sensor_cuda_graph_status = "pending"
+    assert sim._cuda_graph_enabled is True
     n = world_slot_layout(cfg).num_slots
     actions = torch.zeros((n, 2), device="cuda")
     actions[:, 0] = 0.2
     for _ in range(8):
         sim.step(actions)
-    if sim._sensor_cuda_graph is None:
-        pytest.skip(f"sensor graph unsupported: {sim._sensor_cuda_graph_status}")
-    assert sim._sensor_cuda_graph_status in ("captured", "replaying")
+    if sim._cuda_graph is None:
+        pytest.skip(f"full-step graph unsupported: {sim._cuda_graph_status}")
+    assert sim._cuda_graph_status in ("captured", "replaying")
     a = sim.rebuild_sensors().detach().clone()
     b = sim.rebuild_sensors().detach().clone()
     assert torch.equal(a, b)
