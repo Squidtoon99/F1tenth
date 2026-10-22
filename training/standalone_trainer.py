@@ -3790,7 +3790,8 @@ def main():
                             "advantage_filter_discard_rate=%.4f "
                             "advantage_filter_retained=%.1f "
                             "explained_var=%.4f explained_var_post=%.4f "
-                            "value_clip_active_frac=%.3f",
+                            "value_clip_active_frac=%.3f "
+                            "base_kl=%.5f kl_penalty=%.5f critic_warmup=%.0f",
                             ppo_metric_accum["value_loss"] / loss_count,
                             ppo_metric_accum["negative_log_prob"] / loss_count,
                             ppo_metric_accum["approx_kl"] / loss_count,
@@ -3809,6 +3810,10 @@ def main():
                             ppo_metric_accum["explained_variance"] / loss_count,
                             ppo_metric_accum["explained_variance_post"] / loss_count,
                             ppo_metric_accum["value_clip_active_fraction"] / loss_count,
+                            ppo_metric_accum.get("base_kl", 0.0) / loss_count,
+                            ppo_metric_accum.get("kl_penalty", 0.0) / loss_count,
+                            ppo_metric_accum.get("critic_warmup_active", 0.0)
+                            / loss_count,
                         )
                 window_env_steps = float(window_transitions)
                 nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
