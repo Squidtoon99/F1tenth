@@ -289,6 +289,7 @@ def eval_from_rest(
     *,
     seconds: float = 60.0,
     teacher: bool = False,
+    collect_poses: bool = False,
 ) -> dict[str, Any]:
     actor.eval()
     prev_flag = bool(sim.sync_no_respawn)
@@ -306,6 +307,7 @@ def eval_from_rest(
     survival = torch.zeros(n, device=t.x.device, dtype=torch.float32)
     prev_xy = torch.stack([t.x.clone(), t.y.clone()], dim=-1)
     obs = t.sensor_obs
+    poses: list[np.ndarray] = []
     for step in range(steps):
         if not bool(alive.any()):
             break
@@ -325,6 +327,20 @@ def eval_from_rest(
             hidden = out.hidden
         result = sim.step(actions)
         obs = result["sensor_obs"]
+        if collect_poses and step % 4 == 0 and len(poses) < 250:
+            poses.append(
+                np.array(
+                    [
+                        [
+                            float(t.x[0].item()),
+                            float(t.y[0].item()),
+                            float(t.yaw[0].item()),
+                            float(t.active[0].item()),
+                        ]
+                    ],
+                    dtype=np.float32,
+                )
+            )
         xy = torch.stack([t.x, t.y], dim=-1)
         delta = torch.linalg.norm(xy - prev_xy, dim=-1)
         dist = dist + delta * alive.to(dtype=torch.float32)
@@ -357,6 +373,8 @@ def eval_from_rest(
         "full_lap": dist_m >= COURTYARD_LENGTH_M and not crashed,
         "multi_lap": dist_m >= 2.0 * COURTYARD_LENGTH_M and not crashed,
     }
+    if collect_poses:
+        payload["poses"] = poses
     actor.train()
     return payload
 
@@ -485,7 +503,9 @@ def train_courtyard(
             ev = eval_from_rest(
                 eval_sim, actor, seconds=eval_seconds, teacher=False
             )
-            row.update({f"eval_{k}": v for k, v in ev.items() if k != "spawn"})
+            row.update(
+                {f"eval_{k}": v for k, v in ev.items() if k not in {"spawn", "poses"}}
+            )
             row["eval"] = ev
             ckpt_path = run_dir / f"actor_update_{update:05d}.pt"
             export_baked_actor(cfg, actor, path=str(ckpt_path))
@@ -507,12 +527,39 @@ def train_courtyard(
         shutil.copy2(winner_src, winner_dst)
     elif (run_dir / "actor_best.pt").is_file():
         shutil.copy2(run_dir / "actor_best.pt", winner_dst)
+    video = None
+    if winner_dst.is_file():
+        try:
+            from gigaflow_f1tenth.visualization import render_side_by_side
+
+            winner_actor = load_student(eval_cfg, winner_dst, device)
+            if hasattr(winner_actor, "gru"):
+                winner_actor.gru.flatten_parameters()
+            left = eval_from_rest(
+                eval_sim, frozen, seconds=50.0, collect_poses=True
+            )
+            right = eval_from_rest(
+                eval_sim, winner_actor, seconds=50.0, collect_poses=True
+            )
+            cache = Path(cfg.tracks.manifest_path).expanduser().parent
+            atlas = load_atlas(str(cache)).view()
+            video = render_side_by_side(
+                atlas,
+                left.get("poses") or [],
+                right.get("poses") or [],
+                run_dir / "side_by_side.mp4",
+                car_length=cfg.agents.car_length_m,
+                car_width=cfg.agents.car_width_m,
+            )
+        except Exception as exc:
+            print(json.dumps({"render_error": str(exc)}), flush=True)
     report = {
         "best": best,
         "updates": len(history),
         "history_tail": history[-8:],
         "run_dir": str(run_dir),
         "winner": str(winner_dst),
+        "video": None if video is None else str(video),
     }
     (run_dir / "train_report.json").write_text(
         json.dumps(report, indent=2, default=str) + "\n"
