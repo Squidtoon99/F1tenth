@@ -231,6 +231,62 @@ def _cmd_soak(args: argparse.Namespace) -> int:
     return 0 if report["ok"] else 1
 
 
+def _cmd_bake_irl(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.artifacts import FileArtifactStore, bake_actor_artifact
+    from gigaflow_f1tenth.sophy_compat import load_baked_actor, refuse_ppo_resume
+
+    refuse_ppo_resume("bake")
+    actor, payload = load_baked_actor(args.checkpoint, device="cpu")
+    baked = bake_actor_artifact(payload, actor=actor)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    FileArtifactStore().write_actor_artifact(str(args.output), baked)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(args.output),
+                "irl_baked": True,
+                "irl_identity": baked.get("irl_identity"),
+                "deployment_style": baked.get("deployment_style"),
+                "deployment_condition_normalized": baked.get(
+                    "deployment_condition_normalized"
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_finetune_sophy(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.sophy_compat import refuse_ppo_resume
+    from gigaflow_f1tenth.sophy_sim_finetune import (
+        DEFAULT_KL_COEF,
+        DEFAULT_KL_MAX,
+        DEFAULT_NUM_ENVS,
+        DEFAULT_TRACK,
+        DEFAULT_UPDATES,
+        run_sophy_finetune,
+    )
+
+    refuse_ppo_resume(str(args.method))
+    report = run_sophy_finetune(
+        checkpoint=args.checkpoint,
+        output_dir=args.output_dir,
+        device=str(args.device),
+        num_updates=int(args.num_updates or DEFAULT_UPDATES),
+        num_envs=int(args.num_envs or DEFAULT_NUM_ENVS),
+        track=str(args.track or DEFAULT_TRACK),
+        kl_coef=float(args.kl_coef if args.kl_coef is not None else DEFAULT_KL_COEF),
+        kl_max=float(args.kl_max if args.kl_max is not None else DEFAULT_KL_MAX),
+        smoke=bool(args.smoke),
+        seed=int(args.seed),
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("ok") else 1
+
+
 def _cmd_view(args: argparse.Namespace) -> int:
     from gigaflow_f1tenth.viewer.replay import ViewerError, ViewerLaunchArgs
     from gigaflow_f1tenth.viewer.server import run_viewer
@@ -478,6 +534,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not open a browser tab for the local UI",
     )
     p_view.set_defaults(func=_cmd_view)
+
+    p_bake = sub.add_parser(
+        "bake-irl",
+        help="Hardcode IRL/Sophy embodied defaults into a deployable actor",
+    )
+    p_bake.add_argument("--checkpoint", type=Path, required=True)
+    p_bake.add_argument("--output", type=Path, required=True)
+    p_bake.set_defaults(func=_cmd_bake_irl)
+
+    p_sophy = sub.add_parser(
+        "finetune-sophy",
+        help="KL-clip PPO fine-tune of a baked actor in the Sophy Warp env",
+    )
+    p_sophy.add_argument("--checkpoint", type=Path, required=True)
+    p_sophy.add_argument("--output-dir", type=Path, required=True)
+    p_sophy.add_argument("--device", type=str, default="cuda")
+    p_sophy.add_argument("--num-updates", type=int, default=None)
+    p_sophy.add_argument("--num-envs", type=int, default=None)
+    p_sophy.add_argument("--track", type=str, default=None)
+    p_sophy.add_argument("--kl-coef", type=float, default=None)
+    p_sophy.add_argument("--kl-max", type=float, default=None)
+    p_sophy.add_argument("--seed", type=int, default=0)
+    p_sophy.add_argument(
+        "--smoke",
+        action="store_true",
+        help="One short update (CPU/GPU integration smoke)",
+    )
+    p_sophy.add_argument(
+        "--method",
+        type=str,
+        default="sophy-kl",
+        help="sophy-kl (default). ppo resume is rejected.",
+    )
+    p_sophy.set_defaults(func=_cmd_finetune_sophy)
 
     return parser
 
