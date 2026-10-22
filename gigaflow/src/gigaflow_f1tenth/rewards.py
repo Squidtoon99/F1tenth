@@ -37,10 +37,11 @@ assert CONDITION_DIM == 10
 # Table A2 ranges (racing subset; comfort / goal / stop-line / lane-align omitted).
 ALPHA_COLLISION_RANGE = (0.0, 3.0)
 ALPHA_BOUNDARY_RANGE = (0.0, 3.0)
-ALPHA_L_CENTER_RANGE = (2.5e-4, 7.5e-3)
+# Minor shaping vs Δs (the extra Δt keeps |R_center| well below progress).
+ALPHA_L_CENTER_RANGE = (2.5e-3, 7.5e-2)
 ALPHA_CENTER_BIAS_RANGE = (-0.5, 0.5)
-# Spans time-trial drivers at 0 through roughly twice the previous global 3.0.
-ALPHA_PASSING_RANGE = (0.0, 6.0)
+# Range max 0.8 < implicit progress α=1 so overtaking cannot dominate Δs.
+ALPHA_PASSING_RANGE = (0.0, 0.8)
 COLLISION_SPEED_COEF = 0.1
 # Lateral error cap: far-OOB / projection spikes belong to boundary and collision.
 LANE_CENTER_MAX_ERR = 2.0
@@ -59,9 +60,9 @@ DEPLOYMENT_STYLES: dict[str, dict[str, float]] = {
     "centered_high_collision": {
         "alpha_collision": 3.0,
         "alpha_boundary": 3.0,
-        "alpha_l_center": 3.8e-3,
+        "alpha_l_center": 3.8e-2,
         "alpha_center_bias": 0.0,
-        "alpha_passing": 3.0,
+        "alpha_passing": 0.4,
         "drive_scale": 1.0,
         "steer_scale": 1.0,
         "accel_scale": 1.0,

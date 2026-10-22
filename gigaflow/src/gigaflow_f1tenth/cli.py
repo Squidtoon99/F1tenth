@@ -12,6 +12,7 @@ import torch
 from gigaflow_f1tenth.config import (
     PINNED_UPSTREAM_TRACK_COUNT,
     config_to_dict,
+    configure_cuda_allocator,
     estimate_memory_bytes,
     load_config,
     replace_wandb_config,
@@ -258,6 +259,104 @@ def _cmd_view(args: argparse.Namespace) -> int:
         return 2
 
 
+def _cmd_bake_irl(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.artifacts import FileArtifactStore, bake_actor_artifact
+    from gigaflow_f1tenth.offline_finetune import load_offline_actor
+
+    actor, payload = load_offline_actor(args.checkpoint, device="cpu")
+    baked = bake_actor_artifact(payload, actor=actor)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    FileArtifactStore().write_actor_artifact(str(args.output), baked)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(args.output),
+                "irl_baked": True,
+                "irl_identity": baked.get("irl_identity"),
+                "deployment_style": baked.get("deployment_style"),
+                "deployment_condition_normalized": baked.get(
+                    "deployment_condition_normalized"
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_finetune_offline(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.offline_finetune import (
+        UNIQUE_ARMS,
+        refuse_ppo,
+        run_bakeoff,
+    )
+    from gigaflow_f1tenth.teleop_dataset import load_manual_dataset
+    from gigaflow_f1tenth.wandb_log import build_wandb_session
+
+    refuse_ppo(args.method)
+    trajectories = None
+    if not args.synthetic:
+        roots = tuple(args.bag_root) if args.bag_root else None
+        trajectories = load_manual_dataset(roots, max_bags=args.max_bags)
+        if not trajectories:
+            raise SystemExit("no manual/teleop trajectories loaded")
+    cfg_path = args.config
+    if cfg_path is None:
+        cfg_path = Path(__file__).resolve().parents[2] / "configs" / "smoke.yaml"
+    cfg = _apply_wandb_cli_overrides(load_config(cfg_path), args)
+    session = build_wandb_session(cfg, run_dir=args.output_dir)
+    by_name = {str(row["name"]): dict(row) for row in UNIQUE_ARMS}
+    if args.campaign:
+        arm_specs = [dict(row) for row in UNIQUE_ARMS]
+    elif args.arm:
+        missing = [name for name in args.arm if name not in by_name]
+        if missing:
+            raise SystemExit(f"unknown arm(s): {missing}")
+        arm_specs = [by_name[name] for name in args.arm]
+    else:
+        arm_specs = [dict(next(iter(by_name.values())))]
+    result = run_bakeoff(
+        checkpoint=args.checkpoint,
+        output_dir=args.output_dir,
+        trajectories=trajectories,
+        steps=int(args.steps),
+        batch_size=int(args.batch_size),
+        lr=float(args.lr),
+        seed=int(args.seed),
+        device=str(args.device),
+        window=int(args.window),
+        wandb_session=session,
+        arms=arm_specs,
+        include_variations=bool(args.campaign) and not bool(args.no_variations),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_courtyard_multilap(args: argparse.Namespace) -> int:
+    from gigaflow_f1tenth.courtyard_adapt import CKPT_BASE, run_campaign
+
+    result = run_campaign(
+        checkpoint=args.checkpoint or CKPT_BASE,
+        output_dir=args.output_dir,
+        device=args.device,
+        eval_seconds=float(args.eval_seconds),
+        skip_train=bool(args.skip_train),
+    )
+    keys = (
+        "winner",
+        "laps",
+        "progress_m",
+        "survival_s",
+        "video",
+        "winner_checkpoint",
+    )
+    print(json.dumps({k: result[k] for k in keys}, indent=2, default=str))
+    return 0
+
+
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     device = args.device or (
@@ -479,10 +578,85 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_view.set_defaults(func=_cmd_view)
 
+    p_bake = sub.add_parser(
+        "bake-irl",
+        help="Hardcode IRL embodied identity into a deployable actor artifact",
+    )
+    p_bake.add_argument("--checkpoint", type=Path, required=True)
+    p_bake.add_argument("--output", type=Path, required=True)
+    p_bake.set_defaults(func=_cmd_bake_irl)
+
+    p_ft = sub.add_parser(
+        "finetune-offline",
+        help="AWAC+KL teleop fine-tune of a baked actor (never PPO-resume)",
+    )
+    p_ft.add_argument("--checkpoint", type=Path, required=True)
+    p_ft.add_argument("--output-dir", type=Path, required=True)
+    p_ft.add_argument("--config", type=Path, default=None)
+    p_ft.add_argument("--device", type=str, default="cpu")
+    p_ft.add_argument("--steps", type=int, default=40)
+    p_ft.add_argument("--batch-size", type=int, default=8)
+    p_ft.add_argument("--lr", type=float, default=3.0e-5)
+    p_ft.add_argument("--seed", type=int, default=0)
+    p_ft.add_argument("--window", type=int, default=16)
+    p_ft.add_argument("--max-bags", type=int, default=None)
+    p_ft.add_argument(
+        "--bag-root",
+        type=Path,
+        action="append",
+        default=None,
+        help="Manual rosbag root (repeatable)",
+    )
+    p_ft.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="Use synthetic windows instead of rosbags (CPU smoke)",
+    )
+    p_ft.add_argument(
+        "--method",
+        type=str,
+        default="bakeoff",
+        help="awac (default). ppo is rejected.",
+    )
+    p_ft.add_argument(
+        "--campaign",
+        action="store_true",
+        help="Run the kept AWAC+KL winner arm",
+    )
+    p_ft.add_argument(
+        "--arm",
+        action="append",
+        default=None,
+        help="Arm name from UNIQUE_ARMS (repeatable). Ignored with --campaign.",
+    )
+    p_ft.add_argument(
+        "--no-variations",
+        action="store_true",
+        help="Skip winner variations",
+    )
+    _add_wandb_args(p_ft)
+    p_ft.set_defaults(func=_cmd_finetune_offline)
+
+    p_cy = sub.add_parser(
+        "courtyard-multilap",
+        help="Courtyard_2 from-rest 3-round DAgger (PP+Stanley) + trailing PPO",
+    )
+    p_cy.add_argument("--checkpoint", type=Path, default=None)
+    p_cy.add_argument("--output-dir", type=Path, default=None)
+    p_cy.add_argument("--device", type=str, default=None)
+    p_cy.add_argument("--eval-seconds", type=float, default=90.0)
+    p_cy.add_argument(
+        "--skip-train",
+        action="store_true",
+        help="Diagnose + eval the checkpoint without fine-tuning",
+    )
+    p_cy.set_defaults(func=_cmd_courtyard_multilap)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_cuda_allocator()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

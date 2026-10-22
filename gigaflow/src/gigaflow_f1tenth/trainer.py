@@ -31,7 +31,11 @@ from gigaflow_f1tenth.buffers import (
     allocate_rollout_buffer,
     observation_digest,
 )
-from gigaflow_f1tenth.config import ExperimentConfig, config_to_dict
+from gigaflow_f1tenth.config import (
+    ExperimentConfig,
+    config_to_dict,
+    configure_cuda_allocator,
+)
 from gigaflow_f1tenth.critic import (
     build_critic,
     critic_values_over_time,
@@ -286,6 +290,7 @@ class SelfPlayTrainer:
         wandb_session: WandbSession | None = None,
     ) -> None:
         self.cfg = cfg
+        configure_cuda_allocator()
         self.device = _resolve_device(cfg, device)
         self.atlas = atlas
         self._preview_atlas: PackedTrackAtlasView | None = None
@@ -679,7 +684,7 @@ class SelfPlayTrainer:
         active = (batch.state[..., STATE_INDEX["active"]] > 0.5).to(device=device)
         self._assert_observation_digests(batch, sensor, active)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             logp_bt, _, _ = evaluate_actions_sequence(
                 self.actor,
                 sensor.transpose(0, 1).contiguous(),
@@ -689,7 +694,8 @@ class SelfPlayTrainer:
                 reset_mask=batch.reset_mask.transpose(0, 1).contiguous(),
                 pre_tanh=batch.pre_tanh.transpose(0, 1).contiguous(),
             )
-            batch.old_logp.copy_(logp_bt.transpose(0, 1))
+            reconstruct_logp = logp_bt.transpose(0, 1).contiguous()
+            batch.old_logp.copy_(reconstruct_logp)
 
         world_id = torch.arange(num_slots, device=device) // cfg.worlds.max_agents_per_world
         world_id = world_id.view(1, num_slots).expand(t_steps, num_slots)
@@ -708,6 +714,7 @@ class SelfPlayTrainer:
             other_agents=others,
             other_mask=other_mask,
             bootstrap_values=self._bootstrap_values(batch, world_id),
+            reconstruct_logp=reconstruct_logp.detach().clone(),
         )
         if verify_parity:
             self.profile.update({"reconstruction_digest_mismatches": 0.0})

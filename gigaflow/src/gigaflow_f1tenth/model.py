@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 import torch
@@ -13,15 +13,24 @@ from torch.distributions.normal import Normal
 
 from gigaflow_f1tenth.config import (
     ACTION_DIM,
+    ALLOWED_CNN_POOL_BINS,
+    CNN_CONV_OUT_BINS,
+    CNN_POOL_BINS,
+    CNN_POOL_MODE,
     CNN_PROJECTION_DIM,
     GRU_HIDDEN_DIM,
     LIDAR_DIM,
     PROPRIO_DIM,
     SENSOR_OBS_DIM,
     ExperimentConfig,
+    normalize_cnn_pool_mode,
 )
 from gigaflow_f1tenth.normalization import SensorNormalizer
-from gigaflow_f1tenth.rewards import CONDITION_DIM
+from gigaflow_f1tenth.rewards import (
+    CONDITION_DIM,
+    deployment_style,
+    normalize_condition_vector,
+)
 
 CNN_CONV_CHANNELS = (32, 64, 64)
 CNN_KERNELS = (7, 5, 3)
@@ -30,7 +39,7 @@ CNN_PADDING = (3, 2, 1)
 DEFAULT_ACTOR_MLP = (1024, 1024, 1024)
 ACTOR_ARCHITECTURE_NAME = "lidar_cnn_gru_conditioned"
 CONDITION_EMBED_DIM = 64
-LIDAR_POOL_BINS = 32
+LIDAR_POOL_BINS = CNN_POOL_BINS
 # Tight upper bound: std≫1 saturates tanh; atanh(action) then disagrees with the
 # sampled pre_tanh and PPO ratios / pre-update KL explode.
 LOG_STD_MAX = 0.5
@@ -49,10 +58,16 @@ class ActorShapes:
     action_dim: int = ACTION_DIM
     gru_hidden_dim: int = GRU_HIDDEN_DIM
     cnn_projection_dim: int = CNN_PROJECTION_DIM
+    cnn_pool_bins: int = LIDAR_POOL_BINS
+    cnn_pool_mode: str = CNN_POOL_MODE
     mlp_sizes: tuple[int, ...] = DEFAULT_ACTOR_MLP
 
 
 def actor_shapes(cfg: ExperimentConfig) -> ActorShapes:
+    pool_mode = normalize_cnn_pool_mode(cfg.agents.cnn_pool_mode)
+    pool_bins = (
+        CNN_CONV_OUT_BINS if pool_mode == "none" else int(cfg.agents.cnn_pool_bins)
+    )
     return ActorShapes(
         sensor_obs_dim=cfg.agents.sensor_obs_dim,
         lidar_dim=cfg.agents.lidar_dim,
@@ -61,6 +76,8 @@ def actor_shapes(cfg: ExperimentConfig) -> ActorShapes:
         action_dim=cfg.agents.action_dim,
         gru_hidden_dim=cfg.agents.gru_hidden_dim,
         cnn_projection_dim=cfg.agents.cnn_projection_dim,
+        cnn_pool_bins=pool_bins,
+        cnn_pool_mode=pool_mode,
         mlp_sizes=cfg.agents.actor_mlp_sizes,
     )
 
@@ -230,11 +247,26 @@ class LidarCNNEncoder(nn.Module):
         pool_bins: int = LIDAR_POOL_BINS,
         projection_dim: int = CNN_PROJECTION_DIM,
         in_channels: int = 1,
+        pool_mode: str = CNN_POOL_MODE,
     ):
         super().__init__()
         self.lidar_dim = int(lidar_dim)
-        self.pool_bins = int(pool_bins)
+        self.pool_mode = normalize_cnn_pool_mode(pool_mode)
+        if self.pool_mode == "none":
+            length = self.lidar_dim
+            for kernel, stride, pad in zip(CNN_KERNELS, CNN_STRIDES, CNN_PADDING):
+                length = (length + 2 * pad - kernel) // stride + 1
+            self.pool_bins = int(length)
+        else:
+            bins = int(pool_bins)
+            if bins not in ALLOWED_CNN_POOL_BINS:
+                raise ValueError(
+                    f"pool_bins must be one of {ALLOWED_CNN_POOL_BINS}, got {pool_bins}"
+                )
+            self.pool_bins = bins
         self.projection_dim = int(projection_dim)
+        if self.projection_dim <= 0:
+            raise ValueError("projection_dim must be positive")
         self.in_channels = int(in_channels)
         self.conv = nn.Sequential(
             nn.Conv1d(
@@ -244,7 +276,7 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[0],
                 padding=CNN_PADDING[0],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv1d(
                 CNN_CONV_CHANNELS[0],
                 CNN_CONV_CHANNELS[1],
@@ -252,7 +284,7 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[1],
                 padding=CNN_PADDING[1],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv1d(
                 CNN_CONV_CHANNELS[1],
                 CNN_CONV_CHANNELS[2],
@@ -260,9 +292,14 @@ class LidarCNNEncoder(nn.Module):
                 stride=CNN_STRIDES[2],
                 padding=CNN_PADDING[2],
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
-        self.pool = nn.AdaptiveAvgPool1d(self.pool_bins)
+        if self.pool_mode == "avg":
+            self.pool: nn.Module = nn.AdaptiveAvgPool1d(self.pool_bins)
+        elif self.pool_mode == "max":
+            self.pool = nn.AdaptiveMaxPool1d(self.pool_bins)
+        else:
+            self.pool = nn.Identity()
         self.projection = nn.Linear(
             CNN_CONV_CHANNELS[2] * self.pool_bins, self.projection_dim
         )
@@ -275,7 +312,7 @@ class LidarCNNEncoder(nn.Module):
             x = lidar
         x = self.conv(x)
         flat = self.pool(x).flatten(1)
-        return F.relu(self.projection(flat))
+        return F.relu(self.projection(flat), inplace=True)
 
 
 class ConditionEncoder(nn.Module):
@@ -283,9 +320,9 @@ class ConditionEncoder(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(condition_dim, embed_dim),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
         self.embed_dim = embed_dim
 
@@ -296,7 +333,11 @@ class ConditionEncoder(nn.Module):
 class ConditionedLidarGRUActor(nn.Module):
     """Primary racing actor: ordered-LiDAR CNN + condition MLP + 512 GRU + MLP head."""
 
-    def __init__(self, shapes: ActorShapes, condition_embed_dim: int = CONDITION_EMBED_DIM):
+    def __init__(
+        self,
+        shapes: ActorShapes,
+        condition_embed_dim: int = CONDITION_EMBED_DIM,
+    ):
         super().__init__()
         if shapes.sensor_obs_dim != shapes.lidar_dim + shapes.proprio_dim:
             raise ValueError("sensor_obs_dim must equal lidar_dim + proprio_dim")
@@ -309,8 +350,10 @@ class ConditionedLidarGRUActor(nn.Module):
         self.sensor_normalizer = SensorNormalizer(shapes.sensor_obs_dim)
         self.encoder = LidarCNNEncoder(
             lidar_dim=shapes.lidar_dim,
+            pool_bins=shapes.cnn_pool_bins,
             projection_dim=shapes.cnn_projection_dim,
             in_channels=1,
+            pool_mode=shapes.cnn_pool_mode,
         )
         self.condition_encoder = ConditionEncoder(
             shapes.condition_dim, self.condition_embed_dim
@@ -335,6 +378,13 @@ class ConditionedLidarGRUActor(nn.Module):
         nn.init.zeros_(self.mu_layer.bias)
         nn.init.orthogonal_(self.log_std_layer.weight, gain=0.01)
         nn.init.zeros_(self.log_std_layer.bias)
+        irl = normalize_condition_vector(
+            deployment_style("centered_high_collision").raw_vector()
+        )
+        self.register_buffer(
+            "baked_condition",
+            torch.as_tensor(np.asarray(irl, dtype=np.float32)),
+        )
 
     def shapes(self) -> ActorShapes:
         return self._shapes
@@ -362,19 +412,68 @@ class ConditionedLidarGRUActor(nn.Module):
         mask = reset_mask.to(device=hidden.device, dtype=hidden.dtype).unsqueeze(-1)
         return hidden * (1.0 - mask)
 
+    def set_baked_condition(self, condition: torch.Tensor | np.ndarray | Sequence) -> None:
+        vec = torch.as_tensor(condition, dtype=torch.float32).reshape(-1)
+        if int(vec.numel()) != self._shapes.condition_dim:
+            raise ValueError(
+                f"baked_condition dim {int(vec.numel())} != {self._shapes.condition_dim}"
+            )
+        if self.baked_condition is None:
+            self.register_buffer("baked_condition", vec.detach().contiguous())
+        else:
+            self.baked_condition.copy_(vec.to(device=self.baked_condition.device))
+
+    def resolve_condition(
+        self,
+        private_condition: torch.Tensor | None,
+        batch: int,
+        device: torch.device | str,
+    ) -> torch.Tensor:
+        if private_condition is not None:
+            if private_condition.shape[-1] != self._shapes.condition_dim:
+                raise ValueError(
+                    f"private_condition dim {private_condition.shape[-1]} != "
+                    f"{self._shapes.condition_dim}"
+                )
+            return private_condition
+        if self.baked_condition is None:
+            raise ValueError("actor has no baked_condition; pass private_condition")
+        return (
+            self.baked_condition.to(device=device, dtype=torch.float32)
+            .reshape(1, -1)
+            .expand(int(batch), -1)
+            .contiguous()
+        )
+
+    @property
+    def pool_bins(self) -> int:
+        return int(self.encoder.pool_bins)
+
+    @property
+    def pool_mode(self) -> str:
+        return str(self.encoder.pool_mode)
+
+    def gru_condition_slice(self) -> int:
+        return int(self._shapes.cnn_projection_dim + self._shapes.proprio_dim)
+
     def encode_trunk(
-        self, sensor_obs: torch.Tensor, private_condition: torch.Tensor
+        self,
+        sensor_obs: torch.Tensor,
+        private_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         lidar, proprio = self._split_obs(sensor_obs)
         features = self.encoder(lidar)
-        cond = self.condition_encoder(private_condition)
+        cond_in = self.resolve_condition(
+            private_condition, features.shape[0], features.device
+        )
+        cond = self.condition_encoder(cond_in)
         return torch.cat([features, proprio, cond], dim=-1)
 
     def forward(
         self,
         sensor_obs: torch.Tensor,
-        private_condition: torch.Tensor,
-        hidden: torch.Tensor,
+        private_condition: torch.Tensor | None = None,
+        hidden: torch.Tensor | None = None,
         reset_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> ActorOutput:
@@ -383,10 +482,9 @@ class ConditionedLidarGRUActor(nn.Module):
                 f"sensor_obs shape {tuple(sensor_obs.shape)}; "
                 f"expected (B, {self._shapes.sensor_obs_dim})"
             )
-        if private_condition.shape[-1] != self._shapes.condition_dim:
-            raise ValueError(
-                f"private_condition dim {private_condition.shape[-1]} != "
-                f"{self._shapes.condition_dim}"
+        if hidden is None:
+            hidden = self.initial_hidden(
+                sensor_obs.shape[0], device=str(sensor_obs.device)
             )
         hidden = self._apply_reset_mask(hidden, reset_mask)
         trunk = self.encode_trunk(sensor_obs, private_condition)
@@ -443,7 +541,7 @@ class ConditionedLidarGRUActor(nn.Module):
     def evaluate_actions_sequence(
         self,
         sensor_obs: torch.Tensor,
-        private_condition: torch.Tensor,
+        private_condition: torch.Tensor | None,
         hidden: torch.Tensor,
         actions: torch.Tensor,
         reset_mask: torch.Tensor | None = None,
@@ -458,7 +556,13 @@ class ConditionedLidarGRUActor(nn.Module):
                 f"got {tuple(sensor_obs.shape)}"
             )
         batch, steps, _ = sensor_obs.shape
-        if private_condition.dim() == 2:
+        if private_condition is None:
+            cond = (
+                self.resolve_condition(None, batch, sensor_obs.device)
+                .unsqueeze(1)
+                .expand(batch, steps, -1)
+            )
+        elif private_condition.dim() == 2:
             if private_condition.shape != (batch, self._shapes.condition_dim):
                 raise ValueError(
                     f"private_condition shape {tuple(private_condition.shape)}; "
@@ -535,6 +639,53 @@ class ConditionedLidarGRUActor(nn.Module):
             return (*result, *extras)
         return result
 
+    def distribution_params_sequence(
+        self,
+        sensor_obs: torch.Tensor,
+        private_condition: torch.Tensor | None,
+        hidden: torch.Tensor,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (mu, std, gru_out, hidden) for a [B,T] observation window."""
+        batch, steps, _ = sensor_obs.shape
+        if private_condition is None:
+            cond = self.resolve_condition(None, batch, sensor_obs.device)
+        else:
+            cond = private_condition
+        if cond.dim() == 2:
+            cond = cond.unsqueeze(1).expand(batch, steps, -1)
+        flat_obs = sensor_obs.reshape(batch * steps, self._shapes.sensor_obs_dim)
+        flat_cond = cond.reshape(batch * steps, self._shapes.condition_dim)
+        trunk = self.encode_trunk(flat_obs, flat_cond).view(batch, steps, -1)
+        gru_out, h = self._gru_sequence(trunk, hidden, reset_mask)
+        flat_h = gru_out.reshape(batch * steps, self._shapes.gru_hidden_dim)
+        with torch.amp.autocast(device_type=flat_h.device.type, enabled=False):
+            net_out = self.net(flat_h.to(dtype=torch.float32))
+            mu = self.mu_layer(net_out).view(batch, steps, self._shapes.action_dim)
+            log_std = torch.clamp(
+                self.log_std_layer(net_out), LOG_STD_MIN, LOG_STD_MAX
+            ).view(batch, steps, self._shapes.action_dim)
+            std = torch.exp(log_std)
+        return mu, std, gru_out, h
+
+    def fold_gru_layer0(
+        self, condition: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Exact GRU Layer-0 bias fold of a constant condition embedding.
+
+        Returns ``(e_c, W_ih_folded, b_ih_folded)`` where
+        ``W_ih_folded = W_ih[:, :cnn+proprio]`` and
+        ``b_ih_folded = b_ih + W_ih[:, cnn+proprio:] @ e_c``.
+        """
+        cond = self.resolve_condition(condition, 1, self.baked_condition.device)
+        e_c = self.condition_encoder(cond).reshape(-1)
+        split = self.gru_condition_slice()
+        w_ih = self.gru.weight_ih_l0
+        b_ih = self.gru.bias_ih_l0
+        w_folded = w_ih[:, :split].contiguous()
+        b_folded = b_ih + w_ih[:, split:] @ e_c
+        return e_c.detach(), w_folded.detach(), b_folded.detach()
+
 
 class ConditionedLidarFeedForwardActor(nn.Module):
     """Matched-parameter ablation: CNN + condition, no GRU recurrence."""
@@ -552,8 +703,10 @@ class ConditionedLidarFeedForwardActor(nn.Module):
         self.sensor_normalizer = SensorNormalizer(shapes.sensor_obs_dim)
         self.encoder = LidarCNNEncoder(
             lidar_dim=shapes.lidar_dim,
+            pool_bins=shapes.cnn_pool_bins,
             projection_dim=shapes.cnn_projection_dim,
             in_channels=self.frame_stack,
+            pool_mode=shapes.cnn_pool_mode,
         )
         self.condition_encoder = ConditionEncoder(
             shapes.condition_dim, self.condition_embed_dim
@@ -746,6 +899,24 @@ def build_actor(
     raise ValueError(f"unknown actor variant {variant!r}")
 
 
+def actor_from_architecture(arch: Mapping[str, Any]) -> ConditionedLidarGRUActor:
+    return ConditionedLidarGRUActor(
+        ActorShapes(
+            sensor_obs_dim=int(arch["sensor_obs_dim"]),
+            lidar_dim=int(arch["lidar_dim"]),
+            proprio_dim=int(arch["proprio_dim"]),
+            condition_dim=int(arch["condition_dim"]),
+            action_dim=int(arch["action_dim"]),
+            gru_hidden_dim=int(arch["gru_hidden_dim"]),
+            cnn_projection_dim=int(arch["cnn_projection_dim"]),
+            cnn_pool_bins=int(arch.get("pool_bins", LIDAR_POOL_BINS)),
+            cnn_pool_mode=str(arch.get("pool_mode", "max")),
+            mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
+        ),
+        condition_embed_dim=int(arch.get("condition_embed_dim", CONDITION_EMBED_DIM)),
+    )
+
+
 def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:
     shapes = actor_shapes(cfg)
     return {
@@ -762,7 +933,8 @@ def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:
         "cnn_kernels": list(CNN_KERNELS),
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": shapes.cnn_pool_bins,
+        "pool_mode": shapes.cnn_pool_mode,
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",
@@ -775,6 +947,9 @@ def actor_architecture_from_module(actor: nn.Module) -> dict[str, Any]:
     if not hasattr(actor, "shapes"):
         raise TypeError("actor must expose shapes()")
     shapes = actor.shapes()
+    encoder = getattr(actor, "encoder", None)
+    pool_bins = int(getattr(encoder, "pool_bins", shapes.cnn_pool_bins))
+    pool_mode = str(getattr(encoder, "pool_mode", shapes.cnn_pool_mode))
     meta = {
         "name": ACTOR_ARCHITECTURE_NAME,
         "sensor_obs_dim": shapes.sensor_obs_dim,
@@ -789,7 +964,8 @@ def actor_architecture_from_module(actor: nn.Module) -> dict[str, Any]:
         "cnn_kernels": list(CNN_KERNELS),
         "cnn_strides": list(CNN_STRIDES),
         "cnn_padding": list(CNN_PADDING),
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": pool_bins,
+        "pool_mode": pool_mode,
         "mlp_sizes": list(shapes.mlp_sizes),
         "steering_action_mode": "delta",
         "longitudinal_mode": "force",

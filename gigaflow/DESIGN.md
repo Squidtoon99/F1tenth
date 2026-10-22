@@ -92,7 +92,7 @@ Pinned upstream tracks: **23** (`PINNED_UPSTREAM_TRACK_COUNT`).
 - Table A2-style private weights for collision and boundary, plus bounded-linear
   lane-center shaping kept only as environment variation.
 - Passing: GT Sophy-style `alpha_passing * mean(ego_ds - opp_ds)` over gated
-  opponents, conditioned per driver with `alpha_passing ~ U(0, 6)`.
+  opponents, conditioned per driver with `alpha_passing ~ U(0, 0.8)`.
 - Urban goal/stop-line, lane-align, reverse, velocity, and active-timestep terms
   omitted; finish/rank/blocking/zero-sum disabled by default.
 - Simulator `step` overlays conditioned rewards onto the progress buffer each control tick.

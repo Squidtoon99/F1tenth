@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -17,7 +18,15 @@ PROPRIO_DIM = 16
 SENSOR_OBS_DIM = LIDAR_DIM + PROPRIO_DIM
 ACTION_DIM = 2
 GRU_HIDDEN_DIM = 512
-CNN_PROJECTION_DIM = 256
+CNN_PROJECTION_DIM = 512
+CNN_POOL_BINS = 64
+CNN_CONV_OUT_BINS = 91
+CNN_POOL_MODE = "max"
+# Untagged checkpoints predate pool_mode metadata and used avg/32/256.
+LEGACY_CNN_POOL_BINS = 32
+LEGACY_CNN_POOL_MODE = "avg"
+ALLOWED_CNN_POOL_BINS = (16, 32, 64)
+ALLOWED_CNN_POOL_MODES = ("avg", "max", "none")
 CONTROL_HZ = 20.0
 SIM_DT = 0.005
 CONTROL_INTERVAL = 10
@@ -49,6 +58,7 @@ GRU_BACKWARD_STATE_FLOATS_PER_HIDDEN = 8
 # Margin over the derived terms for cuDNN algorithm scratch and caching-allocator
 # block rounding, neither of which is a function of the config.
 ESTIMATE_SAFETY_MARGIN = 1.15
+CUDA_ALLOC_EXPANDABLE_SEGMENTS = "expandable_segments:True"
 
 
 @dataclass(frozen=True)
@@ -86,6 +96,8 @@ class AgentsConfig:
     action_dim: int = ACTION_DIM
     gru_hidden_dim: int = GRU_HIDDEN_DIM
     cnn_projection_dim: int = CNN_PROJECTION_DIM
+    cnn_pool_bins: int = CNN_POOL_BINS
+    cnn_pool_mode: str = CNN_POOL_MODE
     actor_mlp_sizes: tuple[int, ...] = (1024, 1024, 1024)
     condition_dim: int = 10
     target_laps: float = 3.0
@@ -106,7 +118,7 @@ class RewardConditioningConfig:
     enabled: bool = True
     x_drive_a: float = 1.25
     x_accel_a: float = 1.5
-    # Apple C_vel: 50% U[min, 1] (1.5..6.0 m/s) and 50% U[1, max] (6.0..9.0 m/s).
+    # Apple C_vel: 50% U[min, 1] (2.25..9.0 m/s) and 50% U[1, max] (9.0..13.5 m/s).
     vmax_scale_min: float = 0.25
     vmax_scale_max: float = 1.5
     enable_finish_rank: bool = False
@@ -252,6 +264,46 @@ class ConfigError(ValueError):
     """Raised when an experiment config fails validation."""
 
 
+_CNN_POOL_MODE_ALIASES: dict[str, str] = {
+    "avg": "avg",
+    "adaptive_avg_1d": "avg",
+    "max": "max",
+    "adaptive_max_1d": "max",
+    "none": "none",
+}
+
+
+def configure_cuda_allocator() -> None:
+    """Enable expandable caching-allocator segments before the first CUDA alloc.
+
+    The A40 smoke OOM was a contiguous 11.28 GiB CNN activation after PPO had
+    already reserved 21.72 GiB in minibatch-sized holes. Expandable segments
+    let that reservation satisfy the next large mapping. Must run before any
+    ``torch.cuda`` allocation.
+    """
+    key = "PYTORCH_CUDA_ALLOC_CONF"
+    current = os.environ.get(key, "")
+    parts = [part.strip() for part in current.split(",") if part.strip()]
+    if not any(part.startswith("expandable_segments") for part in parts):
+        parts.append(CUDA_ALLOC_EXPANDABLE_SEGMENTS)
+        os.environ[key] = ",".join(parts)
+
+
+def normalize_cnn_pool_mode(pool_mode: str) -> str:
+    if not isinstance(pool_mode, str):
+        raise ConfigError(
+            f"cnn_pool_mode must be a string in {ALLOWED_CNN_POOL_MODES}, "
+            f"got {pool_mode!r}"
+        )
+    key = pool_mode.strip().lower()
+    if key not in _CNN_POOL_MODE_ALIASES:
+        raise ConfigError(
+            f"cnn_pool_mode must be one of {ALLOWED_CNN_POOL_MODES}, "
+            f"got {pool_mode!r}"
+        )
+    return _CNN_POOL_MODE_ALIASES[key]
+
+
 def _as_tuple(value: Any) -> tuple:
     if isinstance(value, tuple):
         return value
@@ -376,12 +428,15 @@ def prepared_inputs_bytes(cfg: ExperimentConfig) -> int:
     ``critic.pack_critic_features``), so unlike the compact state it stores, it
     no longer aliases anything and is a second full-width copy.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     cells = _agent_steps(cfg)
     obs = cells * cfg.agents.sensor_obs_dim * BYTES_PER_FLOAT32
     ego_state = cells * arch["critic_ego_state_dim"] * BYTES_PER_FLOAT32
     bootstrap_values = cells * BYTES_PER_FLOAT32
-    return obs + ego_state + critic_set_bytes(cfg) + bootstrap_values
+    reconstruct_logp = cells * BYTES_PER_FLOAT32
+    return (
+        obs + ego_state + critic_set_bytes(cfg) + bootstrap_values + reconstruct_logp
+    )
 
 
 def ppo_update_bytes(cfg: ExperimentConfig) -> int:
@@ -392,7 +447,7 @@ def ppo_update_bytes(cfg: ExperimentConfig) -> int:
     observations laid out as ``[B, T, obs]``: once over every kept slot (the logp
     rescore and the parity gate), and once per minibatch.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
     cells = _agent_steps(cfg)
     obs_dim = cfg.agents.sensor_obs_dim
@@ -411,7 +466,7 @@ def ppo_update_bytes(cfg: ExperimentConfig) -> int:
     return sanitized + scalars + all_slot_obs + minibatch_obs
 
 
-def _architecture_constants() -> dict[str, Any]:
+def _architecture_constants(cfg: ExperimentConfig | None = None) -> dict[str, Any]:
     """Layer geometry read from the modules themselves, never mirrored here."""
     from gigaflow_f1tenth.critic import (
         CRITIC_CONDITION_EMBED,
@@ -428,12 +483,25 @@ def _architecture_constants() -> dict[str, Any]:
         LIDAR_POOL_BINS,
     )
 
+    pool_bins = LIDAR_POOL_BINS
+    pool_mode = CNN_POOL_MODE
+    if cfg is not None:
+        pool_mode = normalize_cnn_pool_mode(cfg.agents.cnn_pool_mode)
+        if pool_mode == "none":
+            length = cfg.agents.lidar_dim
+            for kernel, stride, pad in zip(CNN_KERNELS, CNN_STRIDES, CNN_PADDING):
+                length = (length + 2 * pad - kernel) // stride + 1
+            pool_bins = length
+        else:
+            pool_bins = int(cfg.agents.cnn_pool_bins)
+
     return {
         "channels": CNN_CONV_CHANNELS,
         "kernels": CNN_KERNELS,
         "strides": CNN_STRIDES,
         "padding": CNN_PADDING,
-        "pool_bins": LIDAR_POOL_BINS,
+        "pool_bins": pool_bins,
+        "pool_mode": pool_mode,
         "condition_embed": CONDITION_EMBED_DIM,
         "critic_hidden": CRITIC_ELEMENT_HIDDEN,
         "critic_condition_embed": CRITIC_CONDITION_EMBED,
@@ -454,17 +522,22 @@ def _conv_output_lengths(cfg: ExperimentConfig, arch: dict[str, Any]) -> list[in
 def _actor_activation_floats(
     cfg: ExperimentConfig, arch: dict[str, Any]
 ) -> list[int]:
-    """Elements of every tensor one agent-step produces in the actor, in order."""
+    """Elements of every tensor one agent-step produces in the actor, in order.
+
+    CNN and projection ReLU run inplace, so each conv occupies one live map
+    (not conv+relu duplicates). Peak no-grad live set is still two consecutive
+    conv maps while ``conv2`` reads ``conv1``.
+    """
     a = cfg.agents
     embed = arch["condition_embed"]
     floats = [a.lidar_dim]  # conv1 needs the sliced LiDAR window contiguous
     for channels, length in zip(
         arch["channels"], _conv_output_lengths(cfg, arch)
     ):
-        floats += [channels * length, channels * length]  # conv, relu
+        floats.append(channels * length)  # conv + inplace relu
     floats.append(arch["channels"][-1] * arch["pool_bins"])
-    floats += [a.cnn_projection_dim, a.cnn_projection_dim]  # projection, relu
-    floats += [embed] * 4  # condition encoder: two linear+relu pairs
+    floats.append(a.cnn_projection_dim)  # projection + inplace relu
+    floats += [embed] * 2  # condition encoder: two linear+inplace-relu
     floats.append(a.cnn_projection_dim + a.proprio_dim + embed)  # trunk cat
     floats += [
         a.gru_hidden_dim,
@@ -503,13 +576,12 @@ def _forward_live_floats(chain: list[int]) -> int:
 def full_rollout_scoring_bytes(cfg: ExperimentConfig) -> int:
     """Activations of the no-grad passes that score the whole rollout at once.
 
-    Rescoring in ``reconstruct_prepared``, the collect/evaluate parity gate, and
-    the critic's ``old_values`` / bootstrap passes all flatten ``[T, S]`` into one
-    batch, so their activations scale with every agent-step in the rollout — the
-    same dimensions the buffer terms scale with, and the largest single
-    allocation training makes.
+    ``reconstruct_prepared`` and the post-epoch KL diagnostic flatten ``[T, S]``
+    into one CNN batch. Inplace ReLU removes the duplicate conv map; peak live
+    set is still two consecutive conv activations (input+output of the next
+    ``Conv1d``).
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     a = cfg.agents
     cells = _agent_steps(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
@@ -544,15 +616,18 @@ def ppo_minibatch_backward_bytes(cfg: ExperimentConfig) -> int:
     Epoch count does not enter: each minibatch frees its graph before the next
     one is built, so the peak is set by the minibatch shape alone.
     """
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     n_slots = cfg.worlds.num_worlds * cfg.worlds.max_agents_per_world
     mb_agents = min(
         n_slots, max(1, cfg.ppo.minibatch_size // max(1, cfg.ppo.rollout_length))
     )
     cells = mb_agents * cfg.ppo.rollout_length
-    retained = sum(_actor_activation_floats(cfg, arch)) + sum(
-        _critic_activation_floats(cfg, arch)
-    )
+    actor_retained = sum(_actor_activation_floats(cfg, arch))
+    # Spatial CAPS runs a second ``evaluate_actions_sequence`` whose graph stays
+    # alive until ``policy_loss.backward()``.
+    if float(cfg.ppo.caps_spatial_coef) > 0.0:
+        actor_retained *= 2
+    retained = actor_retained + sum(_critic_activation_floats(cfg, arch))
     workspace = (
         GRU_WORKSPACE_FLOATS_PER_HIDDEN * cfg.agents.gru_hidden_dim * mb_agents
     )
@@ -565,7 +640,7 @@ def _linear_params(in_dim: int, out_dim: int) -> int:
 
 def actor_parameter_count(cfg: ExperimentConfig) -> int:
     """Parameters of the recurrent baseline actor."""
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     a = cfg.agents
     embed = arch["condition_embed"]
     total = 0
@@ -587,7 +662,7 @@ def actor_parameter_count(cfg: ExperimentConfig) -> int:
 
 
 def critic_parameter_count(cfg: ExperimentConfig) -> int:
-    arch = _architecture_constants()
+    arch = _architecture_constants(cfg)
     hidden = arch["critic_hidden"]
     embed = arch["critic_condition_embed"]
     total = _linear_params(CRITIC_ELEMENT_DIM, hidden) + _linear_params(hidden, hidden)
@@ -605,7 +680,7 @@ def model_state_bytes(cfg: ExperimentConfig) -> int:
     ``nn.GRU`` additionally keeps a flattened copy of its own weights for cuDNN.
     """
     a = cfg.agents
-    embed = _architecture_constants()["condition_embed"]
+    embed = _architecture_constants(cfg)["condition_embed"]
     gru_in = a.cnn_projection_dim + a.proprio_dim + embed
     gru_params = 3 * a.gru_hidden_dim * (gru_in + a.gru_hidden_dim + 2)
     params = actor_parameter_count(cfg) + critic_parameter_count(cfg)
@@ -696,6 +771,21 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("car dimensions must be positive")
     if a.condition_dim <= 0 or a.gru_hidden_dim <= 0:
         raise ConfigError("condition_dim and gru_hidden_dim must be positive")
+    if a.cnn_projection_dim <= 0:
+        raise ConfigError("cnn_projection_dim must be positive")
+    pool_mode = normalize_cnn_pool_mode(a.cnn_pool_mode)
+    if pool_mode == "none":
+        if a.cnn_pool_bins not in (*ALLOWED_CNN_POOL_BINS, CNN_CONV_OUT_BINS):
+            raise ConfigError(
+                f"cnn_pool_bins must be one of "
+                f"{(*ALLOWED_CNN_POOL_BINS, CNN_CONV_OUT_BINS)} when "
+                f"cnn_pool_mode='none', got {a.cnn_pool_bins}"
+            )
+    elif a.cnn_pool_bins not in ALLOWED_CNN_POOL_BINS:
+        raise ConfigError(
+            f"cnn_pool_bins must be one of {ALLOWED_CNN_POOL_BINS}, "
+            f"got {a.cnn_pool_bins}"
+        )
     if len(a.actor_mlp_sizes) < 1:
         raise ConfigError("actor_mlp_sizes must be non-empty")
     if a.episode_seconds_min <= 0.0 or a.episode_seconds_max < a.episode_seconds_min:
