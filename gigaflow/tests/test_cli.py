@@ -53,6 +53,20 @@ def test_validate_config_wandb_cli_overrides(capsys):
     assert wb["resume"] == "must"
 
 
+def test_cli_lists_bake_irl_and_finetune_offline():
+    from gigaflow_f1tenth.cli import build_parser
+
+    parser = build_parser()
+    choices = None
+    for action in parser._subparsers._group_actions:  # noqa: SLF001
+        if getattr(action, "choices", None):
+            choices = action.choices
+            break
+    assert choices is not None
+    assert "bake-irl" in choices
+    assert "finetune-offline" in choices
+
+
 def test_prepare_tracks_cli_local_fixture(tmp_path, capsys):
     local = tmp_path / "local"
     local.mkdir()
