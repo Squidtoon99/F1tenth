@@ -80,8 +80,6 @@ def _load_actor_weights(actor: nn.Module, state: Mapping[str, Any]) -> None:
 
 
 def actor_from_payload(payload: Mapping[str, Any], device: str | torch.device):
-    from gigaflow_f1tenth.irl_identity import attach_baked_condition
-
     arch = payload.get("actor_architecture")
     if not isinstance(arch, Mapping):
         raise KeyError("artifact missing actor_architecture")
