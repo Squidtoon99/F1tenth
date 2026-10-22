@@ -79,6 +79,42 @@ def irl_identity_payload() -> dict[str, float | str]:
     }
 
 
+def baked_condition_tensor(device: str | None = None):
+    import torch
+
+    vec = torch.as_tensor(baked_normalized_condition(), dtype=torch.float32)
+    return vec if device is None else vec.to(device)
+
+
+def attach_baked_condition(actor, condition=None) -> None:
+    """Pin ``c_irl`` on the actor so ``actor(sensor_obs)`` needs no condition."""
+    vec = baked_normalized_condition() if condition is None else condition
+    actor.set_baked_condition(vec)
+
+
+def fold_gru_layer0(actor, condition=None):
+    """Structural GRU Layer-0 fold: ``W_ih[:, :k]``, ``b_ih + W_ih[:, k:] @ e_c``."""
+    return actor.fold_gru_layer0(condition)
+
+
+def folded_gru_module(actor, condition=None):
+    """GRU with Layer-0 input size ``cnn+proprio`` and folded bias."""
+    import torch
+    import torch.nn as nn
+
+    e_c, w_folded, b_folded = actor.fold_gru_layer0(condition)
+    split = actor.gru_condition_slice()
+    hidden_size = int(actor.shapes().gru_hidden_dim)
+    gru = nn.GRU(input_size=split, hidden_size=hidden_size, batch_first=True)
+    with torch.no_grad():
+        gru.weight_ih_l0.copy_(w_folded)
+        gru.bias_ih_l0.copy_(b_folded)
+        gru.weight_hh_l0.copy_(actor.gru.weight_hh_l0)
+        gru.bias_hh_l0.copy_(actor.gru.bias_hh_l0)
+    gru.to(device=actor.gru.weight_ih_l0.device)
+    return gru, e_c
+
+
 def bake_deployment_condition(
     payload: Mapping[str, Any],
     *,

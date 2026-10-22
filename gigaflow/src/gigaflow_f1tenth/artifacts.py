@@ -165,6 +165,9 @@ def bake_actor_artifact(
 
     out = bake_deployment_condition(payload, base_name=base_name)
     if actor is not None:
+        from gigaflow_f1tenth.irl_identity import attach_baked_condition
+
+        attach_baked_condition(actor, out["deployment_condition_normalized"])
         out["actor_state_dict"] = actor_state_dict_for_artifact(actor)
         out["sensor_normalizer"] = _sensor_normalizer_payload(actor, None)
     validate_actor_artifact(out)
