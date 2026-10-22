@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 import torch
@@ -883,6 +883,24 @@ def build_actor(
             raise ValueError("frame_stack ablation expects 4 or 8 frames")
         return ConditionedLidarFeedForwardActor(shapes, frame_stack=frame_stack)
     raise ValueError(f"unknown actor variant {variant!r}")
+
+
+def actor_from_architecture(arch: Mapping[str, Any]) -> ConditionedLidarGRUActor:
+    return ConditionedLidarGRUActor(
+        ActorShapes(
+            sensor_obs_dim=int(arch["sensor_obs_dim"]),
+            lidar_dim=int(arch["lidar_dim"]),
+            proprio_dim=int(arch["proprio_dim"]),
+            condition_dim=int(arch["condition_dim"]),
+            action_dim=int(arch["action_dim"]),
+            gru_hidden_dim=int(arch["gru_hidden_dim"]),
+            cnn_projection_dim=int(arch["cnn_projection_dim"]),
+            cnn_pool_bins=int(arch.get("pool_bins", LIDAR_POOL_BINS)),
+            cnn_pool_mode=str(arch.get("pool_mode", "max")),
+            mlp_sizes=tuple(int(v) for v in arch["mlp_sizes"]),
+        ),
+        condition_embed_dim=int(arch.get("condition_embed_dim", CONDITION_EMBED_DIM)),
+    )
 
 
 def architecture_metadata(cfg: ExperimentConfig) -> dict[str, Any]:

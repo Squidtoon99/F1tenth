@@ -313,9 +313,8 @@ def _cmd_finetune_offline(args: argparse.Namespace) -> int:
         seed=int(args.seed),
         device=str(args.device),
         window=int(args.window),
-        method=str(args.method),
         wandb_session=session,
-        phase2=bool(getattr(args, "phase2", False)),
+        include_variations=False,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -579,13 +578,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ft.add_argument(
         "--method",
         type=str,
-        default="bakeoff",
-        help="bakeoff (all unique arms) or one arm name. ppo is rejected.",
-    )
-    p_ft.add_argument(
-        "--phase2",
-        action="store_true",
-        help="Sweep KL/window/smoothness on the top unique arms",
+        default="awac",
+        help="Kept arm is AWAC+KL. ppo is rejected.",
     )
     _add_wandb_args(p_ft)
     p_ft.set_defaults(func=_cmd_finetune_offline)

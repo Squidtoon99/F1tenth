@@ -27,7 +27,7 @@ from gigaflow_f1tenth.irl_identity import (
     fold_gru_layer0,
     folded_gru_module,
 )
-from gigaflow_f1tenth.model import build_actor
+from gigaflow_f1tenth.model import ActorShapes, ConditionedLidarGRUActor, build_actor
 from gigaflow_f1tenth.offline_finetune import refuse_ppo, run_bakeoff
 from gigaflow_f1tenth.sim.vehicle import F_BRAKE_MAX, F_DRIVE_MAX, VehicleParams
 from gigaflow_f1tenth.teleop_dataset import (
@@ -161,6 +161,47 @@ def test_gru_layer0_fold_parity():
     torch.testing.assert_close(h_c, h_f, rtol=0.0, atol=1e-6)
 
 
+def test_gru_layer0_fold_production_split_is_cnn_plus_proprio():
+    actor = ConditionedLidarGRUActor(
+        ActorShapes(
+            sensor_obs_dim=1097,
+            lidar_dim=1081,
+            proprio_dim=16,
+            condition_dim=10,
+            action_dim=2,
+            gru_hidden_dim=512,
+            cnn_projection_dim=512,
+            cnn_pool_bins=64,
+            cnn_pool_mode="max",
+            mlp_sizes=(1024, 1024, 1024),
+        )
+    )
+    attach_baked_condition(actor)
+    actor.eval()
+    split = actor.gru_condition_slice()
+    assert split == 512 + 16
+    assert actor.gru.weight_ih_l0.shape[1] == split + 64
+    e_c, w_folded, b_folded = fold_gru_layer0(actor)
+    w_ih = actor.gru.weight_ih_l0
+    b_ih = actor.gru.bias_ih_l0
+    torch.testing.assert_close(w_folded, w_ih[:, :split], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(b_folded, b_ih + w_ih[:, split:] @ e_c, rtol=0.0, atol=0.0)
+    rng = np.random.default_rng(1)
+    obs = torch.as_tensor(rng.normal(0.0, 0.05, size=(2, 1097)), dtype=torch.float32)
+    obs[:, :1081] = torch.clamp(3.0 + obs[:, :1081], 0.06, 30.0)
+    hidden = actor.initial_hidden(2, "cpu")
+    cond = actor.resolve_condition(None, 2, "cpu")
+    with torch.no_grad():
+        trunk = actor.encode_trunk(obs, cond)
+        out_c, h_c = actor.gru(trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+        gru_f, _ = folded_gru_module(actor)
+        lidar, proprio = actor._split_obs(obs)
+        trunk_f = torch.cat([actor.encoder(lidar), proprio], dim=-1)
+        out_f, h_f = gru_f(trunk_f.unsqueeze(1), hidden.unsqueeze(0).contiguous())
+    torch.testing.assert_close(out_c, out_f, rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(h_c, h_f, rtol=0.0, atol=1e-6)
+
+
 def test_refuse_ppo_resume():
     with pytest.raises(ValueError, match="never PPO-resume"):
         refuse_ppo("ppo")
@@ -184,10 +225,10 @@ def test_bakeoff_synthetic_keep_or_revert(tmp_path):
         seed=1,
         device="cpu",
         window=8,
+        include_variations=False,
     )
-    assert result["scalar"] == "composite_keep_score"
-    assert "baseline" in result["arms"]
-    assert "kl_clipped_bc" in result["arms"]
+    assert result["scalar"] == "holdout_action_mse"
+    assert set(result["arms"]) == {"baseline", "awac-kl-kl2x"}
     assert result["winner"] in result["arms"]
     assert result["decision"] in {"keep", "revert"}
     assert result["keep"] is (result["winner"] != "baseline")
@@ -223,8 +264,6 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
             "--config",
             str(SMOKE),
             "--synthetic",
-            "--method",
-            "kl_clipped_bc",
             "--steps",
             "2",
             "--batch-size",
@@ -236,8 +275,8 @@ def test_cli_bake_irl_and_finetune_offline(tmp_path, capsys):
     )
     assert rc == 0
     ft = json.loads(capsys.readouterr().out)
-    assert ft["scalar"] == "composite_keep_score"
-    assert ft["winner"] in ft["arms"]
+    assert ft["scalar"] == "holdout_action_mse"
+    assert ft["winner"] in {"baseline", "awac-kl-kl2x"}
 
 
 def test_cli_finetune_rejects_ppo(tmp_path):
