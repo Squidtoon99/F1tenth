@@ -966,7 +966,7 @@ def evaluate_from_rest(
         hidden = out.hidden
         sim.step(out.actions.detach())
         steps += 1
-        if collect_poses and step % 2 == 0:
+        if collect_poses and step % 4 == 0 and len(poses) < 250:
             poses.append(
                 np.array(
                     [
