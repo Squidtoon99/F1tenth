@@ -23,7 +23,6 @@ STATIC_PASSING_MARGIN_M = 0.15
 HEAD_TO_HEAD_BEHIND_GAP_M = 8.0
 HEAD_TO_HEAD_LATERAL_M = 0.14
 HEAD_TO_HEAD_SPEED_DELTA_MPS = 2.5
-HEAD_TO_HEAD_DRIVE_SCALE = 1.25
 
 
 def mix_seed(global_seed: int, world_id: int, slot: int, episode_id: int) -> int:

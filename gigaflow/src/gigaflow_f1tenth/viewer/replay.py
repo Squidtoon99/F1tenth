@@ -28,9 +28,8 @@ from gigaflow_f1tenth.model import (
     ConditionedLidarGRUActor,
     architecture_metadata,
 )
-from gigaflow_f1tenth.rewards import deployment_style, styles_to_condition_batch
+from gigaflow_f1tenth.rewards import deployment_style
 from gigaflow_f1tenth.sim.spawn import (
-    HEAD_TO_HEAD_DRIVE_SCALE,
     apply_racer_pose,
     apply_static_pins,
     head_to_head_chaser_pose,
@@ -785,7 +784,6 @@ class CheckpointReplay:
         if self.suite == "head_to_head":
             chaser = replace(
                 style,
-                drive_scale=max(float(style.drive_scale), HEAD_TO_HEAD_DRIVE_SCALE),
                 vmax_scale=float(self._suite_cfg.reward_conditioning.vmax_scale_max),
             )
             for i, slot_t in enumerate(racer_indices):
@@ -896,10 +894,8 @@ class CheckpointReplay:
         n = self.sim.layout.num_slots
         obs = self.sim.action_observation().to(self.device)
         if self._condition is None:
-            cond = torch.as_tensor(
-                styles_to_condition_batch(self.sim.styles, normalize=True),
-                device=self.device,
-                dtype=torch.float32,
+            cond = self.sim.condition_tensor().to(
+                device=self.device, dtype=torch.float32
             )
         else:
             # Every slot carries the one pinned conservative style, so the actor

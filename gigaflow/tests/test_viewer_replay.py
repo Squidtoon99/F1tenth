@@ -19,9 +19,9 @@ from gigaflow_f1tenth.sim.geometry import (
     make_synthetic_oval_atlas,
 )
 from gigaflow_f1tenth.sim.layout_local import LIDAR_DIM
+from gigaflow_f1tenth.rewards import CONDITION_FIELD_NAMES
 from gigaflow_f1tenth.sim.spawn import (
     HEAD_TO_HEAD_BEHIND_GAP_M,
-    HEAD_TO_HEAD_DRIVE_SCALE,
     HEAD_TO_HEAD_SPEED_DELTA_MPS,
     head_to_head_chaser_pose,
 )
@@ -221,9 +221,22 @@ def test_head_to_head_reset_spawns_faster_chaser_behind(
     assert opp_speed == pytest.approx(
         ego_speed + HEAD_TO_HEAD_SPEED_DELTA_MPS, abs=0.05
     )
-    assert float(t.vmax_scale[opp]) > float(t.vmax_scale[ego])
-    assert float(t.drive_scale[opp]) >= HEAD_TO_HEAD_DRIVE_SCALE
+    vmax_max = float(h2h._suite_cfg.reward_conditioning.vmax_scale_max)
+    assert float(t.vmax_scale[ego]) == pytest.approx(1.0)
+    assert float(t.vmax_scale[opp]) == pytest.approx(vmax_max)
+    assert float(t.drive_scale[opp]) == pytest.approx(float(t.drive_scale[ego]))
     assert h2h._condition is None
+    cond = h2h.sim.condition_tensor()
+    vmax_idx = CONDITION_FIELD_NAMES.index("vmax_scale")
+    drive_idx = CONDITION_FIELD_NAMES.index("drive_scale")
+    assert float(cond[opp, vmax_idx]) == pytest.approx(float(np.log(vmax_max)), abs=1e-5)
+    assert float(cond[ego, vmax_idx]) == pytest.approx(0.0, abs=1e-5)
+    assert float(cond[opp, drive_idx]) == pytest.approx(float(cond[ego, drive_idx]))
+    assert not torch.allclose(cond[ego], cond[opp])
+    assert int(t.trainable[ego]) == 1
+    assert int(t.trainable[opp]) == 1
+    actions = h2h._policy_actions()
+    assert actions.shape[0] == h2h.sim.layout.num_slots
 
     dense = CheckpointReplay.from_launch_args(
         ViewerLaunchArgs(
