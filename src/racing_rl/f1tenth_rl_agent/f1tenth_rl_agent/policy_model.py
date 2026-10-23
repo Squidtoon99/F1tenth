@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from f1tenth_contract import validate_policy_artifact
 from f1tenth_policy import (
+    CONTROL_HZ,
     ObsNormalizer as SharedObsNormalizer,
     SquashedGaussianLidarGRUActor,
     actor_from_architecture,
@@ -120,6 +121,13 @@ def load_obs_norm(
     )
 
 
+def _sensor_artifact_for_loader(payload: Mapping) -> dict:
+    relaxed = dict(payload)
+    if relaxed.get("control_hz") is not None:
+        relaxed["control_hz"] = CONTROL_HZ
+    return relaxed
+
+
 def load_sensor_actor(
     checkpoint_path: str,
     state_dict_key: str,
@@ -135,7 +143,7 @@ def load_sensor_actor(
             "Sensor policy artifact is missing actor_architecture metadata."
         )
     validate_sensor_policy_artifact(
-        payload,
+        _sensor_artifact_for_loader(payload),
         expected_architecture=architecture,
         expected_steering_action_mode=expected_steering_action_mode,
         expected_steering_delta_max_rad=expected_steering_delta_max_rad,
@@ -168,7 +176,7 @@ def load_sensor_obs_norm(
             "Sensor policy artifact is missing actor_architecture metadata."
         )
     validate_sensor_policy_artifact(
-        payload,
+        _sensor_artifact_for_loader(payload),
         expected_architecture=architecture,
         expected_steering_action_mode=expected_steering_action_mode,
         expected_steering_delta_max_rad=expected_steering_delta_max_rad,
@@ -248,8 +256,8 @@ def load_folded_sensor_actor(
 ) -> tuple[SquashedGaussianLidarGRUActor, ObsNormalizer | None, Mapping]:
     """Load a 272-D GRU-in ``lidar_cnn_gru`` artifact (folded Gigaflow or Sophy).
 
-    Skips this branch's 10 Hz format-4 control_hz pin so a 20 Hz folded
-    checkpoint still loads on the car. ``sensor_racer`` keeps the strict loader.
+    Skips this branch's 10 Hz format-4 control_hz pin so a 10 Hz or 20 Hz
+    folded checkpoint still loads on a 20 Hz car node.
     """
     payload = load_checkpoint_payload(checkpoint_path, device)
     name = peek_actor_architecture_name(payload)

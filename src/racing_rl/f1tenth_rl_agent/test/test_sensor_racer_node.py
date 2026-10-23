@@ -83,15 +83,30 @@ def _spin_until(nodes, predicate, timeout_s=3.0):
             executor.remove_node(node)
 
 
-def _applied_rl(longitudinal: float = 0.2, steering: float = 0.0) -> ActuatorCommand:
+def _applied(
+    source: int,
+    longitudinal: float = 0.2,
+    steering: float = 0.0,
+    *,
+    i_drive_max_a: float = 60.0,
+    i_brake_max_a: float = 20.0,
+) -> ActuatorCommand:
     msg = ActuatorCommand()
     msg.longitudinal = float(longitudinal)
     msg.steering = float(steering)
-    msg.drive_current_a = si.VESC_CURRENT_SCALE_A * max(float(longitudinal), 0.0)
-    msg.brake_current_a = si.VESC_CURRENT_SCALE_A * max(-float(longitudinal), 0.0)
+    if longitudinal >= 0.0:
+        msg.drive_current_a = float(i_drive_max_a) * float(longitudinal)
+        msg.brake_current_a = 0.0
+    else:
+        msg.drive_current_a = 0.0
+        msg.brake_current_a = float(i_brake_max_a) * (-float(longitudinal))
     msg.servo_position = 0.4495
-    msg.source = ActuatorCommand.SOURCE_RL
+    msg.source = int(source)
     return msg
+
+
+def _applied_rl(longitudinal: float = 0.2, steering: float = 0.0) -> ActuatorCommand:
+    return _applied(ActuatorCommand.SOURCE_RL, longitudinal, steering)
 
 
 def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
@@ -170,9 +185,11 @@ def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():
         assert abs(cmd.steering) <= si.CLIP_ACTIONS + 1e-5
         assert not (cmd.drive_current_a > 0.0 and cmd.brake_current_a > 0.0)
         assert raw_obs[-1][si.VESC_SPEED] == pytest.approx(-2.0, abs=0.05)
-        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * 0.2, abs=0.05
+        expected_vesc = si.VESC_CURRENT_SCALE_A * si.applied_current_fraction(
+            60.0 * 0.2, 60.0, 20.0
         )
+        assert raw_obs[-1][si.VESC_CURRENT] == pytest.approx(expected_vesc, abs=0.05)
+        assert expected_vesc == pytest.approx(1.0, abs=1e-5)
         assert diagnostics[-1][si.DIAG_VALID_TICK] == pytest.approx(1.0)
     finally:
         if helper is not None:
@@ -239,11 +256,13 @@ def test_sensor_racer_resets_when_applied_source_not_rl():
                     Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
                     Parameter("require_checkpoint", Parameter.Type.BOOL, True),
                     Parameter("sensor_max_age_s", Parameter.Type.DOUBLE, 1.0),
+                    Parameter("publish_raw_observation", Parameter.Type.BOOL, True),
                 ]
             )
         helper = rclpy.create_node("sensor_racer_applied_source_helper")
         desired = {"count": 0}
         diagnostics = []
+        raw_obs = []
         helper.create_subscription(
             ActuatorCommand,
             si.TOPIC_DESIRED_ACTUATOR,
@@ -254,6 +273,12 @@ def test_sensor_racer_resets_when_applied_source_not_rl():
             Float32MultiArray,
             si.TOPIC_DIAGNOSTICS,
             lambda m: diagnostics.append(list(m.data)),
+            10,
+        )
+        helper.create_subscription(
+            Float32MultiArray,
+            si.TOPIC_OBSERVATION,
+            lambda m: raw_obs.append(list(m.data)),
             10,
         )
 
@@ -300,6 +325,10 @@ def test_sensor_racer_resets_when_applied_source_not_rl():
 
         assert _spin_until([node, helper], saw_teleop_reset)
         assert desired["count"] == 0
+        assert raw_obs == []
+        assert node._runtime._prev_applied_long == pytest.approx(0.0)
+        assert np.allclose(node._runtime._executed_steer_history, 0.0)
+        assert float(node._runtime._hidden.abs().max()) == pytest.approx(0.0)
     finally:
         if helper is not None:
             helper.destroy_node()
@@ -405,6 +434,81 @@ def test_sensor_racer_publishes_through_safe_applied_bootstrap():
         rclpy.shutdown()
 
 
+def test_sensor_racer_safe_applied_is_zeroed_in_observation():
+    rclpy.init()
+    node = helper = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(ckpt)
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter("sensor_max_age_s", Parameter.Type.DOUBLE, 1.0),
+                    Parameter("publish_raw_observation", Parameter.Type.BOOL, True),
+                    Parameter("i_drive_max_a", Parameter.Type.DOUBLE, 60.0),
+                    Parameter("i_brake_max_a", Parameter.Type.DOUBLE, 20.0),
+                ]
+            )
+        helper = rclpy.create_node("sensor_racer_safe_zero_helper")
+        desired = []
+        raw_obs = []
+        helper.create_subscription(
+            ActuatorCommand,
+            si.TOPIC_DESIRED_ACTUATOR,
+            lambda m: desired.append(m),
+            10,
+        )
+        helper.create_subscription(
+            Float32MultiArray,
+            si.TOPIC_OBSERVATION,
+            lambda m: raw_obs.append(list(m.data)),
+            10,
+        )
+        scan_pub = helper.create_publisher(LaserScan, si.TOPIC_SCAN, 10)
+        imu_pub = helper.create_publisher(Imu, si.TOPIC_IMU, 10)
+        odom_pub = helper.create_publisher(Odometry, si.TOPIC_ODOM, 10)
+        applied_pub = helper.create_publisher(
+            ActuatorCommand, si.TOPIC_APPLIED_ACTUATOR, 10
+        )
+        scan = LaserScan()
+        scan.angle_min = float(si.LIDAR_ANGLE_MIN)
+        scan.angle_increment = float(si.LIDAR_ANGLE_INCREMENT)
+        scan.range_min = 0.05
+        scan.ranges = [1.0] * si.LIDAR_DIM
+        odom = Odometry()
+        imu = Imu()
+        applied = _applied(ActuatorCommand.SOURCE_SAFE, -0.25)
+
+        def publish_all():
+            now = helper.get_clock().now().to_msg()
+            scan.header.stamp = now
+            imu.header.stamp = now
+            odom.header.stamp = now
+            applied.header.stamp = now
+            scan_pub.publish(scan)
+            imu_pub.publish(imu)
+            odom_pub.publish(odom)
+            applied_pub.publish(applied)
+            return len(raw_obs) >= 1 and len(desired) >= 1
+
+        assert _spin_until([node, helper], publish_all)
+        obs = np.asarray(raw_obs[-1], dtype=np.float32)
+        assert obs[si.THROTTLE_CURRENT] == pytest.approx(0.0, abs=1e-5)
+        assert obs[si.THROTTLE_PRED] == pytest.approx(0.0, abs=1e-5)
+        assert obs[si.VESC_CURRENT] == pytest.approx(0.0, abs=1e-5)
+        assert obs[si.STEER_T] == pytest.approx(0.0, abs=1e-5)
+        assert desired[-1].source == ActuatorCommand.SOURCE_RL
+        assert node._runtime._prev_applied_long == pytest.approx(0.0)
+    finally:
+        if helper is not None:
+            helper.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_sensor_racer_post_gate_history_in_observation():
     rclpy.init()
     node = helper = None
@@ -464,9 +568,10 @@ def test_sensor_racer_post_gate_history_in_observation():
         obs = np.asarray(raw_obs[-1], dtype=np.float32)
         assert obs[si.THROTTLE_CURRENT] == pytest.approx(-0.3, abs=1e-5)
         assert obs[si.THROTTLE_PRED] == pytest.approx(0.4, abs=1e-5)
-        assert obs[si.VESC_CURRENT] == pytest.approx(
-            si.VESC_CURRENT_SCALE_A * -0.3, abs=1e-5
+        expected_vesc = si.VESC_CURRENT_SCALE_A * si.applied_current_fraction(
+            -20.0 * 0.3, 60.0, 20.0
         )
+        assert obs[si.VESC_CURRENT] == pytest.approx(expected_vesc, abs=1e-5)
         assert obs[si.STEER_T] == pytest.approx(-0.2 * 0.33, abs=1e-5)
         assert obs[si.STEER_T1] == pytest.approx(0.1 * 0.33, abs=1e-5)
     finally:

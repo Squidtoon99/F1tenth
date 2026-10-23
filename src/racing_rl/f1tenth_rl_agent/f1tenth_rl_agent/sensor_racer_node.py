@@ -464,15 +464,36 @@ class SensorRacerNode(Node):
         assert self._applied is not None
         assert self._runtime is not None
 
+        if self._applied_blocks_rl_publish():
+            source = int(self._applied.source)
+            self._reset_runtime(
+                {
+                    ActuatorCommand.SOURCE_TELEOP: si.GRU_RESET_APPLIED_TELEOP,
+                    ActuatorCommand.SOURCE_SAFETY: si.GRU_RESET_APPLIED_SAFETY,
+                }.get(source, si.GRU_RESET_APPLIED_INVALID)
+            )
+            total_ms = (time.perf_counter() - t0) * 1000.0
+            self._finish_tick(
+                now,
+                preprocess_ms=total_ms,
+                total_ms=total_ms,
+            )
+            return
+
         speed = self.twist_vx_sign * float(self._odom.twist.twist.linear.x)
-        applied_long = float(self._applied.longitudinal)
-        applied_steer = float(self._applied.steering) * self.max_steer
-        signed_current_a = float(
-            self._applied.drive_current_a - self._applied.brake_current_a
-        )
-        vesc_current = si.applied_current_fraction(
-            signed_current_a, self.i_drive_max_a, self.i_brake_max_a
-        )
+        if int(self._applied.source) == ActuatorCommand.SOURCE_RL:
+            applied_long = float(self._applied.longitudinal)
+            applied_steer = float(self._applied.steering) * self.max_steer
+            signed_current_a = float(
+                self._applied.drive_current_a - self._applied.brake_current_a
+            )
+            vesc_current = si.VESC_CURRENT_SCALE_A * si.applied_current_fraction(
+                signed_current_a, self.i_drive_max_a, self.i_brake_max_a
+            )
+        else:
+            applied_long = 0.0
+            applied_steer = 0.0
+            vesc_current = 0.0
         raw_obs, actor_imu, raw_imu, finite = self._runtime.pack_observation(
             scan_angle_min=float(self._scan.angle_min),
             scan_angle_increment=float(self._scan.angle_increment),
@@ -512,18 +533,6 @@ class SensorRacerNode(Node):
         np.clip(action_np, -si.CLIP_ACTIONS, si.CLIP_ACTIONS, out=action_np)
         if not bool(np.isfinite(action_np).all()):
             self._reset_runtime(si.GRU_RESET_ACTION_NONFINITE)
-            total_ms = (time.perf_counter() - t0) * 1000.0
-            self._finish_tick(
-                now,
-                preprocess_ms=preprocess_ms,
-                h2d_ms=infer_timings.h2d_ms,
-                infer_ms=infer_timings.infer_ms,
-                d2h_ms=infer_timings.d2h_ms,
-                total_ms=total_ms,
-            )
-            return
-
-        if self._applied_blocks_rl_publish():
             total_ms = (time.perf_counter() - t0) * 1000.0
             self._finish_tick(
                 now,
