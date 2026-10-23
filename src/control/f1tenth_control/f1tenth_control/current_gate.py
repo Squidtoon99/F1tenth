@@ -167,6 +167,10 @@ def record_rl_rejection(state: GateState, cmd: RlInput, reason: int) -> None:
     state.rejection_counts[reason] += 1
 
 
+def clamp_servo(servo: float) -> float:
+    return max(0.05, min(0.85, float(servo)))
+
+
 def validate_ackermann(acceleration: float, steering_angle: float) -> bool:
     return math.isfinite(acceleration) and math.isfinite(steering_angle)
 
@@ -182,11 +186,10 @@ def ackermann_to_physical(
     i_drive, i_brake = force_to_motor_currents(
         longitudinal, cfg.i_drive_max_a, cfg.i_brake_max_a
     )
-    servo = (
+    servo = clamp_servo(
         cfg.steering_angle_to_servo_gain * steering
         + cfg.steering_angle_to_servo_offset
     )
-    servo = max(0.05, min(0.85, servo))
     steer_norm = steering / cfg.max_steer if cfg.max_steer > 0.0 else 0.0
     return PhysicalCommand(
         drive_current_a=i_drive,
@@ -216,7 +219,7 @@ def rl_to_physical(cmd: RlInput) -> PhysicalCommand:
     return PhysicalCommand(
         drive_current_a=cmd.drive_current_a,
         brake_current_a=cmd.brake_current_a,
-        servo_position=cmd.servo_position,
+        servo_position=clamp_servo(cmd.servo_position),
         longitudinal=cmd.longitudinal,
         steering=cmd.steering,
         source=SOURCE_RL,
@@ -307,7 +310,7 @@ def apply_slew(
     return PhysicalCommand(
         drive_current_a=i_drive,
         brake_current_a=i_brake,
-        servo_position=cmd.servo_position,
+        servo_position=clamp_servo(cmd.servo_position),
         longitudinal=cmd.longitudinal,
         steering=cmd.steering,
         source=cmd.source,

@@ -35,7 +35,7 @@ class RlDeadmanGateNode(Node):
 
         self.get_logger().info(
             'RL deadman gate: block /drive unless L1 (buttons 4/9) '
-            'or R1 (buttons 5/10) held'
+            'or R1 (buttons 5/9/10) held'
         )
 
     def _joy_cb(self, msg: Joy) -> None:
@@ -46,7 +46,7 @@ class RlDeadmanGateNode(Node):
         )
         self._autonomous_held = any(
             i < len(buttons) and buttons[i] == 1
-            for i in (self.autonomous_button, 5, 10)
+            for i in (self.autonomous_button, 5, 9, 10)
         )
 
     def _deadman_held(self) -> bool:
