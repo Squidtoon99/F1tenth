@@ -35,6 +35,7 @@ def _launch_setup(context, *args, **kwargs):
     device = LaunchConfiguration("device")
     dry_run = LaunchConfiguration("dry_run")
     enable_drivers = LaunchConfiguration("enable_drivers")
+    enable_deadman = LaunchConfiguration("enable_deadman")
     enable_racer = LaunchConfiguration("enable_racer")
     enable_gate = LaunchConfiguration("enable_gate")
     enable_safety = LaunchConfiguration("enable_safety")
@@ -104,7 +105,7 @@ def _launch_setup(context, *args, **kwargs):
             parameters=[joy_config],
         ),
         Node(
-            condition=IfCondition(enable_drivers),
+            condition=IfCondition(enable_deadman),
             package="f1tenth_control",
             executable="rl_deadman_gate",
             name="rl_deadman_gate",
@@ -224,6 +225,11 @@ def generate_launch_description() -> LaunchDescription:
                 "enable_drivers",
                 default_value="true",
                 description="Start vendored sensor/teleop drivers.",
+            ),
+            DeclareLaunchArgument(
+                "enable_deadman",
+                default_value="true",
+                description="Start rl_deadman_gate (set false for boxed bench tests).",
             ),
             DeclareLaunchArgument(
                 "enable_racer",

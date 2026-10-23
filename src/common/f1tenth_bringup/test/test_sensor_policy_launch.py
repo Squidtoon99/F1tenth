@@ -115,13 +115,16 @@ def test_sensor_policy_launch_staged_enable_flags():
     source = _launch_source()
 
     assert '"enable_drivers"' in source
+    assert '"enable_deadman"' in source
     assert '"enable_racer"' in source
     assert '"enable_gate"' in source
     assert '"enable_safety"' in source
     assert "IfCondition(enable_drivers)" in source
+    assert "IfCondition(enable_deadman)" in source
     assert "IfCondition(enable_racer)" in source
     assert "IfCondition(enable_gate)" in source
     assert "IfCondition(enable_safety)" in source
+    assert '"enable_deadman",\n                default_value="true"' in source
 
 
 def test_sensor_policy_launch_wires_gate_limits_and_topics():

@@ -79,9 +79,12 @@ def test_gigaflow_policy_launch_staged_enable_flags():
     source = _launch_source()
 
     assert '"enable_drivers"' in source
+    assert '"enable_deadman"' in source
     assert '"enable_racer"' in source
     assert '"enable_gate"' in source
     assert "IfCondition(enable_racer)" in source
+    assert "IfCondition(enable_deadman)" in source
+    assert '"enable_deadman",\n                default_value="true"' in source
 
 
 def test_car_overlay_keeps_gigaflow_racer_and_gate_at_60a_drive_20a_brake():
@@ -107,6 +110,19 @@ def test_gigaflow_racer_node_does_not_publish_vesc_topics():
     assert "commands/motor/current" not in source
     assert "commands/motor/brake" not in source
     assert "commands/servo/position" not in source
+
+
+def test_gigaflow_racer_blocks_non_rl_applied_before_pack():
+    timer = GIGAFLOW_RACER_NODE.read_text().split("def _on_timer", 1)[1]
+    block_at = timer.find("if self._applied_blocks_rl_publish():")
+    pack_at = timer.find("pack_observation(")
+    infer_at = timer.find("infer_host_obs(")
+
+    assert 0 <= block_at < pack_at < infer_at
+    assert "self._reset_runtime(" in timer[block_at:pack_at]
+    assert "applied_long = 0.0" in timer
+    assert "vesc_current = 0.0" in timer
+    assert "VESC_CURRENT_SCALE_A * si.applied_current_fraction" in timer
 
 
 def test_gigaflow_launch_does_not_replace_classical_car_graph():
