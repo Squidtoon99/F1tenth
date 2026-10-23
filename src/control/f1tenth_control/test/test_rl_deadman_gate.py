@@ -14,4 +14,4 @@ def test_deadman_joy_cb_accepts_js0_and_sdl_l1_r1():
         "def _deadman_held", 1
     )[0]
     assert "(self.manual_button, 4, 9)" in joy_cb
-    assert "(self.autonomous_button, 5, 10)" in joy_cb
+    assert "(self.autonomous_button, 5, 9, 10)" in joy_cb

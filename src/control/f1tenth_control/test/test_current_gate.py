@@ -18,6 +18,7 @@ from f1tenth_control.current_gate import (
     ackermann_to_physical,
     apply_slew,
     arbitrate,
+    rl_to_physical,
     safe_brake_command,
     rl_rejection_reason,
     validate_rl_command,
@@ -226,6 +227,12 @@ def test_ackermann_to_physical_clamps_full_steer_servo():
     cmd = ackermann_to_physical(0.0, 0.33, cfg, SOURCE_TELEOP)
     assert raw == pytest.approx(0.049045, abs=1e-6)
     assert cmd.servo_position == pytest.approx(0.05)
+
+
+def test_rl_to_physical_clamps_full_steer_servo():
+    cmd = rl_to_physical(_rl(servo_position=0.049045, steering=1.0))
+    assert cmd.servo_position == pytest.approx(0.05)
+    assert cmd.source == SOURCE_RL
 
 
 def test_safe_brake_command():
