@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -28,13 +29,28 @@ def _discounted_returns(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
 
 
 def _clone_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
-    clone = copy.deepcopy(module)
-    return clone.to(torch.device("cpu"))
+    first = next(module.parameters(), None)
+    if first is None or first.device.type == "cpu":
+        return copy.deepcopy(module)
+    payload = io.BytesIO()
+    torch.save(module, payload)
+    payload.seek(0)
+    try:
+        clone = torch.load(payload, map_location="cpu", weights_only=False)
+    except TypeError:
+        payload.seek(0)
+        clone = torch.load(payload, map_location="cpu")
+    if not isinstance(clone, torch.nn.Module):
+        raise TypeError("failed to clone actor onto CPU")
+    return clone
 
 
 def _copy_state(src: torch.nn.Module, dst: torch.nn.Module) -> None:
     with torch.no_grad():
-        dst.load_state_dict(src.state_dict())
+        for p_dst, p_src in zip(dst.parameters(), src.parameters()):
+            p_dst.copy_(p_src.detach())
+        for b_dst, b_src in zip(dst.buffers(), src.buffers()):
+            b_dst.copy_(b_src.detach())
 
 
 class OnlinePPOUpdater:
