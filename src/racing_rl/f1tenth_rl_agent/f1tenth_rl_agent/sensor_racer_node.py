@@ -20,6 +20,7 @@ from f1tenth_rl_agent.policy_model import (
     GIGAFLOW_ARCHITECTURE_NAME,
     ObsNormalizer,
     SquashedGaussianLidarGRUActor,
+    checkpoint_steering_delta_max_rad,
     load_checkpoint_payload,
     load_sensor_actor,
     load_sensor_obs_norm,
@@ -261,6 +262,13 @@ class SensorRacerNode(Node):
                     "lidar_cnn_gru_conditioned checkpoints load in gigaflow_racer "
                     "(gigaflow_policy.launch.py), not sensor_racer"
                 )
+            ckpt_delta = checkpoint_steering_delta_max_rad(payload)
+            if ckpt_delta is not None:
+                if ckpt_delta <= 0.0:
+                    raise ValueError(
+                        "checkpoint steering_delta_max_rad must be positive"
+                    )
+                self.steering_delta_max_rad = ckpt_delta
             actor = load_sensor_actor(
                 checkpoint_path=checkpoint_path,
                 state_dict_key=state_dict_key,

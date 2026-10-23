@@ -128,6 +128,18 @@ def _sensor_artifact_for_loader(payload: Mapping) -> dict:
     return relaxed
 
 
+def checkpoint_steering_delta_max_rad(payload: Mapping) -> float | None:
+    contract = payload.get("action_contract")
+    if isinstance(contract, Mapping):
+        nested = contract.get("steering_delta_max_rad")
+        if nested is not None:
+            return float(nested)
+    top = payload.get("steering_delta_max_rad")
+    if top is not None:
+        return float(top)
+    return None
+
+
 def load_sensor_actor(
     checkpoint_path: str,
     state_dict_key: str,

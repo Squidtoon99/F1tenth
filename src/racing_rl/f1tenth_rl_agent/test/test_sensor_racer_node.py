@@ -27,6 +27,8 @@ def _write_sensor_checkpoint(
     *,
     steering_action_mode: str = "delta",
     steering_mu: float | None = None,
+    steering_delta_max_rad: float = 0.05235987755982988,
+    action_contract: dict | None = None,
 ) -> None:
     actor = SquashedGaussianLidarGRUActor(
         obs_dim=si.NUM_OBS,
@@ -59,9 +61,11 @@ def _write_sensor_checkpoint(
         "actor_architecture": actor.actor_architecture,
         "longitudinal_mode": "force",
         "steering_action_mode": steering_action_mode,
-        "steering_delta_max_rad": 0.05235987755982988,
+        "steering_delta_max_rad": float(steering_delta_max_rad),
         "control_hz": si.CONTROL_HZ,
     }
+    if action_contract is not None:
+        payload["action_contract"] = action_contract
     torch.save(payload, path)
 
 
@@ -107,6 +111,38 @@ def _applied(
 
 def _applied_rl(longitudinal: float = 0.2, steering: float = 0.0) -> ActuatorCommand:
     return _applied(ActuatorCommand.SOURCE_RL, longitudinal, steering)
+
+
+def test_sensor_racer_adopts_checkpoint_action_contract_delta():
+    rclpy.init()
+    node = None
+    ten_hz = 0.05235987755982988
+    twenty_hz = 0.02617993877991494
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "policy.pt")
+            _write_sensor_checkpoint(
+                ckpt,
+                steering_delta_max_rad=ten_hz,
+                action_contract={"steering_delta_max_rad": ten_hz},
+            )
+            node = SensorRacerNode(
+                parameter_overrides=[
+                    Parameter("checkpoint_path", Parameter.Type.STRING, ckpt),
+                    Parameter("require_checkpoint", Parameter.Type.BOOL, True),
+                    Parameter(
+                        "steering_delta_max_rad",
+                        Parameter.Type.DOUBLE,
+                        twenty_hz,
+                    ),
+                ]
+            )
+        assert node.steering_delta_max_rad == pytest.approx(ten_hz)
+        assert node._runtime.steering_delta_max_rad == pytest.approx(ten_hz)
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
 
 
 def test_sensor_racer_publishes_actuator_command_with_fresh_sensors():

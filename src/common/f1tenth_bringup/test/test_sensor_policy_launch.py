@@ -13,6 +13,13 @@ SENSOR_RACER_NODE = (
     / "f1tenth_rl_agent"
     / "sensor_racer_node.py"
 )
+SENSOR_POLICY_YAML = (
+    Path(__file__).resolve().parents[3]
+    / "racing_rl"
+    / "f1tenth_rl_agent"
+    / "config"
+    / "sensor_policy.yaml"
+)
 
 
 def _launch_executables(launch_file: Path) -> set[str]:
@@ -166,6 +173,23 @@ def test_sensor_racer_node_does_not_publish_vesc_topics():
     assert "commands/motor/current" not in source
     assert "commands/motor/brake" not in source
     assert "commands/servo/position" not in source
+
+
+def test_sensor_policy_yaml_uses_20hz_steering_delta():
+    source = SENSOR_POLICY_YAML.read_text()
+
+    assert "steering_delta_max_rad: 0.02617993877991494" in source
+    assert "steering_delta_max_rad: 0.05235987755982988" not in source
+    assert source.count("steering_delta_max_rad: 0.02617993877991494") == 2
+
+
+def test_sensor_racer_adopts_checkpoint_steering_delta_in_load_policy():
+    load_body = SENSOR_RACER_NODE.read_text().split("def _load_policy", 1)[1]
+    load_body = load_body.split("def _stamp_age_s", 1)[0]
+
+    assert "checkpoint_steering_delta_max_rad(" in load_body
+    assert "self.steering_delta_max_rad = ckpt_delta" in load_body
+    assert "expected_steering_delta_max_rad=self.steering_delta_max_rad" in load_body
 
 
 def test_sensor_racer_blocks_non_rl_applied_before_pack():
