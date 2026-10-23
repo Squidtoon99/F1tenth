@@ -22,7 +22,8 @@ from gigaflow_f1tenth.cli import (
 from gigaflow_f1tenth.config import SENSOR_OBS_DIM, load_config
 from gigaflow_f1tenth.critic import TRACK_PREVIEW_DIM
 from gigaflow_f1tenth.model import actor_shapes, build_actor
-from gigaflow_f1tenth.trainer import run_training
+from gigaflow_f1tenth.sim.vehicle import VehicleParams
+from gigaflow_f1tenth.trainer import _load_finetune_actor, run_training
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "deploy" / "scripts" / "install_irl_images.sh"
@@ -36,6 +37,14 @@ def _baked_actor(tmp_path: Path) -> Path:
     dest = tmp_path / "baked.pt"
     torch.save(build_actor_artifact_payload(cfg, build_actor(cfg)), src)
     bake_irl_artifact(str(src), str(dest))
+    payload = torch.load(dest, map_location="cpu", weights_only=False)
+    state = dict(payload["actor_state_dict"])
+    vec = torch.as_tensor(
+        payload["deployment_condition_normalized"], dtype=torch.float32
+    )
+    state["baked_condition"] = vec.clone()
+    payload["actor_state_dict"] = state
+    torch.save(payload, dest)
     return dest
 
 
@@ -49,7 +58,33 @@ def test_courtyard_config_hardcodes_irl_and_1097d():
     assert cfg.reward_conditioning.vmax_scale_min == cfg.reward_conditioning.vmax_scale_max == 1.0
     assert cfg.evaluation.conservative_deployment_style == "centered_high_collision"
     assert cfg.evaluation.quality_stop_enabled is False
+    assert cfg.agents.i_drive_max_a == pytest.approx(60.0)
+    assert cfg.agents.i_brake_max_a == pytest.approx(20.0)
     assert COURTYARD_CENTERLINE.is_file()
+
+
+def test_courtyard_simulator_uses_60a_drive_20a_brake():
+    cfg = load_config(COURTYARD_CONFIG)
+    params = VehicleParams(
+        i_drive_max_a=float(cfg.agents.i_drive_max_a),
+        i_brake_max_a=float(cfg.agents.i_brake_max_a),
+    )
+    runtime = (
+        ROOT / "gigaflow" / "src" / "gigaflow_f1tenth" / "sim" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    assert params.i_drive_max_a == pytest.approx(60.0)
+    assert params.i_brake_max_a == pytest.approx(20.0)
+    assert "i_drive_max_a=float(cfg.agents.i_drive_max_a)" in runtime
+    assert "i_brake_max_a=float(cfg.agents.i_brake_max_a)" in runtime
+
+
+def test_load_finetune_actor_accepts_baked_condition_buffer(tmp_path):
+    ckpt = _baked_actor(tmp_path)
+    payload = torch.load(ckpt, map_location="cpu", weights_only=False)
+    assert "baked_condition" in payload["actor_state_dict"]
+    actor = _load_finetune_actor(load_config(COURTYARD_CONFIG), ckpt, "cpu")
+    assert actor is not None
+    assert next(actor.parameters()).requires_grad
 
 
 def test_courtyard_actor_has_no_track_geometry_inputs():

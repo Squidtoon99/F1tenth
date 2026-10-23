@@ -44,6 +44,12 @@ def _launch_setup(context, *args, **kwargs):
     i_brake_max_a = LaunchConfiguration("i_brake_max_a")
     i_slew_a_per_s = LaunchConfiguration("i_slew_a_per_s")
     i_brake_safe_a = LaunchConfiguration("i_brake_safe_a")
+    online_ppo_enable = LaunchConfiguration("online_ppo_enable")
+    online_ppo_rollout_steps = LaunchConfiguration("online_ppo_rollout_steps")
+    online_ppo_lr = LaunchConfiguration("online_ppo_lr")
+    online_ppo_kl_coef = LaunchConfiguration("online_ppo_kl_coef")
+    online_ppo_kl_clip = LaunchConfiguration("online_ppo_kl_clip")
+    online_ppo_output_dir = LaunchConfiguration("online_ppo_output_dir")
 
     dry_run_enabled = dry_run.perform(context).lower() in ("true", "1", "yes")
     odom_parameters = [vesc_config]
@@ -140,6 +146,22 @@ def _launch_setup(context, *args, **kwargs):
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
+                "online_ppo_enable": ParameterValue(
+                    online_ppo_enable, value_type=bool
+                ),
+                "online_ppo_rollout_steps": ParameterValue(
+                    online_ppo_rollout_steps, value_type=int
+                ),
+                "online_ppo_lr": ParameterValue(online_ppo_lr, value_type=float),
+                "online_ppo_kl_coef": ParameterValue(
+                    online_ppo_kl_coef, value_type=float
+                ),
+                "online_ppo_kl_clip": ParameterValue(
+                    online_ppo_kl_clip, value_type=float
+                ),
+                "online_ppo_output_dir": ParameterValue(
+                    online_ppo_output_dir, value_type=str
+                ),
             },
         ],
     )
@@ -270,6 +292,36 @@ def generate_launch_description() -> LaunchDescription:
                 "i_brake_safe_a",
                 default_value="5.0",
                 description="Fail-closed safe brake current (A).",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_enable",
+                default_value="false",
+                description="Live on-car KL-clipped PPO from SOURCE_RL ticks.",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_rollout_steps",
+                default_value="128",
+                description="SOURCE_RL ticks collected before one PPO update.",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_lr",
+                default_value="3e-5",
+                description="On-car PPO Adam learning rate.",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_kl_coef",
+                default_value="0.1",
+                description="KL penalty coefficient for on-car PPO.",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_kl_clip",
+                default_value="0.05",
+                description="Skip the actor step when approx KL exceeds this.",
+            ),
+            DeclareLaunchArgument(
+                "online_ppo_output_dir",
+                default_value="/policies/online_ppo",
+                description="Directory for actor_latest.pt from live PPO.",
             ),
             OpaqueFunction(function=_launch_setup),
         ]

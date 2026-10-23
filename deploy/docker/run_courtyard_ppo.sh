@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Launch online courtyard_2 PPO fine-tuning from a mounted actor checkpoint.
 # Does not start until the container is run with the checkpoint mounted.
+# Loads actor-only weights (baked_condition in actor_state_dict is ignored).
+# Current limits come from courtyard_ppo.yaml (60 A drive / 20 A brake).
 set -euo pipefail
 
 CKPT="${CHECKPOINT:-/opt/f1tenth/policies/actor_005700.pt}"

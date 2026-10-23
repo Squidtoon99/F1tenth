@@ -33,6 +33,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip \
     && python3 -m pip install --no-cache-dir -r /opt/gigaflow/requirements-gpu.txt \
          --extra-index-url https://download.pytorch.org/whl/cu130
 
+# Copies gigaflow (baked_condition loader + courtyard_ppo.yaml 60 A / 20 A).
 COPY gigaflow /opt/gigaflow
 COPY deploy/docker/run_courtyard_ppo.sh /usr/local/bin/run_courtyard_ppo.sh
 RUN chmod +x /usr/local/bin/run_courtyard_ppo.sh \

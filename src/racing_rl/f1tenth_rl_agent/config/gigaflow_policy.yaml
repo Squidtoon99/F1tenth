@@ -40,3 +40,9 @@ gigaflow_racer:
     publish_diagnostics: true
     norm_clip: 10.0
     norm_eps: 1.0e-8
+    online_ppo_enable: false
+    online_ppo_rollout_steps: 128
+    online_ppo_lr: 0.00003
+    online_ppo_kl_coef: 0.1
+    online_ppo_kl_clip: 0.05
+    online_ppo_output_dir: /policies/online_ppo

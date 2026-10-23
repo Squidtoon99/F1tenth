@@ -112,6 +112,24 @@ def test_gigaflow_racer_node_does_not_publish_vesc_topics():
     assert "commands/servo/position" not in source
 
 
+def test_gigaflow_launch_declares_online_ppo_defaults():
+    source = _launch_source()
+    racer = GIGAFLOW_RACER_NODE.read_text()
+
+    assert '"online_ppo_enable",\n                default_value="false"' in source
+    assert '"online_ppo_rollout_steps",\n                default_value="128"' in source
+    assert '"online_ppo_lr",\n                default_value="3e-5"' in source
+    assert '"online_ppo_kl_coef",\n                default_value="0.1"' in source
+    assert '"online_ppo_kl_clip",\n                default_value="0.05"' in source
+    assert (
+        '"online_ppo_output_dir",\n                default_value="/policies/online_ppo"'
+        in source
+    )
+    assert "self.declare_parameter(\"online_ppo_enable\", False)" in racer
+    assert "self._online_ppo.discard()" in racer
+    assert "ActuatorCommand.SOURCE_RL" in racer.split("def _on_timer", 1)[1]
+
+
 def test_gigaflow_racer_blocks_non_rl_applied_before_pack():
     timer = GIGAFLOW_RACER_NODE.read_text().split("def _on_timer", 1)[1]
     block_at = timer.find("if self._applied_blocks_rl_publish():")

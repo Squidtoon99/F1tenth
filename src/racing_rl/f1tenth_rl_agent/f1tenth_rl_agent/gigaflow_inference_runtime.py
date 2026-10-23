@@ -128,6 +128,7 @@ class GigaflowInferenceRuntime:
         )
         self._use_cuda = device.type == "cuda"
         self._obs_host_np = np.zeros(si.NUM_OBS, dtype=np.float32)
+        self.last_log_prob: float | None = None
         self.warmup(warmup_iters)
 
     def reset_hidden(self) -> None:
@@ -256,6 +257,11 @@ class GigaflowInferenceRuntime:
             d2h_t0 = time.perf_counter()
             self._action_device.copy_(out.actions)
             self._action_host[:] = self._action_device[0].detach().cpu().numpy()
+            logp = getattr(out, "log_prob", None)
+            if logp is None:
+                self.last_log_prob = None
+            else:
+                self.last_log_prob = float(logp.reshape(-1)[0].detach().cpu())
             d2h_ms = (time.perf_counter() - d2h_t0) * 1000.0
         return self._action_host, InferenceTimings(
             h2d_ms=h2d_ms, infer_ms=infer_ms, d2h_ms=d2h_ms

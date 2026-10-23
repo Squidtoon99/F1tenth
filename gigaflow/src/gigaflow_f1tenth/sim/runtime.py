@@ -99,7 +99,10 @@ class WarpNAgentSimulator:
         # sync_no_respawn=True explicitly; do not inherit evaluation.sync_no_respawn
         # into the learner simulator (that permanently deactivates terminal agents).
         self.sync_no_respawn = False if sync_no_respawn is None else bool(sync_no_respawn)
-        self.vehicle_params = VehicleParams()
+        self.vehicle_params = VehicleParams(
+            i_drive_max_a=float(cfg.agents.i_drive_max_a),
+            i_brake_max_a=float(cfg.agents.i_brake_max_a),
+        )
         self.sim_params = self.vehicle_params.to_warp(
             sim_dt=cfg.agents.sim_dt,
             control_dt=1.0 / cfg.agents.control_hz,

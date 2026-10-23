@@ -22,6 +22,10 @@ from f1tenth_rl_agent.gigaflow_inference_runtime import (
     FoldedLidarGruAdapter,
     GigaflowInferenceRuntime,
 )
+from f1tenth_rl_agent.online_ppo import (
+    OnlinePPOUpdater,
+    actor_supports_online_ppo,
+)
 from f1tenth_rl_agent.policy_model import (
     GIGAFLOW_ARCHITECTURE_NAME,
     load_checkpoint_payload,
@@ -80,6 +84,12 @@ class GigaflowRacerNode(Node):
         self.declare_parameter("publish_diagnostics", True)
         self.declare_parameter("inference_warmup_iters", 5)
         self.declare_parameter("use_torch_compile", False)
+        self.declare_parameter("online_ppo_enable", False)
+        self.declare_parameter("online_ppo_rollout_steps", 128)
+        self.declare_parameter("online_ppo_lr", 3.0e-5)
+        self.declare_parameter("online_ppo_kl_coef", 0.1)
+        self.declare_parameter("online_ppo_kl_clip", 0.05)
+        self.declare_parameter("online_ppo_output_dir", "/policies/online_ppo")
 
         gp = self.get_parameter
         checkpoint_path = gp("checkpoint_path").get_parameter_value().string_value
@@ -129,6 +139,20 @@ class GigaflowRacerNode(Node):
         self.publish_diagnostics = (
             gp("publish_diagnostics").get_parameter_value().bool_value
         )
+        self.online_ppo_enable = gp("online_ppo_enable").get_parameter_value().bool_value
+        self.online_ppo_rollout_steps = int(
+            gp("online_ppo_rollout_steps").get_parameter_value().integer_value
+        )
+        self.online_ppo_lr = float(gp("online_ppo_lr").get_parameter_value().double_value)
+        self.online_ppo_kl_coef = float(
+            gp("online_ppo_kl_coef").get_parameter_value().double_value
+        )
+        self.online_ppo_kl_clip = float(
+            gp("online_ppo_kl_clip").get_parameter_value().double_value
+        )
+        self.online_ppo_output_dir = (
+            gp("online_ppo_output_dir").get_parameter_value().string_value
+        )
         warmup_iters = int(gp("inference_warmup_iters").get_parameter_value().integer_value)
 
         def _imu_f(name: str) -> float:
@@ -152,10 +176,13 @@ class GigaflowRacerNode(Node):
         )
 
         self.device = torch.device(device_str)
+        if self.online_ppo_enable:
+            self.deterministic = False
         self.actor, self.condition = self._load_policy(
             checkpoint_path, state_dict_key
         )
         self._runtime: GigaflowInferenceRuntime | None = None
+        self._online_ppo: OnlinePPOUpdater | None = None
         if self.actor is not None and self.condition is not None:
             self._runtime = GigaflowInferenceRuntime(
                 self.actor,
@@ -170,6 +197,24 @@ class GigaflowRacerNode(Node):
                 steering_angle_to_servo_gain=self.steering_angle_to_servo_gain,
                 steering_angle_to_servo_offset=self.steering_angle_to_servo_offset,
             )
+            if self.online_ppo_enable:
+                if actor_supports_online_ppo(self.actor):
+                    self._online_ppo = OnlinePPOUpdater(
+                        self.actor,
+                        self.condition,
+                        rollout_steps=self.online_ppo_rollout_steps,
+                        lr=self.online_ppo_lr,
+                        kl_coef=self.online_ppo_kl_coef,
+                        kl_clip=self.online_ppo_kl_clip,
+                        device=self.device,
+                        output_dir=self.online_ppo_output_dir,
+                        artifact_payload=self._artifact_payload,
+                    )
+                else:
+                    self.get_logger().warn(
+                        "online_ppo_enable is true but the loaded actor is not "
+                        "a conditioned Gigaflow policy; live PPO is disabled."
+                    )
 
         self._scan: LaserScan | None = None
         self._scan_time = None
@@ -234,15 +279,21 @@ class GigaflowRacerNode(Node):
         period = 1.0 / max(self.control_hz, 1.0)
         self.create_timer(period, self._on_timer)
 
+        ppo_note = (
+            f" online_ppo={self.online_ppo_output_dir}"
+            if self._online_ppo is not None
+            else ""
+        )
         self.get_logger().info(
             f"gigaflow_racer {si.NUM_OBS}-D + 10-D IRL condition @ "
             f"{self.control_hz:.1f} Hz device={device_str} "
             f"delta_max={self.steering_delta_max_rad:.6f} "
-            f"slew={self.i_slew_a_per_s:.1f}A/s"
+            f"slew={self.i_slew_a_per_s:.1f}A/s{ppo_note}"
         )
 
     def _load_policy(self, checkpoint_path: str, state_dict_key: str):
         del state_dict_key
+        self._artifact_payload = None
         if not checkpoint_path:
             if self.require_checkpoint:
                 raise RuntimeError(
@@ -264,6 +315,7 @@ class GigaflowRacerNode(Node):
                 actor, condition, loaded = load_gigaflow_actor(
                     checkpoint_path, self.device
                 )
+                self._artifact_payload = dict(loaded)
                 style = loaded.get("deployment_style", "unknown")
                 self.get_logger().info(
                     f"Loaded IRL Gigaflow checkpoint: {checkpoint_path} "
@@ -323,6 +375,8 @@ class GigaflowRacerNode(Node):
     def _reset_runtime(self, reason: int) -> None:
         if self._runtime is not None:
             self._runtime.reset_hidden()
+        if self._online_ppo is not None:
+            self._online_ppo.discard()
         self._gru_resets += 1
         self._diag_buf[si.DIAG_GRU_RESET] = 1.0
         self._diag_buf[si.DIAG_GRU_RESET_REASON] = float(reason)
@@ -585,6 +639,28 @@ class GigaflowRacerNode(Node):
         cmd.source = ActuatorCommand.SOURCE_RL
         self._desired_pub.publish(cmd)
         publish_ms = (time.perf_counter() - pub_t0) * 1000.0
+        if self._online_ppo is not None:
+            applied_source = int(self._applied.source)
+            logp = self._runtime.last_log_prob
+            if (
+                applied_source == ActuatorCommand.SOURCE_RL
+                and logp is not None
+            ):
+                stats = self._online_ppo.record(
+                    self._runtime._obs_host_np,
+                    action_np,
+                    logp,
+                    speed,
+                )
+                if stats is not None:
+                    self.get_logger().info(
+                        "online PPO update skipped="
+                        f"{int(stats.get('skipped', 0.0))} "
+                        f"kl={stats.get('approx_kl', float('nan')):.4f} "
+                        f"path={self.online_ppo_output_dir}/actor_latest.pt"
+                    )
+            else:
+                self._online_ppo.discard()
 
         total_ms = (time.perf_counter() - t0) * 1000.0
         self._finish_tick(
