@@ -19,7 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import torch
 
-from gigaflow_f1tenth.artifacts import export_actor_artifact
+from gigaflow_f1tenth.artifacts import export_actor_artifact, load_irl_actor
 from gigaflow_f1tenth.async_cpu_eval import (
     ACTOR_SNAPSHOT,
     AsyncCpuEvalManager,
@@ -39,10 +39,11 @@ from gigaflow_f1tenth.critic import (
 )
 from gigaflow_f1tenth.evaluation import (
     BehaviorGateState,
+    load_actor_from_checkpoint,
     resolve_eval_device,
 )
 from gigaflow_f1tenth.kernels import build_simulator, world_slot_layout
-from gigaflow_f1tenth.model import ACT_LIMIT, build_actor
+from gigaflow_f1tenth.model import ACT_LIMIT, build_actor, orthogonal_init_
 from gigaflow_f1tenth.ppo import (
     PreparedPPOInputs,
     build_ppo,
@@ -220,6 +221,16 @@ class Trainer(Protocol):
         ...
 
 
+def _load_finetune_actor(cfg: ExperimentConfig, path: str | Path, device: str):
+    """Load actor weights only. Never restores PPO/sim/optimizer state."""
+    try:
+        actor, _condition, _payload = load_irl_actor(str(path), device=device)
+        return actor.train()
+    except (TypeError, ValueError, KeyError):
+        actor = load_actor_from_checkpoint(cfg, path, device=device)
+        return actor.train()
+
+
 def _resolve_device(cfg: ExperimentConfig, device: str | None) -> str:
     if device is not None:
         wanted = device
@@ -284,6 +295,7 @@ class SelfPlayTrainer:
         device: str | None = None,
         run_dir: str | Path | None = None,
         wandb_session: WandbSession | None = None,
+        init_actor_from: str | Path | None = None,
     ) -> None:
         self.cfg = cfg
         self.device = _resolve_device(cfg, device)
@@ -291,6 +303,9 @@ class SelfPlayTrainer:
         self._preview_atlas: PackedTrackAtlasView | None = None
         self.run_dir = Path(run_dir) if run_dir is not None else None
         self.wandb = wandb_session
+        self.init_actor_from = (
+            None if init_actor_from is None else Path(init_actor_from)
+        )
         self.layout = world_slot_layout(cfg)
         self.sim = None
         self.actor = None
@@ -332,15 +347,28 @@ class SelfPlayTrainer:
 
         self.sim = build_simulator(cfg, atlas, self.device)
         variant, frame_stack = _actor_variant(cfg)
-        self.actor = build_actor(cfg, variant=variant, frame_stack=frame_stack)
         self.critic = build_critic(cfg)
-        self.ppo = build_ppo(
-            cfg,
-            self.actor,
-            self.critic,
-            orthogonal_init=True,
-            device=self.device,
-        )
+        if self.init_actor_from is not None:
+            self.actor = _load_finetune_actor(
+                cfg, self.init_actor_from, self.device
+            )
+            self.ppo = build_ppo(
+                cfg,
+                self.actor,
+                self.critic,
+                orthogonal_init=False,
+                device=self.device,
+            )
+            orthogonal_init_(self.critic)
+        else:
+            self.actor = build_actor(cfg, variant=variant, frame_stack=frame_stack)
+            self.ppo = build_ppo(
+                cfg,
+                self.actor,
+                self.critic,
+                orthogonal_init=True,
+                device=self.device,
+            )
         self.buffer = allocate_rollout_buffer(
             cfg, self.device, state_dim=int(self.sim.state_dim)
         )
@@ -980,6 +1008,7 @@ def build_trainer(
     device: str | None = None,
     run_dir: str | Path | None = None,
     wandb_session: WandbSession | None = None,
+    init_actor_from: str | Path | None = None,
 ) -> SelfPlayTrainer:
     return SelfPlayTrainer(
         cfg,
@@ -987,6 +1016,7 @@ def build_trainer(
         device=device,
         run_dir=run_dir,
         wandb_session=wandb_session,
+        init_actor_from=init_actor_from,
     )
 
 
@@ -999,9 +1029,15 @@ def run_training(
     run_dir: str | Path | None = None,
     checkpoint_interval: int = 0,
     resume_from: str | Path | None = None,
+    init_actor_from: str | Path | None = None,
     wandb_session: WandbSession | None = None,
 ) -> TrainProgress:
     """Run PPO updates with transactional shutdown and cadenced evaluation."""
+    if resume_from is not None and init_actor_from is not None:
+        raise ValueError(
+            "resume_from restores PPO/sim state; use init_actor_from for "
+            "actor-only fine-tune (never PPO-resume from actor-only weights)"
+        )
     checkpoint_wandb_run_id = None
     resume_preview = None
     if resume_from is not None:
@@ -1026,6 +1062,7 @@ def run_training(
         device=device,
         run_dir=run_dir,
         wandb_session=session,
+        init_actor_from=init_actor_from,
     )
     progress = TrainProgress(update_index=0, transitions=0, metrics={})
     async_eval = AsyncCpuEvalManager(cfg, run_dir=run_dir)

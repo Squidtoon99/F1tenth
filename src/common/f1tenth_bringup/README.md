@@ -7,6 +7,8 @@ Top-level launch files that compose the whole stack:
 - `launch/car.launch.py` — vehicle drivers only (shakedown/teleop).
 - `launch/sensor_policy.launch.py` — no-localization recurrent RL (`sensor_racer`
   + `rl_current_gate`; classical race graph unchanged).
+- `launch/gigaflow_policy.launch.py` — IRL Gigaflow (`gigaflow_racer` +
+  `rl_current_gate`; frozen embodied condition, no 392-D graph).
 
 Generic launch configs live in `config/`. Per-car parameters and maps are supplied
 at runtime from [`deploy/cars/`](../../../deploy/cars/), not baked in here.

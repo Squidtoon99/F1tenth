@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Copy a snapshot to the Jetson, load it under a SHA tag, stage overlay/checkpoint,
-# and record rollback metadata. Never overwrites the other stack's moving tag
-# (racing :develop vs sensor-policy :sensor-policy) and never clobbers
-# /opt/f1tenth/policies/policy.pt.
+# and record rollback metadata. Never overwrites another stack's moving tag
+# (racing :develop vs sensor-policy :sensor-policy vs gigaflow :gigaflow) and
+# never clobbers /opt/f1tenth/policies/policy.pt.
 #
 # Usage:
 #   deploy/scripts/load_to_jetson.sh <user@jetson-host> <snapshot.tar.gz> <carNN>
 #   TARGET=sensor_policy CHECKPOINT=/path/to/policy_271360000.pt \
 #     deploy/scripts/load_to_jetson.sh user@car01 deploy/snapshots/....tar.gz car01
+#   TARGET=gigaflow CHECKPOINT=/path/to/actor_005700.pt \
+#     deploy/scripts/load_to_jetson.sh user@car01 deploy/snapshots/....tar.gz car01
 #
 # Env:
-#   TARGET        racing (default) | sensor_policy
+#   TARGET        racing (default) | sensor_policy | gigaflow
 #   IMAGE         override image name
 #   CHECKPOINT    optional local .pt to stage under a unique name
 #   ACTOR_LAYOUT  optional manifest note (default 2 for format-4 sensor-policy)
@@ -35,6 +37,10 @@ case "${TARGET}" in
     MOVING_TAG="develop"
     DEFAULT_LAUNCH='ros2 launch f1tenth_bringup race.launch.py'
     RUNTIME_FLAGS="--privileged --net=host"
+    PINS_FILE=""
+    POLICY_LINK=""
+    SMOKE_ENTRY=""
+    CHECK_VESC=0
     ;;
   sensor_policy)
     IMAGE="${IMAGE:-f1tenth-sensor-policy}"
@@ -42,9 +48,23 @@ case "${TARGET}" in
     DEFAULT_LAUNCH='ros2 launch f1tenth_bringup sensor_policy.launch.py'
     # NVIDIA runtime required for CUDA; CPU inference still works with it present.
     RUNTIME_FLAGS="--runtime nvidia --privileged --net=host"
+    PINS_FILE="/etc/f1tenth/sensor_policy_pins.json"
+    POLICY_LINK="e2e_policy.pt"
+    SMOKE_ENTRY="smoke_sensor_policy.sh"
+    CHECK_VESC=1
+    ;;
+  gigaflow)
+    IMAGE="${IMAGE:-f1tenth-gigaflow}"
+    MOVING_TAG="gigaflow"
+    DEFAULT_LAUNCH='ros2 launch f1tenth_bringup gigaflow_policy.launch.py'
+    RUNTIME_FLAGS="--runtime nvidia --privileged --net=host"
+    PINS_FILE="/etc/f1tenth/gigaflow_pins.json"
+    POLICY_LINK="gigaflow_policy.pt"
+    SMOKE_ENTRY="smoke_gigaflow_policy.sh"
+    CHECK_VESC=1
     ;;
   *)
-    echo "TARGET must be racing or sensor_policy (got: ${TARGET})" >&2
+    echo "TARGET must be racing, sensor_policy, or gigaflow (got: ${TARGET})" >&2
     exit 1
     ;;
 esac
@@ -163,42 +183,48 @@ ssh "${JETSON}" "test -f /opt/f1tenth/config/car.yaml || cp /dev/stdin /opt/f1te
 if [ -n "${CKPT_REMOTE}" ]; then
   echo "==> Staging checkpoint (unique name, leaves policy.pt untouched)"
   scp "${CHECKPOINT}" "${JETSON}:${CKPT_REMOTE}"
-  if [ "${TARGET}" = "sensor_policy" ]; then
-    ssh "${JETSON}" "ln -sfn '$(basename "${CKPT_REMOTE}")' /opt/f1tenth/policies/e2e_policy.pt"
+  if [ -n "${POLICY_LINK}" ]; then
+    ssh "${JETSON}" "ln -sfn '$(basename "${CKPT_REMOTE}")' /opt/f1tenth/policies/${POLICY_LINK}"
   fi
   ssh "${JETSON}" "printf '%s\n' '${CKPT_REMOTE}' > '${ROLLBACK_DIR}/checkpoint.path'"
 fi
 
 echo "==> Loading image on ${JETSON} as ${IMAGE}:${GITSHA}"
-ssh "${JETSON}" bash -s -- "${REMOTE_SNAP}" "${IMAGE}" "${GITSHA}" "${MOVING_TAG}" "${ROLLBACK_DIR}" <<'EOF'
+ssh "${JETSON}" bash -s -- "${REMOTE_SNAP}" "${IMAGE}" "${GITSHA}" "${MOVING_TAG}" \
+  "${ROLLBACK_DIR}" "${PINS_FILE}" <<'EOF'
 set -euo pipefail
 REMOTE_SNAP="$1"
 IMAGE="$2"
 GITSHA="$3"
 MOVING_TAG="$4"
 ROLLBACK_DIR="$5"
+PINS_FILE="$6"
 
 gunzip -c "${REMOTE_SNAP}" | docker load
 docker tag "${IMAGE}:${GITSHA}" "${IMAGE}:${MOVING_TAG}"
 docker image inspect --format '{{.Id}}' "${IMAGE}:${GITSHA}"
-docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" /etc/f1tenth/sensor_policy_pins.json \
-  > "${ROLLBACK_DIR}/pins.json" 2>/dev/null \
-  || echo '{}' > "${ROLLBACK_DIR}/pins.json"
+if [ -n "${PINS_FILE}" ]; then
+  docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" "${PINS_FILE}" \
+    > "${ROLLBACK_DIR}/pins.json" 2>/dev/null \
+    || echo '{}' > "${ROLLBACK_DIR}/pins.json"
+else
+  echo '{}' > "${ROLLBACK_DIR}/pins.json"
+fi
 rm -f "${REMOTE_SNAP}"
 EOF
 
 RUN_HELPER="${ROLLBACK_DIR}/run.sh"
 LAUNCH_CKPT_ARG=""
-if [ "${TARGET}" = "sensor_policy" ]; then
+if [ -n "${POLICY_LINK}" ]; then
   if [ -n "${CKPT_REMOTE}" ]; then
     LAUNCH_CKPT_ARG="checkpoint_path:=/policies/$(basename "${CKPT_REMOTE}")"
   else
-    LAUNCH_CKPT_ARG="checkpoint_path:=/policies/e2e_policy.pt"
+    LAUNCH_CKPT_ARG="checkpoint_path:=/policies/${POLICY_LINK}"
   fi
 fi
 
 ssh "${JETSON}" bash -s -- "${RUN_HELPER}" "${IMAGE}" "${MOVING_TAG}" "${RUNTIME_FLAGS}" \
-  "${DEFAULT_LAUNCH}" "${LAUNCH_CKPT_ARG}" "${TARGET}" <<'EOF'
+  "${DEFAULT_LAUNCH}" "${LAUNCH_CKPT_ARG}" "${CHECK_VESC}" "${TARGET}" <<'EOF'
 set -euo pipefail
 RUN_HELPER="$1"
 IMAGE="$2"
@@ -206,13 +232,14 @@ MOVING_TAG="$3"
 RUNTIME_FLAGS="$4"
 DEFAULT_LAUNCH="$5"
 LAUNCH_CKPT_ARG="$6"
-TARGET="$7"
+CHECK_VESC="$7"
+TARGET="$8"
 
 cat > "${RUN_HELPER}" <<RUN
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${TARGET}" = "sensor_policy" ] && fuser /dev/sensors/vesc >/dev/null 2>&1; then
-  echo "VESC serial device already has an owner; refusing to start sensor-policy." >&2
+if [ "${CHECK_VESC}" = "1" ] && fuser /dev/sensors/vesc >/dev/null 2>&1; then
+  echo "VESC serial device already has an owner; refusing to start ${TARGET}." >&2
   fuser -v /dev/sensors/vesc >&2 || true
   exit 1
 fi
@@ -243,20 +270,20 @@ cat <<EOF
 Run on the car:
   ssh ${JETSON} ${RUN_HELPER}
 
-Dry-run (VESC *_dryrun topics; drivers/gate/racer disabled) for sensor_policy:
+Dry-run (VESC *_dryrun topics; drivers/gate/racer disabled) for ${TARGET}:
   docker run --rm -it ${RUNTIME_FLAGS} \\
     -v /dev:/dev \\
     -v /opt/f1tenth/config:/config:ro \\
     -v /opt/f1tenth/policies:/policies:ro \\
     ${IMAGE}:${MOVING_TAG} \\
-    ros2 launch f1tenth_bringup sensor_policy.launch.py \\
+    ${DEFAULT_LAUNCH} \\
       dry_run:=true device:=cuda \\
       enable_drivers:=false enable_gate:=false enable_racer:=false
 
 Non-powered smoke (inventory + artifact + dry-run launch):
   docker run --rm --runtime nvidia \\
     -v /opt/f1tenth/policies:/policies:ro \\
-    --entrypoint smoke_sensor_policy.sh ${IMAGE}:${MOVING_TAG}
+    --entrypoint ${SMOKE_ENTRY:-true} ${IMAGE}:${MOVING_TAG}
 
 Rollback metadata: ${ROLLBACK_DIR}/pins.json (Torch/CUDA/base digest)
 

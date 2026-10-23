@@ -13,6 +13,13 @@ SENSOR_RACER_NODE = (
     / "f1tenth_rl_agent"
     / "sensor_racer_node.py"
 )
+SENSOR_POLICY_YAML = (
+    Path(__file__).resolve().parents[3]
+    / "racing_rl"
+    / "f1tenth_rl_agent"
+    / "config"
+    / "sensor_policy.yaml"
+)
 
 
 def _launch_executables(launch_file: Path) -> set[str]:
@@ -115,13 +122,19 @@ def test_sensor_policy_launch_staged_enable_flags():
     source = _launch_source()
 
     assert '"enable_drivers"' in source
+    assert '"enable_teleop"' in source
+    assert '"enable_teleop",\n                default_value="false"' in source
+    assert "IfCondition(enable_teleop)" in source
+    assert '"enable_deadman"' in source
     assert '"enable_racer"' in source
     assert '"enable_gate"' in source
     assert '"enable_safety"' in source
     assert "IfCondition(enable_drivers)" in source
+    assert "IfCondition(enable_deadman)" in source
     assert "IfCondition(enable_racer)" in source
     assert "IfCondition(enable_gate)" in source
     assert "IfCondition(enable_safety)" in source
+    assert '"enable_deadman",\n                default_value="true"' in source
 
 
 def test_sensor_policy_launch_wires_gate_limits_and_topics():
@@ -130,19 +143,31 @@ def test_sensor_policy_launch_wires_gate_limits_and_topics():
     gate_params = _node_inline_parameter_keys("current_gate")
 
     assert "rl_current_gate.yaml" in source
-    assert {"i_drive_max_a", "i_brake_max_a"} <= racer_params
-    assert {"i_drive_max_a", "i_brake_max_a", "i_brake_safe_a"} <= gate_params
+    assert {"i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"} <= racer_params
+    assert {
+        "i_drive_max_a",
+        "i_brake_max_a",
+        "i_brake_safe_a",
+        "i_slew_a_per_s",
+    } <= gate_params
     assert '"gate_config"' in source
 
 
-def test_car_overlay_keeps_sensor_racer_and_gate_at_5a():
+def test_car_overlay_keeps_sensor_racer_and_gate_at_60a_drive_20a_brake():
     racer = _overlay_node_block("sensor_racer")
     gate = _overlay_node_block("rl_current_gate")
+    source = _launch_source()
 
-    assert "i_drive_max_a: 5.0" in racer
-    assert "i_brake_max_a: 5.0" in racer
-    assert "i_drive_max_a: 5.0" in gate
-    assert "i_brake_max_a: 5.0" in gate
+    assert '"i_drive_max_a",\n                default_value="60.0"' in source
+    assert '"i_brake_max_a",\n                default_value="20.0"' in source
+    assert '"i_slew_a_per_s",\n                default_value="200.0"' in source
+    assert "i_drive_max_a: 60.0" in racer
+    assert "i_brake_max_a: 20.0" in racer
+    assert "i_slew_a_per_s: 200.0" in racer
+    assert "control_hz: 20.0" in racer
+    assert "i_drive_max_a: 60.0" in gate
+    assert "i_brake_max_a: 20.0" in gate
+    assert "i_slew_a_per_s: 200.0" in gate
 
 
 def test_sensor_racer_node_does_not_publish_vesc_topics():
@@ -151,6 +176,36 @@ def test_sensor_racer_node_does_not_publish_vesc_topics():
     assert "commands/motor/current" not in source
     assert "commands/motor/brake" not in source
     assert "commands/servo/position" not in source
+
+
+def test_sensor_policy_yaml_uses_20hz_steering_delta():
+    source = SENSOR_POLICY_YAML.read_text()
+
+    assert "steering_delta_max_rad: 0.02617993877991494" in source
+    assert "steering_delta_max_rad: 0.05235987755982988" not in source
+    assert source.count("steering_delta_max_rad: 0.02617993877991494") == 2
+
+
+def test_sensor_racer_adopts_checkpoint_steering_delta_in_load_policy():
+    load_body = SENSOR_RACER_NODE.read_text().split("def _load_policy", 1)[1]
+    load_body = load_body.split("def _stamp_age_s", 1)[0]
+
+    assert "checkpoint_steering_delta_max_rad(" in load_body
+    assert "self.steering_delta_max_rad = ckpt_delta" in load_body
+    assert "expected_steering_delta_max_rad=self.steering_delta_max_rad" in load_body
+
+
+def test_sensor_racer_blocks_non_rl_applied_before_pack():
+    timer = SENSOR_RACER_NODE.read_text().split("def _on_timer", 1)[1]
+    block_at = timer.find("if self._applied_blocks_rl_publish():")
+    pack_at = timer.find("pack_observation(")
+    infer_at = timer.find("infer_host_obs(")
+
+    assert 0 <= block_at < pack_at < infer_at
+    assert "self._reset_runtime(" in timer[block_at:pack_at]
+    assert "applied_long = 0.0" in timer
+    assert "vesc_current = 0.0" in timer
+    assert "VESC_CURRENT_SCALE_A * si.applied_current_fraction" in timer
 
 
 def test_classical_car_launch_unaffected():

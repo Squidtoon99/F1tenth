@@ -60,6 +60,7 @@ STEER_HISTORY = 4
 HIDDEN_LAYERS = [1024, 1024, 1024]
 ACT_LIMIT = 1.0
 CLIP_ACTIONS = 1.0
+VESC_CURRENT_SCALE_A = 5.0
 
 # Diagnostics layout (/sensor_racer/diagnostics).
 DIAG_PREPROCESS_MS = 0

@@ -14,6 +14,7 @@ import torch.nn as nn
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
     SquashedGaussianLidarGRUActor,
+    checkpoint_steering_delta_max_rad,
     load_sensor_actor,
     load_sensor_obs_norm,
     make_sensor_actor,
@@ -59,6 +60,87 @@ def _sensor_payload(actor: SquashedGaussianLidarGRUActor, **extra):
     }
     payload.update(extra)
     return payload
+
+
+def test_checkpoint_steering_delta_prefers_action_contract():
+    ten_hz = 0.05235987755982988
+    twenty_hz = 0.02617993877991494
+    assert checkpoint_steering_delta_max_rad(
+        {
+            "action_contract": {"steering_delta_max_rad": ten_hz},
+            "steering_delta_max_rad": twenty_hz,
+        }
+    ) == pytest.approx(ten_hz)
+    assert checkpoint_steering_delta_max_rad(
+        {"steering_delta_max_rad": twenty_hz}
+    ) == pytest.approx(twenty_hz)
+    assert checkpoint_steering_delta_max_rad({}) is None
+
+
+def test_load_sensor_actor_accepts_10hz_delta_when_node_expects_20hz():
+    actor = SquashedGaussianLidarGRUActor(
+        obs_dim=si.NUM_OBS,
+        act_dim=si.NUM_ACTIONS,
+        hidden_sizes=si.HIDDEN_LAYERS,
+        activation=nn.ReLU,
+        act_limit=si.ACT_LIMIT,
+    )
+    ten_hz = 0.05235987755982988
+    twenty_hz = 0.02617993877991494
+    payload = _sensor_payload(
+        actor,
+        steering_delta_max_rad=ten_hz,
+        action_contract={"steering_delta_max_rad": ten_hz},
+    )
+    adopted = checkpoint_steering_delta_max_rad(payload)
+    assert adopted == pytest.approx(ten_hz)
+    assert adopted != pytest.approx(twenty_hz)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "sensor.pt")
+        torch.save(payload, path)
+        loaded = load_sensor_actor(
+            path,
+            "actor",
+            torch.device("cpu"),
+            expected_steering_delta_max_rad=adopted,
+        )
+        load_sensor_obs_norm(
+            path,
+            torch.device("cpu"),
+            si.OBS_NORM_EPS,
+            si.OBS_NORM_CLIP,
+            expected_steering_delta_max_rad=adopted,
+        )
+    obs = torch.randn(1, si.NUM_OBS)
+    with torch.no_grad():
+        expected, _ = actor(obs, deterministic=True, with_logprob=False)
+        actual, _ = loaded(obs, deterministic=True, with_logprob=False)
+    assert torch.allclose(expected, actual, atol=1e-6)
+
+
+@pytest.mark.parametrize("control_hz", [10.0, 20.0])
+def test_load_sensor_actor_accepts_10hz_or_20hz_metadata(control_hz):
+    actor = SquashedGaussianLidarGRUActor(
+        obs_dim=si.NUM_OBS,
+        act_dim=si.NUM_ACTIONS,
+        hidden_sizes=si.HIDDEN_LAYERS,
+        activation=nn.ReLU,
+        act_limit=si.ACT_LIMIT,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "sensor.pt")
+        torch.save(_sensor_payload(actor, control_hz=control_hz), path)
+        loaded = load_sensor_actor(path, "actor", torch.device("cpu"))
+        norm = load_sensor_obs_norm(
+            path, torch.device("cpu"), si.OBS_NORM_EPS, si.OBS_NORM_CLIP
+        )
+    obs = torch.randn(2, si.NUM_OBS)
+    with torch.no_grad():
+        expected, _ = actor(obs, deterministic=True, with_logprob=False)
+        actual, _ = loaded(obs, deterministic=True, with_logprob=False)
+    assert torch.allclose(expected, actual, atol=1e-6)
+    assert norm is not None
+    assert si.CONTROL_HZ == pytest.approx(10.0)
 
 
 def test_format4_checkpoint_round_trip():

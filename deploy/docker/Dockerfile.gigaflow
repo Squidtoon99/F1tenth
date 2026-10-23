@@ -1,0 +1,108 @@
+# syntax=docker/dockerfile:1
+# IRL Gigaflow runtime: JetPack 6 iGPU PyTorch + ROS 2 Humble + gigaflow_policy graph.
+#
+# GENERIC — no per-car config and no policy weights. Mount /config and /policies
+# at runtime. Supports device:=cpu and device:=cuda in the same image.
+#
+# Target: Jetson Orin Nano 8 GB, L4T R36.4.x / JetPack 6.2.x (CUDA 12.6).
+# Base pin: NVIDIA PyTorch 24.09-py3-igpu (Ubuntu 22.04 Jammy, CUDA 12.6).
+#
+# Build natively on linux/arm64 (Jetson or arm64 builder). The -igpu base is
+# arm64-only — do not certify amd64/QEMU builds.
+#
+#   TARGET=gigaflow deploy/scripts/build_image.sh
+#   deploy/docker/smoke_gigaflow_policy.sh
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c
+
+# ---- runtime ROS layer (shipped in the car image; no colcon/rosdep/git) ----
+FROM ${BASE_IMAGE} AS ros_runtime
+ARG BASE_IMAGE
+ENV ROS_DISTRO=humble
+ENV F1TENTH_GIGAFLOW_BASE=${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+SHELL ["/bin/bash", "-lc"]
+
+RUN . /etc/os-release \
+    && if [ "${ID}" != "ubuntu" ] || [ "${VERSION_CODENAME}" != "jammy" ]; then \
+         echo "gigaflow image requires Ubuntu Jammy for ROS 2 Humble (got ${PRETTY_NAME})" >&2; \
+         exit 1; \
+       fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      curl gnupg2 ca-certificates python3-yaml \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+      http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+      > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-ros-base \
+      ros-humble-ackermann-msgs \
+      ros-humble-joy \
+      ros-humble-teleop-tools \
+      ros-humble-urg-node \
+      ros-humble-serial-driver \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/f1tenth \
+    && python3 - <<'PY'
+import json
+import os
+
+import torch
+
+pins = {
+    "base_image": os.environ.get("F1TENTH_GIGAFLOW_BASE", ""),
+    "ros_distro": os.environ.get("ROS_DISTRO", ""),
+    "torch": torch.__version__,
+    "cuda": torch.version.cuda,
+    "cudnn": torch.backends.cudnn.version(),
+    "stack": "gigaflow",
+}
+with open("/etc/f1tenth/gigaflow_pins.json", "w", encoding="utf-8") as fh:
+    json.dump(pins, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+print(json.dumps(pins, sort_keys=True))
+PY
+
+# ---- build stage: colcon closure for gigaflow_policy.launch.py ----
+FROM ros_runtime AS build
+WORKDIR /ws
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+      python3-rosdep \
+      ros-humble-asio-cmake-module \
+    && rm -rf /var/lib/apt/lists/* \
+    && rosdep init || true
+
+COPY src ./src
+COPY libs ./libs
+COPY gigaflow/src /opt/gigaflow/src
+
+RUN mkdir -p src/localization/range_libc \
+    && touch src/localization/range_libc/COLCON_IGNORE
+
+RUN source /opt/ros/humble/setup.bash \
+    && rosdep update \
+    && (rosdep install --from-paths src libs --ignore-src -y -r || true) \
+    && colcon build --merge-install --packages-up-to f1tenth_bringup \
+      --packages-ignore \
+        range_lib particle_filter f1tenth_localization \
+        f1tenth_rl_vehicle f1tenth_racing_algo f1tenth_planning \
+        ackermann_mux f1tenth_common f1tenth_mapping f1tenth_perception \
+      --cmake-args -DBUILD_TESTING=OFF
+
+# ---- runtime stage ----
+FROM ros_runtime AS runtime
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+ENV PYTHONPATH=/opt/gigaflow/src
+WORKDIR /ws
+COPY --from=build /ws/install /ws/install
+COPY --from=build /opt/gigaflow/src /opt/gigaflow/src
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+COPY deploy/docker/smoke_gigaflow_policy.sh /usr/local/bin/smoke_gigaflow_policy.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/smoke_gigaflow_policy.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "f1tenth_bringup", "gigaflow_policy.launch.py"]

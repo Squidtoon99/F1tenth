@@ -7,29 +7,59 @@
 # Usage:
 #   deploy/scripts/build_image.sh
 #   TARGET=sensor_policy deploy/scripts/build_image.sh
+#   TARGET=gigaflow deploy/scripts/build_image.sh
+#   TARGET=courtyard_trainer deploy/scripts/build_image.sh
 #
 # Env:
-#   TARGET       racing (default) | sensor_policy
-#   ARCH         default linux/arm64
+#   TARGET       racing (default) | sensor_policy | gigaflow | courtyard_trainer
+#   ARCH         default linux/arm64 (linux/amd64 for courtyard_trainer)
 #   ROS_DISTRO   default humble
 #   IMAGE        override image name
-#   BASE_IMAGE   sensor_policy only — pin NGC iGPU base (tag or @sha256:)
-#   SMOKE        sensor_policy only — if 1, run smoke_sensor_policy.sh after build
+#   BASE_IMAGE   pin NGC iGPU base (tag or @sha256:) for gigaflow / sensor_policy /
+#                racing on linux/arm64
+#   CUDA         racing: 1 (default on linux/arm64) uses NGC CUDA torch; 0 keeps
+#                the amd64 f1tenth-base + CPU torch path
+#   RANGE_LIBC_CUDA  racing range_libc pywrapper (default 0; 1 on native Jetson)
+#   SMOKE        sensor_policy/gigaflow — if 1, run the image smoke script after build
 #   REQUIRE_CUDA smoke only — pass through (default 1)
-#   GITSHA       default: current short HEAD
+#   GITSHA       default: current short HEAD; falls back to ./GITSHA or on-car
+#                when the build context is not a git checkout (Jetson rebuild)
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
 TARGET="${TARGET:-racing}"
-ARCH="${ARCH:-linux/arm64}"
+if [ "${TARGET}" = "courtyard_trainer" ]; then
+  ARCH="${ARCH:-linux/amd64}"
+else
+  ARCH="${ARCH:-linux/arm64}"
+fi
 ROS_DISTRO="${ROS_DISTRO:-humble}"
-GITSHA="${GITSHA:-$(git rev-parse --short HEAD)}"
+if [ -z "${GITSHA:-}" ]; then
+  GITSHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+fi
+if [ -z "${GITSHA}" ] && [ -f GITSHA ]; then
+  GITSHA="$(tr -d '[:space:]' < GITSHA)"
+fi
+if [ -z "${GITSHA}" ]; then
+  GITSHA="on-car"
+fi
+
+NGC_IGPU_BASE="${NGC_IGPU_BASE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
 
 case "${TARGET}" in
   racing)
     IMAGE="${IMAGE:-f1tenth-racing}"
     DOCKERFILE="deploy/docker/Dockerfile.runtime"
     MOVING_TAG="develop"
+    if [ "${ARCH}" = "linux/arm64" ]; then
+      CUDA="${CUDA:-1}"
+      BASE_IMAGE="${BASE_IMAGE:-${NGC_IGPU_BASE}}"
+      RANGE_LIBC_CUDA="${RANGE_LIBC_CUDA:-0}"
+    else
+      CUDA="${CUDA:-0}"
+      BASE_IMAGE="${BASE_IMAGE:-f1tenth-base:latest}"
+      RANGE_LIBC_CUDA="${RANGE_LIBC_CUDA:-0}"
+    fi
     ;;
   sensor_policy)
     IMAGE="${IMAGE:-f1tenth-sensor-policy}"
@@ -40,10 +70,25 @@ case "${TARGET}" in
       exit 1
     fi
     # Ubuntu 22.04 + CUDA 12.6 iGPU base for ROS 2 Humble on JetPack 6.
-    BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:c652f021080c2d327fe7c14ae898fef1ba7dd3b756f15bff1455612f32b7cc0c}"
+    BASE_IMAGE="${BASE_IMAGE:-${NGC_IGPU_BASE}}"
+    ;;
+  gigaflow)
+    IMAGE="${IMAGE:-f1tenth-gigaflow}"
+    DOCKERFILE="deploy/docker/Dockerfile.gigaflow"
+    MOVING_TAG="gigaflow"
+    if [ "${ROS_DISTRO}" != "humble" ]; then
+      echo "gigaflow is locked to ROS_DISTRO=humble" >&2
+      exit 1
+    fi
+    BASE_IMAGE="${BASE_IMAGE:-${NGC_IGPU_BASE}}"
+    ;;
+  courtyard_trainer)
+    IMAGE="${IMAGE:-f1tenth-courtyard-trainer}"
+    DOCKERFILE="deploy/docker/Dockerfile.courtyard_trainer"
+    MOVING_TAG="courtyard-trainer"
     ;;
   *)
-    echo "TARGET must be racing or sensor_policy (got: ${TARGET})" >&2
+    echo "TARGET must be racing, sensor_policy, gigaflow, or courtyard_trainer (got: ${TARGET})" >&2
     exit 1
     ;;
 esac
@@ -56,20 +101,39 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 BUILD_ARGS=()
-if [ "${TARGET}" = "sensor_policy" ]; then
+if [ "${TARGET}" = "courtyard_trainer" ]; then
+  echo "==> Building courtyard PPO trainer ${IMAGE}:${GITSHA}"
+  echo "    Dockerfile: ${DOCKERFILE}"
+  echo "    Platform:   ${ARCH} (CUDA training image; not the on-car gigaflow image)"
+  docker buildx build --platform "${ARCH}" --load \
+    -f "${DOCKERFILE}" \
+    --label "f1tenth.git_sha=${GITSHA}" \
+    --label "f1tenth.target=${TARGET}" \
+    -t "${IMAGE}:${GITSHA}" \
+    -t "${IMAGE}:${MOVING_TAG}" .
+elif [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ] \
+    || { [ "${TARGET}" = "racing" ] && [ "${ARCH}" = "linux/arm64" ]; }; then
   BUILD_ARGS+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
-  echo "==> Building sensor-policy runtime ${IMAGE}:${GITSHA}"
+  if [ "${TARGET}" = "racing" ]; then
+    BUILD_ARGS+=(--build-arg "CUDA=${CUDA:-1}")
+    BUILD_ARGS+=(--build-arg "ROS_DISTRO=${ROS_DISTRO}")
+    BUILD_ARGS+=(--build-arg "RANGE_LIBC_CUDA=${RANGE_LIBC_CUDA:-0}")
+  fi
+  echo "==> Building ${TARGET} runtime ${IMAGE}:${GITSHA}"
   echo "    Dockerfile: ${DOCKERFILE}"
   echo "    Base:       ${BASE_IMAGE}"
   echo "    Platform:   ${ARCH} (igpu base is arm64-only; prefer native arm64)"
+  if [ "${TARGET}" = "racing" ]; then
+    echo "    CUDA:       ${CUDA:-1}  range_libc_cuda=${RANGE_LIBC_CUDA:-0}"
+  fi
   if [ "${ARCH}" != "linux/arm64" ]; then
     echo "warning: ARCH=${ARCH} — NGC -igpu base is arm64-only; build will not be certified" >&2
   fi
-  docker buildx build --platform "${ARCH}" --load \
+  docker buildx build --platform "${ARCH}" --provenance=false --load \
     -f "${DOCKERFILE}" \
     "${BUILD_ARGS[@]}" \
     --label "f1tenth.git_sha=${GITSHA}" \
-    --label "f1tenth.target=sensor_policy" \
+    --label "f1tenth.target=${TARGET}" \
     --label "f1tenth.base_image=${BASE_IMAGE}" \
     -t "${IMAGE}:${GITSHA}" \
     -t "${IMAGE}:${MOVING_TAG}" .
@@ -85,6 +149,9 @@ else
   docker buildx build --platform "${ARCH}" --load \
     -f "${DOCKERFILE}" \
     "${BUILD_ARGS[@]}" \
+    --build-arg "CUDA=${CUDA:-0}" \
+    --build-arg "BASE_IMAGE=${BASE_IMAGE:-f1tenth-base:latest}" \
+    --build-arg "RANGE_LIBC_CUDA=${RANGE_LIBC_CUDA:-0}" \
     -t "${IMAGE}:${GITSHA}" \
     -t "${IMAGE}:${MOVING_TAG}" .
 fi
@@ -98,14 +165,27 @@ fi
 echo "==> Built ${IMAGE}:${GITSHA} (and :${MOVING_TAG}) for ${ARCH}"
 echo "    image id: ${IMAGE_SHA}"
 
-if [ "${TARGET}" = "sensor_policy" ]; then
+if [ "${TARGET}" = "sensor_policy" ] || [ "${TARGET}" = "gigaflow" ] || [ "${TARGET}" = "racing" ]; then
+  PINS_FILE="/etc/f1tenth/sensor_policy_pins.json"
+  SMOKE_ENTRY="smoke_sensor_policy.sh"
+  if [ "${TARGET}" = "gigaflow" ]; then
+    PINS_FILE="/etc/f1tenth/gigaflow_pins.json"
+    SMOKE_ENTRY="smoke_gigaflow_policy.sh"
+  elif [ "${TARGET}" = "racing" ]; then
+    PINS_FILE="/etc/f1tenth/racing_pins.json"
+    SMOKE_ENTRY=""
+  fi
   echo "==> Version pins (from image)"
   docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" \
-    /etc/f1tenth/sensor_policy_pins.json 2>/dev/null || \
+    "${PINS_FILE}" 2>/dev/null || \
     echo "    (pins file unavailable — image may not have finished runtime stage)"
   IMAGE_SIZE="$(docker image inspect --format '{{.Size}}' "${IMAGE}:${GITSHA}")"
   echo "    size bytes: ${IMAGE_SIZE}"
-  if [ "${SMOKE:-0}" = "1" ]; then
+  echo "==> Torch (image python, no GPU required for version pins)"
+  docker run --rm --entrypoint python3 "${IMAGE}:${GITSHA}" -c \
+    "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available())" \
+    || true
+  if [ "${SMOKE:-0}" = "1" ] && [ -n "${SMOKE_ENTRY}" ]; then
     echo "==> Running non-powered smoke (SMOKE=1)"
     SMOKE_ENV=()
     if [ -n "${REQUIRE_CUDA:-}" ]; then
@@ -118,9 +198,9 @@ if [ "${TARGET}" = "sensor_policy" ]; then
       SMOKE_MOUNT=()
     fi
     docker run --rm --runtime nvidia "${SMOKE_ENV[@]}" "${SMOKE_MOUNT[@]}" \
-      --entrypoint smoke_sensor_policy.sh "${IMAGE}:${GITSHA}"
+      --entrypoint "${SMOKE_ENTRY}" "${IMAGE}:${GITSHA}"
   else
-    echo "    Smoke: SMOKE=1 TARGET=sensor_policy $0 (after native arm64 build on Jetson)"
+    echo "    Smoke: SMOKE=1 TARGET=${TARGET} $0 (after native arm64 build on Jetson)"
   fi
 fi
 

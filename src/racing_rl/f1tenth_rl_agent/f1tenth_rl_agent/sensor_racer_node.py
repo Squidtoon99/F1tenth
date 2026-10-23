@@ -17,10 +17,14 @@ from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import sensor_interfaces as si
 from f1tenth_rl_agent.policy_model import (
+    GIGAFLOW_ARCHITECTURE_NAME,
     ObsNormalizer,
     SquashedGaussianLidarGRUActor,
+    checkpoint_steering_delta_max_rad,
+    load_checkpoint_payload,
     load_sensor_actor,
     load_sensor_obs_norm,
+    peek_actor_architecture_name,
 )
 from f1tenth_rl_agent.sensor_inference_runtime import SensorInferenceRuntime
 from f1tenth_rl_agent.sensor_preprocessing import ImuCalibration, RawImuSample
@@ -44,8 +48,9 @@ class SensorRacerNode(Node):
         self.declare_parameter("applied_actuator_topic", si.TOPIC_APPLIED_ACTUATOR)
         self.declare_parameter("sensor_max_age_s", 0.15)
         self.declare_parameter("twist_vx_sign", -1.0)
-        self.declare_parameter("i_drive_max_a", 10.0)
-        self.declare_parameter("i_brake_max_a", 10.0)
+        self.declare_parameter("i_drive_max_a", 60.0)
+        self.declare_parameter("i_brake_max_a", 20.0)
+        self.declare_parameter("i_slew_a_per_s", 200.0)
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
         self.declare_parameter("steering_delta_max_rad", math.pi / 60.0)
@@ -89,6 +94,7 @@ class SensorRacerNode(Node):
         self.twist_vx_sign = float(gp("twist_vx_sign").get_parameter_value().double_value)
         self.i_drive_max_a = float(gp("i_drive_max_a").get_parameter_value().double_value)
         self.i_brake_max_a = float(gp("i_brake_max_a").get_parameter_value().double_value)
+        self.i_slew_a_per_s = float(gp("i_slew_a_per_s").get_parameter_value().double_value)
         if self.i_drive_max_a <= 0.0 or self.i_brake_max_a <= 0.0:
             raise ValueError(
                 "i_drive_max_a and i_brake_max_a must be > 0 "
@@ -231,7 +237,8 @@ class SensorRacerNode(Node):
 
         self.get_logger().info(
             f"sensor_racer {si.NUM_OBS}-D @ {self.control_hz:.1f} Hz "
-            f"device={device_str} delta_max={self.steering_delta_max_rad:.6f}"
+            f"device={device_str} delta_max={self.steering_delta_max_rad:.6f} "
+            f"slew={self.i_slew_a_per_s:.1f}A/s"
         )
 
     def _load_policy(
@@ -248,6 +255,20 @@ class SensorRacerNode(Node):
             )
             return None, None
         try:
+            payload = load_checkpoint_payload(checkpoint_path, self.device)
+            name = peek_actor_architecture_name(payload)
+            if name == GIGAFLOW_ARCHITECTURE_NAME:
+                raise ValueError(
+                    "lidar_cnn_gru_conditioned checkpoints load in gigaflow_racer "
+                    "(gigaflow_policy.launch.py), not sensor_racer"
+                )
+            ckpt_delta = checkpoint_steering_delta_max_rad(payload)
+            if ckpt_delta is not None:
+                if ckpt_delta <= 0.0:
+                    raise ValueError(
+                        "checkpoint steering_delta_max_rad must be positive"
+                    )
+                self.steering_delta_max_rad = ckpt_delta
             actor = load_sensor_actor(
                 checkpoint_path=checkpoint_path,
                 state_dict_key=state_dict_key,
@@ -451,15 +472,36 @@ class SensorRacerNode(Node):
         assert self._applied is not None
         assert self._runtime is not None
 
+        if self._applied_blocks_rl_publish():
+            source = int(self._applied.source)
+            self._reset_runtime(
+                {
+                    ActuatorCommand.SOURCE_TELEOP: si.GRU_RESET_APPLIED_TELEOP,
+                    ActuatorCommand.SOURCE_SAFETY: si.GRU_RESET_APPLIED_SAFETY,
+                }.get(source, si.GRU_RESET_APPLIED_INVALID)
+            )
+            total_ms = (time.perf_counter() - t0) * 1000.0
+            self._finish_tick(
+                now,
+                preprocess_ms=total_ms,
+                total_ms=total_ms,
+            )
+            return
+
         speed = self.twist_vx_sign * float(self._odom.twist.twist.linear.x)
-        applied_long = float(self._applied.longitudinal)
-        applied_steer = float(self._applied.steering) * self.max_steer
-        signed_current_a = float(
-            self._applied.drive_current_a - self._applied.brake_current_a
-        )
-        vesc_current = si.applied_current_fraction(
-            signed_current_a, self.i_drive_max_a, self.i_brake_max_a
-        )
+        if int(self._applied.source) == ActuatorCommand.SOURCE_RL:
+            applied_long = float(self._applied.longitudinal)
+            applied_steer = float(self._applied.steering) * self.max_steer
+            signed_current_a = float(
+                self._applied.drive_current_a - self._applied.brake_current_a
+            )
+            vesc_current = si.VESC_CURRENT_SCALE_A * si.applied_current_fraction(
+                signed_current_a, self.i_drive_max_a, self.i_brake_max_a
+            )
+        else:
+            applied_long = 0.0
+            applied_steer = 0.0
+            vesc_current = 0.0
         raw_obs, actor_imu, raw_imu, finite = self._runtime.pack_observation(
             scan_angle_min=float(self._scan.angle_min),
             scan_angle_increment=float(self._scan.angle_increment),
@@ -499,18 +541,6 @@ class SensorRacerNode(Node):
         np.clip(action_np, -si.CLIP_ACTIONS, si.CLIP_ACTIONS, out=action_np)
         if not bool(np.isfinite(action_np).all()):
             self._reset_runtime(si.GRU_RESET_ACTION_NONFINITE)
-            total_ms = (time.perf_counter() - t0) * 1000.0
-            self._finish_tick(
-                now,
-                preprocess_ms=preprocess_ms,
-                h2d_ms=infer_timings.h2d_ms,
-                infer_ms=infer_timings.infer_ms,
-                d2h_ms=infer_timings.d2h_ms,
-                total_ms=total_ms,
-            )
-            return
-
-        if self._applied_blocks_rl_publish():
             total_ms = (time.perf_counter() - t0) * 1000.0
             self._finish_tick(
                 now,

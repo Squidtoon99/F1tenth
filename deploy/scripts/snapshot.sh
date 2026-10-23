@@ -3,7 +3,7 @@
 # (no registry yet). Optionally also produce an Apptainer .sif.
 #
 # Usage:   deploy/scripts/snapshot.sh
-# Env:     TARGET (racing|sensor_policy), IMAGE, GITSHA, OUT_DIR
+# Env:     TARGET (racing|sensor_policy|gigaflow|courtyard_trainer), IMAGE, GITSHA, OUT_DIR
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root
 
@@ -11,7 +11,9 @@ TARGET="${TARGET:-racing}"
 case "${TARGET}" in
   racing) IMAGE="${IMAGE:-f1tenth-racing}" ;;
   sensor_policy) IMAGE="${IMAGE:-f1tenth-sensor-policy}" ;;
-  *) echo "TARGET must be racing or sensor_policy (got: ${TARGET})" >&2; exit 1 ;;
+  gigaflow) IMAGE="${IMAGE:-f1tenth-gigaflow}" ;;
+  courtyard_trainer) IMAGE="${IMAGE:-f1tenth-courtyard-trainer}" ;;
+  *) echo "TARGET must be racing, sensor_policy, gigaflow, or courtyard_trainer (got: ${TARGET})" >&2; exit 1 ;;
 esac
 
 GITSHA="${GITSHA:-$(git rev-parse --short HEAD)}"
@@ -38,6 +40,10 @@ echo "    sha256:  ${SHA256}"
 if [ "${TARGET}" = "sensor_policy" ]; then
   echo "    pins:    $(docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" \
     /etc/f1tenth/sensor_policy_pins.json 2>/dev/null | tr -d '\n' || echo '(unavailable)')"
+fi
+if [ "${TARGET}" = "gigaflow" ]; then
+  echo "    pins:    $(docker run --rm --entrypoint cat "${IMAGE}:${GITSHA}" \
+    /etc/f1tenth/gigaflow_pins.json 2>/dev/null | tr -d '\n' || echo '(unavailable)')"
 fi
 echo "    Record this in deploy/releases/manifest.csv (git_sha,image_sha256,car_id,...)."
 echo "    Load: TARGET=${TARGET} deploy/scripts/load_to_jetson.sh user@host ${TAR} car01"

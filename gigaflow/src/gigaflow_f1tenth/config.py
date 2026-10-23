@@ -99,6 +99,8 @@ class AgentsConfig:
     mu_range: tuple[float, float] = (0.55, 0.85)
     steer_gain_range: tuple[float, float] = (0.84, 1.26)
     command_delay_substeps_range: tuple[int, int] = (0, 4)
+    i_drive_max_a: float = 80.0
+    i_brake_max_a: float = 40.0
 
 
 @dataclass(frozen=True)
@@ -702,6 +704,8 @@ def validate_config(cfg: ExperimentConfig, *, check_training_budget: bool = True
         raise ConfigError("invalid episode_seconds_min/max")
     if a.reference_speed_mps <= 0.0 or a.target_laps <= 0.0:
         raise ConfigError("reference_speed_mps and target_laps must be positive")
+    if float(a.i_drive_max_a) <= 0.0 or float(a.i_brake_max_a) <= 0.0:
+        raise ConfigError("i_drive_max_a and i_brake_max_a must be positive")
 
     if w.num_worlds <= 0 or w.max_agents_per_world <= 0:
         raise ConfigError("num_worlds and max_agents_per_world must be positive")

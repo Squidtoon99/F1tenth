@@ -33,6 +33,7 @@ setup(
             "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
             "sensor_racer = f1tenth_rl_agent.sensor_racer_node:main",
             "sensor_policy = f1tenth_rl_agent.sensor_racer_node:main",
+            "gigaflow_racer = f1tenth_rl_agent.gigaflow_racer_node:main",
         ],
     },
 )

@@ -31,15 +31,46 @@ policy_inference:
     device: "cpu"
 
 # --- Sensor-policy experiment (sensor_policy.launch.py; not used by race.launch) ---
-# First-run current limits are launch args (default 5 A) so the ackermann
+# Drive/brake current limits for sensor_policy.launch.py. The ackermann
 # vesc_actuator block above stays unchanged for the legacy 390-D path.
 sensor_racer:
   ros__parameters:
     device: "cpu"
     deterministic: true
-    control_hz: 10.0
-    i_drive_max_a: 5.0
-    i_brake_max_a: 5.0
+    control_hz: 20.0
+    i_drive_max_a: 60.0
+    i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
+    sensor_max_age_s: 0.15
+    twist_vx_sign: -1.0
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453292519943295
+    imu_ax_sign: 1.0
+    imu_ay_sign: 1.0
+    imu_az_sign: 1.0
+    imu_gx_sign: 1.0
+    imu_gy_sign: 1.0
+    imu_gz_sign: 1.0
+    imu_ax_bias: -0.02114
+    imu_ay_bias: 0.07107
+    imu_az_bias: 0.0
+    imu_gx_bias: 0.0
+    imu_gy_bias: 0.0
+    imu_gz_bias: 0.0
+    recording_mode: false
+    publish_raw_observation: false
+    require_checkpoint: true
+
+# IRL Gigaflow (gigaflow_policy.launch.py). Same 20 Hz / 60 A drive / 20 A brake.
+gigaflow_racer:
+  ros__parameters:
+    device: "cpu"
+    deterministic: true
+    control_hz: 20.0
+    i_drive_max_a: 60.0
+    i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
+    steering_delta_max_rad: 0.02617993877991494
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
     imu_accel_to_ms2: 9.80665
@@ -62,9 +93,10 @@ sensor_racer:
 
 rl_current_gate:
   ros__parameters:
-    i_drive_max_a: 5.0
-    i_brake_max_a: 5.0
+    i_drive_max_a: 60.0
+    i_brake_max_a: 20.0
     i_brake_safe_a: 5.0
+    i_slew_a_per_s: 200.0
     publish_rate_hz: 50.0
     max_steer: 0.33
     steering_angle_to_servo_gain: -1.2135
@@ -75,9 +107,10 @@ sensor_policy:
   ros__parameters:
     device: "cpu"
     deterministic: true
-    control_hz: 10.0
-    i_drive_max_a: 5.0
-    i_brake_max_a: 5.0
+    control_hz: 20.0
+    i_drive_max_a: 60.0
+    i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
     imu_accel_to_ms2: 9.80665
@@ -140,7 +173,7 @@ vehicle_obs:
     speed_max: 80000.0
     position_min: 0.0
     position_max: 0.0
-    servo_min: 0.05
+    servo_min: 0.048
     servo_max: 0.85
 
 vesc_to_odom_node:
@@ -184,7 +217,7 @@ joy_teleop:
       type: topic
       interface_type: ackermann_msgs/msg/AckermannDriveStamped
       topic_name: teleop
-      deadman_buttons: [9]
+      deadman_buttons: [4]
       axis_mappings:
         # Force/current mode (ADR 0006): stick maps to normalized effort on
         # acceleration; speed stays unused (vesc_actuator ignores it).
@@ -206,8 +239,8 @@ rl_deadman_gate:
   ros__parameters:
     joy_topic: /joy
     teleop_topic: /teleop
-    manual_button: 9
-    autonomous_button: 10
+    manual_button: 4
+    autonomous_button: 9
     publish_rate_hz: 20.0
 
 # --- PF relocalize (PS4 X / Square) ---

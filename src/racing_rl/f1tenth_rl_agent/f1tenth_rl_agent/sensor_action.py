@@ -59,6 +59,7 @@ def normalized_action_to_physical(
         long_norm, i_drive_max_a, i_brake_max_a
     )
     servo = steering_angle_to_servo_gain * steer_rad + steering_angle_to_servo_offset
+    servo = max(0.05, min(0.85, servo))
     steer_norm = steer_rad / max_steer if max_steer > 0.0 else 0.0
     if not all(
         math.isfinite(v)

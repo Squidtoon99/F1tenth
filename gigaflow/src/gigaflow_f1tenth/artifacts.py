@@ -5,17 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, runtime_checkable
 
+import numpy as np
 import torch
 
 from gigaflow_f1tenth.config import ExperimentConfig
 from gigaflow_f1tenth.model import (
     actor_architecture_from_module,
+    actor_from_architecture,
     architecture_metadata as actor_architecture_metadata,
+    complete_actor_architecture,
+    load_conditioned_state_dict,
+    split_baked_condition,
 )
 from gigaflow_f1tenth.rewards import (
     CONDITION_DIM,
     CONDITION_FIELD_NAMES,
     DEPLOYMENT_STYLES,
+    PrivateStyle,
     condition_schema_fields,
     deployment_style,
     normalize_condition_vector,
@@ -195,3 +201,96 @@ def _validate_sensor_normalizer(normalizer: Any, arch: Mapping[str, Any]) -> Non
     m2 = torch.as_tensor(normalizer["m2"])
     if mean.shape[-1] != sensor_dim or m2.shape[-1] != sensor_dim:
         raise ValueError("sensor_normalizer mean/m2 must have length sensor_obs_dim")
+
+
+IRL_DEFAULT_STYLE = "centered_high_collision"
+
+
+def bake_irl_condition(
+    payload: Mapping[str, Any],
+    *,
+    style_name: str = IRL_DEFAULT_STYLE,
+    field_overrides: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Pin the artifact's private condition so on-car inference never samples it."""
+    validate_actor_artifact(payload)
+    style = deployment_style(style_name)
+    raw = style.as_dict()
+    if field_overrides:
+        for key, value in field_overrides.items():
+            if key not in CONDITION_FIELD_NAMES:
+                raise ValueError(f"unknown condition field {key!r}")
+            raw[key] = float(value)
+    baked = PrivateStyle(**{name: float(raw[name]) for name in CONDITION_FIELD_NAMES})
+    vec = normalize_condition_vector(baked.raw_vector())
+    if hasattr(vec, "detach"):
+        vec = vec.detach().cpu().numpy()
+    out = dict(payload)
+    out["deployment_style"] = style_name
+    baked_vec = np.asarray(vec, dtype=np.float32).tolist()
+    out["deployment_condition_normalized"] = baked_vec
+    out["baked_condition"] = baked_vec
+    out["irl_condition_raw"] = baked.as_dict()
+    return out
+
+
+def bake_irl_artifact(
+    src: str,
+    dest: str,
+    *,
+    style_name: str = IRL_DEFAULT_STYLE,
+    field_overrides: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    store = FileArtifactStore()
+    payload = bake_irl_condition(
+        store.read_actor_artifact(src),
+        style_name=style_name,
+        field_overrides=field_overrides,
+    )
+    store.write_actor_artifact(dest, payload)
+    return payload
+
+
+def load_irl_actor(
+    path: str,
+    device: str | torch.device = "cpu",
+) -> tuple[Any, torch.Tensor, dict[str, Any]]:
+    """Load a deployable actor and the frozen IRL condition vector.
+
+    Returns ``(actor, condition[1, 10], payload)``. The condition is the
+    artifact's ``deployment_condition_normalized`` and is never resampled.
+    """
+    payload = FileArtifactStore().read_actor_artifact(path)
+    state = payload.get("actor_state_dict")
+    if not isinstance(state, Mapping):
+        raise ValueError("checkpoint missing actor_state_dict")
+    state, baked_from_weights = split_baked_condition(state)
+    condition = payload.get("deployment_condition_normalized")
+    if condition is None:
+        condition = payload.get("baked_condition")
+    if condition is None and baked_from_weights is not None:
+        condition = baked_from_weights
+    if condition is None:
+        payload = bake_irl_condition(payload)
+        condition = payload["deployment_condition_normalized"]
+    vec = torch.as_tensor(condition, dtype=torch.float32)
+    if vec.numel() != CONDITION_DIM:
+        raise ValueError(
+            f"deployment_condition_normalized length {int(vec.numel())} != {CONDITION_DIM}"
+        )
+    actor = actor_from_architecture(
+        complete_actor_architecture(payload["actor_architecture"], state)
+    )
+    loaded = load_conditioned_state_dict(actor, state, strict=False)
+    unexpected = sorted(loaded.unexpected_keys)
+    missing = sorted(
+        k for k in loaded.missing_keys if not str(k).startswith("sensor_normalizer.")
+    )
+    if unexpected or missing:
+        raise ValueError(
+            "checkpoint weights do not fit the recorded architecture: "
+            f"missing={missing} unexpected={unexpected}"
+        )
+    device_t = torch.device(device)
+    actor = actor.to(device_t).eval()
+    return actor, vec.to(device_t).view(1, CONDITION_DIM), dict(payload)

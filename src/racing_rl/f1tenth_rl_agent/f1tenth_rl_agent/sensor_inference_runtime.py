@@ -1,4 +1,8 @@
-"""Preallocated recurrent inference runtime for sensor_racer."""
+"""Preallocated recurrent inference runtime for sensor_racer.
+
+10 Hz consecutive history packing. 20 Hz stride-2 packing for IRL Gigaflow
+(conditioned and folded lidar_cnn_gru) lives in gigaflow_inference_runtime.
+"""
 
 from __future__ import annotations
 

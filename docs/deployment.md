@@ -196,10 +196,10 @@ Staged enable flags support non-powered certification:
 - `enable_racer:=false` — no inference node
 - `enable_gate:=false` — no VESC command publisher
 
-First-run current limits default to **5 A** via launch args (`i_drive_max_a`,
-`i_brake_max_a`, `i_brake_safe_a`). The launch passes the same drive/brake limits
-to both `sensor_racer` and `rl_current_gate`; keep the two node-scoped values equal
-in the per-car overlay.
+Current limits default to **60 A** drive and **20 A** brake via launch args
+(`i_drive_max_a`, `i_brake_max_a`). Fail-closed `i_brake_safe_a` remains **5 A**.
+The launch passes the same drive/brake limits to both `sensor_racer` and
+`rl_current_gate`; keep the two node-scoped values equal in the per-car overlay.
 
 Record `/sensor_racer/diagnostics` and `/rl_current_gate/diagnostics` during dry
 runs. They expose applied ownership, consecutive SAFE ticks, GRU reset reasons,
@@ -271,6 +271,73 @@ deploy/scripts/rollback_jetson.sh shereef@f1tenth sensor_policy
 Logs: container stdout plus on-car `tegrastats` / rosbag as required by the 10 Hz
 gate. Keep racing rollback available via
 `deploy/scripts/rollback_jetson.sh shereef@f1tenth racing`.
+
+## IRL Gigaflow (1097-D conditioned CNN-GRU + current gate)
+
+Isolated from the 392-D racing path and from unconditioned `sensor_racer`.
+On-car graph: scan / IMU / odom → `gigaflow_racer` → `rl_current_gate` (drive).
+The racer injects a **frozen** embodied condition (`centered_high_collision`,
+`vmax_scale=1.0`); it never samples `vmax_scale`. Bake an actor artifact before
+staging (until a fine-tuned checkpoint lands, `actor_005700` is the default):
+
+```bash
+PYTHONPATH=gigaflow/src python3 -m gigaflow_f1tenth.cli bake-irl \
+  --checkpoint actor_005700.pt --output gigaflow_policy.pt
+```
+
+Image name `f1tenth-gigaflow`, moving tag `:gigaflow`, checkpoint symlink
+`/policies/gigaflow_policy.pt` (does not clobber `policy.pt` or `e2e_policy.pt`).
+
+```bash
+TARGET=gigaflow deploy/scripts/build_image.sh
+TARGET=gigaflow deploy/scripts/snapshot.sh
+# -> deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz
+
+TARGET=gigaflow CHECKPOINT=gigaflow_policy.pt \
+  deploy/scripts/load_to_jetson.sh user@car01 \
+  deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz car01
+```
+
+SSH-install the Gigaflow car image **and** the Sophy GT / standalone trainer
+images (Apptainer `training.sif` from `deploy/apptainer/training.def`) in one go:
+
+```bash
+deploy/scripts/install_irl_images.sh user@car01 car01 \
+  --gigaflow deploy/snapshots/f1tenth-gigaflow-<gitsha>.tar.gz \
+  --gigaflow-ckpt gigaflow_policy.pt \
+  --sensor-policy deploy/snapshots/f1tenth-sensor-policy-<gitsha>.tar.gz \
+  --racing deploy/snapshots/f1tenth-racing-<gitsha>.tar.gz \
+  --training training.sif
+```
+
+Trainer-only (GPU box; pass `-` for the car id):
+
+```bash
+deploy/scripts/install_irl_images.sh user@gpu-box - \
+  --training training.sif
+```
+
+Online courtyard PPO trainer (separate CUDA image, not `Dockerfile.gigaflow`):
+
+```bash
+TARGET=courtyard_trainer deploy/scripts/build_image.sh
+TARGET=courtyard_trainer deploy/scripts/snapshot.sh
+# -> deploy/snapshots/f1tenth-courtyard-trainer-<gitsha>.tar.gz
+
+deploy/scripts/install_irl_images.sh user@gpu-box - \
+  --courtyard-trainer deploy/snapshots/f1tenth-courtyard-trainer-<gitsha>.tar.gz
+```
+
+Copy `actor_005700.pt` to `/opt/f1tenth/policies/actor_005700.pt` on the GPU host,
+then `ssh user@gpu-box /opt/f1tenth/rollback/courtyard_trainer/run_train.sh`.
+Outputs land in `/opt/f1tenth/outputs/courtyard_ppo/`. The actor stays 1,097-D
+LiDAR + proprio with a hardcoded IRL condition (`centered_high_collision`).
+
+On the car: `ssh user@car01 /opt/f1tenth/rollback/gigaflow/run.sh`.
+Rollback: `deploy/scripts/rollback_jetson.sh user@car01 gigaflow`.
+Trainer help: `ssh user@host /opt/f1tenth/images/run_training.sh --help`
+(runs `standalone_trainer.py` inside `training.sif`; this script does not start
+training).
 
 ## Releases
 

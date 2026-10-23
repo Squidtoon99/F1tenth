@@ -14,7 +14,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     OpaqueFunction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import AndCondition, IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -34,12 +34,15 @@ def _launch_setup(context, *args, **kwargs):
     device = LaunchConfiguration("device")
     dry_run = LaunchConfiguration("dry_run")
     enable_drivers = LaunchConfiguration("enable_drivers")
+    enable_teleop = LaunchConfiguration("enable_teleop")
+    enable_deadman = LaunchConfiguration("enable_deadman")
     enable_racer = LaunchConfiguration("enable_racer")
     enable_gate = LaunchConfiguration("enable_gate")
     enable_safety = LaunchConfiguration("enable_safety")
     recording_mode = LaunchConfiguration("recording_mode")
     i_drive_max_a = LaunchConfiguration("i_drive_max_a")
     i_brake_max_a = LaunchConfiguration("i_brake_max_a")
+    i_slew_a_per_s = LaunchConfiguration("i_slew_a_per_s")
     i_brake_safe_a = LaunchConfiguration("i_brake_safe_a")
 
     dry_run_enabled = dry_run.perform(context).lower() in ("true", "1", "yes")
@@ -95,14 +98,16 @@ def _launch_setup(context, *args, **kwargs):
             ],
         ),
         Node(
-            condition=IfCondition(enable_drivers),
+            condition=AndCondition(
+                IfCondition(enable_drivers), IfCondition(enable_teleop)
+            ),
             package="joy_teleop",
             executable="joy_teleop",
             name="joy_teleop",
             parameters=[joy_config],
         ),
         Node(
-            condition=IfCondition(enable_drivers),
+            condition=IfCondition(enable_deadman),
             package="f1tenth_control",
             executable="rl_deadman_gate",
             name="rl_deadman_gate",
@@ -136,6 +141,7 @@ def _launch_setup(context, *args, **kwargs):
                 "recording_mode": ParameterValue(recording_mode, value_type=bool),
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
     )
@@ -162,6 +168,7 @@ def _launch_setup(context, *args, **kwargs):
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
         remappings=gate_remappings,
@@ -222,6 +229,16 @@ def generate_launch_description() -> LaunchDescription:
                 description="Start vendored sensor/teleop drivers.",
             ),
             DeclareLaunchArgument(
+                "enable_teleop",
+                default_value="false",
+                description="Start joy_teleop on /teleop (manual stick; off for RL).",
+            ),
+            DeclareLaunchArgument(
+                "enable_deadman",
+                default_value="true",
+                description="Start rl_deadman_gate (set false for boxed bench tests).",
+            ),
+            DeclareLaunchArgument(
                 "enable_racer",
                 default_value="true",
                 description="Start the sensor_racer inference node.",
@@ -243,13 +260,18 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "i_drive_max_a",
-                default_value="5.0",
-                description="Conservative first-run drive current limit (A).",
+                default_value="60.0",
+                description="Drive current limit (A).",
             ),
             DeclareLaunchArgument(
                 "i_brake_max_a",
-                default_value="5.0",
-                description="Conservative first-run brake current limit (A).",
+                default_value="20.0",
+                description="Brake current limit (A).",
+            ),
+            DeclareLaunchArgument(
+                "i_slew_a_per_s",
+                default_value="200.0",
+                description="Current slew limit (A/s).",
             ),
             DeclareLaunchArgument(
                 "i_brake_safe_a",
