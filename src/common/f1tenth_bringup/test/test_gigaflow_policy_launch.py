@@ -84,14 +84,18 @@ def test_gigaflow_policy_launch_staged_enable_flags():
     assert "IfCondition(enable_racer)" in source
 
 
-def test_car_overlay_keeps_gigaflow_racer_and_gate_at_5a():
+def test_car_overlay_keeps_gigaflow_racer_and_gate_at_80a_drive_20a_brake():
     racer = _overlay_node_block("gigaflow_racer")
     gate = _overlay_node_block("rl_current_gate")
+    source = _launch_source()
 
-    assert "i_drive_max_a: 5.0" in racer
-    assert "i_brake_max_a: 5.0" in racer
+    assert '"i_drive_max_a",\n                default_value="80.0"' in source
+    assert '"i_brake_max_a",\n                default_value="20.0"' in source
+    assert "i_drive_max_a: 80.0" in racer
+    assert "i_brake_max_a: 20.0" in racer
     assert "control_hz: 20.0" in racer
-    assert "i_drive_max_a: 5.0" in gate
+    assert "i_drive_max_a: 80.0" in gate
+    assert "i_brake_max_a: 20.0" in gate
 
 
 def test_gigaflow_racer_node_does_not_publish_vesc_topics():

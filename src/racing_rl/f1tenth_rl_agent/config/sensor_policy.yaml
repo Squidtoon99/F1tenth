@@ -13,8 +13,8 @@ sensor_racer:
     applied_actuator_topic: /rl/actuator/applied
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
-    i_drive_max_a: 10.0
-    i_brake_max_a: 10.0
+    i_drive_max_a: 80.0
+    i_brake_max_a: 20.0
     max_steer: 0.33
     steering_action_mode: delta
     steering_delta_max_rad: 0.05235987755982988
@@ -55,8 +55,8 @@ sensor_policy:
     applied_actuator_topic: /rl/actuator/applied
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
-    i_drive_max_a: 10.0
-    i_brake_max_a: 10.0
+    i_drive_max_a: 80.0
+    i_brake_max_a: 20.0
     max_steer: 0.33
     steering_action_mode: delta
     steering_delta_max_rad: 0.05235987755982988

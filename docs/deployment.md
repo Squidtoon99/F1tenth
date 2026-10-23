@@ -196,10 +196,10 @@ Staged enable flags support non-powered certification:
 - `enable_racer:=false` — no inference node
 - `enable_gate:=false` — no VESC command publisher
 
-First-run current limits default to **5 A** via launch args (`i_drive_max_a`,
-`i_brake_max_a`, `i_brake_safe_a`). The launch passes the same drive/brake limits
-to both `sensor_racer` and `rl_current_gate`; keep the two node-scoped values equal
-in the per-car overlay.
+Current limits default to **80 A** drive and **20 A** brake via launch args
+(`i_drive_max_a`, `i_brake_max_a`). Fail-closed `i_brake_safe_a` remains **5 A**.
+The launch passes the same drive/brake limits to both `sensor_racer` and
+`rl_current_gate`; keep the two node-scoped values equal in the per-car overlay.
 
 Record `/sensor_racer/diagnostics` and `/rl_current_gate/diagnostics` during dry
 runs. They expose applied ownership, consecutive SAFE ticks, GRU reset reasons,
