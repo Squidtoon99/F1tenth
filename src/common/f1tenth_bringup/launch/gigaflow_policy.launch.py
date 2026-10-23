@@ -41,6 +41,7 @@ def _launch_setup(context, *args, **kwargs):
     recording_mode = LaunchConfiguration("recording_mode")
     i_drive_max_a = LaunchConfiguration("i_drive_max_a")
     i_brake_max_a = LaunchConfiguration("i_brake_max_a")
+    i_slew_a_per_s = LaunchConfiguration("i_slew_a_per_s")
     i_brake_safe_a = LaunchConfiguration("i_brake_safe_a")
 
     dry_run_enabled = dry_run.perform(context).lower() in ("true", "1", "yes")
@@ -137,6 +138,7 @@ def _launch_setup(context, *args, **kwargs):
                 "recording_mode": ParameterValue(recording_mode, value_type=bool),
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
     )
@@ -163,6 +165,7 @@ def _launch_setup(context, *args, **kwargs):
                 "i_drive_max_a": ParameterValue(i_drive_max_a, value_type=float),
                 "i_brake_max_a": ParameterValue(i_brake_max_a, value_type=float),
                 "i_brake_safe_a": ParameterValue(i_brake_safe_a, value_type=float),
+                "i_slew_a_per_s": ParameterValue(i_slew_a_per_s, value_type=float),
             },
         ],
         remappings=gate_remappings,
@@ -251,6 +254,11 @@ def generate_launch_description() -> LaunchDescription:
                 "i_brake_max_a",
                 default_value="20.0",
                 description="Brake current limit (A).",
+            ),
+            DeclareLaunchArgument(
+                "i_slew_a_per_s",
+                default_value="200.0",
+                description="Current slew limit (A/s).",
             ),
             DeclareLaunchArgument(
                 "i_brake_safe_a",

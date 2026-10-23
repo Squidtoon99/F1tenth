@@ -37,9 +37,10 @@ sensor_racer:
   ros__parameters:
     device: "cpu"
     deterministic: true
-    control_hz: 10.0
+    control_hz: 20.0
     i_drive_max_a: 60.0
     i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
     imu_accel_to_ms2: 9.80665
@@ -60,7 +61,7 @@ sensor_racer:
     publish_raw_observation: false
     require_checkpoint: true
 
-# IRL Gigaflow (gigaflow_policy.launch.py). Same 60 A drive / 20 A brake limits.
+# IRL Gigaflow (gigaflow_policy.launch.py). Same 20 Hz / 60 A drive / 20 A brake.
 gigaflow_racer:
   ros__parameters:
     device: "cpu"
@@ -68,6 +69,7 @@ gigaflow_racer:
     control_hz: 20.0
     i_drive_max_a: 60.0
     i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
     steering_delta_max_rad: 0.02617993877991494
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
@@ -94,6 +96,7 @@ rl_current_gate:
     i_drive_max_a: 60.0
     i_brake_max_a: 20.0
     i_brake_safe_a: 5.0
+    i_slew_a_per_s: 200.0
     publish_rate_hz: 50.0
     max_steer: 0.33
     steering_angle_to_servo_gain: -1.2135
@@ -104,9 +107,10 @@ sensor_policy:
   ros__parameters:
     device: "cpu"
     deterministic: true
-    control_hz: 10.0
+    control_hz: 20.0
     i_drive_max_a: 60.0
     i_brake_max_a: 20.0
+    i_slew_a_per_s: 200.0
     sensor_max_age_s: 0.15
     twist_vx_sign: -1.0
     imu_accel_to_ms2: 9.80665

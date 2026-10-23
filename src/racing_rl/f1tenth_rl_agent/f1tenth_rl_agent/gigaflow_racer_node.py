@@ -52,6 +52,7 @@ class GigaflowRacerNode(Node):
         self.declare_parameter("twist_vx_sign", -1.0)
         self.declare_parameter("i_drive_max_a", 60.0)
         self.declare_parameter("i_brake_max_a", 20.0)
+        self.declare_parameter("i_slew_a_per_s", 200.0)
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")
         self.declare_parameter("steering_delta_max_rad", STEERING_DELTA_MAX_RAD)
@@ -95,6 +96,7 @@ class GigaflowRacerNode(Node):
         self.twist_vx_sign = float(gp("twist_vx_sign").get_parameter_value().double_value)
         self.i_drive_max_a = float(gp("i_drive_max_a").get_parameter_value().double_value)
         self.i_brake_max_a = float(gp("i_brake_max_a").get_parameter_value().double_value)
+        self.i_slew_a_per_s = float(gp("i_slew_a_per_s").get_parameter_value().double_value)
         if self.i_drive_max_a <= 0.0 or self.i_brake_max_a <= 0.0:
             raise ValueError(
                 "i_drive_max_a and i_brake_max_a must be > 0 "
@@ -235,7 +237,8 @@ class GigaflowRacerNode(Node):
         self.get_logger().info(
             f"gigaflow_racer {si.NUM_OBS}-D + 10-D IRL condition @ "
             f"{self.control_hz:.1f} Hz device={device_str} "
-            f"delta_max={self.steering_delta_max_rad:.6f}"
+            f"delta_max={self.steering_delta_max_rad:.6f} "
+            f"slew={self.i_slew_a_per_s:.1f}A/s"
         )
 
     def _load_policy(self, checkpoint_path: str, state_dict_key: str):

@@ -130,8 +130,13 @@ def test_sensor_policy_launch_wires_gate_limits_and_topics():
     gate_params = _node_inline_parameter_keys("current_gate")
 
     assert "rl_current_gate.yaml" in source
-    assert {"i_drive_max_a", "i_brake_max_a"} <= racer_params
-    assert {"i_drive_max_a", "i_brake_max_a", "i_brake_safe_a"} <= gate_params
+    assert {"i_drive_max_a", "i_brake_max_a", "i_slew_a_per_s"} <= racer_params
+    assert {
+        "i_drive_max_a",
+        "i_brake_max_a",
+        "i_brake_safe_a",
+        "i_slew_a_per_s",
+    } <= gate_params
     assert '"gate_config"' in source
 
 
@@ -142,10 +147,14 @@ def test_car_overlay_keeps_sensor_racer_and_gate_at_60a_drive_20a_brake():
 
     assert '"i_drive_max_a",\n                default_value="60.0"' in source
     assert '"i_brake_max_a",\n                default_value="20.0"' in source
+    assert '"i_slew_a_per_s",\n                default_value="200.0"' in source
     assert "i_drive_max_a: 60.0" in racer
     assert "i_brake_max_a: 20.0" in racer
+    assert "i_slew_a_per_s: 200.0" in racer
+    assert "control_hz: 20.0" in racer
     assert "i_drive_max_a: 60.0" in gate
     assert "i_brake_max_a: 20.0" in gate
+    assert "i_slew_a_per_s: 200.0" in gate
 
 
 def test_sensor_racer_node_does_not_publish_vesc_topics():
