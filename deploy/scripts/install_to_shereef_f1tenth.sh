@@ -5,7 +5,7 @@
 #   ./install_to_shereef_f1tenth.sh [--dry-run] [--bundle-dir DIR]
 #       [--build-on-car|--load-only] [user@host] [car_id]
 #
-# Defaults: user@host=shereef@f1tenth  car_id=car01
+# Defaults: user@host=shereef@f1tenth-1 (Tailscale 100.82.65.17)  car_id=car01
 #
 # Env:
 #   SKIP_TRAINER=1  do not rsync/load the amd64 courtyard-trainer tarball
@@ -87,7 +87,7 @@ if [ -z "${BUNDLE_DIR}" ]; then
   fi
 fi
 BUNDLE_DIR="$(cd "${BUNDLE_DIR}" && pwd)"
-HOST="${HOST:-shereef@f1tenth}"
+HOST="${HOST:-shereef@f1tenth-1}"
 CAR="${CAR:-car01}"
 SKIP_TRAINER="${SKIP_TRAINER:-0}"
 SKIP_AMD64="${SKIP_AMD64:-0}"
@@ -146,7 +146,7 @@ TRAINER_TAR="${IMAGES_DIR}/f1tenth-courtyard-trainer.tar.gz"
 RACING_TAR="${IMAGES_DIR}/f1tenth-racing.tar.gz"
 RACING_ARM64="${IMAGES_DIR}/f1tenth-racing-arm64.tar.gz"
 
-# Jetson Orin (`shereef@f1tenth`) is aarch64 — never load amd64 CPU images on the car.
+# Jetson Orin (`shereef@f1tenth-1`) is aarch64 — never load amd64 CPU images on the car.
 CAR_CTX="${BUNDLE_DIR}/car-build-context"
 if [ ! -x "${CAR_CTX}/build_on_car.sh" ]; then
   echo "missing native on-car build context: ${CAR_CTX}/build_on_car.sh" >&2

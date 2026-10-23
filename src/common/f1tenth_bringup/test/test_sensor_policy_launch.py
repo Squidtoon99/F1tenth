@@ -122,6 +122,9 @@ def test_sensor_policy_launch_staged_enable_flags():
     source = _launch_source()
 
     assert '"enable_drivers"' in source
+    assert '"enable_teleop"' in source
+    assert '"enable_teleop",\n                default_value="false"' in source
+    assert "IfCondition(enable_teleop)" in source
     assert '"enable_deadman"' in source
     assert '"enable_racer"' in source
     assert '"enable_gate"' in source

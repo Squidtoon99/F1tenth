@@ -79,12 +79,26 @@ def test_gigaflow_policy_launch_staged_enable_flags():
     source = _launch_source()
 
     assert '"enable_drivers"' in source
+    assert '"enable_teleop"' in source
+    assert '"enable_teleop",\n                default_value="false"' in source
+    assert "IfCondition(enable_teleop)" in source
     assert '"enable_deadman"' in source
     assert '"enable_racer"' in source
     assert '"enable_gate"' in source
     assert "IfCondition(enable_racer)" in source
     assert "IfCondition(enable_deadman)" in source
     assert '"enable_deadman",\n                default_value="true"' in source
+
+
+def test_car_overlay_ps4_deadman_splits_l1_teleop_from_r1_autonomous():
+    joy = _overlay_node_block("joy_teleop")
+    gate = _overlay_node_block("rl_deadman_gate")
+
+    assert "deadman_buttons: [4]" in joy
+    assert "deadman_buttons: [9]" not in joy
+    assert "manual_button: 4" in gate
+    assert "autonomous_button: 9" in gate
+    assert "manual_button: 9" not in gate
 
 
 def test_car_overlay_keeps_gigaflow_racer_and_gate_at_60a_drive_20a_brake():

@@ -122,39 +122,25 @@ class OnlinePPOUpdater:
         self.discard()
         return stats
 
-    def _step_logp(
-        self,
-        obs: torch.Tensor,
-        action: torch.Tensor,
-        hidden: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        from gigaflow_f1tenth.model import _log_prob_actions
-
-        trunk = self._train_actor.encode_trunk(obs, self._train_condition)
-        out, h_n = self._train_actor.gru(
-            trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous()
-        )
-        logp, _entropy = _log_prob_actions(
-            self._train_actor.net,
-            self._train_actor.mu_layer,
-            self._train_actor.log_std_layer,
-            out.squeeze(1),
-            action,
-        )
-        return logp, h_n.squeeze(0)
-
     def _sequence_logp(
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
         hidden: torch.Tensor,
     ) -> torch.Tensor:
-        logps = []
-        h = hidden
-        for t in range(int(obs.shape[0])):
-            logp, h = self._step_logp(obs[t : t + 1], actions[t : t + 1], h)
-            logps.append(logp)
-        return torch.cat(logps, dim=0)
+        from gigaflow_f1tenth.ppo import evaluate_actions_sequence
+
+        sensor_obs = obs.unsqueeze(0)
+        act = actions.unsqueeze(0)
+        h0 = hidden.unsqueeze(0) if hidden.dim() == 1 else hidden
+        logp_bt, _, _ = evaluate_actions_sequence(
+            self._train_actor,
+            sensor_obs,
+            self._train_condition,
+            h0,
+            act,
+        )
+        return logp_bt.squeeze(0)
 
     def _sync_inference_actor(self) -> None:
         with torch.no_grad():

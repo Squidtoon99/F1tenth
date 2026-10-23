@@ -14,7 +14,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     OpaqueFunction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import AndCondition, IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -34,6 +34,7 @@ def _launch_setup(context, *args, **kwargs):
     device = LaunchConfiguration("device")
     dry_run = LaunchConfiguration("dry_run")
     enable_drivers = LaunchConfiguration("enable_drivers")
+    enable_teleop = LaunchConfiguration("enable_teleop")
     enable_deadman = LaunchConfiguration("enable_deadman")
     enable_racer = LaunchConfiguration("enable_racer")
     enable_gate = LaunchConfiguration("enable_gate")
@@ -97,7 +98,9 @@ def _launch_setup(context, *args, **kwargs):
             ],
         ),
         Node(
-            condition=IfCondition(enable_drivers),
+            condition=AndCondition(
+                IfCondition(enable_drivers), IfCondition(enable_teleop)
+            ),
             package="joy_teleop",
             executable="joy_teleop",
             name="joy_teleop",
@@ -224,6 +227,11 @@ def generate_launch_description() -> LaunchDescription:
                 "enable_drivers",
                 default_value="true",
                 description="Start vendored sensor/teleop drivers.",
+            ),
+            DeclareLaunchArgument(
+                "enable_teleop",
+                default_value="false",
+                description="Start joy_teleop on /teleop (manual stick; off for RL).",
             ),
             DeclareLaunchArgument(
                 "enable_deadman",

@@ -2,6 +2,6 @@ rl_deadman_gate:
   ros__parameters:
     joy_topic: /joy
     teleop_topic: /teleop
-    manual_button: 4      # L1 — linux js0; SDL alias 9 also accepted
-    autonomous_button: 5  # R1 — linux js0; SDL alias 10 also accepted
+    manual_button: 4      # L1 — linux js0 only (never share R1 with joy_teleop)
+    autonomous_button: 9  # R1 — PS4 buttons[9]; also accepts 5/10 aliases
     publish_rate_hz: 20.0

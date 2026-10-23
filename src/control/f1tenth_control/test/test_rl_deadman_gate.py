@@ -13,5 +13,6 @@ def test_deadman_joy_cb_accepts_js0_and_sdl_l1_r1():
     joy_cb = NODE.read_text().split("def _joy_cb", 1)[1].split(
         "def _deadman_held", 1
     )[0]
-    assert "(self.manual_button, 4, 9)" in joy_cb
-    assert "(self.autonomous_button, 5, 10)" in joy_cb
+    assert "(self.manual_button, 4)" in joy_cb
+    assert "9" not in joy_cb.split("self._manual_held")[1].split("self._autonomous_held")[0]
+    assert "(self.autonomous_button, 5, 9, 10)" in joy_cb

@@ -217,7 +217,7 @@ joy_teleop:
       type: topic
       interface_type: ackermann_msgs/msg/AckermannDriveStamped
       topic_name: teleop
-      deadman_buttons: [9]
+      deadman_buttons: [4]
       axis_mappings:
         # Force/current mode (ADR 0006): stick maps to normalized effort on
         # acceleration; speed stays unused (vesc_actuator ignores it).
@@ -239,8 +239,8 @@ rl_deadman_gate:
   ros__parameters:
     joy_topic: /joy
     teleop_topic: /teleop
-    manual_button: 9
-    autonomous_button: 10
+    manual_button: 4
+    autonomous_button: 9
     publish_rate_hz: 20.0
 
 # --- PF relocalize (PS4 X / Square) ---

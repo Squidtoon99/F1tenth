@@ -161,6 +161,16 @@ def test_online_ppo_keeps_inference_on_cuda_and_updates_on_cpu(tmp_path):
     assert changed
 
 
+def test_online_ppo_sequence_logp_uses_batched_evaluate_actions_sequence():
+    import inspect
+
+    from f1tenth_rl_agent.online_ppo import OnlinePPOUpdater
+
+    source = inspect.getsource(OnlinePPOUpdater._sequence_logp)
+    assert "evaluate_actions_sequence" in source
+    assert "for t in range" not in source
+
+
 def test_online_ppo_discards_partial_rollout_on_interrupt(tmp_path):
     actor, condition, payload = _smoke_actor_and_condition(tmp_path)
     updater = OnlinePPOUpdater(

@@ -213,10 +213,11 @@ def safe_brake_command(cfg: GateConfig) -> PhysicalCommand:
 
 
 def rl_to_physical(cmd: RlInput) -> PhysicalCommand:
+    servo = max(0.05, min(0.85, float(cmd.servo_position)))
     return PhysicalCommand(
         drive_current_a=cmd.drive_current_a,
         brake_current_a=cmd.brake_current_a,
-        servo_position=cmd.servo_position,
+        servo_position=servo,
         longitudinal=cmd.longitudinal,
         steering=cmd.steering,
         source=SOURCE_RL,

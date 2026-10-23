@@ -17,7 +17,7 @@ class RlDeadmanGateNode(Node):
         self.declare_parameter('joy_topic', '/joy')
         self.declare_parameter('teleop_topic', '/teleop')
         self.declare_parameter('manual_button', 4)
-        self.declare_parameter('autonomous_button', 5)
+        self.declare_parameter('autonomous_button', 9)
         self.declare_parameter('publish_rate_hz', 20.0)
 
         joy_topic = self.get_parameter('joy_topic').value
@@ -34,19 +34,19 @@ class RlDeadmanGateNode(Node):
         self.create_timer(1.0 / rate_hz, self._publish_block)
 
         self.get_logger().info(
-            'RL deadman gate: block /drive unless L1 (buttons 4/9) '
-            'or R1 (buttons 5/10) held'
+            'RL deadman gate: block /drive unless L1 (button 4) '
+            'or R1 (buttons 5/9/10) held'
         )
 
     def _joy_cb(self, msg: Joy) -> None:
         buttons = msg.buttons
         self._manual_held = any(
             i < len(buttons) and buttons[i] == 1
-            for i in (self.manual_button, 4, 9)
+            for i in (self.manual_button, 4)
         )
         self._autonomous_held = any(
             i < len(buttons) and buttons[i] == 1
-            for i in (self.autonomous_button, 5, 10)
+            for i in (self.autonomous_button, 5, 9, 10)
         )
 
     def _deadman_held(self) -> bool:
