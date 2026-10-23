@@ -47,7 +47,7 @@ class SensorRacerNode(Node):
         self.declare_parameter("applied_actuator_topic", si.TOPIC_APPLIED_ACTUATOR)
         self.declare_parameter("sensor_max_age_s", 0.15)
         self.declare_parameter("twist_vx_sign", -1.0)
-        self.declare_parameter("i_drive_max_a", 80.0)
+        self.declare_parameter("i_drive_max_a", 60.0)
         self.declare_parameter("i_brake_max_a", 20.0)
         self.declare_parameter("max_steer", 0.33)
         self.declare_parameter("steering_action_mode", "delta")

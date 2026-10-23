@@ -244,7 +244,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "i_drive_max_a",
-                default_value="80.0",
+                default_value="60.0",
                 description="Drive current limit (A).",
             ),
             DeclareLaunchArgument(
