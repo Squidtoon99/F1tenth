@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,6 +27,16 @@ def _discounted_returns(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
     return out
 
 
+def _clone_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
+    clone = copy.deepcopy(module)
+    return clone.to(torch.device("cpu"))
+
+
+def _copy_state(src: torch.nn.Module, dst: torch.nn.Module) -> None:
+    with torch.no_grad():
+        dst.load_state_dict(src.state_dict())
+
+
 class OnlinePPOUpdater:
     def __init__(
         self,
@@ -47,10 +58,19 @@ class OnlinePPOUpdater:
         if int(rollout_steps) < 2:
             raise ValueError("online_ppo_rollout_steps must be >= 2")
         self.actor = actor
+        self.device = device
         self.condition = condition.to(device=device, dtype=torch.float32)
         if self.condition.dim() == 1:
             self.condition = self.condition.view(1, -1)
-        self.device = device
+        self._train_actor = _clone_to_cpu(actor)
+        self._base_actor = _clone_to_cpu(actor)
+        self._train_actor.train()
+        self._base_actor.eval()
+        for parameter in self._base_actor.parameters():
+            parameter.requires_grad_(False)
+        self._train_condition = self.condition.detach().to("cpu")
+        if self._train_condition.dim() == 1:
+            self._train_condition = self._train_condition.view(1, -1)
         self.rollout_steps = int(rollout_steps)
         self.kl_coef = float(kl_coef)
         self.kl_clip = float(kl_clip)
@@ -60,7 +80,7 @@ class OnlinePPOUpdater:
         self.artifact_payload = (
             dict(artifact_payload) if artifact_payload is not None else None
         )
-        self.optimizer = Adam(self.actor.parameters(), lr=float(lr))
+        self.optimizer = Adam(self._train_actor.parameters(), lr=float(lr))
         self._obs: list[np.ndarray] = []
         self._actions: list[np.ndarray] = []
         self._logp: list[float] = []
@@ -110,14 +130,14 @@ class OnlinePPOUpdater:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         from gigaflow_f1tenth.model import _log_prob_actions
 
-        trunk = self.actor.encode_trunk(obs, self.condition)
-        out, h_n = self.actor.gru(
+        trunk = self._train_actor.encode_trunk(obs, self._train_condition)
+        out, h_n = self._train_actor.gru(
             trunk.unsqueeze(1), hidden.unsqueeze(0).contiguous()
         )
         logp, _entropy = _log_prob_actions(
-            self.actor.net,
-            self.actor.mu_layer,
-            self.actor.log_std_layer,
+            self._train_actor.net,
+            self._train_actor.mu_layer,
+            self._train_actor.log_std_layer,
             out.squeeze(1),
             action,
         )
@@ -136,26 +156,29 @@ class OnlinePPOUpdater:
             logps.append(logp)
         return torch.cat(logps, dim=0)
 
+    def _sync_inference_actor(self) -> None:
+        with torch.no_grad():
+            _copy_state(self._train_actor, self.actor)
+            _copy_state(self._train_actor, self._base_actor)
+        self.actor.eval()
+        self._train_actor.eval()
+        self._base_actor.eval()
+
     def _update(self) -> dict[str, float]:
-        obs = torch.as_tensor(
-            np.stack(self._obs, axis=0), device=self.device, dtype=torch.float32
-        )
+        cpu = torch.device("cpu")
+        obs = torch.as_tensor(np.stack(self._obs, axis=0), device=cpu, dtype=torch.float32)
         actions = torch.as_tensor(
-            np.stack(self._actions, axis=0), device=self.device, dtype=torch.float32
+            np.stack(self._actions, axis=0), device=cpu, dtype=torch.float32
         )
-        old_logp = torch.as_tensor(
-            self._logp, device=self.device, dtype=torch.float32
-        )
-        rewards = torch.as_tensor(
-            self._rewards, device=self.device, dtype=torch.float32
-        )
+        old_logp = torch.as_tensor(self._logp, device=cpu, dtype=torch.float32)
+        rewards = torch.as_tensor(self._rewards, device=cpu, dtype=torch.float32)
         returns = _discounted_returns(rewards, self.gamma)
         adv = returns - returns.mean()
         std = adv.std(unbiased=False)
         if float(std) > 1.0e-6:
             adv = adv / std
-        hidden = self.actor.initial_hidden(1, device=str(self.device))
-        self.actor.train()
+        hidden = self._train_actor.initial_hidden(1, device="cpu")
+        self._train_actor.train()
         new_logp = self._sequence_logp(obs, actions, hidden)
         ratio = (new_logp - old_logp).exp()
         surr1 = ratio * adv
@@ -163,22 +186,23 @@ class OnlinePPOUpdater:
         policy_loss = -torch.min(surr1, surr2).mean()
         approx_kl = (old_logp - new_logp).mean()
         stats = {
-            "policy_loss": float(policy_loss.detach().cpu()),
-            "approx_kl": float(approx_kl.detach().cpu()),
+            "policy_loss": float(policy_loss.detach()),
+            "approx_kl": float(approx_kl.detach()),
             "steps": float(self.rollout_steps),
             "skipped": 0.0,
         }
         if float(approx_kl) > self.kl_clip:
             stats["skipped"] = 1.0
-            self.actor.eval()
+            self._train_actor.eval()
+            _copy_state(self._base_actor, self._train_actor)
             return stats
         loss = policy_loss + self.kl_coef * approx_kl.clamp(min=0.0)
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+        torch.nn.utils.clip_grad_norm_(self._train_actor.parameters(), 0.5)
         self.optimizer.step()
-        self.actor.eval()
-        stats["loss"] = float(loss.detach().cpu())
+        stats["loss"] = float(loss.detach())
+        self._sync_inference_actor()
         self.save()
         return stats
 
@@ -188,9 +212,9 @@ class OnlinePPOUpdater:
         payload = dict(self.artifact_payload or {})
         payload["actor_state_dict"] = {
             key: value.detach().cpu()
-            for key, value in self.actor.state_dict().items()
+            for key, value in self._train_actor.state_dict().items()
         }
-        vec = self.condition.detach().cpu().reshape(-1).tolist()
+        vec = self._train_condition.detach().cpu().reshape(-1).tolist()
         payload["deployment_condition_normalized"] = vec
         payload["baked_condition"] = vec
         torch.save(payload, path)

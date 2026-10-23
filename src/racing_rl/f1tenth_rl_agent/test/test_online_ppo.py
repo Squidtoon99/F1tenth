@@ -79,6 +79,88 @@ def test_online_ppo_updates_actor_and_writes_latest_checkpoint(tmp_path):
     assert loaded_cond.numel() == condition.numel()
 
 
+def _assert_cpu_training_copies(updater: OnlinePPOUpdater, actor: torch.nn.Module) -> None:
+    assert updater.actor is actor
+    assert next(updater._train_actor.parameters()).device.type == "cpu"
+    assert next(updater._base_actor.parameters()).device.type == "cpu"
+    assert updater._train_actor is not actor
+    assert updater._base_actor is not actor
+    assert updater._train_condition.device.type == "cpu"
+
+
+def _fill_rollout(updater: OnlinePPOUpdater, steps: int, seed: int) -> dict[str, float] | None:
+    rng = np.random.default_rng(seed)
+    stats = None
+    for step in range(steps):
+        obs = rng.normal(size=(1097,)).astype(np.float32)
+        action = rng.uniform(-0.5, 0.5, size=(2,)).astype(np.float32)
+        stats = updater.record(obs, action, logp=-1.0, reward=float(step))
+    return stats
+
+
+def test_online_ppo_trains_on_cpu_copy_and_syncs_inference_actor(tmp_path):
+    actor, condition, payload = _smoke_actor_and_condition(tmp_path)
+    before = {k: v.detach().clone() for k, v in actor.state_dict().items()}
+    updater = OnlinePPOUpdater(
+        actor,
+        condition,
+        rollout_steps=4,
+        lr=3.0e-5,
+        kl_coef=0.1,
+        kl_clip=10.0,
+        device=torch.device("cpu"),
+        output_dir=str(tmp_path / "online_ppo"),
+        artifact_payload=payload,
+    )
+    _assert_cpu_training_copies(updater, actor)
+    stats = _fill_rollout(updater, steps=4, seed=2)
+    assert stats is not None
+    assert stats["skipped"] == pytest.approx(0.0)
+    for key, value in actor.state_dict().items():
+        assert torch.allclose(value, updater._train_actor.state_dict()[key])
+        assert torch.allclose(value, updater._base_actor.state_dict()[key])
+    changed = any(
+        not torch.allclose(before[key], value)
+        for key, value in actor.state_dict().items()
+    )
+    assert changed
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda not available")
+def test_online_ppo_keeps_inference_on_cuda_and_updates_on_cpu(tmp_path):
+    actor, condition, payload = _smoke_actor_and_condition(tmp_path)
+    device = torch.device("cuda")
+    actor = actor.to(device)
+    condition = condition.to(device)
+    before = {k: v.detach().cpu().clone() for k, v in actor.state_dict().items()}
+    updater = OnlinePPOUpdater(
+        actor,
+        condition,
+        rollout_steps=4,
+        lr=3.0e-5,
+        kl_coef=0.1,
+        kl_clip=10.0,
+        device=device,
+        output_dir=str(tmp_path / "online_ppo"),
+        artifact_payload=payload,
+    )
+    _assert_cpu_training_copies(updater, actor)
+    assert next(actor.parameters()).is_cuda
+    stats = _fill_rollout(updater, steps=4, seed=3)
+    assert stats is not None
+    assert stats["skipped"] == pytest.approx(0.0)
+    assert next(actor.parameters()).is_cuda
+    assert next(updater._train_actor.parameters()).device.type == "cpu"
+    for key, value in actor.state_dict().items():
+        assert value.device.type == "cuda"
+        assert torch.allclose(value.cpu(), updater._train_actor.state_dict()[key].cpu())
+    changed = any(
+        not torch.allclose(before[key], value.cpu())
+        for key, value in actor.state_dict().items()
+    )
+    assert changed
+
+
 def test_online_ppo_discards_partial_rollout_on_interrupt(tmp_path):
     actor, condition, payload = _smoke_actor_and_condition(tmp_path)
     updater = OnlinePPOUpdater(
