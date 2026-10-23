@@ -21,6 +21,8 @@ from gigaflow_f1tenth.model import (
     ActorShapes,
     ConditionedLidarGRUActor,
     architecture_metadata,
+    load_conditioned_state_dict,
+    split_baked_condition,
 )
 from gigaflow_f1tenth.rewards import deployment_style, styles_to_condition_batch
 from gigaflow_f1tenth.sim.spawn import apply_static_pins, place_static_opponents
@@ -344,15 +346,20 @@ def _load_native_condition_actor(
         raise ViewerError(
             "checkpoint architecture and condition schema disagree on condition_dim"
         )
+    state = payload.get("actor_state_dict")
+    if not isinstance(state, Mapping):
+        raise ViewerError("checkpoint missing actor weights")
+    state, baked_from_weights = split_baked_condition(state)
     condition = payload.get("deployment_condition_normalized")
+    if condition is None:
+        condition = payload.get("baked_condition")
+    if condition is None and baked_from_weights is not None:
+        condition = baked_from_weights.tolist()
     if condition is None or len(condition) != width:
         raise ViewerError(
             f"checkpoint records condition_dim={width} but carries no matching "
             "deployment condition vector, so it cannot be fed faithfully"
         )
-    state = payload.get("actor_state_dict")
-    if not isinstance(state, Mapping):
-        raise ViewerError("checkpoint missing actor weights")
     shapes = ActorShapes(
         sensor_obs_dim=int(arch["sensor_obs_dim"]),
         lidar_dim=int(arch["lidar_dim"]),
@@ -370,7 +377,7 @@ def _load_native_condition_actor(
         actor = ConditionedLidarGRUActor(shapes)
     finally:
         model_mod.CONDITION_DIM = live_schema
-    loaded = actor.load_state_dict(state, strict=False)
+    loaded = load_conditioned_state_dict(actor, state, strict=False)
     unexpected = sorted(loaded.unexpected_keys)
     # Actors from before the sensor normalizer existed keep the identity
     # transform a freshly built normalizer applies, which is the input pipeline

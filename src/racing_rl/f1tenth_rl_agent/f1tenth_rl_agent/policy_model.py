@@ -224,6 +224,21 @@ def _obs_norm_from_welford(
     return ObsNormalizer(mean=mean, var=var, eps=eps, clip=clip, device=device)
 
 
+def load_gigaflow_actor(
+    checkpoint_path: str,
+    device: torch.device,
+) -> tuple[torch.nn.Module, torch.Tensor, Mapping]:
+    """Load a 1,097-D conditioned Gigaflow actor and frozen IRL condition.
+
+    Accepts ``actor_state_dict`` with or without a ``baked_condition`` buffer.
+    If top-level ``deployment_condition_normalized`` is absent, that buffer is
+    used as the frozen condition.
+    """
+    from gigaflow_f1tenth.artifacts import load_irl_actor
+
+    return load_irl_actor(checkpoint_path, device=device)
+
+
 def load_folded_sensor_actor(
     checkpoint_path: str,
     device: torch.device,

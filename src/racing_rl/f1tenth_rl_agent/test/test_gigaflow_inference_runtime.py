@@ -26,10 +26,12 @@ from f1tenth_rl_agent.gigaflow_inference_runtime import (  # noqa: E402
     FOLDED_CONDITION_DIM,
     FoldedLidarGruAdapter,
     GigaflowInferenceRuntime,
+    frozen_condition_from_payload,
 )
 from f1tenth_rl_agent.policy_model import (  # noqa: E402
     SquashedGaussianLidarGRUActor,
     load_folded_sensor_actor,
+    load_gigaflow_actor,
 )
 from gigaflow_f1tenth.artifacts import (  # noqa: E402
     build_actor_artifact_payload,
@@ -52,10 +54,7 @@ def _write_baked(tmp_path: Path) -> Path:
     return path
 
 
-def test_gigaflow_runtime_actions_in_unit_interval(tmp_path):
-    path = _write_baked(tmp_path)
-    actor, condition, _ = load_irl_actor(str(path), device="cpu")
-    runtime = GigaflowInferenceRuntime(actor, condition, torch.device("cpu"))
+def _pack_and_infer(runtime: GigaflowInferenceRuntime):
     scan = [1.0] * si.LIDAR_DIM
     imu = [
         RawImuSample(stamp_s=0.0, ax=0.0, ay=0.0, az=1.0, gx=0.0, gy=0.0, gz=0.0)
@@ -78,9 +77,66 @@ def test_gigaflow_runtime_actions_in_unit_interval(tmp_path):
     assert action.shape == (si.NUM_ACTIONS,)
     assert np.isfinite(action).all()
     assert np.max(np.abs(action)) <= 1.0 + 1e-5
+    return action
+
+
+def test_gigaflow_runtime_actions_in_unit_interval(tmp_path):
+    path = _write_baked(tmp_path)
+    actor, condition, _ = load_irl_actor(str(path), device="cpu")
+    runtime = GigaflowInferenceRuntime(actor, condition, torch.device("cpu"))
+    action = _pack_and_infer(runtime)
     again, _ = runtime.infer_host_obs()
     # Frozen condition: same obs buffer, recurrent hidden advances.
     assert again.shape == action.shape
+
+
+def _payload_with_baked_condition_buffer(tmp_path: Path, *, drop_top_level: bool):
+    cfg = _smoke_config()
+    actor = build_actor(cfg)
+    payload = build_actor_artifact_payload(cfg, actor)
+    vec = torch.as_tensor(
+        payload["deployment_condition_normalized"], dtype=torch.float32
+    )
+    state = dict(payload["actor_state_dict"])
+    state["baked_condition"] = vec.clone()
+    payload["actor_state_dict"] = state
+    if drop_top_level:
+        payload.pop("deployment_condition_normalized", None)
+        payload.pop("baked_condition", None)
+    path = tmp_path / ("buffer_only.pt" if drop_top_level else "buffer_and_top.pt")
+    torch.save(payload, path)
+    return path, vec
+
+
+def test_load_gigaflow_actor_accepts_baked_condition_in_state_dict(tmp_path):
+    path, vec = _payload_with_baked_condition_buffer(tmp_path, drop_top_level=False)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert "baked_condition" in payload["actor_state_dict"]
+    resolved = frozen_condition_from_payload(payload)
+    assert resolved is not None
+    loaded, condition, _ = load_gigaflow_actor(str(path), torch.device("cpu"))
+    assert torch.allclose(condition.view(-1), vec, atol=1e-6)
+    assert torch.allclose(resolved.view(-1), vec, atol=1e-6)
+    runtime = GigaflowInferenceRuntime.from_checkpoint(str(path), torch.device("cpu"))
+    _pack_and_infer(runtime)
+    assert loaded is not None
+
+
+def test_load_gigaflow_actor_uses_state_dict_baked_condition_if_top_level_missing(
+    tmp_path,
+):
+    path, vec = _payload_with_baked_condition_buffer(tmp_path, drop_top_level=True)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert "deployment_condition_normalized" not in payload
+    assert "baked_condition" in payload["actor_state_dict"]
+    resolved = frozen_condition_from_payload(payload)
+    assert resolved is not None
+    assert torch.allclose(resolved.view(-1), vec, atol=1e-6)
+    _actor, condition, _ = load_gigaflow_actor(str(path), torch.device("cpu"))
+    assert torch.allclose(condition.view(-1), vec, atol=1e-6)
+    _pack_and_infer(
+        GigaflowInferenceRuntime.from_checkpoint(str(path), torch.device("cpu"))
+    )
 
 
 def test_folded_lidar_cnn_gru_runtime_272d_gru(tmp_path):

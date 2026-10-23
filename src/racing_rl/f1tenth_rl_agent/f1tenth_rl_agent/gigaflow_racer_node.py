@@ -24,8 +24,9 @@ from f1tenth_rl_agent.gigaflow_inference_runtime import (
 )
 from f1tenth_rl_agent.policy_model import (
     GIGAFLOW_ARCHITECTURE_NAME,
-    load_folded_sensor_actor,
     load_checkpoint_payload,
+    load_folded_sensor_actor,
+    load_gigaflow_actor,
     peek_actor_architecture_name,
 )
 from f1tenth_rl_agent.sensor_preprocessing import ImuCalibration, RawImuSample
@@ -257,10 +258,8 @@ class GigaflowRacerNode(Node):
                 and payload.get("actor_state_dict") is not None
                 and payload.get("sensor_normalizer") is not None
             ):
-                from gigaflow_f1tenth.artifacts import load_irl_actor
-
-                actor, condition, loaded = load_irl_actor(
-                    checkpoint_path, device=self.device
+                actor, condition, loaded = load_gigaflow_actor(
+                    checkpoint_path, self.device
                 )
                 style = loaded.get("deployment_style", "unknown")
                 self.get_logger().info(

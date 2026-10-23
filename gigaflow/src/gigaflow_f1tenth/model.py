@@ -860,6 +860,32 @@ def complete_actor_architecture(
     return out
 
 
+BAKED_CONDITION_STATE_KEY = "baked_condition"
+
+
+def split_baked_condition(
+    state_dict: Mapping[str, Any],
+) -> tuple[dict[str, Any], torch.Tensor | None]:
+    """Drop a ``baked_condition`` buffer some exporters store in the weights."""
+    state = dict(state_dict)
+    baked = state.pop(BAKED_CONDITION_STATE_KEY, None)
+    if baked is None:
+        return state, None
+    tensor = torch.as_tensor(baked, dtype=torch.float32).detach().cpu().reshape(-1)
+    return state, tensor
+
+
+def load_conditioned_state_dict(
+    module: nn.Module,
+    state_dict: Mapping[str, Any],
+    *,
+    strict: bool = False,
+):
+    """Load actor weights, ignoring a ``baked_condition`` buffer if present."""
+    state, _baked = split_baked_condition(state_dict)
+    return module.load_state_dict(state, strict=strict)
+
+
 def actor_from_architecture(arch: Mapping[str, Any]) -> ConditionedLidarGRUActor:
     """Rebuild a GRU actor from deployable artifact architecture metadata."""
     if not isinstance(arch, Mapping):

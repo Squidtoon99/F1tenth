@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -62,7 +63,29 @@ class FoldedLidarGruAdapter:
             self.hidden = hidden
 
 
+def frozen_condition_from_payload(payload: Mapping) -> torch.Tensor | None:
+    """Resolve the 10-D IRL condition, including ``actor_state_dict`` buffers."""
+    condition = payload.get("deployment_condition_normalized")
+    if condition is None:
+        condition = payload.get("baked_condition")
+    if condition is None:
+        state = payload.get("actor_state_dict")
+        if isinstance(state, Mapping) and "baked_condition" in state:
+            condition = state["baked_condition"]
+    if condition is None:
+        return None
+    vec = torch.as_tensor(condition, dtype=torch.float32).reshape(-1)
+    return vec.view(1, -1)
+
+
 class GigaflowInferenceRuntime:
+    @classmethod
+    def from_checkpoint(cls, checkpoint_path: str, device: torch.device, **kwargs):
+        from f1tenth_rl_agent.policy_model import load_gigaflow_actor
+
+        actor, condition, _payload = load_gigaflow_actor(checkpoint_path, device)
+        return cls(actor, condition, device, **kwargs)
+
     def __init__(
         self,
         actor,

@@ -19,7 +19,7 @@ from gigaflow_f1tenth.config import (
     config_to_dict,
 )
 from gigaflow_f1tenth.kernels import build_simulator, world_slot_layout
-from gigaflow_f1tenth.model import build_actor
+from gigaflow_f1tenth.model import build_actor, load_conditioned_state_dict
 from gigaflow_f1tenth.rewards import (
     deployment_style,
     styles_to_condition_batch,
@@ -922,7 +922,9 @@ def load_actor_from_checkpoint(
         else 1,
     )
     if "actor_state_dict" in payload:
-        actor.load_state_dict(payload["actor_state_dict"])
+        load_conditioned_state_dict(
+            actor, payload["actor_state_dict"], strict=True
+        )
     elif "ppo" in payload and "actor" in payload["ppo"]:
         actor.load_state_dict(payload["ppo"]["actor"])
     else:

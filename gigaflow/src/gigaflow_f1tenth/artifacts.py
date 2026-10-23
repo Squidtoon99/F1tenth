@@ -14,6 +14,8 @@ from gigaflow_f1tenth.model import (
     actor_from_architecture,
     architecture_metadata as actor_architecture_metadata,
     complete_actor_architecture,
+    load_conditioned_state_dict,
+    split_baked_condition,
 )
 from gigaflow_f1tenth.rewards import (
     CONDITION_DIM,
@@ -259,9 +261,15 @@ def load_irl_actor(
     artifact's ``deployment_condition_normalized`` and is never resampled.
     """
     payload = FileArtifactStore().read_actor_artifact(path)
+    state = payload.get("actor_state_dict")
+    if not isinstance(state, Mapping):
+        raise ValueError("checkpoint missing actor_state_dict")
+    state, baked_from_weights = split_baked_condition(state)
     condition = payload.get("deployment_condition_normalized")
     if condition is None:
         condition = payload.get("baked_condition")
+    if condition is None and baked_from_weights is not None:
+        condition = baked_from_weights
     if condition is None:
         payload = bake_irl_condition(payload)
         condition = payload["deployment_condition_normalized"]
@@ -270,13 +278,10 @@ def load_irl_actor(
         raise ValueError(
             f"deployment_condition_normalized length {int(vec.numel())} != {CONDITION_DIM}"
         )
-    state = payload.get("actor_state_dict")
-    if not isinstance(state, Mapping):
-        raise ValueError("checkpoint missing actor_state_dict")
     actor = actor_from_architecture(
         complete_actor_architecture(payload["actor_architecture"], state)
     )
-    loaded = actor.load_state_dict(state, strict=False)
+    loaded = load_conditioned_state_dict(actor, state, strict=False)
     unexpected = sorted(loaded.unexpected_keys)
     missing = sorted(
         k for k in loaded.missing_keys if not str(k).startswith("sensor_normalizer.")
