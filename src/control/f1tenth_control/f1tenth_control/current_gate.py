@@ -186,6 +186,7 @@ def ackermann_to_physical(
         cfg.steering_angle_to_servo_gain * steering
         + cfg.steering_angle_to_servo_offset
     )
+    servo = max(0.05, min(0.85, servo))
     steer_norm = steering / cfg.max_steer if cfg.max_steer > 0.0 else 0.0
     return PhysicalCommand(
         drive_current_a=i_drive,

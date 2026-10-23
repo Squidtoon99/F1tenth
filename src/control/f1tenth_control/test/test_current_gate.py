@@ -220,6 +220,14 @@ def test_ackermann_to_physical_maps_force_and_servo():
     assert cmd.steering == pytest.approx(0.5, abs=0.01)
 
 
+def test_ackermann_to_physical_clamps_full_steer_servo():
+    cfg = _cfg()
+    raw = cfg.steering_angle_to_servo_gain * 0.33 + cfg.steering_angle_to_servo_offset
+    cmd = ackermann_to_physical(0.0, 0.33, cfg, SOURCE_TELEOP)
+    assert raw == pytest.approx(0.049045, abs=1e-6)
+    assert cmd.servo_position == pytest.approx(0.05)
+
+
 def test_safe_brake_command():
     cfg = _cfg(i_brake_safe_a=4.0, i_brake_max_a=10.0)
     cmd = safe_brake_command(cfg)

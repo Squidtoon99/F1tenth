@@ -20,7 +20,7 @@ def test_normalized_action_matches_drive_math():
     for long_in, steer_in, i_drive, i_brake, max_steer in cases:
         long_norm, steer_rad = map_action_to_force(long_in, steer_in, max_steer)
         exp_drive, exp_brake = force_to_motor_currents(long_norm, i_drive, i_brake)
-        exp_servo = gain * steer_rad + offset
+        exp_servo = min(0.85, max(0.05, gain * steer_rad + offset))
         exp_steer_norm = steer_rad / max_steer if max_steer > 0.0 else 0.0
 
         drive, brake, servo, got_long, got_steer = normalized_action_to_physical(

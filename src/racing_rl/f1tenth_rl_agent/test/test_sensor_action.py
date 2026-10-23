@@ -55,7 +55,8 @@ def test_steering_maps_to_servo_with_calibration():
         steering_angle_to_servo_offset=0.4495,
     )
     assert steer_norm == pytest.approx(1.0)
-    assert servo == pytest.approx(-1.2135 * 0.33 + 0.4495)
+    assert servo == pytest.approx(0.05)
+    assert -1.2135 * 0.33 + 0.4495 < 0.05
 
 
 def test_nonfinite_input_coasts():

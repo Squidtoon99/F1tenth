@@ -34,17 +34,19 @@ class RlDeadmanGateNode(Node):
         self.create_timer(1.0 / rate_hz, self._publish_block)
 
         self.get_logger().info(
-            f'RL deadman gate: block /drive unless L1 (button {self.manual_button}) '
-            f'or R1 (button {self.autonomous_button}) held'
+            'RL deadman gate: block /drive unless L1 (buttons 4/9) '
+            'or R1 (buttons 5/10) held'
         )
 
     def _joy_cb(self, msg: Joy) -> None:
         buttons = msg.buttons
-        self._manual_held = (
-            self.manual_button < len(buttons) and buttons[self.manual_button] == 1
+        self._manual_held = any(
+            i < len(buttons) and buttons[i] == 1
+            for i in (self.manual_button, 4, 9)
         )
-        self._autonomous_held = (
-            self.autonomous_button < len(buttons) and buttons[self.autonomous_button] == 1
+        self._autonomous_held = any(
+            i < len(buttons) and buttons[i] == 1
+            for i in (self.autonomous_button, 5, 10)
         )
 
     def _deadman_held(self) -> bool:
