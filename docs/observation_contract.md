@@ -23,9 +23,10 @@ Training and deploy both consume this package. The policy observation is always
   ```
 
   Editing the observation space is picked up on the next trainer run — no rebuild,
-  no reinstall. This is wired into `training/requirements.txt` and
-  `training/environment.yml`. `standalone_trainer.py` also imports
-  `validate_policy_artifact` from the contract.
+  no reinstall. Wired into `training/requirements-mac.txt` and
+  `training/requirements-gpu.txt` (`requirements.txt` includes the mac set).
+  `environment.yml` has the contract + torch but not Warp. `standalone_trainer.py`
+  imports `validate_policy_artifact` from the contract.
 
 - **On-car inference** (`src/racing_rl`) depends on it via
   `<exec_depend>f1tenth_contract</exec_depend>` and the workspace is built with

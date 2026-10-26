@@ -183,7 +183,7 @@ real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
   `acceleration` in `[-1, 1]`, `speed == 0`, and `|steer|` within `max_steer`;
 - the car moves (odom speed above the floor for enough samples);
 - the opponent block `[384:390)` stays zero in solo mode;
-- ≥ 3 consecutive IV_2026 laps and a 10-minute soak with no process exits and no
+- ≥ 3 consecutive IV_2026_SIM laps and a 10-minute soak with no process exits and no
   watchdog trips during normal operation;
 - policy-loss and non-finite-input fault tests command a safe brake within the
   ~0.15 s (3-cycle @ 20 Hz) drive watchdog (covered by the `f1tenth_control` node

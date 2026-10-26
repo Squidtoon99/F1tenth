@@ -98,7 +98,7 @@ gitGraph
   `tools/sim.sh` imports the gym (`vcs import sim < sim/f1tenth_gym_ros.repos`),
   builds the agent workspace, launches the bridge-only sim
   (`rl_agent_sim_launch.py`) plus our `f1tenth_bringup/sim.launch.py`, and drives
-  the car with the trained policy. The gym map is **IV_2026**. The `evaluation`
+  the car with the trained policy. The gym map is **IV_2026_SIM**. The `evaluation`
   node spawns the car forward-facing along the centerline and resets it on
   stuck/out-of-bounds. See [`../sim/README.md`](../sim/README.md).
 
