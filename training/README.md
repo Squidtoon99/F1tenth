@@ -81,7 +81,8 @@ For a checkpoint that must pass the gym gate, use the gym map:
 ```
 
 `--track` also accepts a bundled name, a GitHub `f1tenth_racetracks` name (fetched
-on first run), or a centerline CSV path.
+on first run), or a centerline CSV path. Optional `--config path.json` patches
+`DEFAULT_CONFIG` (env/reward/model/schedule/selfplay/obs); explicit CLI flags win.
 
 ### 2. Head-to-head
 

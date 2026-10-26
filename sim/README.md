@@ -28,7 +28,7 @@ vcs import sim < sim/f1tenth_gym_ros.repos
 `vcs`. The clone (`sim/f1tenth_gym_ros/`, engine at `f1tenth_gym/`) is gitignored
 and is **not** in the car image.
 
-Map is **IV_2026**. The gym centerline and
+Map is **IV_2026_SIM**. The gym centerline and
 `src/racing_rl/f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv` must match
 (`tools/sim.sh` checks). Train with `--track IV_2026_SIM` for a checkpoint that
 can pass this gate.
