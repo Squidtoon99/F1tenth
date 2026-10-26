@@ -35,7 +35,7 @@ covers what the repo is, first-time setup, and contributing a ROS node end to en
 Everything runs in Docker; you do not need ROS 2 installed on your host.
 
 ```bash
-git clone https://github.com/Squidtoon99/F1tenth.git f1tenth && cd f1tenth
+git clone --recurse-submodules https://github.com/Squidtoon99/F1tenth.git f1tenth && cd f1tenth
 ./tools/dev.sh up        # build/enter the dev container (or `./tools/dev.sh pull`)
 ```
 
@@ -49,7 +49,9 @@ Teammates on amd64 can skip building by pulling the prebuilt seed images
 ./tools/build.sh -t racing_algo   # or just one module group
 ```
 
-To bring up the simulator + a racing stack, see [`docs/development.md`](docs/development.md).
+To bring up the gym + racing stack, or to train a policy, see
+[`docs/getting-started.md`](docs/getting-started.md) and
+[`docs/development.md`](docs/development.md).
 
 ## Branching
 
