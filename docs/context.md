@@ -34,15 +34,16 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Hand-designed observation** — car state (velocity, acceleration, yaw rate),
   the track geometry ahead (curvature / boundary distances), and, for wheel-to-
   wheel racing, opponent-relative features. Ours is the single source of truth in
-  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 384-dim base vector
-  plus an optional 6-dim opponent block).
+  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (always 390-dim: a
+  384-dim base plus a 6-dim opponent block that is all zeros when no opponent
+  is relevant).
 - **Reward shaping** — progress along the track, staying within the boundaries,
   and penalties that encourage clean, rule-abiding overtakes rather than
   collisions.
 - **Sim-to-real via domain randomization** — the policy trains in a batched
   NVIDIA Warp environment against randomized physics so it transfers to the real
-  car. The environment is in
-  [`../training/f1tenth_env/`](../training/f1tenth_env/).
+  car. Physics lives in [`../training/f1tenth_sim/`](../training/f1tenth_sim/);
+  the env loop is [`../training/f1tenth_env/`](../training/f1tenth_env/).
 
 The point of the reference is orientation: when you touch the observation, the
 reward, or the trainer, this is *why* it is shaped the way it is.
@@ -54,19 +55,19 @@ mapping, and localization modules:
 
 ```mermaid
 flowchart LR
-  sensors["LiDAR / IMU / VESC"] --> perception
-  sensors --> localization
+  sensors["LiDAR / IMU / VESC"] --> localization
   sensors --> mapping
-  localization --> planning
+  sensors --> racing_rl
   localization --> racing_rl
-  planning --> control
+  localization --> racing_algo
+  racing_algo --> control
   control -->|"/drive"| car[vehicle drivers]
   racing_rl -->|"/drive"| car
 ```
 
-- **Algorithmic racing** (`src/racing_algo/`, `src/planning/`, `src/control/`) —
-  a classical pipeline: optimize a global raceline, then track it with
-  pure-pursuit. Transparent and tunable.
+- **Algorithmic racing** (`src/racing_algo/`, `src/control/`) —
+  track a raceline CSV with pure-pursuit (and related controllers).
+  Transparent and tunable.
 - **RL racing** (`src/racing_rl/`, trained in `training/`) — an end-to-end policy
   that maps the observation straight to a drive command. It can run standalone.
 
@@ -76,8 +77,8 @@ The core problems, by module:
 | --- | --- |
 | State estimation (where am I on the track?) | `src/localization/` (particle filter) |
 | Track mapping | `src/mapping/` (SLAM) |
-| Opponent detection | `src/perception/` (from LiDAR) |
-| Global raceline / planning | `src/planning/` |
+| Opponent detection | `src/racing_rl/` (`opponent_detector`; `perception/` is a placeholder) |
+| Global raceline / planning | Per-car `raceline.csv` (`planning/` is a placeholder) |
 | Real-time tracking control | `src/control/` (pure-pursuit + drive layer) |
 | End-to-end policy inference | `src/racing_rl/` |
 | **Sim-to-real observation parity** | [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) + the C++ mirror in `f1tenth_common` |

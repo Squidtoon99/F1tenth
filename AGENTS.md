@@ -110,7 +110,7 @@ docker compose -f deploy/docker/docker-compose.dev.yml run --rm dev bash -lc \
    colcon test-result --verbose'
 ```
 
-The training `.venv` is only for pure-Python parity checks (e.g.
+The training `.venv` is for the trainer and for pure-Python parity checks (e.g.
 `test_obs_parity.py`, `test_contract_parity.py`); anything importing `rclpy` or a
 built C++ node runs in the container, never the venv.
 
@@ -130,11 +130,11 @@ tools/sim.sh down
 
 ### Training Python environment (`.venv`)
 
-The pure-Python [`training/`](training/) stack (QR-SAC trainer, `f1tenth_env`,
-`f1tenth_sim`) is **not** built by colcon and does not need the dev container. It
-runs against a local virtualenv exposed at the repo root as `.venv`, which is a
-**symlink** to a venv living outside the repo (so `find`/globs that skip symlinks
-miss it — reference it explicitly). Use its interpreter directly:
+The pure-Python [`training/`](training/) stack (QR-SAC trainer, Warp env) is
+**not** built by colcon and does not need the dev container. It runs against a
+local virtualenv at the repo root as `.venv` (a symlink to a venv outside the
+repo is fine — `find`/globs that skip symlinks miss it, so reference `.venv`
+explicitly). Use its interpreter directly:
 
 ```bash
 .venv/bin/python training/standalone_trainer.py --help   # run the trainer
@@ -142,11 +142,10 @@ miss it — reference it explicitly). Use its interpreter directly:
 .venv/bin/python -m flake8 training                      # lint (max line 99)
 ```
 
-It provides `torch`, `genesis`, `wandb`, etc. It is CPU-only on this host (no
-CUDA/MPS), so use `--physics torch` for fast standalone runs and expect long
-wall-clock for large step counts. `f1tenth_contract` is not installed there and
-training does not import it (the contract constants are mirrored in
-`training/config.py`).
+It provides `torch`, `warp-lang`, `wandb`, and an editable
+`libs/f1tenth_contract`. On this host it is CPU-only (no CUDA/MPS); use
+`--device cpu` and small `--num-envs`. GPU training is Linux + NVIDIA. See
+[`training/README.md`](training/README.md).
 
 ## Testing philosophy
 

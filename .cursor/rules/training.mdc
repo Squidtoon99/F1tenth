@@ -7,8 +7,7 @@ alwaysApply: false
 # Training
 
 - `training/` is **pure Python**: never built by colcon, never shipped in the car
-  image. Run commands from the `training/` directory. See
-  [training/README.md](training/README.md).
+  image. Use the repo-root `.venv` (see [training/README.md](training/README.md)).
 - The RL approach follows GT Sophy: QR-SAC in [training/qrsac/](training/qrsac/),
   the sim env in [training/f1tenth_env/](training/f1tenth_env/). Background:
   [docs/context.md](docs/context.md).
@@ -17,6 +16,6 @@ alwaysApply: false
   format change is picked up on the next run with no rebuild, but it also affects
   `racing_rl` and the C++ mirror, so treat it as a shared-surface change.
 - No mocks — tests exercise the real env and modules. Run them where the training
-  dependencies (e.g. Genesis) are actually installed, rather than faking or
+  dependencies (Warp, torch) are actually installed, rather than faking or
   skipping them.
 - Keep heavy artifacts (checkpoints, logs, wandb) out of git; they are gitignored.

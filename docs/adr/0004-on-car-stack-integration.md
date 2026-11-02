@@ -6,12 +6,11 @@ Accepted (2026-07-11)
 
 ## Context
 
-The physical car at `shereef@f1tenth` ran a fragmented workspace (`f1tenth_ws_bak`)
-with first-party driver nodes embedded in a modified `f1tenth_stack`, a vendored
-`particle_filter` with local edits, and RL nodes from `F1tenth-Genesis/ros2_deploy`.
-The monorepo already held the RL contract (384 + 6 opponent, tyre loads) and a
-generic deploy image, but `localization/`, `control/`, and `racing_algo/` were
-mostly scaffolds.
+The physical car ran a fragmented workspace with first-party driver nodes
+embedded in a modified `f1tenth_stack`, a vendored `particle_filter` with local
+edits, and RL nodes from a prior deploy tree. The monorepo already held the RL
+contract (384 + 6 opponent, tyre loads) and a generic deploy image, but
+`localization/`, `control/`, and `racing_algo/` were mostly scaffolds.
 
 ## Decision
 
