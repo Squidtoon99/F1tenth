@@ -15,6 +15,7 @@ Nearby runbooks (not under `docs/`):
 [`../training/README.md`](../training/README.md),
 [`../sim/README.md`](../sim/README.md),
 [`../analysis/README.md`](../analysis/README.md),
+[`../src/mapping/README.md`](../src/mapping/README.md),
 [`../deploy/README.md`](../deploy/README.md),
 [`../calibration/README.md`](../calibration/README.md).
 

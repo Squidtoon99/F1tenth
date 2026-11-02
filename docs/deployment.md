@@ -251,7 +251,7 @@ RL training can run on HPC via Apptainer:
 
 ```bash
 apptainer build training.sif deploy/apptainer/training.def
-apptainer run --nv training.sif --num-envs 4096 --total-steps 2000000
+apptainer run --nv training.sif --num-envs 4096 --total-transitions 256000000
 ```
 
 Weights produced there are delivered to the car as the mounted `/policies/policy.pt`

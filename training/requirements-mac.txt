@@ -1,16 +1,17 @@
 # RL training dependencies for macOS (Apple Silicon / arm64).
 #
-# The standalone trainer runs NATIVELY on macOS (not in the amd64 ROS container),
-# using the torch MPS/Metal or CPU backend. This installs current arm64 wheels.
+# The standalone trainer runs NATIVELY on macOS (not in the amd64 ROS container).
+# Warp on macOS is CPU only; the trainer --device is auto|cpu|cuda (no MPS).
+# Keep --num-envs small. This installs current arm64 wheels.
 #
-#   python3 -m venv .venv && source .venv/bin/activate
-#   pip install -r requirements-mac.txt
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r training/requirements-mac.txt
 
 # Shared observation/action contract, installed EDITABLE so obs-space changes need
 # no rebuild/reinstall during training.
 -e ../libs/f1tenth_contract
 
-# Core ML stack (arm64 wheels; torch selects the MPS/Metal or CPU backend).
+# Core ML stack (arm64 wheels; torch CPU backend — no MPS training path).
 torch
 warp-lang==1.15.0
 numpy
