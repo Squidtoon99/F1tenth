@@ -69,37 +69,66 @@ gitGraph
 
 ## Running
 
-- Simulation — evaluate the deployed RL stack in the gym (two containers: the gym
-  bridge in the fork image + our nodes in the dev image, sharing a docker bridge
-  network; noVNC serves RViz, Foxglove serves at `ws://localhost:8765`):
+- **Gym (deployed ROS stack)** — two containers: the gym bridge in the fork image
+  plus our nodes in the dev image, sharing a docker bridge network. noVNC serves
+  RViz; Foxglove is `ws://localhost:8765`. `STACK=vehicle` is the only graph
+  (`vehicle_obs` → `policy_inference` → `drive`).
 
   ```bash
   # CHECKPOINT_DIR is the host dir holding the trained .pt; CKPT its filename.
   CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
-  # ... watch: RViz at http://localhost:8080/vnc.html, or Foxglove -> ws://localhost:8765
+  # RViz: http://localhost:8080/vnc.html   Foxglove: ws://localhost:8765
+  CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
   ./tools/sim.sh down
   ```
 
-  `tools/sim.sh` imports the gym (`vcs import sim < sim/f1tenth_gym_ros.repos`),
-  builds the agent workspace, launches the bridge-only sim
-  (`rl_agent_sim_launch.py`) plus our `f1tenth_bringup/sim.launch.py` (on-car C++
-  graph), and drives the car
-  with the trained policy. The `evaluation` node spawns the car forward-facing along
-  the centerline (matching training) and resets it on stuck/out-of-bounds. See
+  `MODE=dev` (default) builds live source. `MODE=release` runs the generic car
+  image with `/config` + `/policies` mounted. Gym map is `IV_2026_SIM`. See
   [`../sim/README.md`](../sim/README.md).
 
-- On the car: vehicle-only shakedown then full stack:
+- **On the car** — vehicle-only shakedown, then a racing stack.
+  `race.launch.py` defaults to `stack:=algo`; pass `stack:=rl` for the policy.
 
   ```bash
   ros2 launch f1tenth_bringup car.launch.py
   ros2 launch f1tenth_bringup race.launch.py stack:=algo
+  ros2 launch f1tenth_bringup race.launch.py stack:=rl
   ```
 
 ## RL training
 
-Training is pure Python and never built by colcon. See
-[`../training/README.md`](../training/README.md). The observation contract is
-installed editable, so changing the observation space needs no rebuild.
+Training is pure Python (NVIDIA Warp + QR-SAC) and never built by colcon. Create
+`.venv` at the repo root, then run from `training/`:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r training/requirements-gpu.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu130
+cd training
+python standalone_trainer.py --device cuda --num-envs 4096 --track IV_2026_SIM
+```
+
+macOS: `pip install -r training/requirements-mac.txt` — Warp CPU tests only, no
+MPS. There is no `--physics` flag. See [`../training/README.md`](../training/README.md).
+The observation contract is installed editable, so changing the observation space
+needs no rebuild (but it is a shared-surface change — see
+[`observation_contract.md`](observation_contract.md)).
+
+## Pitfalls
+
+- ROS 2 nodes: Docker only (`./tools/dev.sh up`). Host `.venv` has no `rclpy`.
+- Training: host `.venv` at the repo root. Run from `training/` (or
+  `PYTHONPATH=training`). `.venv/bin/python training/standalone_trainer.py` from
+  the repo root does not import `config` / `f1tenth_env` on its own.
+- Default training track is `ecss_clean`. Gym eval is `IV_2026_SIM`. Match them.
+- Checkpoints must be `policy_format_version >= 2` with `longitudinal_mode: force`.
+- Slip/load: `vehicle_obs.enable_slip_estimation` / `enable_load_estimation` in
+  the per-car overlay must match how the checkpoint was trained. Copy
+  `obs_norm.mean[372:380]` into `slip_obs_mean` when estimation is on.
+- `race.launch.py` defaults to the algorithmic stack. The runtime image CMD is
+  that launch with no `stack:=` override.
+- `-v /dev:/dev` on the car: `--privileged` exposes device nodes but not the udev
+  symlinks (`/dev/sensors/vesc`, LiDAR, joystick).
 
 ## Conventions
 

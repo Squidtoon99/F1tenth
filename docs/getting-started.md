@@ -25,6 +25,17 @@ Everything under [`../src/`](../src/) is one colcon workspace, grouped by domain
 `racing_algo/`, plus `common/` and vendored `vehicle/`). Each group is code-owned —
 see [`../CODEOWNERS`](../CODEOWNERS).
 
+```mermaid
+flowchart LR
+  warp["Warp trainer (training/)"] -->|"policy.pt"| gym["gym gate (tools/sim.sh)"]
+  warp -->|"policy.pt"| car["Jetson /policies"]
+  gym -->|PASS| img["generic image"]
+  img --> car
+```
+
+Two sims: Warp trains; the gym certifies the deployed ROS graph. Tracks must match
+(`IV_2026_SIM` for the gym gate; default training track is `ecss_clean`).
+
 ## 2. First-time setup
 
 ### Prerequisites
@@ -66,28 +77,43 @@ better off with option A. (`SEED_REGISTRY=<user>` overrides the registry.)
 
 `--symlink-install` means **Python-only edits need no rebuild** — just re-run the node.
 
-### Run the simulator
+### Run the gym (deployed ROS stack)
 
-Evaluate the RL stack against the f1tenth gym (two containers + noVNC/Foxglove):
+Evaluate the on-car C++ graph against the f1tenth gym (two containers + noVNC /
+Foxglove). Gym assets are `IV_2026_SIM`; the checkpoint must be
+`policy_format_version >= 2` with `longitudinal_mode: force`.
 
 ```bash
 CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh up
 #   RViz over VNC : http://localhost:8080/vnc.html
 #   Foxglove      : ws://localhost:8765
+CHECKPOINT_DIR=/abs/path/to/checkpoints CKPT=policy.pt ./tools/sim.sh validate
 ./tools/sim.sh down
 ```
 
-See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md) for
-details.
+See [`../sim/README.md`](../sim/README.md) and [`development.md`](development.md).
 
-Train policies with the separate batched Warp simulator:
+### Train a policy (host `.venv`, not Docker)
+
+Training is pure Python (Warp + QR-SAC). Create `.venv` at the **repo root**:
 
 ```bash
-.venv/bin/python training/standalone_trainer.py \
-  --device cuda --precision 32 --num-envs 4096
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r training/requirements-gpu.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu130   # Linux + NVIDIA
+# macOS: pip install -r training/requirements-mac.txt   (Warp CPU tests only)
 ```
 
-macOS supports small Warp CPU tests, not MPS training. See
+Trainer modules are top-level, so run from `training/`:
+
+```bash
+cd training
+python standalone_trainer.py --device cuda --num-envs 4096 --track IV_2026_SIM
+```
+
+Default `--track` is `ecss_clean` (building floor). Use `IV_2026_SIM` if the next
+step is the gym gate. `--mixed-opponents` turns on the 1v1 mixed field. Checkpoints
+land in `outputs/runs/<id>/checkpoints/`. Full flags, eval video, and 1v1:
 [`../training/README.md`](../training/README.md).
 
 ## 3. Contribute a ROS node

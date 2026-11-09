@@ -35,7 +35,8 @@ flowchart LR
 1. Build the generic image from `develop` (tagged by git SHA).
 2. Snapshot it to a portable artifact and record it in `releases/manifest.csv`.
 3. Load it onto the Jetson and run with the per-car overlay mounted at `/config`
-   and the RL policy at `/policies`.
+   and the RL policy at `/policies`. Image CMD is `race.launch.py` (default
+   `stack:=algo`); pass `stack:=rl` for the policy.
 
 A release is a git tag on `develop` (e.g. `racing-v<ver>`) whose exact image is
 snapshotted. See [`../docs/deployment.md`](../docs/deployment.md).

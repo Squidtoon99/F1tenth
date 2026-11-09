@@ -13,7 +13,7 @@ duplication.
 ## Use from training (no rebuild on changes)
 
 ```bash
-pip install -e libs/f1tenth_contract     # one time, wired into environment.yml/dev.sh
+pip install -e libs/f1tenth_contract     # one time; also in training/requirements-*.txt
 ```
 
 Because it is installed editable, editing `observation.py` (e.g. adding a field) is
