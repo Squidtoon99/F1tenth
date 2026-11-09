@@ -9,16 +9,22 @@ observation/action contract, the build/deploy shape, or accepts a non-obvious
 trade-off. Routine work is captured by the PR instead (see
 [../development.md](../development.md)).
 
-- [0000](0000-template.md) — Template (copy this).
-- [0001](0001-single-monorepo-and-generic-car-image.md) — Single monorepo, single
-  colcon workspace, and a generic car image with per-car runtime config.
-- [0002](0002-physx-tyre-slip-and-tyre-load-observation.md) — PhysX-grounded tyre
-  slip and a per-wheel tyre-load observation block (380 → 384 layout change).
-- [0003](0003-opponent-obs-range-mask.md) — Remove opponent `present` channel;
-  6-dim opponent block with caller-side range/certainty masking (391 → 390).
-- [0004](0004-on-car-stack-integration.md) — Integrate the on-car localization,
-  algorithmic drivers, and deploy image from `shereef@f1tenth`.
-- [0005](0005-force-mode-vesc-actuation.md) — Force-mode VESC actuation via
-  current/brake commands (superseded).
-- [0006](0006-current-only-vesc-actuation.md) — Current/force is the only
-  longitudinal action semantic; speed-mode removed; policy_format_version 2.
+## Timeline
+
+These records are the path to the current implementation. Accepted decisions
+still hold unless a later ADR supersedes them.
+
+**Current stack:** one monorepo, 390-dim observation (384 base + 6-dim opponent
+block), NVIDIA Warp batched training sim, current/force VESC actuation
+(`policy_format_version` 2).
+
+| ADR | Decision | Status |
+| --- | --- | --- |
+| [0000](0000-template.md) | Template | — |
+| [0001](0001-single-monorepo-and-generic-car-image.md) | Single monorepo, one colcon workspace, generic car image + per-car runtime config | Accepted |
+| [0002](0002-physx-tyre-slip-and-tyre-load-observation.md) | PhysX tyre slip + 4-dim tyre-load block (380 → 384). TorchSim as sim source of truth later superseded by 0007 | Accepted (layout) |
+| [0003](0003-opponent-obs-range-mask.md) | Drop opponent `present`; 6-dim block with caller-side masking (391 → 390) | Accepted |
+| [0004](0004-on-car-stack-integration.md) | On-car localization, algo drivers, and deploy image in the monorepo | Accepted |
+| [0005](0005-force-mode-vesc-actuation.md) | Dual speed/force VESC actuation | **Superseded by 0006** |
+| [0006](0006-current-only-vesc-actuation.md) | Current/force is the only longitudinal action; speed-mode removed | Accepted |
+| [0007](0007-warp-simulator.md) | NVIDIA Warp is the batched RL simulator (replaces TorchSim) | Accepted |

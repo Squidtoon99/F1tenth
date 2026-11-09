@@ -56,14 +56,17 @@ flowchart LR
 
    On the car:
 
-   **CPU range_libc** (default off Jetson, or explicit `RANGE_LIBC_WITH_CUDA=OFF`):
+   **CPU range_libc** (default off Jetson, or explicit `RANGE_LIBC_WITH_CUDA=OFF`).
+   The image CMD is `race.launch.py` with launch default `stack:=algo`. Pass
+   `stack:=rl` for the policy:
 
    ```bash
    docker run --rm -it --net=host --privileged \
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
-     f1tenth-racing:develop
+     f1tenth-racing:develop \
+     ros2 launch f1tenth_bringup race.launch.py stack:=rl
    ```
 
    **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the image
@@ -87,7 +90,8 @@ flowchart LR
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
-     f1tenth-racing:develop
+     f1tenth-racing:develop \
+     ros2 launch f1tenth_bringup race.launch.py stack:=rl
    ```
 
    After a CUDA build, verify the extension imports (build checks `DT_NEEDED` and
@@ -118,11 +122,12 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 - `maps/` — occupancy grid + centerline/raceline for the current track (`map.yaml`,
   `centerline.csv`, `raceline.csv`).
 
-The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
-or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
-`race.launch.py` starts vehicle drivers, particle-filter localization
-(`enable_localization:=true`), and a read-only `localization_preflight` health check.
-The RL graph emits no drive command until pose + twist are live.
+The same image runs either stack. `race.launch.py` defaults to `stack:=algo`;
+pass `stack:=rl` for the policy. The RL checkpoint is mounted read-only at
+`/policies/policy.pt`. The launch starts vehicle drivers, particle-filter
+localization (`enable_localization:=true`), and a read-only
+`localization_preflight` health check. The RL graph emits no drive command until
+pose + twist are live.
 
 **Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
 are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
@@ -134,7 +139,7 @@ real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
 `policy_inference` → `drive`) is the sole gate. All commands run from the repo root.
 
 1. **Contract, parity, unit (host `.venv`)** — the 390-dim contract and the
-   training↔deploy observation parity:
+   training↔deploy observation layout:
 
    ```bash
    PYTHONPATH="libs/f1tenth_contract:src/racing_rl/f1tenth_rl_agent:training" \
@@ -142,9 +147,11 @@ real 390-dim checkpoint. The on-car C++ autonomy graph (`vehicle_obs` →
        libs/f1tenth_contract/test/test_contract.py \
        src/racing_rl/f1tenth_rl_agent/test/test_contract_parity.py \
        src/racing_rl/f1tenth_rl_agent/test/test_quasi_static_load.py
-   NUMBA_DISABLE_JIT=1 PYTHONPATH="libs/f1tenth_contract:src/racing_rl/f1tenth_rl_agent:training" \
-     .venv/bin/python -m pytest src/racing_rl/f1tenth_rl_agent/test/test_obs_parity.py
    ```
+
+   `test_obs_parity.py` (deploy `obs_core` vs `f1tenth_env.observations`) still
+   `importorskip("genesis")` and skips in a Warp-only venv. The C++ layout mirror
+   in step 2 is the test that always runs.
 
 2. **Build + ROS/C++ tests (dev container)** — the C++ obs/action mirror, tyre
    slip/load math, fixture parity, node integration, and drive-watchdog / bad-obs
@@ -243,12 +250,15 @@ exact commit and note the tag in the manifest. There is no release branch.
 
 ## Offboard training (HPC)
 
-RL training can run on HPC via Apptainer:
+RL training can run on HPC via Apptainer (Warp + CUDA torch from
+`training/requirements-gpu.txt`):
 
 ```bash
 apptainer build training.sif deploy/apptainer/training.def
-apptainer run --nv training.sif --num-envs 4096 --total-steps 2000000
+apptainer run --nv training.sif --device cuda --num-envs 4096 --track IV_2026_SIM
 ```
 
-Weights produced there are delivered to the car as the mounted `/policies/policy.pt`
-— they are never baked into the image.
+The def's `%runscript` `cd`s into `training/` and execs `standalone_trainer.py`.
+The old `--total-steps` flag is `--total-transitions`. Weights produced there are
+delivered to the car as the mounted `/policies/policy.pt` — they are never baked
+into the image. See [`../training/README.md`](../training/README.md).

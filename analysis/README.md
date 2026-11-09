@@ -1,14 +1,25 @@
 # analysis/
 
-Offline analysis of races, telemetry, rosbags, and training runs — lap-time
-studies, trajectory/raceline comparisons, RL learning-curve analysis, failure
-triage.
+Offline analysis of races, telemetry, rosbags, and training runs. Keep **notebooks
+and scripts** here. The data they consume — rosbags, logs, checkpoints, wandb
+exports, rendered plots — is heavy and **gitignored**.
 
-Keep **notebooks and scripts** here (they are small and reviewable). The data they
-consume — rosbags, logs, checkpoints, wandb exports, rendered plots — is heavy and
-**gitignored**; store it off-repo and load it by path/URL.
+Scripts in this tree:
 
-Suggested convention:
+- `warp_parity/generate_torch_reference.py` — regenerate the committed Warp↔Torch
+  trajectory fixture (`training/tests/data/torch_reference_trajectory.npz`).
+- `steering_full_lock/warp_full_lock.py` — Warp full-lock turning-radius check
+  against the measured 0.33 rad servo clamp.
+- `friction/estimate_mu_from_bag.py` — friction estimate from a rosbag.
+
+Training-side harnesses live next to the trainer:
+
+- [`../training/analysis/lap_timing.py`](../training/analysis/lap_timing.py) — solo
+  lap-time distributions over a run's checkpoints.
+- [`../training/analysis/tournament.py`](../training/analysis/tournament.py) — 1v1
+  triple-elim bracket.
+
+Suggested convention for new work:
 
 ```text
 analysis/

@@ -32,10 +32,14 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Algorithm: QR-SAC** — a distributional (Quantile-Regression) variant of Soft
   Actor-Critic. Ours lives in [`../training/qrsac/`](../training/qrsac/).
 - **Hand-designed observation** — car state (velocity, acceleration, yaw rate),
-  the track geometry ahead (curvature / boundary distances), and, for wheel-to-
-  wheel racing, opponent-relative features. Ours is the single source of truth in
-  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 384-dim base vector
-  plus an optional 6-dim opponent block).
+  the track geometry ahead (curvature / boundary distances), tyre slip/load, and,
+  for wheel-to-wheel racing, opponent-relative features. Ours is the single
+  source of truth in [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a
+  384-dim base vector plus a 6-dim opponent block; the policy input is always
+  390 values).
+- **Action** — normalized `(throttle, steer)` at 20 Hz. Throttle is drive/coast/
+  brake effort (sim force / VESC current), not a speed setpoint
+  ([ADR 0006](adr/0006-current-only-vesc-actuation.md)).
 - **Reward shaping** — progress along the track, staying within the boundaries,
   and penalties that encourage clean, rule-abiding overtakes rather than
   collisions.

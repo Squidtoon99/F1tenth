@@ -35,13 +35,16 @@ ssh "${JETSON}" 'gunzip -c /tmp/f1tenth-image.tar.gz | docker load'
 
 cat <<EOF
 
-==> Done. Run on the car (mount the overlay + policy):
+==> Done. Run on the car (mount the overlay + policy).
+  Image CMD is race.launch.py with launch default stack:=algo.
+  Pass stack:=rl for the policy:
 
   docker run --rm -it --net=host --privileged \\
     -v /dev:/dev \\
     -v /opt/f1tenth/config:/config:ro \\
     -v /opt/f1tenth/policies:/policies:ro \\
-    ${IMAGE}:develop
+    ${IMAGE}:develop \\
+    ros2 launch f1tenth_bringup race.launch.py stack:=rl
 
   CUDA range_libc images ship L4T libcudart; see docs/deployment.md for verify/import.
   GPU kernel execution needs the nvidia runtime (libcuda from the host):
@@ -50,5 +53,6 @@ cat <<EOF
     -v /dev:/dev \\
     -v /opt/f1tenth/config:/config:ro \\
     -v /opt/f1tenth/policies:/policies:ro \\
-    ${IMAGE}:develop
+    ${IMAGE}:develop \\
+    ros2 launch f1tenth_bringup race.launch.py stack:=rl
 EOF
