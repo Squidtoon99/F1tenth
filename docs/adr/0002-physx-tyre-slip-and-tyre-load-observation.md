@@ -1,6 +1,7 @@
 # 0002 — PhysX-grounded tyre slip + tyre-load observation block
 
-- Status: Accepted
+- Status: Accepted (observation layout). TorchSim as the simulation source of
+  truth is superseded by [0007](0007-warp-simulator.md); Warp now owns slip/load.
 - Date: 2026-07-08
 
 ## Context

@@ -32,13 +32,16 @@ Turismo simulator. The pieces we deliberately mirror:
 - **Algorithm: QR-SAC** — a distributional (Quantile-Regression) variant of Soft
   Actor-Critic. Ours lives in [`../training/qrsac/`](../training/qrsac/).
 - **Hand-designed observation** — car state (velocity, acceleration, yaw rate),
-  the track geometry ahead (curvature / boundary distances), and, for wheel-to-
-  wheel racing, opponent-relative features. Ours is the single source of truth in
-  [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a 384-dim base vector
-  plus an optional 6-dim opponent block).
+  the track geometry ahead (curvature / boundary distances), tyre slip/load, and,
+  for wheel-to-wheel racing, opponent-relative features. Ours is the single
+  source of truth in [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) (a
+  384-dim base vector plus a 6-dim opponent block; the policy input is always
+  390 values).
+- **Action** — normalized `(throttle, steer)` at 20 Hz. Throttle is drive/coast/
+  brake effort (sim force / VESC current), not a speed setpoint
+  ([ADR 0006](adr/0006-current-only-vesc-actuation.md)).
 - **Reward shaping** — progress along the track, staying within the boundaries,
-  and penalties that encourage clean, rule-abiding overtakes rather than
-  collisions.
+  and Maggiore passing / collision / rear-end terms for 1v1.
 - **Sim-to-real via domain randomization** — the policy trains in a batched
   NVIDIA Warp environment against randomized physics so it transfers to the real
   car. The environment is in
@@ -49,24 +52,24 @@ reward, or the trainer, this is *why* it is shaped the way it is.
 
 ## Our autonomy stack and the core problems
 
-The monorepo hosts **two racing approaches** that share the same perception,
-mapping, and localization modules:
+The monorepo hosts **two racing approaches** that share mapping and localization:
 
 ```mermaid
 flowchart LR
-  sensors["LiDAR / IMU / VESC"] --> perception
-  sensors --> localization
+  sensors["LiDAR / IMU / VESC"] --> localization
   sensors --> mapping
-  localization --> planning
+  sensors --> racing_rl
   localization --> racing_rl
-  planning --> control
+  localization --> racing_algo
+  racing_algo --> control
   control -->|"/drive"| car[vehicle drivers]
   racing_rl -->|"/drive"| car
 ```
 
-- **Algorithmic racing** (`src/racing_algo/`, `src/planning/`, `src/control/`) —
-  a classical pipeline: optimize a global raceline, then track it with
-  pure-pursuit. Transparent and tunable.
+- **Algorithmic racing** (`src/racing_algo/`, `src/control/`) — a classical
+  pipeline: track a raceline CSV with pure-pursuit. Transparent and tunable.
+  `src/planning/` is still an empty scaffold; racelines come from mapping
+  postprocess / the per-car overlay.
 - **RL racing** (`src/racing_rl/`, trained in `training/`) — an end-to-end policy
   that maps the observation straight to a drive command. It can run standalone.
 
@@ -75,10 +78,10 @@ The core problems, by module:
 | Problem | Where it lives |
 | --- | --- |
 | State estimation (where am I on the track?) | `src/localization/` (particle filter) |
-| Track mapping | `src/mapping/` (SLAM) |
-| Opponent detection | `src/perception/` (from LiDAR) |
-| Global raceline / planning | `src/planning/` |
-| Real-time tracking control | `src/control/` (pure-pursuit + drive layer) |
+| Track mapping | `src/mapping/` (slam_toolbox + postprocess) |
+| Opponent detection | `src/racing_rl/` C++ `opponent_detector` (LiDAR). `src/perception/` is a scaffold |
+| Global raceline | mapping `postprocess/` → `deploy/cars/<car>/maps/` |
+| Real-time tracking control | `src/control/` (pure-pursuit + `vesc_actuator` + drive layer) |
 | End-to-end policy inference | `src/racing_rl/` |
 | **Sim-to-real observation parity** | [`../libs/f1tenth_contract`](../libs/f1tenth_contract/) + the C++ mirror in `f1tenth_common` |
 
