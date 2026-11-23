@@ -5,7 +5,7 @@ filter localization, a read-only localization preflight, and the selected racing
 stack.
 
 Per-car calibration/track come from the overlay mounted at /config; the policy from
-/policies. Select the stack with ``stack:=rl`` (default) or ``stack:=algo``.
+/policies. Select the stack with ``stack:=algo`` (default) or ``stack:=rl``.
 """
 
 import os

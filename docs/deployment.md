@@ -54,7 +54,8 @@ flowchart LR
    deploy/scripts/load_to_jetson.sh user@car01 deploy/snapshots/f1tenth-racing-<gitsha>.tar.gz car01
    ```
 
-   On the car:
+   On the car, image CMD is `race.launch.py` (launch default `stack:=algo`). Extra
+   `docker run` args **replace** CMD, so restate the launch to select a stack.
 
    **CPU range_libc** (default off Jetson, or explicit `RANGE_LIBC_WITH_CUDA=OFF`):
 
@@ -63,7 +64,8 @@ flowchart LR
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
-     f1tenth-racing:develop
+     f1tenth-racing:develop \
+     ros2 launch f1tenth_bringup race.launch.py stack:=rl
    ```
 
    **CUDA range_libc** (Jetson auto-build, or `RANGE_LIBC_WITH_CUDA=ON`): the image
@@ -87,7 +89,8 @@ flowchart LR
      -v /dev:/dev \
      -v /opt/f1tenth/config:/config:ro \
      -v /opt/f1tenth/policies:/policies:ro \
-     f1tenth-racing:develop
+     f1tenth-racing:develop \
+     ros2 launch f1tenth_bringup race.launch.py stack:=rl
    ```
 
    After a CUDA build, verify the extension imports (build checks `DT_NEEDED` and
@@ -118,11 +121,16 @@ Lives in [`../deploy/cars/`](../deploy/cars/). Each `carNN/` has:
 - `maps/` — occupancy grid + centerline/raceline for the current track (`map.yaml`,
   `centerline.csv`, `raceline.csv`).
 
-The same image runs the algorithmic or RL stack; select with `stack:=rl` (default)
-or `stack:=algo`. The RL policy is mounted read-only at `/policies/policy.pt`.
-`race.launch.py` starts vehicle drivers, particle-filter localization
-(`enable_localization:=true`), and a read-only `localization_preflight` health check.
-The RL graph emits no drive command until pose + twist are live.
+The same image runs the algorithmic or RL stack. Image CMD is `race.launch.py`
+with launch default `stack:=algo`; pass `stack:=rl` for the policy. The RL
+policy is mounted read-only at `/policies/policy.pt`. `race.launch.py` starts
+vehicle drivers, particle-filter localization (`enable_localization:=true`), and
+a read-only `localization_preflight` health check. The RL graph emits no drive
+command until pose + twist are live.
+
+`vesc_actuator` is the exclusive owner of `/commands/motor/current`,
+`/commands/motor/brake`, and servo position (ADR 0006). `car.launch.py` starves
+vendored `ackermann_to_vesc` at its `ackermann_cmd` input so the two never fight.
 
 **Checkpoint compatibility:** policies trained under the legacy on-car 387-dim layout
 are not compatible with the monorepo 390-dim contract; retrain before RL deploy.
@@ -247,7 +255,7 @@ RL training can run on HPC via Apptainer:
 
 ```bash
 apptainer build training.sif deploy/apptainer/training.def
-apptainer run --nv training.sif --num-envs 4096 --total-steps 2000000
+apptainer run --nv training.sif --device cuda --num-envs 4096 --total-transitions 256000000
 ```
 
 Weights produced there are delivered to the car as the mounted `/policies/policy.pt`
