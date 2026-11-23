@@ -14,5 +14,7 @@ supplied at runtime.
 The **training** side lives entirely under top-level [`training/`](../../../training/)
 and is never built by colcon nor included in the car image.
 
-End-to-end bringup: `f1tenth_bringup/race.launch.py` (on-car) and
-`f1tenth_bringup/sim.launch.py` (gym gate).
+End-to-end bringup: `f1tenth_bringup/race.launch.py stack:=rl` (on-car; launch
+default is `algo`) and `f1tenth_bringup/sim.launch.py` (gym gate via
+`tools/sim.sh`). Checkpoints must be `policy_format_version >= 2` with
+`longitudinal_mode: force`.

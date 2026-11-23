@@ -31,8 +31,8 @@ or HPC, so there is intentionally **no GPU CI**.
 ```text
 src/         # single colcon workspace (ROS 2 Humble), grouped by domain
 libs/        # cross-language shared libraries (observation/action contract)
-training/    # RL training frameworks (pure Python; not colcon; not in car image)
-sim/         # simulator integration
+training/    # RL training (Warp + QR-SAC; pure Python; not colcon; not in car image)
+sim/         # gym bridge pin (closed-loop eval of the deployed ROS stack)
 deploy/      # images, per-car overlays, deploy scripts
 tools/       # build + dev helpers
 calibration/ # sim-to-real calibration
@@ -50,13 +50,13 @@ independently:
   - `f1tenth_common` — shared C++/Python helpers, including the C++ mirror of the
     observation layout.
   - `f1tenth_bringup` — top-level launch files (race / sim / car variants).
-- `perception/` — e.g. opponent detection from LiDAR.
-- `mapping/` — SLAM-based track mapping (shared).
+- `perception/` — empty scaffold. LiDAR opponent detection lives in `racing_rl`.
+- `mapping/` — SLAM-based track mapping + offline postprocess (shared).
 - `localization/` — particle-filter localization (shared). Vendored
   `particle_filter` + `f1tenth_localization` launch/wrappers; `range_libc` submodule.
-- `planning/` — raceline optimization and global planning.
+- `planning/` — empty scaffold. Raceline CSVs come from mapping postprocess / overlays.
 - `control/` — pure-pursuit, follow-the-gap, PID controllers, safety, deadman gate,
-  and the RL drive-command layer.
+  `vesc_actuator`, and the RL drive-command layer.
 - `racing_rl/` — the on-car RL inference nodes (observation builder, policy
   inference, drive). Loads a trained policy at runtime.
 - `racing_algo/` — composition/bringup of the algorithmic racing stack.
@@ -69,10 +69,8 @@ flowchart LR
   sensors["sensors: LiDAR / VESC / IMU"] --> vehicle[vehicle drivers]
   vehicle -->|"/scan /odom /sensors/*"| localization
   vehicle -->|"/scan"| mapping
-  localization --> planning
   localization --> racing_rl
   localization --> racing_algo
-  planning --> control
   racing_algo --> control
   racing_rl -->|"/drive"| vehicle
   control -->|"/drive"| vehicle
@@ -84,6 +82,10 @@ The observation and action layout is a single source of truth in
 [`libs/f1tenth_contract`](libs/f1tenth_contract/). It is a dual package: a normal
 Python package (`pyproject.toml`) that also carries a `package.xml`, so it works in
 both worlds without duplication:
+
+The policy observation is always 390 values (384 base + 6-dim opponent block;
+zeros mean no relevant opponent). Longitudinal action is force/current
+(`policy_format_version` 2).
 
 - **Training** installs it editable (`pip install -e libs/f1tenth_contract`), so
   changing the observation space is picked up on the next run with no rebuild.
@@ -122,3 +124,7 @@ Three images off one base so dev and car run identical dependencies:
 - `Dockerfile.base` — ROS 2 Humble + all apt/rosdep deps + tooling (changes rarely).
 - `Dockerfile.dev` — base + dev conveniences, mounts live source.
 - `Dockerfile.runtime` — base + a baked colcon install (this is the car image).
+  Target `runtime-cuda` when `RANGE_LIBC_WITH_CUDA=ON` (Jetson particle_filter).
+
+Training uses NVIDIA Warp in `training/f1tenth_sim/` (ADR 0007), not the gym and
+not a second physics backend. The gym bridge is the ROS closed-loop gate only.

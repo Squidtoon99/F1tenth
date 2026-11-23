@@ -110,15 +110,16 @@ docker compose -f deploy/docker/docker-compose.dev.yml run --rm dev bash -lc \
    colcon test-result --verbose'
 ```
 
-The training `.venv` is only for pure-Python parity checks (e.g.
-`test_obs_parity.py`, `test_contract_parity.py`); anything importing `rclpy` or a
-built C++ node runs in the container, never the venv.
+The training `.venv` is only for pure-Python work (trainer, Warp tests, contract
+parity). Anything importing `rclpy` or a built C++ node runs in the container,
+never the venv.
 
 ### End-to-end ROS testing against f1tenth_gym
 
 Closed-loop testing of the deployed nodes + ML policy uses the two-container gym
 stack (gym bridge + our agent graph). `tools/sim.sh` orchestrates it; the on-car
-C++ graph (`vehicle_obs` → `policy_inference` → `drive`) is the release gate. See
+C++ graph (`vehicle_obs` → `policy_inference` → `drive`) is the release gate
+(`STACK=vehicle`). Gym assets are `IV_2026_SIM`. See
 [`docs/deployment.md`](docs/deployment.md) for the full certification sequence and
 acceptance criteria.
 
@@ -130,23 +131,23 @@ tools/sim.sh down
 
 ### Training Python environment (`.venv`)
 
-The pure-Python [`training/`](training/) stack (QR-SAC trainer, `f1tenth_env`,
-`f1tenth_sim`) is **not** built by colcon and does not need the dev container. It
-runs against a local virtualenv exposed at the repo root as `.venv`, which is a
-**symlink** to a venv living outside the repo (so `find`/globs that skip symlinks
-miss it — reference it explicitly). Use its interpreter directly:
+The pure-Python [`training/`](training/) stack (QR-SAC trainer, Warp `f1tenth_env`
+/ `f1tenth_sim`) is **not** built by colcon and does not need the dev container.
+It runs against a local virtualenv at the repo root as `.venv` (may be a symlink
+to a venv outside the repo — `find`/globs that skip symlinks miss it). Trainer
+modules are top-level, so either `cd training` or set `PYTHONPATH=training`:
 
 ```bash
-.venv/bin/python training/standalone_trainer.py --help   # run the trainer
-.venv/bin/python -m pytest training/tests                # training unit tests
+cd training && ../.venv/bin/python standalone_trainer.py --help
+PYTHONPATH=training .venv/bin/python -m pytest training/tests
 .venv/bin/python -m flake8 training                      # lint (max line 99)
 ```
 
-It provides `torch`, `genesis`, `wandb`, etc. It is CPU-only on this host (no
-CUDA/MPS), so use `--physics torch` for fast standalone runs and expect long
-wall-clock for large step counts. `f1tenth_contract` is not installed there and
-training does not import it (the contract constants are mirrored in
-`training/config.py`).
+Install from `training/requirements-gpu.txt` (Linux + CUDA) or
+`training/requirements-mac.txt` (Warp CPU tests only; no MPS). There is no
+`--physics` flag — Warp is the only sim. `f1tenth_contract` is installed
+editable; the trainer also mirrors layout constants in `training/config.py`.
+See [`training/README.md`](training/README.md).
 
 ## Testing philosophy
 
